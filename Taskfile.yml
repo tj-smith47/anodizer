@@ -358,6 +358,10 @@ tasks:
       - sh: git diff --quiet && git diff --cached --quiet
         msg: "Working tree is dirty — commit or stash before task push."
     cmds:
+      # Fetch + divergence check first: a CI-pushed release bump commit is
+      # rebased in automatically; any other divergence fails here, before
+      # the long gate spends its time.
+      - .claude/scripts/push-preflight.sh
       - task: gate
       - git push {{.CLI_ARGS | default "origin master"}}
 

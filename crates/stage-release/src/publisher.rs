@@ -16,15 +16,18 @@
 //!
 //! # Rollback shape
 //!
-//! Two server-side operations per recorded target:
+//! One server-side operation per recorded target:
+//! `DELETE /repos/{owner}/{repo}/releases/{id}` — removes the release
+//! and every attached asset.
 //!
-//! 1. `DELETE /repos/{owner}/{repo}/releases/{id}` — removes the release
-//!    and every attached asset.
-//! 2. `DELETE /repos/{owner}/{repo}/git/refs/tags/{tag}` — removes the
-//!    tag ref itself. GitHub's release-delete does NOT cascade to the
-//!    tag, so without this step a re-run would still see the old tag.
+//! The tag ref is deliberately NOT touched here: tag lifecycle (create,
+//! push, delete) has a single owner — `anodizer tag` / `anodizer tag
+//! rollback` (which the release failure policy drives) — so publisher
+//! rollback and tag rollback can never race a double-delete, and
+//! operator `on_rollback` hooks never observe a half-deleted
+//! release/tag pair.
 //!
-//! Both steps bucket a 404 response as [`ReleaseDeleteOutcome::AlreadyAbsent`]
+//! A 404 response buckets as [`ReleaseDeleteOutcome::AlreadyAbsent`]
 //! so re-running `--rollback-only` after a partial success does not
 //! surface false failures.
 //!
@@ -52,9 +55,7 @@ use std::sync::Arc;
 
 use anodizer_core::config::ScmRepoConfig;
 use anodizer_core::context::Context;
-use anodizer_core::github_client::{
-    DeleteReleaseParams, DeleteTagParams, GetReleaseByTagParams, GitHubClient,
-};
+use anodizer_core::github_client::{DeleteReleaseParams, GetReleaseByTagParams, GitHubClient};
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
 
@@ -75,8 +76,8 @@ const ROLLBACK_PARALLELISM: usize = 4;
 /// tag) coordinates the publish path acted on plus the numeric
 /// release ID (when GitHub returned one). The release ID is `None`
 /// when the post-publish `get_release_by_tag` lookup failed —
-/// rollback for that row will skip the release-delete step (the
-/// tag-delete still fires).
+/// rollback for that row skips the release-delete step (there is
+/// nothing else to do here; the tag ref is owned by tag rollback).
 pub(crate) type GithubReleaseTarget = anodizer_core::publish_evidence::GithubReleaseTargetSnapshot;
 
 /// Decode the GithubRelease variant from
@@ -91,8 +92,8 @@ fn decode_github_release_targets(
     }
 }
 
-/// Three-bucket outcome for a single DELETE call (either release or
-/// tag). `AlreadyAbsent` is a success bucket — re-running rollback
+/// Three-bucket outcome for a single release DELETE call.
+/// `AlreadyAbsent` is a success bucket — re-running rollback
 /// after a partial success must NOT surface 404s as failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReleaseDeleteOutcome {
@@ -108,11 +109,10 @@ pub(crate) enum ReleaseDeleteOutcome {
 ///
 /// - `404` / `not found` — the canonical "release or tag-ref does not
 ///   exist" response.
-/// - `410` / `gone` — GitHub occasionally returns 410 for tag refs that
-///   were deleted recently (the ref was "tombstoned").
-/// - `422` / `unprocessable` — `DELETE /git/refs/tags/<tag>` returns 422
-///   on some "reference does not exist" edge cases (e.g., tag ref was
-///   never created because the release was a draft).
+/// - `410` / `gone` — GitHub occasionally returns 410 for resources that
+///   were deleted recently (the target was "tombstoned").
+/// - `422` / `unprocessable` — GitHub's "does not exist" edge cases on
+///   recently-mutated resources surface as 422 Unprocessable Entity.
 ///
 /// Every other error message buckets as `Failed` so genuine transport /
 /// auth / 5xx failures still surface a manual-cleanup warn.
@@ -292,7 +292,7 @@ fn capture_release_ids(
             Ok(None) => None,
             // Transport / auth failure looking up the ID. Don't fail
             // the publish over a post-publish enrichment; leave id as
-            // None so rollback degrades to best-effort tag-delete only.
+            // None so rollback skips the release-delete for this row.
             Err(_e) => None,
         };
         target.release_id = resolved;
@@ -382,6 +382,7 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
                 &token,
                 &policy,
                 ctx.config.github_urls.as_ref(),
+                ctx.preflight_is_strict(),
                 ctx.env_source(),
                 &ctx.logger("preflight"),
             ),
@@ -395,18 +396,20 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
 /// the probe must contact the same host the release backend will
 /// (`github_urls.api` on GHES), not hardcoded github.com.
 /// See [`repo_push_check_at`] for the status/permission mapping.
+#[allow(clippy::too_many_arguments)]
 fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
     owner: &str,
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
     github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
+    strict: bool,
     env: &E,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
     let url = format!("{base}/repos/{owner}/{repo}");
-    repo_push_check_at(&url, owner, repo, token, policy, log)
+    repo_push_check_at(&url, owner, repo, token, policy, strict, log)
 }
 
 /// `url`-taking core of [`repo_push_check`] so a unit test can drive the
@@ -419,16 +422,20 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
 ///
 /// * 200 + `permissions.push == true` ⇒ Pass
 /// * 200 + `permissions.push == false` ⇒ Blocker (token lacks `contents:write`)
-/// * 200 + `permissions` absent ⇒ Warning (push scope undeterminable)
+/// * 200 + `permissions` absent ⇒ Warning (push scope undeterminable;
+///   Blocker under strict preflight)
 /// * 404 / 401 / 403 without a rate-limit signal ⇒ Blocker
-/// * 429, or 401 / 403 carrying a rate-limit header ⇒ Warning
-/// * 5xx / transport failure / unexpected status ⇒ Warning
+/// * 429, or 401 / 403 carrying a rate-limit header ⇒ Warning (Blocker under
+///   strict preflight)
+/// * 5xx / transport failure / unexpected status ⇒ Warning (Blocker under
+///   strict preflight)
 fn repo_push_check_at(
     url: &str,
     owner: &str,
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    strict: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
@@ -450,6 +457,7 @@ fn repo_push_check_at(
                  cannot create the release"
             )),
         },
+        strict,
         log,
     )
 }
@@ -505,7 +513,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         // Skip ID capture in dry-run / snapshot — no release was created
         // so `get_release_by_tag` would 404 (or worse, retry-loop on
         // transport errors). Evidence still captures the (owner, repo,
-        // tag) tuples so a rollback can at least try the tag-delete.
+        // tag) tuples so the rollback report names what was targeted.
         if !ctx.is_dry_run() && !ctx.is_snapshot() {
             capture_release_ids(self.client.as_ref(), &mut targets);
         }
@@ -540,15 +548,12 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
             return Ok(());
         }
 
-        // Three counters per delete-step shape; the tag-delete step
-        // applies to every target while the release-delete only fires
-        // when `release_id` was captured.
+        // The release-delete only fires when `release_id` was captured.
+        // The tag ref is owned by `anodizer tag rollback` (see module
+        // docs) and is never deleted from this path.
         let mut release_deleted = 0usize;
         let mut release_already_absent = 0usize;
         let mut release_failed = 0usize;
-        let mut tag_deleted = 0usize;
-        let mut tag_already_absent = 0usize;
-        let mut tag_failed = 0usize;
 
         for chunk in targets.chunks(ROLLBACK_PARALLELISM) {
             // Synchronous per-chunk fan-out via `std::thread::scope` —
@@ -585,36 +590,13 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                             // already-absent for the counter.
                             log.status(&format!(
                                 "skipped release delete — no captured {} release id for {} \
-                                 on {}/{} (tag delete still attempted)",
+                                 on {}/{}",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
                                 target.owner,
                                 target.repo,
                             ));
                             ReleaseDeleteOutcome::AlreadyAbsent
-                        };
-
-                        // GitHub's release delete does NOT cascade to the
-                        // tag ref. Issue the second DELETE unconditionally
-                        // so the tag is also reverted; 404 buckets as
-                        // already-absent.
-                        log.status(&format!(
-                            "deleting {} tag refs/tags/{} from {}/{}",
-                            GithubReleasePublisher::PUBLISHER_NAME,
-                            target.tag,
-                            target.owner,
-                            target.repo,
-                        ));
-                        let tag_outcome = {
-                            let params = DeleteTagParams {
-                                owner: target.owner.clone(),
-                                repo: target.repo.clone(),
-                                tag: target.tag.clone(),
-                            };
-                            match client.delete_tag(&params) {
-                                Ok(()) => ReleaseDeleteOutcome::Deleted,
-                                Err(e) => classify_delete_err(&e),
-                            }
                         };
 
                         // Surface failure warns with the same wording
@@ -629,37 +611,23 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                                 err,
                             ));
                         }
-                        if let ReleaseDeleteOutcome::Failed(err) = &tag_outcome {
-                            log.warn(&rollback_failure_msg(
-                                "tag",
-                                &target.tag,
-                                &target.owner,
-                                &target.repo,
-                                err,
-                            ));
-                        }
-                        (release_outcome, tag_outcome)
+                        release_outcome
                     }));
                 }
                 for h in handles {
                     // A panicked worker must not abort the rollback summary —
-                    // one crashed delete-pair would otherwise hide the
-                    // counters for every sibling target. Translate the
-                    // panic into a (Failed, Failed) outcome pair so the
-                    // operator still sees the per-target failure in the
-                    // summary line below.
-                    let (r, t) = match anodizer_core::parallel::join_panic_to_err(
+                    // one crashed delete would otherwise hide the counters
+                    // for every sibling target. Translate the panic into a
+                    // Failed outcome so the operator still sees the
+                    // per-target failure in the summary line below.
+                    let r = match anodizer_core::parallel::join_panic_to_err(
                         h.join(),
                         "github-release rollback",
                     ) {
-                        Ok(pair) => pair,
+                        Ok(outcome) => outcome,
                         Err(err) => {
                             log.warn(&format!("{err}"));
-                            let msg = format!("{err}");
-                            (
-                                ReleaseDeleteOutcome::Failed(msg.clone()),
-                                ReleaseDeleteOutcome::Failed(msg),
-                            )
+                            ReleaseDeleteOutcome::Failed(format!("{err}"))
                         }
                     };
                     match r {
@@ -667,25 +635,17 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                         ReleaseDeleteOutcome::AlreadyAbsent => release_already_absent += 1,
                         ReleaseDeleteOutcome::Failed(_) => release_failed += 1,
                     }
-                    match t {
-                        ReleaseDeleteOutcome::Deleted => tag_deleted += 1,
-                        ReleaseDeleteOutcome::AlreadyAbsent => tag_already_absent += 1,
-                        ReleaseDeleteOutcome::Failed(_) => tag_failed += 1,
-                    }
                 }
             });
         }
 
         log.status(&format!(
-            "{} rollback deleted {} release(s), {} already-absent, {} failed; \
-             deleted {} tag(s), {} already-absent, {} failed",
+            "{} rollback deleted {} release(s), {} already-absent, {} failed \
+             (tag refs untouched — tag rollback owns them)",
             Self::PUBLISHER_NAME,
             release_deleted,
             release_already_absent,
             release_failed,
-            tag_deleted,
-            tag_already_absent,
-            tag_failed,
         ));
         Ok(())
     }
@@ -927,7 +887,15 @@ mod publisher_tests {
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
         assert!(matches!(
-            repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()),
+            repo_push_check_at(
+                &url,
+                "acme",
+                "widget",
+                "tok",
+                &one_attempt_policy(),
+                false,
+                tlog()
+            ),
             PreflightCheck::Pass
         ));
     }
@@ -938,7 +906,15 @@ mod publisher_tests {
         let (addr, _c) =
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":false}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
+        match repo_push_check_at(
+            &url,
+            "acme",
+            "widget",
+            "tok",
+            &one_attempt_policy(),
+            false,
+            tlog(),
+        ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
             _ => panic!("expected Blocker when permissions.push is false"),
         }
@@ -961,6 +937,7 @@ mod publisher_tests {
                 "tok",
                 &one_attempt_policy(),
                 None,
+                false,
                 &env,
                 tlog()
             ),
@@ -992,6 +969,7 @@ mod publisher_tests {
                 "tok",
                 &one_attempt_policy(),
                 Some(&urls),
+                false,
                 &anodizer_core::MapEnvSource::new(),
                 tlog(),
             ),
@@ -1010,7 +988,15 @@ mod publisher_tests {
         // A 401 with no rate-limit header ⇒ the token cannot access the repo.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("401 Unauthorized", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "bad", &one_attempt_policy(), tlog()) {
+        match repo_push_check_at(
+            &url,
+            "acme",
+            "widget",
+            "bad",
+            &one_attempt_policy(),
+            false,
+            tlog(),
+        ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("acme/widget"), "{m}"),
             _ => panic!("expected Blocker on a 401"),
         }
@@ -1038,7 +1024,15 @@ mod publisher_tests {
             "",
         )]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
+        match repo_push_check_at(
+            &url,
+            "acme",
+            "widget",
+            "tok",
+            &one_attempt_policy(),
+            false,
+            tlog(),
+        ) {
             PreflightCheck::Warning(m) => assert!(m.contains("rate-limited"), "{m}"),
             other => panic!("rate-limited 403 must degrade to Warning, not {other:?}"),
         }
@@ -1052,7 +1046,15 @@ mod publisher_tests {
         // whose token is fine.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
+        match repo_push_check_at(
+            &url,
+            "acme",
+            "widget",
+            "tok",
+            &one_attempt_policy(),
+            false,
+            tlog(),
+        ) {
             PreflightCheck::Warning(m) => assert!(m.contains("acme/widget"), "{m}"),
             other => panic!("inconclusive 5xx must degrade to Warning, not {other:?}"),
         }
@@ -1166,12 +1168,11 @@ mod publisher_tests {
     #[test]
     fn github_release_rollback_treats_404_as_already_absent() {
         let mock = MockGitHubClient::new();
-        // Both DELETE calls return an error whose message contains
-        // "404 Not Found" — the classifier should bucket them as
+        // The release DELETE returns an error whose message contains
+        // "404 Not Found" — the classifier should bucket it as
         // AlreadyAbsent so the rollback returns Ok and the counter
         // sums match.
         mock.set_delete_release_response(Err("HTTP 404 Not Found".to_string()));
-        mock.set_delete_tag_response(Err("HTTP 404 Not Found".to_string()));
         let mock = Arc::new(mock);
         let p = GithubReleasePublisher::with_client(mock.clone());
 
@@ -1191,16 +1192,15 @@ mod publisher_tests {
 
         let mut ctx = TestContextBuilder::new().build();
         p.rollback(&mut ctx, &evidence)
-            .expect("rollback returns Ok even when both deletes 404");
+            .expect("rollback returns Ok even when the delete 404s");
 
-        // Each step ran exactly once; classifier bucketed them as
-        // AlreadyAbsent (no panic / fail-fast).
+        // The release delete ran exactly once; classifier bucketed it as
+        // AlreadyAbsent (no panic / fail-fast). The tag ref must never be
+        // touched — tag rollback owns it.
         assert_eq!(mock.delete_release_call_count(), 1);
-        assert_eq!(mock.delete_tag_call_count(), 1);
+        assert_eq!(mock.delete_tag_call_count(), 0);
         let rel_calls = mock.delete_release_calls();
         assert_eq!(rel_calls[0].release_id, 42);
-        let tag_calls = mock.delete_tag_calls();
-        assert_eq!(tag_calls[0].tag, "v1.0.0");
 
         // Pin the classifier shape directly so a future refactor of
         // `classify_delete_err` cannot silently widen the "AlreadyAbsent"
@@ -1271,11 +1271,14 @@ mod publisher_tests {
         ));
     }
 
+    /// Publisher rollback deletes the RELEASE only. The tag ref has a
+    /// single owner — `anodizer tag rollback` — so this path must never
+    /// issue a tag delete (a second delete here would race the tag
+    /// rollback and run operator hooks between two half-deleted states).
     #[test]
-    fn github_release_rollback_deletes_tag_after_release() {
+    fn github_release_rollback_deletes_release_only_never_the_tag() {
         let mock = MockGitHubClient::new();
         mock.set_delete_release_response(Ok(()));
-        mock.set_delete_tag_response(Ok(()));
         let mock = Arc::new(mock);
         let p = GithubReleasePublisher::with_client(mock.clone());
 
@@ -1296,19 +1299,14 @@ mod publisher_tests {
         let mut ctx = TestContextBuilder::new().build();
         p.rollback(&mut ctx, &evidence).expect("rollback ok");
 
-        // Both DELETE endpoints fired exactly once with the right
-        // params — the (release_id, tag) pair must match the recorded
-        // evidence target.
+        // The release DELETE fired exactly once with the recorded
+        // evidence target's params; no tag DELETE was issued.
         assert_eq!(mock.delete_release_call_count(), 1);
-        assert_eq!(mock.delete_tag_call_count(), 1);
+        assert_eq!(mock.delete_tag_call_count(), 0);
         let rel = mock.delete_release_calls();
         assert_eq!(rel[0].owner, "acme");
         assert_eq!(rel[0].repo, "widget");
         assert_eq!(rel[0].release_id, 42);
-        let tag = mock.delete_tag_calls();
-        assert_eq!(tag[0].owner, "acme");
-        assert_eq!(tag[0].repo, "widget");
-        assert_eq!(tag[0].tag, "v1.0.0");
     }
 
     #[test]

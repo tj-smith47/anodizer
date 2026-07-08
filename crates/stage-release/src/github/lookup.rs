@@ -122,20 +122,57 @@ pub(super) async fn find_release_by_tag(
     }
 }
 
-/// Fetch the names of the assets currently UPLOADED to the published
-/// GitHub release for `crate_cfg`'s resolved tag.
+/// One asset currently stored on a published GitHub release, as the
+/// verify-release stage consumes it: the name plus the content coordinates
+/// (byte size, server-computed digest, API download URL) it needs to verify
+/// the landed bytes match the local artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedAsset {
+    /// Uploaded asset name (the basename shown on the release page).
+    pub name: String,
+    /// Byte size GitHub stores for the asset.
+    pub size: u64,
+    /// Server-computed content digest in `"sha256:<hex>"` form. `None` on
+    /// GHES versions (and any asset) where GitHub has not backfilled it.
+    pub digest: Option<String>,
+    /// Asset API URL — a `GET` with `Accept: application/octet-stream`
+    /// (plus the token for private repos) streams the asset bytes.
+    pub download_url: String,
+}
+
+/// Map a fetched release's typed asset list into [`PublishedAsset`]s.
 ///
-/// This is the network half of the post-release asset-existence check: the
+/// GitHub reports `size` as a signed integer; a negative value has no valid
+/// meaning for stored bytes, so it clamps to 0 (which then reads as a size
+/// mismatch against any real artifact — fail loud, not silently).
+fn assets_of_release(rel: octocrab::models::repos::Release) -> Vec<PublishedAsset> {
+    rel.assets
+        .into_iter()
+        .map(|a| PublishedAsset {
+            name: a.name,
+            size: u64::try_from(a.size).unwrap_or(0),
+            digest: a.digest,
+            download_url: a.url.to_string(),
+        })
+        .collect()
+}
+
+/// Fetch the assets currently UPLOADED to the published GitHub release for
+/// `crate_cfg`'s resolved tag — name, size, digest, and download URL each.
+///
+/// This is the network half of the post-release asset checks: the
 /// verify-release stage diffs this live, GitHub-stored set against the
 /// produced artifact set to catch the partial uploads GitHub silently
-/// tolerates. It reuses the hardened release backend's repo-resolution
-/// ([`resolve_release_repo`]), tag-resolution
+/// tolerates, and compares each stored asset's size/digest against the
+/// local bytes to catch corrupted or stale uploads. It reuses the hardened
+/// release backend's repo-resolution ([`resolve_release_repo`]),
+/// tag-resolution
 /// ([`resolve_release_tag`](crate::release_body::resolve_release_tag)), and
 /// octocrab client/retry path so there is one source of truth for "how do we
 /// talk to the GitHub Releases API".
 ///
 /// Returns:
-/// - `Ok(Some(names))` — the release exists; `names` are its asset names
+/// - `Ok(Some(assets))` — the release exists; `assets` are its stored assets
 ///   (empty vec when the release has no assets).
 /// - `Ok(None)` — no GitHub repo is configured for the active token type
 ///   (the verify stage treats this as "not a GitHub release; skip the asset
@@ -144,11 +181,11 @@ pub(super) async fn find_release_by_tag(
 /// Errors when the tag has no release (the publish should have created it —
 /// a genuine post-publish defect), when no token is available, or when the
 /// GitHub API call fails after retries.
-pub async fn fetch_published_asset_names(
+pub async fn fetch_published_assets(
     ctx: &Context,
     release_cfg: &ReleaseConfig,
     crate_cfg: &CrateConfig,
-) -> Result<Option<Vec<String>>> {
+) -> Result<Option<Vec<PublishedAsset>>> {
     let Some(repo) = resolve_release_repo(release_cfg, ctx.token_type, ctx)? else {
         return Ok(None);
     };
@@ -186,7 +223,7 @@ pub async fn fetch_published_asset_names(
     .await?;
 
     match release {
-        Some(rel) => Ok(Some(rel.assets.into_iter().map(|a| a.name).collect())),
+        Some(rel) => Ok(Some(assets_of_release(rel))),
         None => anyhow::bail!(
             "verify-release: no GitHub release found for tag '{}' on {}/{} — \
              the publish should have created it; this is a post-publish defect",
@@ -491,6 +528,114 @@ mod find_draft_by_name_tests {
             calls.load(Ordering::SeqCst),
             2,
             "must fetch both pages before terminating on the partial page",
+        );
+    }
+}
+
+#[cfg(test)]
+mod published_asset_tests {
+    //! Pin the asset size/digest extraction behind [`fetch_published_assets`]:
+    //! octocrab's typed `Asset` model carries `size` and an optional `digest`,
+    //! and the mapping must preserve both (digest absent on older GHES) so the
+    //! verify-release content check sees exactly what GitHub stores. Driven
+    //! through a real octocrab client against a loopback responder so the
+    //! deserialization path is the production one, not a hand-built struct.
+    use super::*;
+    use crate::test_support::{build_test_octocrab, test_retry_policy};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    /// Release JSON whose assets carry explicit `size` and (optionally)
+    /// `digest` fields, exercising both shapes GitHub serves.
+    fn release_body_with_content_assets() -> String {
+        let assets = serde_json::json!([
+            {
+                "url": "https://api.github.com/repos/o/r/releases/assets/1",
+                "browser_download_url": "https://github.com/o/r/releases/download/v1/app.tar.gz",
+                "id": 1,
+                "node_id": "RA_1",
+                "name": "app.tar.gz",
+                "label": null,
+                "state": "uploaded",
+                "content_type": "application/octet-stream",
+                "size": 12345,
+                "digest": "sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+                "download_count": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "uploader": null,
+            },
+            {
+                "url": "https://api.github.com/repos/o/r/releases/assets/2",
+                "browser_download_url": "https://github.com/o/r/releases/download/v1/checksums.txt",
+                "id": 2,
+                "node_id": "RA_2",
+                "name": "checksums.txt",
+                "label": null,
+                "state": "uploaded",
+                "content_type": "text/plain",
+                "size": 98,
+                "download_count": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "uploader": null,
+            },
+        ]);
+        serde_json::json!({
+            "id": 1,
+            "node_id": "RL_1",
+            "tag_name": "v1.0.0",
+            "target_commitish": "main",
+            "name": "v1.0.0",
+            "draft": false,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": "2026-01-01T00:00:00Z",
+            "author": null,
+            "assets": assets,
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": "https://api.github.com/repos/o/r/releases/1",
+            "html_url": "https://github.com/o/r/releases/1",
+            "assets_url": "https://api.github.com/repos/o/r/releases/1/assets",
+            "upload_url": "https://uploads.github.com/repos/o/r/releases/1/assets{?name,label}",
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn asset_size_and_digest_survive_deserialization_and_mapping() {
+        let body = release_body_with_content_assets();
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let static_resp: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![static_resp]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let release = find_release_by_tag(&octo, "o", "r", "v1.0.0", &policy, None, "test")
+            .await
+            .expect("lookup must succeed")
+            .expect("release must exist");
+        let assets = assets_of_release(release);
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].name, "app.tar.gz");
+        assert_eq!(assets[0].size, 12345);
+        assert_eq!(
+            assets[0].digest.as_deref(),
+            Some("sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"),
+        );
+        assert_eq!(
+            assets[0].download_url,
+            "https://api.github.com/repos/o/r/releases/assets/1",
+        );
+        assert_eq!(assets[1].name, "checksums.txt");
+        assert_eq!(assets[1].size, 98);
+        assert_eq!(
+            assets[1].digest, None,
+            "an asset without a digest field (older GHES) maps to None, not an error",
         );
     }
 }

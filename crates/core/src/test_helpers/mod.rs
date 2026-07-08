@@ -145,6 +145,7 @@ pub struct TestContextBuilder {
     commit_timestamp: String,
     previous_tag: Option<String>,
     snapshot: bool,
+    nightly: bool,
     dry_run: bool,
     verbose: bool,
     debug: bool,
@@ -195,6 +196,7 @@ impl Default for TestContextBuilder {
             commit_timestamp: "1774463400".to_string(),
             previous_tag: Some("v1.2.2".to_string()),
             snapshot: false,
+            nightly: false,
             dry_run: false,
             verbose: false,
             debug: false,
@@ -283,6 +285,12 @@ impl TestContextBuilder {
     /// Enable or disable snapshot mode.
     pub fn snapshot(mut self, snapshot: bool) -> Self {
         self.snapshot = snapshot;
+        self
+    }
+
+    /// Enable or disable nightly mode.
+    pub fn nightly(mut self, nightly: bool) -> Self {
+        self.nightly = nightly;
         self
     }
 
@@ -514,8 +522,9 @@ impl TestContextBuilder {
 
         let options = ContextOptions {
             snapshot: self.snapshot,
-            nightly: false,
+            nightly: self.nightly,
             dry_run: self.dry_run,
+            strict_preflight: false,
             quiet: false,
             verbose: self.verbose,
             debug: self.debug,

@@ -36,7 +36,7 @@ pub(crate) use retry_call::{
 use secondary_rate_limit::RetryAfterCapture;
 
 pub(crate) use backend::run_github_backend;
-pub use lookup::fetch_published_asset_names;
+pub use lookup::{PublishedAsset, fetch_published_assets};
 pub(crate) use spec::{BackendEnv, GithubReleaseSpec, UploadOpts};
 
 // `upload_retry_locals` is exercised only by `crate::github::upload_retry_locals`

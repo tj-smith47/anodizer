@@ -236,8 +236,9 @@ jobs:
           from-artifact: anodizer-linux
           artifact-workflow: ci.yml
           artifact-run-id: auto
-          # Tag-only default (lockstep): master is advanced post-publish, below.
-          args: tag --changelog
+          # Deferred-branch pattern (lockstep): push the tag now, advance
+          # master onto the bump commit post-publish, below.
+          args: tag --changelog --push-tags-only
         env:
           # GITHUB_TOKEN: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

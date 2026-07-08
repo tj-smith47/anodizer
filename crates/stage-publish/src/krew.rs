@@ -660,9 +660,13 @@ fn artifacts_to_platforms(
 ///    archive*: `<wrap_in_directory>/<bin>` for a nested archive, else `<bin>`.
 ///    Without this entry krew's default extractor can fail to find a nested
 ///    binary ("source binary cannot be found in extracted archive").
-/// 2. **LICENSE** — emitted once when the archive bundles a `LICENSE*` file
+/// 2. **LICENSE** — emitted once when the archive bundles a license file
 ///    (gated on `OsArtifact.archive_files`, the actual archive contents), with
-///    `from` carrying its real in-archive path (wrap prefix included).
+///    `from` carrying its real in-archive path (wrap prefix included). When the
+///    basename isn't one krew accepts (`(?i)^(LICENSE|COPYING)(\.txt)?$`,
+///    enforced by validate-krew-manifest), `to: "LICENSE"` renames it on
+///    extraction so the install dir always carries a krew-accepted license;
+///    a candidate already carrying an accepted name is preferred and kept flat.
 /// 3. **README** (`*.md`) — emitted for each bundled markdown doc, same gating.
 ///
 /// `bin` is the already-resolved install-dir binary name (`.exe`-suffixed on
@@ -686,19 +690,33 @@ fn derive_krew_files(a: &OsArtifact, bin: &str) -> Vec<KrewFileEntry> {
         to: ".".to_string(),
     }];
 
-    // LICENSE: include the first bundled LICENSE* file (krew flattens it to the
-    // install root). Real plugins emit exactly one LICENSE entry; `archive_files`
-    // is deterministically ordered (lowercase glob before uppercase) so the pick
-    // is stable.
-    let license_path = a
+    // LICENSE: emit exactly one entry, like real plugins do. Candidates are
+    // sorted so the pick is stable regardless of archive listing order, and a
+    // file already carrying a krew-accepted name wins over suffixed variants
+    // (LICENSE-MIT / LICENSE-APACHE).
+    let mut license_candidates: Vec<&String> = a
         .archive_files
         .iter()
-        .find(|p| is_license(basename(p)))
-        .cloned();
-    if let Some(ref license) = license_path {
+        .filter(|p| is_license(basename(p)))
+        .collect();
+    license_candidates.sort();
+    let license_path = license_candidates
+        .iter()
+        .find(|p| is_krew_accepted_license(basename(p)))
+        .or_else(|| license_candidates.first())
+        .map(|p| (*p).clone());
+    if let Some(license) = license_path {
+        // krew's validate-krew-manifest only accepts an installed license
+        // named (?i)^(LICENSE|COPYING)(\.txt)?$; any other basename must be
+        // renamed on extraction or the plugin fails krew-index validation.
+        let to = if is_krew_accepted_license(basename(&license)) {
+            "."
+        } else {
+            "LICENSE"
+        };
         files.push(KrewFileEntry {
-            from: license.clone(),
-            to: ".".to_string(),
+            from: license,
+            to: to.to_string(),
         });
     }
 
@@ -719,10 +737,20 @@ fn derive_krew_files(a: &OsArtifact, bin: &str) -> Vec<KrewFileEntry> {
     files
 }
 
-/// Whether an in-archive file basename is a LICENSE file (case-insensitive),
-/// e.g. `LICENSE`, `license.txt`, `LICENSE.md`, `LICENSE-MIT`.
+/// Whether an in-archive file basename is a license file (case-insensitive),
+/// e.g. `LICENSE`, `license.txt`, `LICENSE.md`, `LICENSE-MIT`, `COPYING`.
 fn is_license(basename: &str) -> bool {
-    basename.to_ascii_lowercase().starts_with("license")
+    let b = basename.to_ascii_lowercase();
+    b.starts_with("license") || b.starts_with("copying")
+}
+
+/// Whether a basename is one krew's validate-krew-manifest accepts as the
+/// installed license file: `(?i)^(LICENSE|COPYING)(\.txt)?$`.
+fn is_krew_accepted_license(basename: &str) -> bool {
+    matches!(
+        basename.to_ascii_lowercase().as_str(),
+        "license" | "license.txt" | "copying" | "copying.txt"
+    )
 }
 
 /// The final path component of a `/`-separated in-archive path.
@@ -2146,6 +2174,88 @@ mod tests {
             froms.iter().filter(|f| f.as_str() == "LICENSE.md").count(),
             1,
             "LICENSE.md must not be duplicated, got {froms:?}"
+        );
+    }
+
+    /// A dual-licensed archive shipping only `LICENSE-MIT`/`LICENSE-APACHE`
+    /// (the common Rust convention) must still install a krew-accepted
+    /// `LICENSE`: the selected file is renamed on extraction (`to: "LICENSE"`),
+    /// and the pick is the sorted-first candidate for determinism.
+    #[test]
+    fn derive_krew_files_dual_license_renamed_to_krew_accepted() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            None,
+            &["LICENSE-MIT", "LICENSE-APACHE", "README.md"],
+        );
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(
+            files[1],
+            KrewFileEntry {
+                from: "LICENSE-APACHE".into(),
+                to: "LICENSE".into(),
+            },
+            "non-krew-accepted license basename must be renamed to LICENSE, got {files:?}"
+        );
+    }
+
+    /// When the archive bundles BOTH a krew-accepted name and suffixed
+    /// variants, the exact accepted name wins and keeps flat `to: "."`.
+    #[test]
+    fn derive_krew_files_prefers_exact_krew_accepted_name() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            None,
+            &["LICENSE-MIT", "LICENSE"],
+        );
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(
+            files[1],
+            KrewFileEntry {
+                from: "LICENSE".into(),
+                to: ".".into(),
+            }
+        );
+    }
+
+    /// The rename must carry through into the rendered manifest YAML so the
+    /// krew fileOperation actually installs a `LICENSE`.
+    #[test]
+    fn generate_manifest_renders_license_rename_to() {
+        let platform = KrewPlatform {
+            os: "linux".into(),
+            arch: "amd64".into(),
+            url: "https://example.com/cfgd.tar.gz".into(),
+            sha256: "abc".into(),
+            bin: "cfgd".into(),
+            files: vec![
+                KrewFileEntry {
+                    from: "cfgd".into(),
+                    to: ".".into(),
+                },
+                KrewFileEntry {
+                    from: "LICENSE-MIT".into(),
+                    to: "LICENSE".into(),
+                },
+            ],
+        };
+        let params = KrewManifestParams {
+            name: "cfgd",
+            version: "1.0.0",
+            homepage: "",
+            short_description: "test",
+            description: "",
+            caveats: "",
+            platforms: std::slice::from_ref(&platform),
+        };
+        let yaml = generate_manifest(&params).unwrap();
+        assert!(
+            yaml.contains("from: LICENSE-MIT") && yaml.contains("to: LICENSE"),
+            "manifest must express the rename fileOperation, got:\n{yaml}"
         );
     }
 

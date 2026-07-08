@@ -170,7 +170,17 @@ fn apply_source_mutations_with_resolver(
     log: &StageLogger,
     resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
 ) -> Result<()> {
-    let is_snapshot = ctx.is_snapshot();
+    // Snapshot AND nightly versions are synthesized (never tag-derived), so
+    // stamping them into Cargo.toml / binstall metadata would write a version
+    // no registry release ever carries — both modes skip source mutations, and
+    // a tagless repo (the state a rollback/re-cut leaves behind) must not trip
+    // the tag guard below in either mode.
+    let skip_mutations = ctx.is_snapshot() || ctx.is_nightly();
+    let mode = if ctx.is_snapshot() {
+        "snapshot"
+    } else {
+        "nightly"
+    };
     for crate_cfg in crates {
         let needs_mutation = crate_cfg
             .version_sync
@@ -186,14 +196,14 @@ fn apply_source_mutations_with_resolver(
 
         // Re-scope the version/name vars to THIS crate before rendering its
         // source mutations, then restore so one crate's vars never leak into
-        // the next. Snapshot mode skips mutation entirely, so no git lookup
-        // (and no re-scope) happens there.
+        // the next. Snapshot and nightly modes skip mutation entirely, so no
+        // git lookup (and no re-scope) happens there.
         //
         // A mutation-enabled crate with no resolvable per-crate tag/version is
         // a fail-loud error, never a silent fall-back to the first crate's
         // vars: stamping crate B with crate A's version (or rendering B's
         // binstall URL with A's version) ships a wrong, hard-to-spot artifact.
-        let saved: Vec<(&'static str, Option<String>)> = if is_snapshot {
+        let saved: Vec<(&'static str, Option<String>)> = if skip_mutations {
             Vec::new()
         } else {
             let tag = resolve_tag(ctx, crate_cfg).with_context(|| {
@@ -211,9 +221,9 @@ fn apply_source_mutations_with_resolver(
             if let Some(ref vs) = crate_cfg.version_sync
                 && vs.enabled.unwrap_or(false)
             {
-                if is_snapshot {
+                if skip_mutations {
                     log.verbose(&format!(
-                        "skipped version sync for {} — snapshot mode does not mutate source files",
+                        "skipped version sync for {} — {mode} mode does not mutate source files",
                         crate_cfg.path
                     ));
                 } else {
@@ -231,9 +241,9 @@ fn apply_source_mutations_with_resolver(
             if let Some(ref bs) = crate_cfg.binstall
                 && bs.enabled.unwrap_or(false)
             {
-                if is_snapshot {
+                if skip_mutations {
                     log.verbose(&format!(
-                        "skipped binstall metadata for {} — snapshot mode does not mutate source files",
+                        "skipped binstall metadata for {} — {mode} mode does not mutate source files",
                         crate_cfg.path
                     ));
                 } else {
@@ -1560,7 +1570,7 @@ mod run_helpers_tests {
     }
 
     // -------------------------------------------------------------------------
-    // apply_source_mutations — snapshot mode (lines 193, 211-215, 231-235)
+    // apply_source_mutations — synthesized-version modes (snapshot / nightly)
     // -------------------------------------------------------------------------
 
     /// Snapshot mode: mutations are completely skipped for every crate, even if
@@ -1630,6 +1640,79 @@ mod run_helpers_tests {
         assert!(
             doc["package"].get("metadata").is_none(),
             "snapshot mode must not inject binstall metadata"
+        );
+    }
+
+    /// Nightly mode skips source mutations exactly like snapshot — its version
+    /// is synthesized, so stamping it into Cargo.toml/binstall metadata would
+    /// write a version no registry release carries. A TAGLESS repo (the state a
+    /// rollback/re-cut leaves behind) must not die at the tag guard: the
+    /// resolver is never consulted.
+    #[test]
+    fn apply_source_mutations_nightly_mode_skips_all_mutations_tagless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("solo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"solo\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "solo".to_string(),
+            path: dir.to_str().unwrap().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            version_sync: Some(anodizer_core::config::VersionSyncConfig {
+                enabled: Some(true),
+                mode: None,
+            }),
+            binstall: Some(anodizer_core::config::BinstallConfig {
+                enabled: Some(true),
+                pkg_url: Some("https://example.com/v{{ .Version }}/solo.tar.gz".to_string()),
+                bin_dir: None,
+                pkg_fmt: Some("tgz".to_string()),
+                overrides: None,
+            }),
+            ..Default::default()
+        };
+
+        let config = Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                nightly: true,
+                ..Default::default()
+            },
+        );
+        // The synthesized nightly version, as apply_nightly_template_vars
+        // would have stamped it before the pipeline ran.
+        ctx.template_vars_mut()
+            .set("Version", "5.0.1-abc123d-nightly");
+        ctx.template_vars_mut()
+            .set("RawVersion", "5.0.1-abc123d-nightly");
+        ctx.template_vars_mut().set("ProjectName", "solo");
+
+        // A tagless repo resolves NO tag; nightly must never even ask.
+        let resolver = |_: &Context, _: &CrateConfig| -> Option<String> {
+            panic!("resolver must not be called in nightly mode")
+        };
+        let log = mk_log();
+        apply_source_mutations_with_resolver(&mut ctx, &[crate_cfg], &[], false, &log, &resolver)
+            .unwrap();
+
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            toml.contains("version = \"0.0.0\""),
+            "nightly mode must not mutate Cargo.toml, got:\n{toml}"
+        );
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(
+            doc["package"].get("metadata").is_none(),
+            "nightly mode must not inject binstall metadata"
         );
     }
 

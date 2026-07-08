@@ -556,14 +556,18 @@ name = "anodizer-stage-verify-release"
 version = "0.15.5"
 dependencies = [
  "anodizer-core",
+ "anodizer-stage-blob",
+ "anodizer-stage-publish",
  "anodizer-stage-release",
  "anodizer-stage-sbom",
  "anodizer-stage-sign",
  "anyhow",
  "flate2",
  "object",
+ "reqwest",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "tar",
  "tempfile",
  "tokio",

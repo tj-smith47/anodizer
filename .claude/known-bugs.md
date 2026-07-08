@@ -12,13 +12,40 @@ cold without re-investigating.
 
 ## Open
 
-_(empty — the 2026-07-07/08 release-machinery audit's fix-now items are all
-fixed; see the audit Resolved entries below. Design/behavior decisions are
-pitched in `.claude/audits/2026-07-07-design-pitches.md` (D1–D9) and await the
-user's call.)_
+_(None. The 2026-07-07/08 release-machinery audit's fix-now items are all fixed, and the D1–D9
+wave-1 items from `.claude/audits/2026-07-07-design-pitches.md` — which all collapsed to single
+defensible answers under review — are implemented, reviewed, and committed 2026-07-08. Remaining
+D3/D8/U1/D7 work is planned follow-on feature work, not a bug backlog.)_
 
 ## Resolved (2026-07-08 release-machinery audit session)
 
+- [x] **krew renderer emits a non-krew-accepted license name → krew validation
+  fails — RESOLVED 2026-07-08.** Found from cfgd (acceptance S0, publisher
+  audit): krew-index PR #6022 (cfgd v0.5.0) was approved then closed —
+  `validate-krew-manifest` failed: *"LICENSE (or alike) file is not
+  extracted... could not find license file among [LICENSE-MIT, README.md,
+  cfgd.exe]"*. krew accepts only `(?i)^(LICENSE|COPYING)(\.txt)?$` (krew PR
+  #642), but `derive_krew_files` in `crates/stage-publish/src/krew.rs` picked
+  the first `license*` archive file and emitted
+  `KrewFileEntry { from: <name>, to: "." }` — flattening it into the plugin
+  install dir preserving the basename, so a dual-licensed project shipping
+  only `LICENSE-MIT`/`LICENSE-APACHE` always failed krew validation.
+  **Fixed** in `derive_krew_files`: license candidates are sorted (stable
+  pick), an exact krew-accepted basename is preferred when present, and a
+  non-accepted pick is renamed on extraction (`to: "LICENSE"`) — the rename
+  `from`/`to` fileOperation shape is documented in krew's plugin-manifest
+  developer guide (`from: bin/foo-windows.exe` / `to: foo.exe` example).
+  `is_license` also now matches `COPYING*` (krew-accepted, previously never
+  selected). **Evidence (red→green):**
+  `derive_krew_files_dual_license_renamed_to_krew_accepted` and
+  `derive_krew_files_prefers_exact_krew_accepted_name` fail against the old
+  logic (`got [... KrewFileEntry { from: "LICENSE-MIT", to: "." } ...]`),
+  pass with the fix; `generate_manifest_renders_license_rename_to` pins the
+  YAML rendering (`from: LICENSE-MIT` / `to: LICENSE`).
+  `cargo test -p anodizer-stage-publish krew`: 100 passed, 0 failed.
+  Evidence: krew job 85697155238 log.
+
+- [x] **dockers_v2 stages binaries into the docker build context non-executable
   (mode 0644) — RESOLVED 2026-07-08.** Found from cfgd (acceptance S0.5): the
   published cfgd v0.5.0 images ship `/usr/local/bin/<bin>` as `-rw-r--r--`
   because `fs::copy` preserves the source mode, CI artifact round-trips strip
@@ -31,6 +58,7 @@ user's call.)_
   the fix. **Note (user action, unchanged):** the already-published cfgd
   v0.5.0 images are broken and need a patch re-release regardless.
 
+- [x] **Release-machinery audit omnibus — 26 defects across
   tagging / rollback / retry / verification / hooks, all fixed — RESOLVED
   2026-07-08.** Full map: `.claude/audits/2026-07-07-release-machinery-audit.md`.
   Evidence: full workspace 10,419/10,419 tests green, clippy clean,
