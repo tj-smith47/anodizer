@@ -6913,3 +6913,46 @@ mod oci_labels {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn staged_binary_is_forced_executable() {
+    // CI artifact round-trips strip the exec bit; fs::copy preserves the
+    // stripped mode, and the documented plain-`COPY` Dockerfile pattern
+    // propagates it into the image — a non-executable ENTRYPOINT binary.
+    // The staging step must force 0755 on executable kinds.
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("mybin");
+    std::fs::write(&src, b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::Binary,
+        name: "mybin".to_string(),
+        path: src.clone(),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let staging = dir.path().join("ctx");
+    let log = anodizer_core::log::StageLogger::new("docker", anodizer_core::log::Verbosity::Quiet);
+    crate::staging::stage_artifacts_v2(
+        &["linux/amd64".to_string()],
+        &staging,
+        false,
+        None,
+        "app",
+        &ctx,
+        &log,
+    )
+    .unwrap();
+
+    let staged = staging.join("linux").join("amd64").join("mybin");
+    let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755, "staged binary must be executable");
+}

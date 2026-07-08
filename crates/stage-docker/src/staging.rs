@@ -91,6 +91,20 @@ pub(crate) fn stage_artifacts_v2(
                             dest.display()
                         )
                     })?;
+                    // fs::copy preserves the source mode, and CI artifact
+                    // round-trips strip the exec bit — a plain `COPY` in the
+                    // documented Dockerfile pattern would then ship a
+                    // non-executable ENTRYPOINT binary. Force 0755 on
+                    // executable kinds so the staged context always yields a
+                    // runnable image. Packages/archives keep their copied mode.
+                    #[cfg(unix)]
+                    if matches!(kind, ArtifactKind::Binary | ArtifactKind::CShared) {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))
+                            .with_context(|| {
+                                format!("dockers_v2: chmod 0755 {}", dest.display())
+                            })?;
+                    }
                 }
             }
         }
