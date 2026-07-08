@@ -5,7 +5,7 @@ use anyhow::Result;
 use anodizer_core::context::Context;
 use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking};
 
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
@@ -94,7 +94,7 @@ pub(crate) fn fetch_gitlab_commits(
     // (defaults: 10 attempts × 10s base × 5m cap).
     let policy = ctx.retry_policy();
     let (_, body_text) = retry_http_blocking(
-        "gitlab changelog: compare API",
+        RetryLog::new("gitlab changelog: compare API", log),
         &policy,
         SuccessClass::Strict,
         |_| client.get(&url).header(auth_header, token).send(),

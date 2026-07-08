@@ -1006,8 +1006,12 @@ fn run_one_crate_dist(
 /// untouched, including any `Checksum` entries — re-signing produces
 /// a new signature blob but the underlying archive bytes (which the
 /// checksums are computed from) are unchanged, so the checksums
-/// still match. `ChecksumStage` is intentionally not in the publish
-/// pipeline for the same reason: nothing to recompute.
+/// still match. `ChecksumStage` nonetheless runs in the publish-only
+/// pipeline right after the head `SignStage`
+/// (see `pipeline::builders::build_publish_only_pipeline`): the
+/// byte-deterministic recompute refreshes the checksum manifest over
+/// the production-signed tree and backfills the `sha256` metadata
+/// that the determinism-stripped `artifacts.json` omits.
 fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     use anodizer_core::artifact::ArtifactKind;
     let stale_paths: Vec<std::path::PathBuf> = ctx

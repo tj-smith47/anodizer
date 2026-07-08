@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anodizer_core::url::percent_encode_unreserved;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
@@ -40,8 +40,9 @@ pub trait McpAuthProvider {
     }
 
     /// Produce the bearer token used in `Authorization: Bearer <token>`.
-    /// Implementations may perform a token-exchange HTTP call here.
-    fn get_token(&self) -> Result<String>;
+    /// Implementations may perform a token-exchange HTTP call here; `log`
+    /// surfaces their per-attempt retry warns.
+    fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,14 +156,14 @@ pub struct NoneAuthProvider {
 }
 
 impl McpAuthProvider for NoneAuthProvider {
-    fn get_token(&self) -> Result<String> {
+    fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String> {
         if !self.token.is_empty() {
             return Ok(self.token.clone());
         }
         let url = format!("{}/v0/auth/none", self.registry_url.trim_end_matches('/'));
         let client = build_client(Duration::from_secs(30))?;
         let (_, body) = retry_http_blocking(
-            "mcp: /v0/auth/none",
+            RetryLog::new("mcp: /v0/auth/none", log),
             &self.policy,
             SuccessClass::Strict,
             |_| client.post(&url).send(),
@@ -205,7 +206,7 @@ pub struct GithubAtAuthProvider {
 }
 
 impl McpAuthProvider for GithubAtAuthProvider {
-    fn get_token(&self) -> Result<String> {
+    fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String> {
         // Two resolution sources: config `auth.token` first, then the
         // `MCP_GITHUB_TOKEN` env var. `unwrap_or_default()` collapses
         // "var unset" and "var set to empty string" into the same empty-
@@ -232,7 +233,7 @@ impl McpAuthProvider for GithubAtAuthProvider {
         .context("mcp: serialize github-at request body")?;
         let client = build_client(Duration::from_secs(30))?;
         let (_, response_body) = retry_http_blocking(
-            "mcp: /v0/auth/github-at",
+            RetryLog::new("mcp: /v0/auth/github-at", log),
             &self.policy,
             SuccessClass::Strict,
             |_| {
@@ -286,7 +287,7 @@ pub struct GithubOidcAuthProvider {
 }
 
 impl McpAuthProvider for GithubOidcAuthProvider {
-    fn get_token(&self) -> Result<String> {
+    fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String> {
         let request_url = self
             .env
             .var("ACTIONS_ID_TOKEN_REQUEST_URL")
@@ -325,7 +326,7 @@ impl McpAuthProvider for GithubOidcAuthProvider {
 
         let client = build_client(Duration::from_secs(30))?;
         let (_, oidc_body) = retry_http_blocking(
-            "mcp: GitHub Actions OIDC token",
+            RetryLog::new("mcp: GitHub Actions OIDC token", log),
             &self.policy,
             SuccessClass::Strict,
             |_| {
@@ -360,7 +361,7 @@ impl McpAuthProvider for GithubOidcAuthProvider {
         })
         .context("mcp: serialize github-oidc exchange body")?;
         let (_, exchange_body) = retry_http_blocking(
-            "mcp: /v0/auth/github-oidc",
+            RetryLog::new("mcp: /v0/auth/github-oidc", log),
             &self.policy,
             SuccessClass::Strict,
             |_| {
@@ -440,6 +441,10 @@ fn audience_from_registry_url(url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn log() -> anodizer_core::log::StageLogger {
+        anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
+    }
 
     #[test]
     fn audience_uses_scheme_and_lowercased_host() {
@@ -525,7 +530,7 @@ mod tests {
             policy: fast_policy(),
         };
         p.login().expect("default login is a no-op");
-        assert_eq!(p.get_token().unwrap(), "preissued-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "preissued-jwt");
     }
 
     #[test]
@@ -542,7 +547,7 @@ mod tests {
             token: String::new(),
             policy: fast_policy(),
         };
-        assert_eq!(p.get_token().unwrap(), "anon-reg-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "anon-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -555,7 +560,7 @@ mod tests {
             token: String::new(),
             policy: fast_policy(),
         };
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("missing registry_token"), "{err}");
     }
 
@@ -568,7 +573,7 @@ mod tests {
             token: String::new(),
             policy: fast_policy(),
         };
-        let err = format!("{:#}", p.get_token().unwrap_err());
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("parse anonymous token response"), "{err}");
     }
 
@@ -585,7 +590,7 @@ mod tests {
             token: String::new(),
             policy: fast_policy(),
         };
-        let err = format!("{:#}", p.get_token().unwrap_err());
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("HTTP 401"), "{err}");
         assert!(err.contains("no anonymous auth here"), "{err}");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
@@ -608,7 +613,7 @@ mod tests {
             &fast_policy(),
             empty_env(),
         );
-        assert_eq!(p.get_token().unwrap(), "pat-reg-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "pat-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -628,7 +633,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        assert_eq!(p.get_token().unwrap(), "env-reg-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "env-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -641,7 +646,7 @@ mod tests {
             &fast_policy(),
             empty_env(),
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("MCP_GITHUB_TOKEN"), "{err}");
         assert!(err.contains("auth.token"), "{err}");
     }
@@ -657,7 +662,7 @@ mod tests {
             &fast_policy(),
             empty_env(),
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(
             err.contains("github-at response missing registry_token"),
             "{err}"
@@ -676,7 +681,7 @@ mod tests {
             &fast_policy(),
             empty_env(),
         );
-        let err = format!("{:#}", p.get_token().unwrap_err());
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("HTTP 403"), "{err}");
         assert!(err.contains("bad PAT"), "{err}");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
@@ -693,7 +698,7 @@ mod tests {
             &fast_policy(),
             empty_env(),
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("ACTIONS_ID_TOKEN_REQUEST_URL"), "{err}");
     }
 
@@ -709,7 +714,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("ACTIONS_ID_TOKEN_REQUEST_TOKEN"), "{err}");
     }
 
@@ -727,7 +732,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("id-token: write permission missing"), "{err}");
     }
 
@@ -753,7 +758,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        assert_eq!(p.get_token().unwrap(), "oidc-reg-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "oidc-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -780,7 +785,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        assert_eq!(p.get_token().unwrap(), "oidc-reg-jwt");
+        assert_eq!(p.get_token(&log()).unwrap(), "oidc-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -800,7 +805,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("OIDC token response missing value"), "{err}");
     }
 
@@ -824,7 +829,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        let err = p.get_token().unwrap_err().to_string();
+        let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(
             err.contains("github-oidc response missing registry_token"),
             "{err}"
@@ -851,7 +856,7 @@ mod tests {
             &fast_policy(),
             env,
         );
-        let err = format!("{:#}", p.get_token().unwrap_err());
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("HTTP 401"), "{err}");
         assert!(err.contains("bad runner token"), "{err}");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");

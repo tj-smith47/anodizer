@@ -27,7 +27,7 @@ use anodizer_core::context::Context;
 use anodizer_core::http::blocking_client;
 use anodizer_core::redact::redact_bearer_tokens;
 
-use anodizer_core::retry::{RetryPolicy, SuccessClass, http_status, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking};
 
 /// Per-probe HTTP timeout. Generous enough to tolerate a cold TLS handshake to
 /// crates.io / npm / the GitHub API, short enough that a wedged endpoint cannot
@@ -70,6 +70,7 @@ pub(crate) fn probe_token_auth(
     authorization: &str,
     label: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> TokenAuth {
     let client = match blocking_client(PROBE_TIMEOUT) {
         Ok(c) => c,
@@ -77,7 +78,7 @@ pub(crate) fn probe_token_auth(
     };
     let auth = authorization.to_string();
     let result = retry_http_blocking(
-        label,
+        RetryLog::new(label, log),
         policy,
         SuccessClass::Strict,
         |_| {
@@ -105,13 +106,18 @@ pub(crate) fn probe_token_auth(
 /// <version>` means the publish will be rejected. Any non-2xx (404 = absent,
 /// transport error, 5xx) returns `false` — the duplicate warning is
 /// best-effort and must never fabricate a false positive from a network blip.
-pub(crate) fn probe_version_published(url: &str, label: &str, policy: &RetryPolicy) -> bool {
+pub(crate) fn probe_version_published(
+    url: &str,
+    label: &str,
+    policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
+) -> bool {
     let client = match blocking_client(PROBE_TIMEOUT) {
         Ok(c) => c,
         Err(_) => return false,
     };
     retry_http_blocking(
-        label,
+        RetryLog::new(label, log),
         policy,
         SuccessClass::Strict,
         |_| client.get(url).send(),
@@ -223,9 +229,10 @@ pub(crate) fn classify_http_endpoint(
     auth: &ProbeAuth,
     label: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> EndpointStatus {
     let result = retry_http_blocking(
-        label,
+        RetryLog::new(label, log),
         policy,
         // A base-URL HEAD/GET may legitimately 301/302 to a canonical path;
         // a redirect proves reachability, not an auth failure.
@@ -272,6 +279,7 @@ pub(crate) fn classify_http_endpoint(
 /// A bare base-URL reachability probe (whose root path legitimately 404s on a
 /// healthy host) must NOT use this — it should call [`classify_http_endpoint`]
 /// directly and treat [`EndpointStatus::NotFound`] as reachable.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn probe_http_endpoint(
     client: &reqwest::blocking::Client,
     method: ProbeMethod,
@@ -280,8 +288,9 @@ pub(crate) fn probe_http_endpoint(
     label: &str,
     fail: FailSeverity,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
-    match classify_http_endpoint(client, method, url, auth, label, policy) {
+    match classify_http_endpoint(client, method, url, auth, label, policy, log) {
         EndpointStatus::Reachable => PreflightCheck::Pass,
         EndpointStatus::AuthRejected => fail.apply(format!(
             "{label}: endpoint {url} rejected the configured credentials (HTTP 401/403); \
@@ -343,10 +352,11 @@ pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
     token: Option<&str>,
     policy: &RetryPolicy,
     env: &E,
+    log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
     let base = anodizer_core::http::github_api_base(env);
     let url = format!("{base}/repos/{owner}/{repo}");
-    github_repo_check_at(&url, owner, repo, token, policy)
+    github_repo_check_at(&url, owner, repo, token, policy, log)
 }
 
 /// `url`-taking core of [`github_repo_check`] so a unit test can drive the
@@ -369,6 +379,7 @@ pub(crate) fn github_repo_check_at(
     repo: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
     anodizer_core::git::github_repo_push_check(
         url,
@@ -386,6 +397,7 @@ pub(crate) fn github_repo_check_at(
                 "index/fork repo {owner}/{repo} not found or token lacks read access"
             )),
         },
+        log,
     )
 }
 
@@ -424,7 +436,14 @@ pub(crate) fn github_repo_config_check(
         return PreflightCheck::Pass;
     }
     let token = crate::util::resolve_repo_token(ctx, repo, Some(preferred_env));
-    github_repo_check(&owner, &name, token.as_deref(), policy, ctx.env_source())
+    github_repo_check(
+        &owner,
+        &name,
+        token.as_deref(),
+        policy,
+        ctx.env_source(),
+        &ctx.logger("preflight"),
+    )
 }
 
 /// Run [`github_repo_config_check`] over every active entry of a
@@ -556,7 +575,13 @@ mod tests {
         )]);
         let url = format!("http://{addr}/-/whoami");
         assert!(matches!(
-            probe_token_auth(&url, "Bearer t", "test", &fast_retry()),
+            probe_token_auth(
+                &url,
+                "Bearer t",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             TokenAuth::Valid
         ));
     }
@@ -568,7 +593,13 @@ mod tests {
         )]);
         let url = format!("http://{addr}/-/whoami");
         assert!(matches!(
-            probe_token_auth(&url, "Bearer bad", "test", &fast_retry()),
+            probe_token_auth(
+                &url,
+                "Bearer bad",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             TokenAuth::Invalid
         ));
     }
@@ -580,7 +611,13 @@ mod tests {
         )]);
         let url = format!("http://{addr}/me");
         assert!(matches!(
-            probe_token_auth(&url, "raw-token", "test", &fast_retry()),
+            probe_token_auth(
+                &url,
+                "raw-token",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             TokenAuth::Invalid
         ));
     }
@@ -593,7 +630,13 @@ mod tests {
         drop(listener);
         let url = format!("http://{addr}/-/whoami");
         assert!(matches!(
-            probe_token_auth(&url, "Bearer t", "test", &fast_retry()),
+            probe_token_auth(
+                &url,
+                "Bearer t",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             TokenAuth::Indeterminate(_)
         ));
     }
@@ -604,7 +647,12 @@ mod tests {
             http("200 OK", r#"{"version":"1.0.0"}"#).into_boxed_str(),
         )]);
         let url = format!("http://{addr}/pkg/1.0.0");
-        assert!(probe_version_published(&url, "test", &fast_retry()));
+        assert!(probe_version_published(
+            &url,
+            "test",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger()
+        ));
     }
 
     #[test]
@@ -613,7 +661,12 @@ mod tests {
             http("404 Not Found", "").into_boxed_str(),
         )]);
         let url = format!("http://{addr}/pkg/9.9.9");
-        assert!(!probe_version_published(&url, "test", &fast_retry()));
+        assert!(!probe_version_published(
+            &url,
+            "test",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger()
+        ));
     }
 
     #[test]
@@ -623,7 +676,14 @@ mod tests {
         )]);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Pass
         ));
     }
@@ -639,7 +699,14 @@ mod tests {
         let env = anodizer_core::MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
         assert!(matches!(
-            github_repo_check("o", "r", Some("tok"), &fast_retry(), &env),
+            github_repo_check(
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                &env,
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Pass
         ));
         assert_eq!(
@@ -655,7 +722,14 @@ mod tests {
             http("200 OK", r#"{"permissions":{"push":false}}"#).into_boxed_str(),
         )]);
         let url = format!("http://{addr}/repos/o/r");
-        match github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()) {
+        match github_repo_check_at(
+            &url,
+            "o",
+            "r",
+            Some("tok"),
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        ) {
             PreflightCheck::Warning(m) => assert!(m.contains("cannot push"), "{m}"),
             other => panic!("expected Warning, got {other:?}"),
         }
@@ -668,7 +742,14 @@ mod tests {
         )]);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", None, &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                None,
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Warning(_)
         ));
     }
@@ -679,7 +760,14 @@ mod tests {
             http("404 Not Found", "").into_boxed_str(),
         )]);
         let url = format!("http://{addr}/repos/o/missing");
-        match github_repo_check_at(&url, "o", "missing", Some("tok"), &fast_retry()) {
+        match github_repo_check_at(
+            &url,
+            "o",
+            "missing",
+            Some("tok"),
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
             other => panic!("expected Blocker, got {other:?}"),
         }
@@ -692,7 +780,14 @@ mod tests {
         )]);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Blocker(_)
         ));
     }
@@ -716,7 +811,14 @@ mod tests {
         let url = format!("http://{addr}/repos/o/r");
         assert!(
             matches!(
-                github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+                github_repo_check_at(
+                    &url,
+                    "o",
+                    "r",
+                    Some("tok"),
+                    &fast_retry(),
+                    anodizer_core::test_helpers::test_logger()
+                ),
                 PreflightCheck::Warning(_)
             ),
             "rate-limited 403 must degrade to Warning, not Blocker"
@@ -730,7 +832,14 @@ mod tests {
         )]);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Warning(_)
         ));
     }
@@ -742,7 +851,14 @@ mod tests {
         )]);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Warning(_)
         ));
     }
@@ -777,7 +893,14 @@ mod tests {
         drop(listener);
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
-            github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
+            github_repo_check_at(
+                &url,
+                "o",
+                "r",
+                Some("tok"),
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
             PreflightCheck::Warning(_)
         ));
     }
@@ -795,7 +918,8 @@ mod tests {
                 &url,
                 &ProbeAuth::Token("t".into()),
                 "test",
-                &fast_retry()
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             EndpointStatus::Reachable
         ));
@@ -818,7 +942,8 @@ mod tests {
                     password: String::new()
                 },
                 "test",
-                &fast_retry()
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             EndpointStatus::AuthRejected
         ));
@@ -838,7 +963,8 @@ mod tests {
                 &url,
                 &ProbeAuth::None,
                 "test",
-                &fast_retry()
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             EndpointStatus::NotFound
         ));
@@ -858,7 +984,8 @@ mod tests {
                 &url,
                 &ProbeAuth::None,
                 "test",
-                &fast_retry()
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             EndpointStatus::Unreachable(_)
         ));
@@ -879,6 +1006,7 @@ mod tests {
             "test",
             FailSeverity::Blocker,
             &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
             other => panic!("expected Blocker, got {other:?}"),
@@ -901,6 +1029,7 @@ mod tests {
                 "test",
                 FailSeverity::Warning,
                 &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Warning(_)
         ));
@@ -951,6 +1080,7 @@ mod tests {
                 "test",
                 FailSeverity::Warning,
                 &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Pass
         ));

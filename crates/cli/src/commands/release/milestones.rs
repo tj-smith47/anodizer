@@ -159,6 +159,7 @@ pub(super) fn close_milestones(
                     &repo_name,
                     &milestone_name,
                     &policy,
+                    log,
                     &api_base,
                 )
             }
@@ -170,6 +171,7 @@ pub(super) fn close_milestones(
                 &milestone_name,
                 api_url.as_deref(),
                 &policy,
+                log,
             ),
             ScmTokenType::Gitea => close_milestone_gitea(
                 &rt,
@@ -179,6 +181,7 @@ pub(super) fn close_milestones(
                 &milestone_name,
                 api_url.as_deref(),
                 &policy,
+                log,
             ),
         };
         match close_result {
@@ -275,6 +278,7 @@ fn resolve_milestone_repo(
 /// caller routes it through
 /// [`anodizer_core::http::github_api_base_with_config`] so GHES releases
 /// close milestones on the configured host.
+#[allow(clippy::too_many_arguments)]
 fn close_milestone_github(
     rt: &tokio::runtime::Runtime,
     token: &str,
@@ -282,6 +286,7 @@ fn close_milestone_github(
     repo: &str,
     milestone_name: &str,
     policy: &RetryPolicy,
+    log: &StageLogger,
     api_base: &str,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
@@ -303,7 +308,7 @@ fn close_milestone_github(
                 api_base, owner, repo, page
             );
             let resp = retry_http_async(
-                "milestone: list milestones",
+                anodizer_core::retry::RetryLog::new("milestone: list milestones", log),
                 policy,
                 SuccessClass::Strict,
                 |_| {
@@ -354,7 +359,7 @@ fn close_milestone_github(
             api_base, owner, repo, milestone_number
         );
         retry_http_async(
-            "milestone: close milestone",
+            anodizer_core::retry::RetryLog::new("milestone: close milestone", log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -399,6 +404,7 @@ fn resolve_milestone_api_url(
 }
 
 /// Close a GitLab milestone by name using the REST API.
+#[allow(clippy::too_many_arguments)]
 fn close_milestone_gitlab(
     rt: &tokio::runtime::Runtime,
     token: &str,
@@ -407,6 +413,7 @@ fn close_milestone_gitlab(
     milestone_name: &str,
     api_url: Option<&str>,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for GitLab milestone close");
@@ -427,7 +434,7 @@ fn close_milestone_gitlab(
             url_encode(milestone_name)
         );
         let resp = retry_http_async(
-            "milestone: GitLab list milestones",
+            anodizer_core::retry::RetryLog::new("milestone: GitLab list milestones", log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -467,7 +474,7 @@ fn close_milestone_gitlab(
             base, encoded_path, milestone_id
         );
         retry_http_async(
-            "milestone: GitLab close milestone",
+            anodizer_core::retry::RetryLog::new("milestone: GitLab close milestone", log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -486,6 +493,7 @@ fn close_milestone_gitlab(
 }
 
 /// Close a Gitea milestone by name using the REST API.
+#[allow(clippy::too_many_arguments)]
 fn close_milestone_gitea(
     rt: &tokio::runtime::Runtime,
     token: &str,
@@ -494,6 +502,7 @@ fn close_milestone_gitea(
     milestone_name: &str,
     api_url: Option<&str>,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for Gitea milestone close");
@@ -513,7 +522,7 @@ fn close_milestone_gitea(
             url_encode(milestone_name)
         );
         let resp = retry_http_async(
-            "milestone: Gitea list milestones",
+            anodizer_core::retry::RetryLog::new("milestone: Gitea list milestones", log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -562,7 +571,7 @@ fn close_milestone_gitea(
         // the retry helper's Break path and map to NotFound. Other 4xx
         // remain hard errors (the helper Breaks them).
         match retry_http_async(
-            "milestone: Gitea close milestone",
+            anodizer_core::retry::RetryLog::new("milestone: Gitea close milestone", log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -978,6 +987,7 @@ mod tests {
             "v1.0.0",
             Some(&api_url),
             &policy,
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("retry past 503 then close");
         assert_eq!(outcome, MilestoneCloseOutcome::Closed);
@@ -1321,6 +1331,7 @@ mod tests {
             "r",
             "v1.0.0",
             &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
             "https://api.github.com",
         )
         .expect_err("empty token must bail");
@@ -1354,9 +1365,17 @@ mod tests {
         let api_base = anodizer_core::http::github_api_base_with_config(None, &env);
 
         let rt = dummy_rt();
-        let outcome =
-            close_milestone_github(&rt, "tok", "o", "r", "v1.0.0", &default_policy(), &api_base)
-                .expect("close succeeds against the responder");
+        let outcome = close_milestone_github(
+            &rt,
+            "tok",
+            "o",
+            "r",
+            "v1.0.0",
+            &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
+            &api_base,
+        )
+        .expect("close succeeds against the responder");
         assert!(matches!(outcome, MilestoneCloseOutcome::Closed));
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1368,8 +1387,17 @@ mod tests {
     #[test]
     fn gitlab_close_empty_token_bails_before_http() {
         let rt = dummy_rt();
-        let err = close_milestone_gitlab(&rt, "", "o", "r", "v1.0.0", None, &default_policy())
-            .expect_err("empty token must bail");
+        let err = close_milestone_gitlab(
+            &rt,
+            "",
+            "o",
+            "r",
+            "v1.0.0",
+            None,
+            &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("empty token must bail");
         assert!(
             err.to_string()
                 .contains("no authentication token available for GitLab milestone close"),
@@ -1380,8 +1408,17 @@ mod tests {
     #[test]
     fn gitea_close_empty_token_bails_before_http() {
         let rt = dummy_rt();
-        let err = close_milestone_gitea(&rt, "", "o", "r", "v1.0.0", None, &default_policy())
-            .expect_err("empty token must bail");
+        let err = close_milestone_gitea(
+            &rt,
+            "",
+            "o",
+            "r",
+            "v1.0.0",
+            None,
+            &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("empty token must bail");
         assert!(
             err.to_string()
                 .contains("no authentication token available for Gitea milestone close"),
@@ -1409,6 +1446,7 @@ mod tests {
             "v9.9.9",
             Some(&api_url),
             &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("absent milestone is not an error");
         assert_eq!(outcome, MilestoneCloseOutcome::NotFound);
@@ -1438,6 +1476,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("list + close must succeed");
         assert_eq!(outcome, MilestoneCloseOutcome::Closed);
@@ -1468,6 +1507,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("a 404 on the close PATCH must map to NotFound, not Err");
         assert_eq!(outcome, MilestoneCloseOutcome::NotFound);
@@ -1497,6 +1537,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect_err("a 403 on the close PATCH must propagate as an error");
         // The full error chain carries the per-attempt classifier; the top

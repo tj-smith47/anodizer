@@ -277,26 +277,43 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     if opts.force {
         log.warn("skipped the published-state guard — --force");
     } else {
-        // Best-effort config load (rollback is failure-recovery tooling — a
-        // broken or missing config must not stop it): drives the dist-dir
-        // resolution for run summaries and the tag→crate mapping for the
-        // crates.io index probe. The probe itself reuses the publish stage's
-        // sparse-index client so rollback and publish can never disagree
-        // about what "published on crates.io" means.
-        let repo_config = crate::pipeline::load_repo_config(&cwd).ok();
-        let retry_policy = repo_config
-            .as_ref()
-            .and_then(|c| c.retry)
-            .unwrap_or_default()
-            .to_policy();
+        // Fail-closed config load: the config drives the dist-dir resolution
+        // for run summaries and the tag→crate mapping for the crates.io index
+        // probe. A missing or unparseable config would blind the probe — the
+        // exact failure mode the guard exists to prevent — so it refuses
+        // instead of silently narrowing the evidence (a network error already
+        // refuses; a config error must not be weaker). The probe itself
+        // reuses the publish stage's sparse-index client so rollback and
+        // publish can never disagree about what "published on crates.io"
+        // means.
+        let repo_config = match crate::pipeline::load_repo_config(&cwd) {
+            Ok(config) => config,
+            Err(e) => bail!(
+                "refusing to roll back — could not load the anodizer config: {e:#}\n\
+                 The published-state guard needs the config to map the tag(s) to crates \
+                 for the crates.io burn probe; without that mapping there is no proof the \
+                 version(s) are safe to destroy — a prior run may have burned them on a \
+                 one-way-door registry. Fix the config, or run from a checkout whose \
+                 config parses (e.g. the directory that contains it). As a last resort, \
+                 --force skips ALL published-state checks (run summaries, crates.io, \
+                 GitHub releases), not just this config probe — use it only if you are \
+                 certain nothing irreversible shipped."
+            ),
+        };
+        let retry_policy = repo_config.retry.unwrap_or_default().to_policy();
         let index_probe = |name: &str, version: &str| {
-            anodizer_stage_publish::cargo::published_on_crates_io(name, version, &retry_policy)
+            anodizer_stage_publish::cargo::published_on_crates_io(
+                name,
+                version,
+                &retry_policy,
+                &log,
+            )
         };
         check_not_irreversibly_published(
             &cwd,
             gh_binary,
             &deletable,
-            repo_config.as_ref(),
+            &repo_config,
             &index_probe,
             &log,
         )?;
@@ -512,8 +529,10 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 ///    may have published it, and that run's summary lives on another
 ///    runner. A version live on the index REFUSES even when this run's
 ///    summary is clean; an unreachable index FAILS CLOSED (publication
-///    state unverifiable). Skipped with a warning when no config is
-///    parseable (no tag→crate mapping exists to probe with).
+///    state unverifiable). A tag that maps to NO crate while the config
+///    publishes to crates.io also fails closed (the mapping is the
+///    probe's eyes); a tag whose mapped crates simply don't target
+///    crates.io carries no cargo one-way door and proceeds.
 /// 3. Only for tags with no matching summary (e.g. a fresh checkout
 ///    that never ran the release): fall back to probing the GitHub
 ///    Releases API for a published (non-draft) release at the tag.
@@ -530,7 +549,7 @@ fn check_not_irreversibly_published(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
     tags: &[String],
-    repo_config: Option<&anodizer_core::config::Config>,
+    repo_config: &anodizer_core::config::Config,
     index_probe: &dyn Fn(&str, &str) -> Result<bool>,
     log: &StageLogger,
 ) -> Result<()> {
@@ -589,24 +608,32 @@ fn check_not_irreversibly_published(
     check_no_published_releases(cwd, gh_binary, &unsummarized, log)
 }
 
-/// Best-effort dist-dir resolution for the published-state guard: the
-/// repo config's `dist:` when a config was loaded, else the default
-/// `dist`. Relative values anchor at `cwd`. Best-effort because
-/// rollback is failure-recovery tooling — a broken or missing config
-/// must not stop it (the guard then simply finds no summaries and
-/// falls back to the GitHub release probe).
+/// Dist-dir resolution for the published-state guard: the repo config's
+/// `dist:`. Relative values anchor at `cwd`.
 fn resolve_dist_dir(
     cwd: &std::path::Path,
-    repo_config: Option<&anodizer_core::config::Config>,
+    repo_config: &anodizer_core::config::Config,
 ) -> std::path::PathBuf {
-    let dist = repo_config
-        .map(|c| c.dist.clone())
-        .unwrap_or_else(|| std::path::PathBuf::from("dist"));
+    let dist = repo_config.dist.clone();
     if dist.is_absolute() {
         dist
     } else {
         cwd.join(dist)
     }
+}
+
+/// How a tag maps onto the config's crate universe for the crates.io burn
+/// probe. The split lets the guard distinguish "nothing to probe because
+/// none of the tag's crates target crates.io" (safe to proceed) from
+/// "the tag maps to no crate at all" (the probe is blind — fail closed
+/// when the config publishes to crates.io elsewhere).
+struct TagCrateMapping {
+    /// `(crate name, version)` pairs the tag stamps on crates.io.
+    probes: Vec<(String, String)>,
+    /// Crates whose tag family matched but which don't publish to
+    /// crates.io (no `publish.cargo` block, or a custom `registry:`/
+    /// `index:` target outside the probe's scope).
+    matched_non_crates_io: usize,
 }
 
 /// Resolve the `(crate name, version)` pairs a tag stamps on crates.io, per
@@ -629,19 +656,16 @@ fn resolve_dist_dir(
 fn crates_io_versions_for_tag(
     config: &anodizer_core::config::Config,
     tag: &str,
-) -> Vec<(String, String)> {
+) -> TagCrateMapping {
     let stripped = match config.monorepo_tag_prefix() {
         Some(prefix) => git::strip_monorepo_prefix(tag, prefix),
         None => tag,
     };
-    let mut out = Vec::new();
+    let mut mapping = TagCrateMapping {
+        probes: Vec::new(),
+        matched_non_crates_io: 0,
+    };
     for c in config.crate_universe() {
-        let Some(cargo_cfg) = c.publish.as_ref().and_then(|p| p.cargo.as_ref()) else {
-            continue;
-        };
-        if !anodizer_stage_publish::cargo::targets_crates_io(Some(cargo_cfg)) {
-            continue;
-        }
         let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
         let Some(version) = stripped.strip_prefix(&prefix) else {
             continue;
@@ -649,9 +673,16 @@ fn crates_io_versions_for_tag(
         if git::parse_semver(version).is_err() {
             continue;
         }
-        out.push((c.name.clone(), version.to_string()));
+        match c.publish.as_ref().and_then(|p| p.cargo.as_ref()) {
+            Some(cargo_cfg)
+                if anodizer_stage_publish::cargo::targets_crates_io(Some(cargo_cfg)) =>
+            {
+                mapping.probes.push((c.name.clone(), version.to_string()));
+            }
+            _ => mapping.matched_non_crates_io += 1,
+        }
     }
-    out
+    mapping
 }
 
 /// Layer 2 of [`check_not_irreversibly_published`]: refuse rollback when
@@ -664,26 +695,55 @@ fn crates_io_versions_for_tag(
 /// - index unreachable → REFUSE (fail closed: publication state is
 ///   unverifiable, and gambling a destructive delete on a transient outage
 ///   is the poison-guard anti-pattern). `--force` is the operator escape.
-/// - no parseable config → warn and proceed: with no tag→crate mapping
-///   there is nothing to probe; run-summary / GitHub-release evidence
-///   still applies.
+/// - tag maps to NO crate while the config publishes to crates.io →
+///   REFUSE (fail closed: the tag→crate mapping is the probe's eyes; a
+///   tag it cannot map might version a crate that IS burned).
+/// - tag maps only to crates that don't target crates.io, or the config
+///   publishes nothing to crates.io at all → proceed: there is no cargo
+///   one-way door for this config to have burned.
+///
+/// Repeated `crate@version` probes are deduplicated (the same pair recurs
+/// under `Scope::All` when tag families overlap, e.g. a monorepo-prefixed
+/// and a bare tag resolving to the same crate).
 fn check_not_burned_on_crates_io(
     tags: &[String],
-    repo_config: Option<&anodizer_core::config::Config>,
+    config: &anodizer_core::config::Config,
     index_probe: &dyn Fn(&str, &str) -> Result<bool>,
     log: &StageLogger,
 ) -> Result<()> {
-    let Some(config) = repo_config else {
-        log.warn(
-            "skipped the crates.io index probe — no parseable anodizer config to map tags \
-             to crates (run-summary / GitHub-release evidence still applies)",
+    let config_targets_crates_io = config.crate_universe().iter().any(|c| {
+        c.publish
+            .as_ref()
+            .and_then(|p| p.cargo.as_ref())
+            .is_some_and(|cfg| anodizer_stage_publish::cargo::targets_crates_io(Some(cfg)))
+    });
+    if !config_targets_crates_io {
+        log.status(
+            "no crate in the config publishes to crates.io — no cargo one-way door to probe",
         );
         return Ok(());
-    };
+    }
     let mut burned: Vec<String> = Vec::new();
     let mut indeterminate: Vec<String> = Vec::new();
+    let mut unmapped: Vec<String> = Vec::new();
+    let mut probed: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for tag in tags {
-        for (name, version) in crates_io_versions_for_tag(config, tag) {
+        let mapping = crates_io_versions_for_tag(config, tag);
+        if mapping.probes.is_empty() {
+            if mapping.matched_non_crates_io > 0 {
+                log.status(&format!(
+                    "no crates.io-targeting crate is versioned by {tag} — no cargo \
+                     one-way door to probe"
+                ));
+            } else {
+                unmapped.push(format!("  {tag}"));
+            }
+            continue;
+        }
+        for (name, version) in mapping.probes {
+            if !probed.insert((name.clone(), version.clone())) {
+                continue;
+            }
             match index_probe(&name, &version) {
                 Ok(true) => burned.push(format!("  {tag}: {name}@{version}")),
                 Ok(false) => log.status(&format!(
@@ -713,6 +773,19 @@ fn check_not_burned_on_crates_io(
              prior run may have burned them on crates.io. Restore network access and \
              retry, or pass --force if you are certain nothing irreversible shipped.",
             indeterminate.join("\n")
+        );
+    }
+    if !unmapped.is_empty() {
+        bail!(
+            "refusing to roll back — could not map these tag(s) to any crate in the \
+             anodizer config:\n{}\n\
+             The crates.io burn probe works by mapping each tag's family (from the crates' \
+             tag_template) to the crates it versions, and this config publishes crate(s) to \
+             crates.io — a tag the probe cannot map might version a crate whose version is \
+             already burned there, so proceeding blind is not safe. Check that the config's \
+             crates/tag_template families cover these tag(s), or pass --force if you are \
+             certain nothing irreversible shipped.",
+            unmapped.join("\n")
         );
     }
     Ok(())
@@ -1114,6 +1187,14 @@ mod tests {
         );
     }
 
+    /// Write a config with no crates.io-targeting crate, satisfying the
+    /// guard's fail-closed config requirement without arming the index
+    /// probe — the run-path tests below exercise git mechanics, not the
+    /// probe.
+    fn write_minimal_config(dir: &Path) {
+        std::fs::write(dir.join(".anodizer.yaml"), "project_name: fixture\n").unwrap();
+    }
+
     fn opts_for(dir: &Path, sha: Option<String>) -> RollbackOpts {
         let _ = dir; // cwd is process-global; the with-guard helpers below set it
         RollbackOpts {
@@ -1142,6 +1223,7 @@ mod tests {
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 2);
         add_non_github_origin(dir);
+        write_minimal_config(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -1162,6 +1244,7 @@ mod tests {
         let dir = tmp.path();
         let _bump_sha = init_bump_repo(dir, 0);
         add_non_github_origin(dir);
+        write_minimal_config(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -1197,6 +1280,7 @@ mod tests {
         .trim()
         .to_string();
         add_non_github_origin(dir);
+        write_minimal_config(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -1233,6 +1317,7 @@ mod tests {
         let bump_sha = init_bump_repo(dir, 0);
         // Non-github origin only; `no_push` keeps push_branch_in from contacting it.
         add_non_github_origin(dir);
+        write_minimal_config(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -1272,6 +1357,7 @@ mod tests {
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 0);
         add_non_github_origin(dir);
+        write_minimal_config(dir);
         // Add a non-anodize tag at the same SHA.
         run_git(dir, &["tag", "internal-release"]);
 
@@ -1484,6 +1570,15 @@ mod tests {
     /// exists), pinning that the probe layer stays quiet on that path.
     fn probe_untouched(_: &str, _: &str) -> Result<bool> {
         panic!("crates.io index probe must not be consulted on this path")
+    }
+
+    /// Config with no crates.io-targeting crate: layer 2 has nothing to
+    /// probe, so layer-1/3 tests exercise their subject in isolation.
+    /// Named (rather than inlining `Config::default()` at call sites) so
+    /// the six guard tests state the fixture's INTENT — "no cargo crate"
+    /// is the property under test, not an incidental default.
+    fn no_cargo_config() -> anodizer_core::config::Config {
+        anodizer_core::config::Config::default()
     }
 
     /// Minimal in-memory repo config: one crates.io-targeting cargo crate
@@ -1776,7 +1871,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1831,7 +1926,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1873,7 +1968,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1907,7 +2002,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1941,7 +2036,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["mycrate-v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1965,7 +2060,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            None,
+            &no_cargo_config(),
             &probe_untouched,
             &quiet_log(),
         )
@@ -1988,15 +2083,16 @@ mod tests {
             ("cfgd", "v{{ Version }}"),
         ]);
         assert_eq!(
-            crates_io_versions_for_tag(&config, "crd-v0.5.0"),
+            crates_io_versions_for_tag(&config, "crd-v0.5.0").probes,
             vec![("cfgd-crd".to_string(), "0.5.0".to_string())]
         );
         assert_eq!(
-            crates_io_versions_for_tag(&config, "v0.5.0"),
+            crates_io_versions_for_tag(&config, "v0.5.0").probes,
             vec![("cfgd".to_string(), "0.5.0".to_string())]
         );
+        let unmapped = crates_io_versions_for_tag(&config, "other-v1.0.0");
         assert!(
-            crates_io_versions_for_tag(&config, "other-v1.0.0").is_empty(),
+            unmapped.probes.is_empty() && unmapped.matched_non_crates_io == 0,
             "a tag outside every configured family maps to nothing"
         );
     }
@@ -2008,7 +2104,7 @@ mod tests {
         let config =
             config_with_cargo_crates(&[("core", "v{{ Version }}"), ("cli", "v{{ Version }}")]);
         assert_eq!(
-            crates_io_versions_for_tag(&config, "v1.2.3"),
+            crates_io_versions_for_tag(&config, "v1.2.3").probes,
             vec![
                 ("core".to_string(), "1.2.3".to_string()),
                 ("cli".to_string(), "1.2.3".to_string()),
@@ -2030,7 +2126,12 @@ mod tests {
             .as_mut()
             .expect("fixture cargo block")
             .registry = Some("corp".to_string());
-        assert!(crates_io_versions_for_tag(&config, "v1.0.0").is_empty());
+        let mapping = crates_io_versions_for_tag(&config, "v1.0.0");
+        assert!(mapping.probes.is_empty());
+        assert_eq!(
+            mapping.matched_non_crates_io, 1,
+            "the family matched — the crate just probes a different index"
+        );
     }
 
     #[test]
@@ -2070,7 +2171,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["crd-v0.5.0".to_string()],
-            Some(&config),
+            &config,
             &probe,
             &quiet_log(),
         )
@@ -2119,7 +2220,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            Some(&config),
+            &config,
             &probe,
             &quiet_log(),
         )
@@ -2155,7 +2256,7 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
-            Some(&config),
+            &config,
             &probe,
             &quiet_log(),
         )
@@ -2170,6 +2271,140 @@ mod tests {
             "must explain publication state is unverifiable: {msg}"
         );
         assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_bails_when_tag_maps_to_no_crate() {
+        // The config publishes to crates.io, but the guarded tag matches no
+        // crate's tag family: the probe is blind for that tag and must fail
+        // closed instead of silently narrowing itself to zero crates.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_cargo_crates(&[("myapp", "app-v{{ Version }}")]);
+        let probe = |_: &str, _: &str| -> Result<bool> {
+            panic!("an unmapped tag must never reach the index probe")
+        };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probe,
+            &quiet_log(),
+        )
+        .expect_err("an unmappable tag must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not map these tag(s) to any crate"),
+            "must name the mapping failure: {msg}"
+        );
+        assert!(msg.contains("v1.0.0"), "must name the tag: {msg}");
+        assert!(
+            msg.contains("tag_template"),
+            "must point at the family mapping to fix: {msg}"
+        );
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_proceeds_when_mapped_crates_skip_crates_io() {
+        // The tag maps to a crate, but that crate publishes to a custom
+        // registry: no crates.io one-way door exists for it, so the guard
+        // proceeds without probing (distinct from the unmapped-tag bail).
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let mut config = config_with_cargo_crates(&[
+            ("corp-crate", "corp-v{{ Version }}"),
+            ("public-crate", "pub-v{{ Version }}"),
+        ]);
+        config.crates[0]
+            .publish
+            .as_mut()
+            .expect("fixture publish block")
+            .cargo
+            .as_mut()
+            .expect("fixture cargo block")
+            .registry = Some("corp".to_string());
+        let probe = |_: &str, _: &str| -> Result<bool> {
+            panic!("a custom-registry crate must never reach the crates.io probe")
+        };
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["corp-v1.0.0".to_string()],
+            &config,
+            &probe,
+            &quiet_log(),
+        )
+        .expect("a mapped crate outside crates.io carries no cargo one-way door");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_dedups_repeated_crate_version_probes() {
+        // Under Scope::All a monorepo-prefixed and a bare tag can resolve to
+        // the same crate@version; the index must be consulted once per pair.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let mut config = config_with_cargo_crates(&[("mycrate", "v{{ Version }}")]);
+        config.monorepo = Some(anodizer_core::config::MonorepoConfig {
+            tag_prefix: Some("sub/".to_string()),
+            ..Default::default()
+        });
+        let calls = std::cell::Cell::new(0usize);
+        let probe = |name: &str, version: &str| -> Result<bool> {
+            calls.set(calls.get() + 1);
+            assert_eq!((name, version), ("mycrate", "1.0.0"));
+            Ok(false)
+        };
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string(), "sub/v1.0.0".to_string()],
+            &config,
+            &probe,
+            &quiet_log(),
+        )
+        .expect("version absent from the index must permit rollback");
+        assert_eq!(
+            calls.get(),
+            1,
+            "the duplicate crate@version pair must be probed exactly once"
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn run_without_config_fails_closed() {
+        // Unparseable config: the guard cannot map tags to crates, so a
+        // non-forced rollback must refuse instead of silently skipping the
+        // crates.io probe (the pre-fix fail-open).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let _bump_sha = init_bump_repo(dir, 0);
+        std::fs::write(dir.join(".anodizer.yaml"), "::: not yaml {").unwrap();
+        add_non_github_origin(dir);
+
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+        let err = run(opts_for(dir, None)).expect_err("missing config must fail closed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("could not load the anodizer config"),
+            "must name the config failure: {msg}"
+        );
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+        // Nothing was mutated: the tag survives the refusal.
+        let tags = git::get_tags_at_head_in(dir).unwrap();
+        assert_eq!(tags, vec!["v1.0.0".to_string()]);
     }
 
     #[test]

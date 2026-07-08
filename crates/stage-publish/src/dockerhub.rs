@@ -2,7 +2,7 @@ use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
 
 /// Serialized shape of a recorded DockerHub PATCH. One entry per
@@ -73,6 +73,7 @@ pub fn resolve_full_description(
     ctx: &Context,
     client: &reqwest::blocking::Client,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<String> {
     if let Some(ref from_file) = desc.from_file {
         let path = ctx.render_template(&from_file.path).with_context(|| {
@@ -95,7 +96,7 @@ pub fn resolve_full_description(
         let headers = from_url.headers.clone();
         let label = format!("dockerhub: fetch full_description from {}", url);
         let (_, body) = retry_http_blocking(
-            &label,
+            RetryLog::new(&label, log),
             policy,
             SuccessClass::Strict,
             |_| {
@@ -359,7 +360,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // Resolve full description if configured (after dry-run check).
         let full_desc = match entry.full_description {
             Some(ref fd) => Some(
-                resolve_full_description(fd, ctx, client, &policy)
+                resolve_full_description(fd, ctx, client, &policy, log)
                     .context("dockerhub: failed to resolve full_description")?,
             ),
             None => None,
@@ -393,7 +394,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             });
 
             let (_, login_body_text) = retry_http_blocking(
-                "dockerhub: authenticate",
+                RetryLog::new("dockerhub: authenticate", log),
                 &policy,
                 SuccessClass::Strict,
                 |_| {
@@ -443,7 +444,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             // would silently degrade the rollback contract.
             let snapshot_label = format!("dockerhub: GET snapshot for {}", image);
             let (_, snapshot_body) = retry_http_blocking(
-                &snapshot_label,
+                RetryLog::new(&snapshot_label, log),
                 &policy,
                 SuccessClass::Strict,
                 |_| client.get(&repo_url).bearer_auth(token).send(),
@@ -510,7 +511,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 
             let label = format!("dockerhub: PATCH {}", image);
             retry_http_blocking(
-                &label,
+                RetryLog::new(&label, log),
                 &policy,
                 SuccessClass::Strict,
                 |_| {
@@ -564,6 +565,7 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
     policy: &RetryPolicy,
     target: &DockerhubTarget,
     env: &E,
+    log: &StageLogger,
 ) -> Result<()> {
     let mut patch_body = serde_json::Map::new();
     if let Some(ref d) = target.snapshot_description {
@@ -596,7 +598,7 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
     });
     let login_url = format!("{}/v2/users/login/", dockerhub_api_base(env));
     let (_, login_body_text) = retry_http_blocking(
-        "dockerhub: rollback authenticate",
+        RetryLog::new("dockerhub: rollback authenticate", log),
         policy,
         SuccessClass::Strict,
         |_| client.post(&login_url).json(&login_body).send(),
@@ -615,7 +617,7 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
 
     let label = format!("dockerhub: rollback PATCH {}", target.target);
     retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         |_| {
@@ -791,7 +793,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         let mut restored = 0usize;
         let mut failed = 0usize;
         for t in &targets {
-            match restore_dockerhub_target_with_env(&client, &policy, t, env) {
+            match restore_dockerhub_target_with_env(&client, &policy, t, env, &log) {
                 Ok(()) => {
                     restored += 1;
                     log.status(&format!(
@@ -906,6 +908,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                     "preflight: dockerhub login",
                     fail,
                     &policy,
+                    &ctx.logger("preflight"),
                 ),
             );
         }
@@ -1152,8 +1155,14 @@ mod tests {
             from_url: None,
         };
         let ctx = render_ctx();
-        let result =
-            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("resolve");
+        let result = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("resolve");
         assert_eq!(result, "# My App\nDescription here");
     }
 
@@ -1167,7 +1176,16 @@ mod tests {
             from_url: None,
         };
         let ctx = render_ctx();
-        assert!(resolve_full_description(&desc, &ctx, &client, &fast_policy()).is_err());
+        assert!(
+            resolve_full_description(
+                &desc,
+                &ctx,
+                &client,
+                &fast_policy(),
+                anodizer_core::test_helpers::test_logger()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1178,7 +1196,16 @@ mod tests {
             from_url: None,
         };
         let ctx = render_ctx();
-        assert!(resolve_full_description(&desc, &ctx, &client, &fast_policy()).is_err());
+        assert!(
+            resolve_full_description(
+                &desc,
+                &ctx,
+                &client,
+                &fast_policy(),
+                anodizer_core::test_helpers::test_logger()
+            )
+            .is_err()
+        );
     }
 
     /// `disable:` is a serde alias for `skip:` so YAML configs imported from
@@ -1287,7 +1314,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect_err("err");
+        let err = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("err");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("dockerhub: fetch full_description")
@@ -1325,8 +1359,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect("retries 5xx then succeeds");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("retries 5xx then succeeds");
         assert_eq!(body, "hello");
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -1367,8 +1407,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect_err("500 exhaustion must error");
+        let err = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("500 exhaustion must error");
         let chain = format!("{err:#}");
         assert!(
             !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
@@ -1514,8 +1560,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let body =
-            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("200 succeeds");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("200 succeeds");
         assert_eq!(body, "# Title\nbody text");
         let entries = log.lock().expect("log");
         assert_eq!(
@@ -1552,8 +1604,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let err =
-            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect_err("404 errors");
+        let err = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("404 errors");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("404") || chain.contains("Not Found"),
@@ -1599,8 +1657,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect("429 retries then 200");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("429 retries then 200");
         assert_eq!(body, "ok");
         let entries = log.lock().expect("log");
         assert_eq!(entries.len(), 2, "one 429 retry then success: {entries:?}");
@@ -1634,8 +1698,14 @@ dockerhub:
         let mut ctx = render_ctx();
         ctx.template_vars_mut()
             .set_env("DOCKERHUB_TEST_OWNER", "tj");
-        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect("templated url resolves");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("templated url resolves");
         assert_eq!(body, "rendered");
         let entries = log.lock().expect("log");
         assert_eq!(entries.len(), 1);
@@ -1661,8 +1731,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect_err("bad template must error");
+        let err = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("bad template must error");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("render full_description from_url"),
@@ -1695,8 +1771,14 @@ dockerhub:
             "DOCKERHUB_TEST_DOCS_DIR",
             dir.path().to_str().expect("path utf-8"),
         );
-        let body =
-            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("render + read");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("render + read");
         assert_eq!(body, "# Templated path");
     }
 
@@ -1731,8 +1813,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
-            .expect("from_file precedence");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("from_file precedence");
         assert_eq!(body, "from the file");
         let entries = log.lock().expect("log");
         assert!(
@@ -1794,8 +1882,14 @@ dockerhub:
             }),
         };
         let ctx = render_ctx();
-        let body =
-            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("with headers");
+        let body = resolve_full_description(
+            &desc,
+            &ctx,
+            &client,
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("with headers");
         assert_eq!(body, "ok");
         let req = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -2415,8 +2509,14 @@ mod live_http_tests {
         env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
         env.set("DOCKER_PASSWORD", "rollback-pat");
 
-        restore_dockerhub_target_with_env(&client, &policy, &target, &env)
-            .expect("rollback restores snapshot");
+        restore_dockerhub_target_with_env(
+            &client,
+            &policy,
+            &target,
+            &env,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("rollback restores snapshot");
 
         let entries = log.lock().expect("log");
         assert_eq!(entries.len(), 2, "login + patch: {entries:?}");
@@ -2464,8 +2564,14 @@ mod live_http_tests {
         env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
         env.set("DOCKER_PASSWORD", "pw");
 
-        let err = restore_dockerhub_target_with_env(&client, &policy, &target, &env)
-            .expect_err("403 rollback login errors");
+        let err = restore_dockerhub_target_with_env(
+            &client,
+            &policy,
+            &target,
+            &env,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("403 rollback login errors");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("rollback authentication failed") && chain.contains("403"),
@@ -2879,8 +2985,14 @@ mod publisher_tests {
         // make this fail loudly. The no-op short-circuit must fire
         // before either is touched.
         let env = anodizer_core::MapEnvSource::new();
-        restore_dockerhub_target_with_env(&client, &policy, &t, &env)
-            .expect("no-op when snapshot empty");
+        restore_dockerhub_target_with_env(
+            &client,
+            &policy,
+            &t,
+            &env,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("no-op when snapshot empty");
     }
 
     /// Missing env var → restore returns Err with a recognizable
@@ -2910,8 +3022,14 @@ mod publisher_tests {
             snapshot_full_description: None,
         };
         let env = anodizer_core::MapEnvSource::new();
-        let err =
-            restore_dockerhub_target_with_env(&client, &policy, &t, &env).expect_err("env missing");
+        let err = restore_dockerhub_target_with_env(
+            &client,
+            &policy,
+            &t,
+            &env,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("env missing");
         let chain = format!("{err:#}");
         assert!(
             chain.contains(env_var),

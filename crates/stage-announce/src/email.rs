@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use std::process::Command;
 
 use anodizer_core::config::EmailEncryption;
-use anodizer_core::retry::{Retriable, RetryPolicy, is_network_error, retry_sync};
+use anodizer_core::retry::{Retriable, RetryLog, RetryPolicy, is_network_error, retry_sync};
 use anodizer_core::sde;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
@@ -68,6 +68,7 @@ pub fn send_smtp(
     params: &EmailParams<'_>,
     smtp: &SmtpParams<'_>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let from = sanitize_header(params.from)
         .parse()
@@ -136,24 +137,28 @@ pub fn send_smtp(
     }
     let transport = transport_builder.timeout(smtp_timeout()).build();
 
-    retry_sync(policy, |_attempt| match transport.send(&email) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            // Classify lettre errors via Display string against
-            // is_network_error. Persistent SMTP errors (5xx codes) are
-            // fast-failed; transient (network reset, broken pipe, timeout)
-            // get marked Retriable so is_retriable() routes to retry.
-            let display = e.to_string();
-            let err = anyhow::Error::new(e).context("failed to send email via SMTP");
-            if is_network_error(err.as_ref()) || is_transient_smtp_error(&display) {
-                Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
-                    std::io::Error::other(err.to_string()),
-                ))))
-            } else {
-                Err(ControlFlow::Break(err))
+    retry_sync(
+        RetryLog::new("email SMTP send", log),
+        policy,
+        |_attempt| match transport.send(&email) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Classify lettre errors via Display string against
+                // is_network_error. Persistent SMTP errors (5xx codes) are
+                // fast-failed; transient (network reset, broken pipe, timeout)
+                // get marked Retriable so is_retriable() routes to retry.
+                let display = e.to_string();
+                let err = anyhow::Error::new(e).context("failed to send email via SMTP");
+                if is_network_error(err.as_ref()) || is_transient_smtp_error(&display) {
+                    Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
+                        std::io::Error::other(err.to_string()),
+                    ))))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
             }
-        }
-    })
+        },
+    )
     .context("smtp: send exhausted retry attempts")
 }
 

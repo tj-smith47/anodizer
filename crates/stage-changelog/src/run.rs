@@ -475,11 +475,11 @@ fn handle_github_native_changelog(
     let footer_src: Option<ContentSource> = changelog_cfg.and_then(|c| c.footer.clone());
     let header: Option<String> = header_src
         .as_ref()
-        .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx))
+        .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx, log))
         .transpose()?;
     let footer: Option<String> = footer_src
         .as_ref()
-        .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx))
+        .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx, log))
         .transpose()?;
 
     // Header/footer in this path use unconditional emission semantics
@@ -544,11 +544,11 @@ fn resolve_changelog_opts(
     // focused on template-expansion of the resulting body.
     let header: Option<String> = header_src
         .as_ref()
-        .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx))
+        .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx, log))
         .transpose()?;
     let footer: Option<String> = footer_src
         .as_ref()
-        .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx))
+        .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx, log))
         .transpose()?;
 
     let abbrev: i32 = cfg

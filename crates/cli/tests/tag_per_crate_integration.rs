@@ -662,3 +662,395 @@ fn per_crate_change_detection_from_subdir_scopes_to_workspace_root() {
         "dry-run must not create core-v0.1.1"
     );
 }
+
+/// Same flat two-crate fixture but with a `tag:` section spliced in.
+fn flat_two_crate_workspace_with_tag_section(tmp: &Path, tag_section: &str) {
+    flat_two_crate_workspace(tmp);
+    let cfg = fs::read_to_string(tmp.join(".anodizer.yaml")).unwrap();
+    fs::write(tmp.join(".anodizer.yaml"), format!("{cfg}{tag_section}")).unwrap();
+}
+
+#[test]
+fn per_crate_release_branches_guard_skips_off_release_branch() {
+    // The release_branches guard must protect the per-crate path too —
+    // a feature branch run must tag NOTHING and emit empty output.
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace_with_tag_section(
+        tmp.path(),
+        "tag:\n  release_branches:\n    - master\n",
+    );
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+
+    run_git(tmp.path(), &["checkout", "-q", "-b", "feature/oops"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("anodizer-output crates=[]"),
+        "expected empty crates output on a non-release branch: {stdout}"
+    );
+    assert!(
+        !git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "no tag may be cut from a non-release branch"
+    );
+    // No bump commit either — the guard fires before any writeback.
+    assert_eq!(read_crate_version(tmp.path(), "crates/core"), "0.1.0");
+}
+
+#[test]
+fn per_crate_release_branches_guard_allows_release_branch() {
+    // Control for the guard: on the configured release branch, tagging
+    // proceeds normally.
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace_with_tag_section(
+        tmp.path(),
+        "tag:\n  release_branches:\n    - master\n",
+    );
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(
+        git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "release-branch run must still tag: {stdout}\n{stderr}"
+    );
+}
+
+#[test]
+fn per_crate_git_api_tagging_hard_errors() {
+    // git_api_tagging cannot be honored on the per-crate path; silently
+    // ignoring it is the bug, so it must fail loudly.
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace_with_tag_section(tmp.path(), "tag:\n  git_api_tagging: true\n");
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "git_api_tagging with per-crate mode must be a hard error"
+    );
+    assert!(
+        stderr.contains("git_api_tagging") && stderr.contains("per-crate"),
+        "error must name the unsupported combination: {stderr}"
+    );
+    assert!(
+        !git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "no tag may be created when config is rejected"
+    );
+}
+
+#[test]
+fn per_crate_tag_pre_and_post_hooks_run_with_template_vars() {
+    // tag_pre_hooks / tag_post_hooks were silently ignored on the
+    // per-crate path. They must run with the same {{ .Tag }} vars the
+    // single/lockstep closure provides.
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace_with_tag_section(
+        tmp.path(),
+        "tag:\n  tag_pre_hooks:\n    - \"touch pre-{{ .Tag }}\"\n  tag_post_hooks:\n    - \"touch post-{{ .Tag }}\"\n",
+    );
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(
+        git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "tagging must proceed: {stderr}"
+    );
+    assert!(
+        tmp.path().join("pre-core-v0.1.1").exists(),
+        "tag_pre_hooks must run on the per-crate path with rendered vars"
+    );
+    assert!(
+        tmp.path().join("post-core-v0.1.1").exists(),
+        "tag_post_hooks must run after the push on the per-crate path"
+    );
+}
+
+#[test]
+fn per_crate_failing_post_hook_still_emits_output_payload() {
+    // The tags are live (created + pushed) before post hooks run, so a
+    // failing post hook must error the command WITHOUT suppressing the
+    // `anodizer-output` payload — a missing payload reads as "nothing
+    // tagged" to CI while live tags exist.
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace_with_tag_section(
+        tmp.path(),
+        "tag:\n  tag_post_hooks:\n    - \"false\"\n",
+    );
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a failing post hook must error the command: {stdout}\n{stderr}"
+    );
+    assert!(
+        git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "the tag exists — it was created before the post hook ran"
+    );
+    assert!(
+        stdout.contains("anodizer-output crates=[\"core\"]"),
+        "payload must be emitted before post hooks so CI can parse the \
+         live tags: {stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("anodizer-output versions={\"core\":\"0.1.1\"}"),
+        "versions payload must also precede post hooks: {stdout}\n{stderr}"
+    );
+}
+
+#[test]
+fn per_crate_shared_tag_fires_hooks_once_per_unique_tag() {
+    // Two explicit workspaces sharing one tag family resolve to the SAME
+    // tag when both bump to the same version. Tag creation dedupes; hook
+    // firing must too. `mkdir` is the detector: a second firing for the
+    // same tag would fail with "File exists" and error the command.
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/lib\", \"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("crates/lib/src")).unwrap();
+    fs::create_dir_all(tmp.path().join("crates/app/src")).unwrap();
+    for (name, path) in [("lib", "crates/lib"), ("app", "crates/app")] {
+        fs::write(
+            tmp.path().join(path).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(tmp.path().join(path).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"project_name: myproj
+tag:
+  tag_pre_hooks:
+    - "mkdir pre-{{ .Tag }}"
+  tag_post_hooks:
+    - "mkdir post-{{ .Tag }}"
+workspaces:
+  - name: ws-lib
+    crates:
+      - name: lib
+        path: crates/lib
+        tag_template: "v{{ .Version }}"
+        version_sync:
+          enabled: true
+  - name: ws-app
+    crates:
+      - name: app
+        path: crates/app
+        tag_template: "v{{ .Version }}"
+        version_sync:
+          enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    fs::write(tmp.path().join("crates/lib/src/lib.rs"), "// touched\n").unwrap();
+    fs::write(tmp.path().join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: both crates");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "hooks must fire exactly once per unique tag (a second mkdir for \
+         the shared tag would fail): {stdout}\n{stderr}"
+    );
+    assert!(git_tag_exists(tmp.path(), "v0.1.1"), "shared tag created");
+    assert!(
+        tmp.path().join("pre-v0.1.1").is_dir() && tmp.path().join("post-v0.1.1").is_dir(),
+        "hooks fired for the shared tag"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn per_crate_first_release_group_does_not_inherit_previous_tag_env() {
+    // ANODIZER_PREVIOUS_TAG is process env reused across the per-crate
+    // group loop: a group with no previous tag must see it UNSET, not the
+    // previous group's value (a wrong-crate tag range for its hooks).
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/lib\", \"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("crates/lib/src")).unwrap();
+    fs::create_dir_all(tmp.path().join("crates/app/src")).unwrap();
+    for (name, path) in [("lib", "crates/lib"), ("app", "crates/app")] {
+        fs::write(
+            tmp.path().join(path).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(tmp.path().join(path).join("src/lib.rs"), "").unwrap();
+    }
+    let script = tmp.path().join("record-env.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\necho \"${ANODIZER_CURRENT_TAG}|${ANODIZER_PREVIOUS_TAG-UNSET}\" >> hook-env.log\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"project_name: myproj
+tag:
+  tag_pre_hooks:
+    - "./record-env.sh"
+workspaces:
+  - name: ws-lib
+    crates:
+      - name: lib
+        path: crates/lib
+        tag_template: "lib-v{{ .Version }}"
+        version_sync:
+          enabled: true
+  - name: ws-app
+    crates:
+      - name: app
+        path: crates/app
+        tag_template: "app-v{{ .Version }}"
+        version_sync:
+          enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    // Only lib has a previous tag; app is a first release (prev = None).
+    run_git(tmp.path(), &["tag", "lib-v0.1.0"]);
+    fs::write(tmp.path().join("crates/lib/src/lib.rs"), "// touched\n").unwrap();
+    fs::write(tmp.path().join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: both crates");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    let log = fs::read_to_string(tmp.path().join("hook-env.log")).expect("hook ran");
+    let lib_line = log
+        .lines()
+        .find(|l| l.starts_with("lib-v"))
+        .expect("lib group hook line");
+    assert_eq!(
+        lib_line, "lib-v0.1.1|lib-v0.1.0",
+        "lib group sees its own previous tag: {log}"
+    );
+    let app_line = log
+        .lines()
+        .find(|l| l.starts_with("app-v"))
+        .expect("app group hook line");
+    assert_eq!(
+        app_line, "app-v0.1.0|UNSET",
+        "a first-release group must not inherit the previous group's \
+         ANODIZER_PREVIOUS_TAG: {log}"
+    );
+}
+
+#[test]
+fn per_crate_rerun_after_failed_push_is_idempotent() {
+    // A prior run's leftover local tag at the same commit must not kill
+    // the re-run with git's raw "tag already exists".
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let first = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    assert!(git_tag_exists(tmp.path(), "core-v0.1.1"));
+
+    // Simulate "writeback committed + tag created, push failed": the bump
+    // commit and local tag exist. Re-running must reuse the tag (it points at
+    // HEAD — the bump commit is the last commit) instead of dying.
+    let second = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second.status.success(),
+        "re-run over leftover local tag must succeed: {stdout}\n{stderr}"
+    );
+}

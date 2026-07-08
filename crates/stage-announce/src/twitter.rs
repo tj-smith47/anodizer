@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::time::SystemTime;
 
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 use base64::Engine;
 
@@ -35,13 +35,14 @@ pub fn send_twitter(
     access_token_secret: &str,
     message: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let url = twitter_tweets_url();
     let url = url.as_str();
     let body = serde_json::json!({ "text": message }).to_string();
     let client = crate::http::blocking_client()?;
 
-    retry_sync(policy, |_attempt| {
+    retry_sync(RetryLog::new("twitter announce", log), policy, |_attempt| {
         // Re-sign on every attempt: oauth_nonce + oauth_timestamp must be
         // fresh per RFC 5849 §3.3 to avoid replay rejection.
         let auth_header = match build_oauth1_header(
@@ -318,8 +319,16 @@ mod tests {
         }]);
         let _base = set_base(addr);
 
-        send_twitter("ck", "cs", "at", "ats", "MyApp v1.2.3 is out!", &ONE_SHOT)
-            .expect("happy path should succeed");
+        send_twitter(
+            "ck",
+            "cs",
+            "at",
+            "ats",
+            "MyApp v1.2.3 is out!",
+            &ONE_SHOT,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("happy path should succeed");
 
         let entries = log.lock().unwrap();
         assert_eq!(entries.len(), 1, "exactly one POST expected");
@@ -356,7 +365,16 @@ mod tests {
 
         let err = format!(
             "{:#}",
-            send_twitter("ck", "cs", "at", "ats", "hi", &ONE_SHOT).unwrap_err()
+            send_twitter(
+                "ck",
+                "cs",
+                "at",
+                "ats",
+                "hi",
+                &ONE_SHOT,
+                anodizer_core::test_helpers::test_logger()
+            )
+            .unwrap_err()
         );
         assert!(err.contains("403"), "status must surface: {err}");
         assert!(

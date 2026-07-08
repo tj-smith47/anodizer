@@ -59,9 +59,10 @@ pub fn send_slack(
     message: &str,
     opts: &SlackOptions<'_>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let payload = slack_payload(message, opts);
-    post_json(webhook_url, &payload, "slack", policy)
+    post_json(webhook_url, &payload, "slack", policy, log)
 }
 
 // ---------------------------------------------------------------------------

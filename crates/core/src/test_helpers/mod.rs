@@ -29,9 +29,25 @@ pub mod https_responder;
 pub mod responder;
 pub mod scripted_responder;
 
+/// A shared quiet logger for tests that need a `&StageLogger` parameter.
+///
+/// Quiet verbosity keeps retry-warn lines out of test output while still
+/// exercising the logging code path.
+pub fn test_logger() -> &'static StageLogger {
+    static L: std::sync::OnceLock<StageLogger> = std::sync::OnceLock::new();
+    L.get_or_init(|| StageLogger::new("test", Verbosity::Quiet))
+}
+
+/// A shared [`RetryLog`] for tests that drive a retry engine directly.
+pub fn test_retry_log() -> RetryLog<'static> {
+    RetryLog::new("test op", test_logger())
+}
+
 use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig, WorkspaceConfig};
 use crate::context::{Context, ContextOptions};
 use crate::git::{GitInfo, SemVer};
+use crate::log::{StageLogger, Verbosity};
+use crate::retry::RetryLog;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

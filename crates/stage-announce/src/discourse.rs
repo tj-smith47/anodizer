@@ -10,6 +10,7 @@ use crate::helpers::retry_http;
 /// The topic is created in the specified category with the given title and message.
 ///
 /// `policy` enables retry on 5xx / 429 / network failures (P1.3).
+#[allow(clippy::too_many_arguments)]
 pub fn send_discourse(
     server: &str,
     api_key: &str,
@@ -18,6 +19,7 @@ pub fn send_discourse(
     title: &str,
     message: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let url = format!("{}/posts.json", server.trim_end_matches('/'));
     let body = json!({
@@ -28,7 +30,7 @@ pub fn send_discourse(
     .to_string();
 
     let client = crate::http::blocking_client()?;
-    let _ = retry_http("discourse", "create topic", policy, || {
+    let _ = retry_http("discourse", "create topic", policy, log, || {
         client
             .post(&url)
             .header("Api-Key", api_key)
@@ -92,6 +94,7 @@ mod tests {
             "Title",
             "Body",
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -125,7 +128,17 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
         ]);
         let server = format!("http://{addr}");
-        send_discourse(&server, "k", "u", 1, "t", "b", &fast_policy()).unwrap();
+        send_discourse(
+            &server,
+            "k",
+            "u",
+            1,
+            "t",
+            "b",
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
@@ -135,7 +148,17 @@ mod tests {
             "HTTP/1.1 403 Forbidden\r\nContent-Length: 7\r\n\r\nnope :(",
         ]);
         let server = format!("http://{addr}");
-        let err = send_discourse(&server, "k", "u", 1, "t", "b", &fast_policy()).unwrap_err();
+        let err = send_discourse(
+            &server,
+            "k",
+            "u",
+            1,
+            "t",
+            "b",
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("403"),

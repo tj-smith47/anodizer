@@ -793,6 +793,7 @@ impl BlobStage {
             &jobs,
             global_parallelism,
             "blob",
+            &log,
             run_job,
         );
         // Snapshot the uploaded list whether the run succeeded or failed

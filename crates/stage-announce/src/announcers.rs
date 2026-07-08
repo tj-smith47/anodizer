@@ -501,6 +501,8 @@ impl Announcer for DiscordAnnouncer {
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         // Owned copy so the queued closure is `'static`.
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -513,7 +515,7 @@ impl Announcer for DiscordAnnouncer {
                     color,
                     icon_url: icon_url.as_deref(),
                 };
-                discord::send_discord(&url, &message, &opts, &retry_policy)
+                discord::send_discord(&url, &message, &opts, &retry_policy, &qlog)
             },
         )
     }
@@ -595,6 +597,8 @@ impl Announcer for DiscourseAnnouncer {
         let api_key = require_env_with_env("discourse", "DISCOURSE_API_KEY", ctx.env_source())?;
 
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -610,6 +614,7 @@ impl Announcer for DiscourseAnnouncer {
                     &title,
                     &message,
                     &retry_policy,
+                    &qlog,
                 )
             },
         )
@@ -695,6 +700,8 @@ impl Announcer for SlackAnnouncer {
             None => None,
         };
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(ctx, queue, "slack", message.clone(), key_width, move || {
             let opts = slack::SlackOptions {
                 channel: channel.as_deref(),
@@ -704,7 +711,7 @@ impl Announcer for SlackAnnouncer {
                 blocks: blocks.as_ref(),
                 attachments: attachments.as_ref(),
             };
-            slack::send_slack(&url, &message, &opts, &retry_policy)
+            slack::send_slack(&url, &message, &opts, &retry_policy, &qlog)
         })
     }
     fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
@@ -816,6 +823,8 @@ impl Announcer for WebhookAnnouncer {
             cfg.expected_status_codes.clone()
         };
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -831,6 +840,7 @@ impl Announcer for WebhookAnnouncer {
                     skip_tls,
                     &expected_codes,
                     &retry_policy,
+                    &qlog,
                 )
             },
         )
@@ -951,6 +961,8 @@ impl Announcer for TelegramAnnouncer {
         };
 
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -965,6 +977,7 @@ impl Announcer for TelegramAnnouncer {
                     parse_mode.as_deref(),
                     message_thread_id,
                     &retry_policy,
+                    &qlog,
                 )
             },
         )
@@ -1044,13 +1057,15 @@ impl Announcer for TeamsAnnouncer {
         let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(ctx, queue, "teams", message.clone(), key_width, move || {
             let opts = teams::TeamsOptions {
                 title: title.as_deref(),
                 color: Some(color_val.as_str()),
                 icon_url: icon_url.as_deref(),
             };
-            teams::send_teams(&url, &message, &opts, &retry_policy)
+            teams::send_teams(&url, &message, &opts, &retry_policy, &qlog)
         })
     }
     fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
@@ -1139,6 +1154,8 @@ impl Announcer for MattermostAnnouncer {
         let title = Some(ctx.render_template(title_template)?);
 
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -1154,7 +1171,7 @@ impl Announcer for MattermostAnnouncer {
                     color: Some(color_val.as_str()),
                     title: title.as_deref(),
                 };
-                mattermost::send_mattermost(&url, &message, &opts, &retry_policy)
+                mattermost::send_mattermost(&url, &message, &opts, &retry_policy, &qlog)
             },
         )
     }
@@ -1308,7 +1325,7 @@ impl Announcer for TwitterAnnouncer {
         ctx: &mut Context,
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
-        _log: &StageLogger,
+        log: &StageLogger,
         key_width: usize,
         queue: &mut DispatchQueue,
     ) -> Result<()> {
@@ -1334,6 +1351,8 @@ impl Announcer for TwitterAnnouncer {
         let access_token_secret = creds[3].clone();
 
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -1348,6 +1367,7 @@ impl Announcer for TwitterAnnouncer {
                     &access_token_secret,
                     &message,
                     &retry_policy,
+                    &qlog,
                 )
             },
         )
@@ -1412,13 +1432,15 @@ impl Announcer for MastodonAnnouncer {
         require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_ID", ctx.env_source())?;
         require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_SECRET", ctx.env_source())?;
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
             "mastodon",
             message.clone(),
             key_width,
-            move || mastodon::send_mastodon(&server, &access_token, &message, &retry_policy),
+            move || mastodon::send_mastodon(&server, &access_token, &message, &retry_policy, &qlog),
         )
     }
     fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
@@ -1478,6 +1500,8 @@ impl Announcer for BlueskyAnnouncer {
             .transpose()?;
 
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -1492,6 +1516,7 @@ impl Announcer for BlueskyAnnouncer {
                     release_url.as_deref(),
                     pds_url.as_deref(),
                     &retry_policy,
+                    &qlog,
                 )
             },
         )
@@ -1623,6 +1648,8 @@ impl Announcer for OpenCollectiveAnnouncer {
             require_env_with_env("opencollective", "OPENCOLLECTIVE_TOKEN", ctx.env_source())?;
         opencollective::validate_token_shape(&token)?;
         let retry_policy = *retry_policy;
+        // Owned clone: the queued closure must be 'static like its other captures.
+        let qlog = log.clone();
         dispatch(
             ctx,
             queue,
@@ -1630,7 +1657,14 @@ impl Announcer for OpenCollectiveAnnouncer {
             title.clone(),
             key_width,
             move || {
-                opencollective::send_opencollective(&token, &slug, &title, &html, &retry_policy)
+                opencollective::send_opencollective(
+                    &token,
+                    &slug,
+                    &title,
+                    &html,
+                    &retry_policy,
+                    &qlog,
+                )
             },
         )
     }
@@ -1751,6 +1785,8 @@ impl Announcer for EmailAnnouncer {
             let port = smtp_port;
             let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
+            // Owned clone: the queued closure must be 'static like its other captures.
+            let qlog = log.clone();
             dispatch(
                 ctx,
                 queue,
@@ -1772,7 +1808,7 @@ impl Announcer for EmailAnnouncer {
                         insecure_skip_verify: insecure,
                         encryption,
                     };
-                    email::send_smtp(&email_params, &smtp_params, &retry_policy)
+                    email::send_smtp(&email_params, &smtp_params, &retry_policy, &qlog)
                 },
             )?;
         } else {

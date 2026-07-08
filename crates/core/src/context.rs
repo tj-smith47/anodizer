@@ -1579,7 +1579,12 @@ impl Context {
         // header/footer fields.
         let full_description = match full_desc_src {
             None => String::new(),
-            Some(src) => crate::content_source::resolve(&src, "metadata.full_description", self)?,
+            Some(src) => crate::content_source::resolve(
+                &src,
+                "metadata.full_description",
+                self,
+                &self.logger("metadata"),
+            )?,
         };
 
         let commit_author_map = serde_json::json!({

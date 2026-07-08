@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
 use anodizer_core::url::percent_encode_unreserved;
 use anyhow::Context as _;
 
@@ -88,7 +88,7 @@ fn rollback_one_target(
     );
     provider.login().context("mcp: rollback login")?;
     let token = provider
-        .get_token()
+        .get_token(log)
         .context("mcp: rollback get registry token")?;
 
     // `percent_encode_unreserved` encodes `/` (it's in the UNRESERVED encode
@@ -114,7 +114,7 @@ fn rollback_one_target(
         build_client(Duration::from_secs(60)).context("mcp: build rollback HTTP client")?;
 
     let result = retry_http_blocking(
-        "mcp: PATCH status",
+        RetryLog::new("mcp: PATCH status", log),
         &policy,
         SuccessClass::Strict,
         |_| {
@@ -317,7 +317,9 @@ impl anodizer_core::Publisher for McpPublisher {
             &mcp_rendered.auth.token,
             &policy,
         );
-        let probe = provider.login().and_then(|()| provider.get_token());
+        let probe = provider
+            .login()
+            .and_then(|()| provider.get_token(&ctx.logger("preflight")));
         Ok(match probe {
             Ok(_) => PreflightCheck::Pass,
             Err(err) => {

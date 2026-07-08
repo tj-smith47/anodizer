@@ -75,9 +75,10 @@ pub fn send_mattermost(
     message: &str,
     opts: &MattermostOptions<'_>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let payload = mattermost_payload(message, opts);
-    post_json(webhook_url, &payload, "mattermost", policy)
+    post_json(webhook_url, &payload, "mattermost", policy, log)
 }
 
 // ---------------------------------------------------------------------------

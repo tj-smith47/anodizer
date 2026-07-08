@@ -193,6 +193,7 @@ the hook process, and template variables rendered into `cmd`:
 | `ANODIZER_GROUP` | `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
 | `ANODIZER_REQUIRED` | `{{ .Required }}` | `true` / `false` |
 | `ANODIZER_ROLLED_BACK` | `{{ .RolledBack }}` | `true` if any publisher was rolled back (or rollback was attempted and failed) during this run |
+| `ANODIZER_RUN_REPORT` | `{{ .RunReport }}` | Path of this run's already-written `dist/run-<id>/report.json` (per-publisher outcomes including rollback results); empty in snapshot/dry-run or when the report could not be persisted |
 
 In workspace per-crate mode both channels carry the per-crate-scoped
 `Version` / `Tag` of the crate being published.
@@ -674,10 +675,14 @@ one-way-door publisher, by evidence strength:
    state — a PRIOR run may have published it, and that run's summary lives
    on another runner's disk. The crate's exact `name@version` live on the
    sparse index → refuse (fix forward); an **unreachable index** → refuse
-   (fail closed: publication state is unverifiable). Skipped with a warning
-   when no anodizer config is parseable (no tag→crate mapping to probe
-   with); crates on a custom `registry:`/`index:` are out of the probe's
-   scope, exactly like the publish stage's own content guard.
+   (fail closed: publication state is unverifiable). A **missing or
+   unparseable config** also refuses — the config is the probe's
+   tag→crate mapping, so proceeding without it would blind the guard —
+   as does a tag the config **cannot map to any crate** while other
+   crates do target crates.io. Tags whose mapped crates simply don't
+   publish to crates.io proceed (no cargo one-way door exists); crates on
+   a custom `registry:`/`index:` are out of the probe's scope, exactly
+   like the publish stage's own content guard.
 3. **GitHub release probe** — only for tags with NO summary on disk. A
    published (non-draft) release → refuse. An **unanswerable probe**
    (gh missing, auth/network error) also refuses — fail closed: with no

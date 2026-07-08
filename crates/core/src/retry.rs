@@ -27,6 +27,46 @@ use std::io;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
+use crate::log::StageLogger;
+
+/// Names the operation a retry engine is driving and carries the logger that
+/// surfaces per-attempt failures.
+///
+/// A required parameter on every retry engine — not an optional builder — so
+/// a silent retry is unrepresentable: a backoff ladder can sleep for many
+/// minutes (10 attempts × 5m cap), and an operator watching a run must be
+/// able to tell "waiting on a transient failure" from "hung".
+#[derive(Clone, Copy)]
+pub struct RetryLog<'a> {
+    desc: &'a str,
+    log: &'a StageLogger,
+}
+
+impl<'a> RetryLog<'a> {
+    /// `desc` is a short human description of the operation being retried
+    /// (e.g. `"chocolatey push"`, `"mastodon announce"`); it prefixes every
+    /// per-attempt warn line.
+    pub fn new(desc: &'a str, log: &'a StageLogger) -> Self {
+        Self { desc, log }
+    }
+
+    /// The operation description supplied at construction.
+    pub fn desc(&self) -> &str {
+        self.desc
+    }
+
+    fn warn_retry(&self, attempt: u32, max: u32, cause: &dyn fmt::Display, delay: Duration) {
+        self.log.warn(&format!(
+            "{} attempt {}/{} failed ({}); retrying in {:.1}s",
+            self.desc,
+            attempt,
+            max,
+            cause,
+            delay.as_secs_f64()
+        ));
+    }
+}
+
 /// Retry policy used by `retry_sync` / `retry_async`.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
@@ -129,11 +169,16 @@ pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 /// - `Err(ControlFlow::Break(e))` to stop immediately (4xx-style fast-fail).
 ///
 /// Returns the last error if all attempts are exhausted.
-pub fn retry_sync<T, E, F>(policy: &RetryPolicy, op: F) -> Result<T, E>
+///
+/// Every failed attempt that will be retried emits a default-visible warn
+/// (`<desc> attempt n/max failed (<cause>); retrying in <X.Y>s`) via `rlog`
+/// before the backoff sleep, so a multi-minute ladder is never silent.
+pub fn retry_sync<T, E, F>(rlog: RetryLog<'_>, policy: &RetryPolicy, op: F) -> Result<T, E>
 where
+    E: fmt::Display,
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
-    retry_sync_deadline(policy, None, op)
+    retry_sync_deadline(rlog, policy, None, op)
 }
 
 /// Like [`retry_sync`], but stops retrying once the next backoff sleep would
@@ -143,11 +188,13 @@ where
 /// outer timeout. `deadline: None` is byte-for-byte the old attempt-count-only
 /// behavior.
 pub fn retry_sync_deadline<T, E, F>(
+    rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     deadline: Option<std::time::Instant>,
     mut op: F,
 ) -> Result<T, E>
 where
+    E: fmt::Display,
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
     let max = policy.max_attempts.max(1);
@@ -171,6 +218,7 @@ where
                         return Err(e);
                     }
                 }
+                rlog.warn_retry(attempt, max, &e, policy.delay_for(attempt + 1));
             }
         }
         attempt += 1;
@@ -180,8 +228,13 @@ where
 /// Retry an asynchronous operation according to `policy`.
 ///
 /// Same semantics as `retry_sync` but awaits `op` and uses `tokio::time::sleep`.
-pub async fn retry_async<T, E, F, Fut>(policy: &RetryPolicy, mut op: F) -> Result<T, E>
+pub async fn retry_async<T, E, F, Fut>(
+    rlog: RetryLog<'_>,
+    policy: &RetryPolicy,
+    mut op: F,
+) -> Result<T, E>
 where
+    E: fmt::Display,
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = Result<T, ControlFlow<E, E>>>,
 {
@@ -198,6 +251,7 @@ where
                 if attempt >= max {
                     return Err(e);
                 }
+                rlog.warn_retry(attempt, max, &e, policy.delay_for(attempt + 1));
             }
         }
         attempt += 1;
@@ -245,7 +299,7 @@ pub enum SuccessClass {
 ///   announce/helpers.rs for the thin adapter that returns the body string
 ///   instead of `(StatusCode, String)`).
 pub fn retry_http_blocking<F, M>(
-    label: &str,
+    rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
     mut send: F,
@@ -256,7 +310,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync(policy, |attempt| {
+    retry_sync(rlog, policy, |attempt| {
         match send(attempt) {
             Ok(resp) => {
                 let status = resp.status();
@@ -294,7 +348,7 @@ where
                 // so the chain-walking classifier can see network-error
                 // substrings via the inner io::Error message.
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
-                    .context(format!("{label}: HTTP transport error"));
+                    .context(format!("{}: HTTP transport error", rlog.desc()));
                 if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
@@ -303,7 +357,7 @@ where
             }
         }
     })
-    .with_context(|| format!("{label}: exhausted retry attempts"))
+    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
 }
 
 /// Binary-body sibling of [`retry_http_blocking`] for endpoints whose success
@@ -320,7 +374,7 @@ where
 /// and a few replacement characters in an already-failing message are
 /// harmless.
 pub fn retry_http_blocking_bytes<F, M>(
-    label: &str,
+    rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
     mut send: F,
@@ -331,7 +385,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync(policy, |attempt| match send(attempt) {
+    retry_sync(rlog, policy, |attempt| match send(attempt) {
         Ok(resp) => {
             let status = resp.status();
             let succeeded = match success_class {
@@ -362,7 +416,7 @@ where
         }
         Err(e) => {
             let err = anyhow::Error::new(HttpError::from_response(e, None))
-                .context(format!("{label}: HTTP transport error"));
+                .context(format!("{}: HTTP transport error", rlog.desc()));
             if is_retriable(err.as_ref()) {
                 Err(ControlFlow::Continue(err))
             } else {
@@ -370,7 +424,7 @@ where
             }
         }
     })
-    .with_context(|| format!("{label}: exhausted retry attempts"))
+    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
 }
 
 /// Async sibling of [`retry_http_blocking`] for `reqwest::Client` (non-blocking)
@@ -394,7 +448,7 @@ where
 /// (their reqwest::Client follows redirects by default, so a surfaced 3xx
 /// is itself an error).
 pub async fn retry_http_async<F, Fut, M>(
-    label: &str,
+    rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
     mut send: F,
@@ -406,7 +460,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_async(policy, |attempt| {
+    retry_async(rlog, policy, |attempt| {
         let fut = send(attempt);
         let error_msg = &error_msg;
         async move {
@@ -450,7 +504,7 @@ where
                     // the chain-walking classifier can see network-error
                     // substrings via the inner io::Error message.
                     let err = anyhow::Error::new(HttpError::from_response(e, None))
-                        .context(format!("{label}: HTTP transport error"));
+                        .context(format!("{}: HTTP transport error", rlog.desc()));
                     if is_retriable(err.as_ref()) {
                         Err(ControlFlow::Continue(err))
                     } else {
@@ -461,7 +515,7 @@ where
         }
     })
     .await
-    .with_context(|| format!("{label}: exhausted retry attempts"))
+    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
 }
 
 /// Classify a `reqwest::Result<reqwest::blocking::Response>` into the
@@ -779,12 +833,22 @@ pub fn jitter_duration(base: Duration) -> Duration {
         return base;
     }
     // Cheap pseudo-random offset in [0, window * 2) centred on window,
-    // giving a net range of [base - window, base + window). Routed
-    // through `sde::resolve_now()` so jitter collapses to a constant
-    // under `SOURCE_DATE_EPOCH` (no subsec precision) — required for
-    // determinism-harness byte-equality; real jitter is preserved in
-    // prod where the helper falls back to `Utc::now()`.
-    let seed = crate::sde::resolve_now().timestamp_subsec_nanos() as u64;
+    // giving a net range of [base - window, base + window). The wall-clock
+    // seed is XORed with a process-local Weyl sequence (odd-constant atomic
+    // counter, so consecutive draws stay well spread) because under
+    // SOURCE_DATE_EPOCH a pinned clock would collapse jitter to a constant
+    // and re-synchronize concurrent retriers on every round — recreating
+    // the exact collision jitter exists to break. SOURCE_DATE_EPOCH pins
+    // BUILD OUTPUT bytes; a retry sleep duration never reaches an artifact,
+    // so varying it is determinism-safe (which is also why this reads the
+    // real clock instead of `sde::resolve_now()`).
+    static JITTER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let seq = JITTER_SEQ.fetch_add(0x9E37_79B9_7F4A_7C15, std::sync::atomic::Ordering::Relaxed);
+    let seed = clock ^ seq;
     let offset = seed % (window * 2);
     // Saturating arithmetic so we never panic on extreme values.
     let jittered = nanos.saturating_sub(window).saturating_add(offset);
@@ -795,6 +859,8 @@ pub fn jitter_duration(base: Duration) -> Duration {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    use crate::test_helpers::{test_logger, test_retry_log as tlog};
 
     fn fast_policy() -> RetryPolicy {
         RetryPolicy {
@@ -894,6 +960,21 @@ mod tests {
     }
 
     #[test]
+    fn jitter_spreads_consecutive_draws_even_with_a_pinned_clock() {
+        // The Weyl-sequence XOR guarantees consecutive draws differ even if
+        // the wall clock were frozen (the SOURCE_DATE_EPOCH-style failure
+        // mode where a constant seed re-synchronizes concurrent retriers).
+        // The clock here is real, but the sequence term alone already forces
+        // distinct offsets, so all-equal draws would mean the mixing broke.
+        let base = Duration::from_millis(100);
+        let draws: Vec<Duration> = (0..8).map(|_| jitter_duration(base)).collect();
+        assert!(
+            draws.windows(2).any(|w| w[0] != w[1]),
+            "8 consecutive jitter draws were all identical: {draws:?}"
+        );
+    }
+
+    #[test]
     fn delay_progression_caps_at_max() {
         let p = RetryPolicy {
             max_attempts: 10,
@@ -910,7 +991,7 @@ mod tests {
     #[test]
     fn sync_succeeds_on_first_attempt() {
         let calls = AtomicU32::new(0);
-        let result: Result<&str, ()> = retry_sync(&fast_policy(), |_| {
+        let result: Result<&str, &str> = retry_sync(tlog(), &fast_policy(), |_| {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok("ok")
         });
@@ -921,7 +1002,7 @@ mod tests {
     #[test]
     fn sync_retries_until_success() {
         let calls = AtomicU32::new(0);
-        let result: Result<u32, &str> = retry_sync(&fast_policy(), |attempt| {
+        let result: Result<u32, &str> = retry_sync(tlog(), &fast_policy(), |attempt| {
             calls.fetch_add(1, Ordering::SeqCst);
             if attempt < 3 {
                 Err(ControlFlow::Continue("transient"))
@@ -936,7 +1017,7 @@ mod tests {
     #[test]
     fn sync_break_stops_immediately() {
         let calls = AtomicU32::new(0);
-        let result: Result<(), &str> = retry_sync(&fast_policy(), |_| {
+        let result: Result<(), &str> = retry_sync(tlog(), &fast_policy(), |_| {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(ControlFlow::Break("fatal"))
         });
@@ -947,7 +1028,7 @@ mod tests {
     #[test]
     fn sync_returns_last_error_after_exhaustion() {
         let calls = AtomicU32::new(0);
-        let result: Result<(), String> = retry_sync(&fast_policy(), |attempt| {
+        let result: Result<(), String> = retry_sync(tlog(), &fast_policy(), |attempt| {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(ControlFlow::Continue(format!("fail {attempt}")))
         });
@@ -968,7 +1049,7 @@ mod tests {
         let deadline = std::time::Instant::now();
         let calls = AtomicU32::new(0);
         let start = std::time::Instant::now();
-        let result: Result<(), &str> = retry_sync_deadline(&policy, Some(deadline), |_| {
+        let result: Result<(), &str> = retry_sync_deadline(tlog(), &policy, Some(deadline), |_| {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(ControlFlow::Continue("transient"))
         });
@@ -988,19 +1069,20 @@ mod tests {
     #[test]
     fn deadline_none_matches_retry_sync_on_success() {
         let calls = AtomicU32::new(0);
-        let result: Result<u32, &str> = retry_sync_deadline(&fast_policy(), None, |attempt| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            if attempt < 2 {
-                Err(ControlFlow::Continue("transient"))
-            } else {
-                Ok(attempt)
-            }
-        });
+        let result: Result<u32, &str> =
+            retry_sync_deadline(tlog(), &fast_policy(), None, |attempt| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if attempt < 2 {
+                    Err(ControlFlow::Continue("transient"))
+                } else {
+                    Ok(attempt)
+                }
+            });
         assert_eq!(result, Ok(2));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         let sync_calls = AtomicU32::new(0);
-        let sync_result: Result<u32, &str> = retry_sync(&fast_policy(), |attempt| {
+        let sync_result: Result<u32, &str> = retry_sync(tlog(), &fast_policy(), |attempt| {
             sync_calls.fetch_add(1, Ordering::SeqCst);
             if attempt < 2 {
                 Err(ControlFlow::Continue("transient"))
@@ -1017,7 +1099,7 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(3600);
         let calls = AtomicU32::new(0);
         let result: Result<u32, &str> =
-            retry_sync_deadline(&fast_policy(), Some(deadline), |attempt| {
+            retry_sync_deadline(tlog(), &fast_policy(), Some(deadline), |attempt| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 if attempt < 3 {
                     Err(ControlFlow::Continue("transient"))
@@ -1033,7 +1115,7 @@ mod tests {
     async fn async_retries_until_success() {
         let calls = std::sync::Arc::new(AtomicU32::new(0));
         let calls_inner = calls.clone();
-        let result: Result<u32, &str> = retry_async(&fast_policy(), move |attempt| {
+        let result: Result<u32, &str> = retry_async(tlog(), &fast_policy(), move |attempt| {
             let c = calls_inner.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -1394,7 +1476,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1422,7 +1504,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1448,7 +1530,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking(
-            "myscope",
+            RetryLog::new("myscope", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1485,7 +1567,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::AllowRedirects,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1533,7 +1615,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking_bytes(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1559,7 +1641,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking_bytes(
-            "myscope",
+            RetryLog::new("myscope", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1594,7 +1676,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking_bytes(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1630,7 +1712,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_async(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1660,7 +1742,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_async(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1687,7 +1769,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_async(
-            "myscope",
+            RetryLog::new("myscope", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1728,7 +1810,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_async(
-            "test",
+            RetryLog::new("test", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| client.get(format!("http://{addr}/")).send(),
@@ -1779,7 +1861,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_blocking(
-            "test-transport",
+            RetryLog::new("test-transport", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| {
@@ -1815,7 +1897,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result = retry_http_async(
-            "test-transport-async",
+            RetryLog::new("test-transport-async", test_logger()),
             &policy,
             SuccessClass::Strict,
             |_| {

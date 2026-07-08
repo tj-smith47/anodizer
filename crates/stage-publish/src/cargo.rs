@@ -215,8 +215,15 @@ fn is_already_published(
     crate_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
 ) -> Result<Option<String>> {
-    is_already_published_at(&sparse_index_url(crate_name), crate_name, version, policy)
+    is_already_published_at(
+        &sparse_index_url(crate_name),
+        crate_name,
+        version,
+        policy,
+        log,
+    )
 }
 
 /// Same as [`is_already_published`] but uses the supplied URL instead of
@@ -227,6 +234,7 @@ fn is_already_published_at(
     crate_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
 ) -> Result<Option<String>> {
     use anodizer_core::retry::{SuccessClass, retry_http_blocking};
     use std::time::Duration;
@@ -236,7 +244,7 @@ fn is_already_published_at(
 
     let label = format!("publish: query crates.io index for '{}'", crate_name);
     let result = retry_http_blocking(
-        &label,
+        anodizer_core::retry::RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         |_| client.get(url).send(),
@@ -314,6 +322,7 @@ pub fn published_on_crates_io(
     name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
 ) -> Result<bool> {
     // Test-harness index-base override, mirroring `--simulate-failure`'s env
     // gating: integration tests drive the real binary across a process
@@ -327,7 +336,7 @@ pub fn published_on_crates_io(
         }
         _ => sparse_index_url(name),
     };
-    Ok(is_already_published_at(&url, name, version, policy)?.is_some())
+    Ok(is_already_published_at(&url, name, version, policy, log)?.is_some())
 }
 
 /// Whether a crate's resolved `publish.cargo` block targets the default
@@ -532,6 +541,7 @@ fn fetch_published_crate(
     name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
 ) -> Result<Vec<u8>> {
     use anodizer_core::retry::{SuccessClass, retry_http_blocking_bytes};
     use std::time::Duration;
@@ -541,7 +551,7 @@ fn fetch_published_crate(
     let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
     let label = format!("publish: fetch published .crate for '{name}-{version}'");
     let (_status, bytes) = retry_http_blocking_bytes(
-        &label,
+        anodizer_core::retry::RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&url).send(),
@@ -590,6 +600,7 @@ impl RecutNormalization {
 /// Outcome of comparing a local `.crate` tarball against the published one,
 /// modulo anodizer's own release-process artifacts (see
 /// [`RecutNormalization`]).
+#[derive(Debug)]
 enum CrateContentMatch {
     /// Every entry matches, except release-process artifacts the comparison
     /// normalized; `normalized` enumerates exactly which rules fired (empty
@@ -665,24 +676,28 @@ fn is_crate_root_entry(path: &std::path::Path, file_name: &str) -> bool {
     normal_component_count == 2 && path.file_name().is_some_and(|f| f == file_name)
 }
 
-/// Whether the packaged crate carries any binary target, judged from the
-/// LOCAL tarball's entries.
+/// Whether the packaged crate carries any installable target — binaries
+/// AND examples — judged from the LOCAL tarball's entries. Examples count
+/// because `cargo install --example` consumes the packaged lockfile
+/// exactly like `cargo install` does for bins, so a lib-with-examples
+/// crate's lockfile is consumer-visible and must stay byte-strict.
 ///
 /// Source of truth: the normalized crate-root `Cargo.toml` INSIDE the
 /// tarball. `cargo package` rewrites the packaged manifest with explicit
-/// target sections (auto-discovered bins become literal `[[bin]]` tables),
-/// so the packaged manifest — unlike the workspace-relative source manifest
-/// — states bin-ness explicitly, needs no `cargo metadata` subprocess, and
-/// describes exactly the artifact being compared (the tarball bytes are
-/// already in memory). Local vs published manifests are interchangeable
-/// here: a Cargo.toml byte difference is never normalizable, so the caller
-/// hard-fails before this answer matters.
+/// target sections (auto-discovered bins/examples become literal `[[bin]]`
+/// / `[[example]]` tables), so the packaged manifest — unlike the
+/// workspace-relative source manifest — states target-ness explicitly,
+/// needs no `cargo metadata` subprocess, and describes exactly the
+/// artifact being compared (the tarball bytes are already in memory).
+/// Local vs published manifests are interchangeable here: a Cargo.toml
+/// byte difference is never normalizable, so the caller hard-fails before
+/// this answer matters.
 ///
-/// Belt-and-braces: conventional bin source paths (`src/main.rs`,
-/// `src/bin/**`) in the tarball also count as binary targets, guarding
+/// Belt-and-braces: conventional installable source paths (`src/main.rs`,
+/// `src/bin/**`, `examples/**`) in the tarball also count, guarding
 /// against a manifest normalization scheme that leaves auto-discovery
-/// implicit. The supplement only ever WIDENS "has bins" (tightening the
-/// guard toward byte-strict), never widens "lib-only".
+/// implicit. The supplement only ever WIDENS "has installable targets"
+/// (tightening the guard toward byte-strict), never widens "lib-only".
 ///
 /// Returns `None` when the root Cargo.toml is missing or unparseable — the
 /// caller fails closed (byte-strict Cargo.lock) on an indeterminate answer.
@@ -695,17 +710,17 @@ fn packaged_crate_has_bin_targets(
         .map(|(_, b)| b)?;
     let manifest = std::str::from_utf8(manifest_bytes).ok()?;
     let doc = manifest.parse::<toml_edit::DocumentMut>().ok()?;
-    let explicit_bins = match doc.get("bin") {
+    // A key of an unrecognized shape counts as targets-exist so the
+    // lockfile stays byte-strict (fail closed).
+    let explicit_targets = ["bin", "example"].iter().any(|key| match doc.get(key) {
         None => false,
         Some(item) => item
             .as_array_of_tables()
             .map(|t| !t.is_empty())
             .or_else(|| item.as_array().map(|a| !a.is_empty()))
-            // A `bin` key of an unrecognized shape: assume binary targets
-            // exist so the lockfile stays byte-strict (fail closed).
             .unwrap_or(true),
-    };
-    let conventional_bin_sources = entries.keys().any(|p| {
+    });
+    let conventional_installable_sources = entries.keys().any(|p| {
         let mut normals = p
             .components()
             .filter_map(|c| match c {
@@ -715,10 +730,10 @@ fn packaged_crate_has_bin_targets(
             .skip(1); // {name}-{version}/ root dir
         matches!(
             (normals.next(), normals.next()),
-            (Some("src"), Some("main.rs")) | (Some("src"), Some("bin"))
+            (Some("src"), Some("main.rs")) | (Some("src"), Some("bin")) | (Some("examples"), _)
         )
     });
-    Some(explicit_bins || conventional_bin_sources)
+    Some(explicit_targets || conventional_installable_sources)
 }
 
 /// Pure, unit-testable comparison at the heart of the content-vs-version
@@ -737,10 +752,11 @@ fn packaged_crate_has_bin_targets(
 ///   anodizer's changelog stage regenerates the file on every re-cut, so
 ///   the drift is the tool's own artifact. With no changelog stage in play
 ///   the drift is operator-authored and stays a hard divergence.
-/// - `Cargo.lock` — forgiven ONLY for lib-only crates (no binary targets;
-///   see [`packaged_crate_has_bin_targets`]): cargo ignores a dependency's
-///   packaged lockfile for library consumers, but for binary crates
-///   `cargo install --locked` makes it consumer-visible, so it stays
+/// - `Cargo.lock` — forgiven ONLY for lib-only crates (no binary or
+///   example targets; see [`packaged_crate_has_bin_targets`]): cargo
+///   ignores a dependency's packaged lockfile for library consumers, but
+///   `cargo install --locked` (for bins) and `cargo install --locked
+///   --example` (for examples) make it consumer-visible, so it stays
 ///   byte-strict there.
 ///
 /// A file present in only one archive is always an unambiguous divergence,
@@ -805,13 +821,14 @@ fn crates_equal_modulo_vcs(
                 Some(false) => normalized.push(RecutNormalization::LockfileLibOnly),
                 Some(true) => differs.push(format!(
                     "{path_str} (not treated as a release-process artifact: the crate has \
-                     binary targets, so the packaged lockfile is consumer-visible via \
-                     `cargo install --locked` and stays byte-strict)"
+                     binary or example targets, so the packaged lockfile is \
+                     consumer-visible via `cargo install --locked` (or `--example`) and \
+                     stays byte-strict)"
                 )),
                 None => differs.push(format!(
                     "{path_str} (not treated as a release-process artifact: could not \
-                     determine binary targets from the packaged Cargo.toml, so the \
-                     lockfile stays byte-strict)"
+                     determine binary/example targets from the packaged Cargo.toml, so \
+                     the lockfile stays byte-strict)"
                 )),
             }
         } else {
@@ -2299,6 +2316,7 @@ fn publish_to_cargo_with(
         &str,
         &str,
         &anodizer_core::retry::RetryPolicy,
+        &StageLogger,
     ) -> Result<Option<String>>,
 ) -> Result<()> {
     publish_to_cargo_with_guard(
@@ -2340,6 +2358,7 @@ fn publish_to_cargo_with_guard(
         &str,
         &str,
         &anodizer_core::retry::RetryPolicy,
+        &StageLogger,
     ) -> Result<Option<String>>,
     local_cksum_check: impl Fn(
         &str,
@@ -2347,7 +2366,12 @@ fn publish_to_cargo_with_guard(
         Option<&CargoPublishConfig>,
     ) -> Result<Option<LocalCrate>>,
     resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
-    fetch_published: impl Fn(&str, &str, &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>>,
+    fetch_published: impl Fn(
+        &str,
+        &str,
+        &anodizer_core::retry::RetryPolicy,
+        &StageLogger,
+    ) -> Result<Vec<u8>>,
 ) -> Result<()> {
     // Defensive guard: the `--skip=cargo` gate lives in the
     // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
@@ -2429,13 +2453,16 @@ fn publish_to_cargo_with_guard(
     // `Ok(Some)` = present, `Ok(None)` = positively absent, `Err` = inconclusive
     // (never fails the guard).
     {
-        let probe =
-            |name: &str, version: &str| match already_published_check(name, version, &retry_policy)
-            {
-                Ok(Some(_)) => DepIndexState::Present,
-                Ok(None) => DepIndexState::Absent,
-                Err(_) => DepIndexState::Unknown,
-            };
+        let probe = |name: &str, version: &str| match already_published_check(
+            name,
+            version,
+            &retry_policy,
+            log,
+        ) {
+            Ok(Some(_)) => DepIndexState::Present,
+            Ok(None) => DepIndexState::Absent,
+            Err(_) => DepIndexState::Unknown,
+        };
         check_publish_set_completeness(&sorted_names, &all_crates, &crate_versions, &probe, log)?;
     }
 
@@ -2522,7 +2549,7 @@ fn publish_to_cargo_with_guard(
         let guard = if crate_version.is_empty() || !targets_crates_io(cargo_cfg) {
             CargoSkipDecision::Publish
         } else {
-            match already_published_check(name, &crate_version, &retry_policy) {
+            match already_published_check(name, &crate_version, &retry_policy, log) {
                 Ok(None) => CargoSkipDecision::Publish,
                 Ok(Some(index_cksum)) => {
                     let crate_cfg = crate_cfg.ok_or_else(|| {
@@ -2539,7 +2566,7 @@ fn publish_to_cargo_with_guard(
                         cargo_cfg,
                         changelog_stage_active,
                         &local_cksum_check,
-                        |n, v| fetch_published(n, v, &retry_policy),
+                        |n, v| fetch_published(n, v, &retry_policy, log),
                         log,
                     )?
                 }
@@ -3002,6 +3029,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 &token,
                 "preflight: crates.io token",
                 &policy,
+                &ctx.logger("preflight"),
             ) {
                 crate::publisher_preflight::TokenAuth::Valid => anodizer_core::PreflightCheck::Pass,
                 crate::publisher_preflight::TokenAuth::Invalid => {
@@ -4360,7 +4388,7 @@ mod tests {
             "must name the file: {msg}"
         );
         assert!(
-            msg.contains("binary targets") && msg.contains("cargo install --locked"),
+            msg.contains("binary or example targets") && msg.contains("cargo install --locked"),
             "must say why the lockfile stayed byte-strict: {msg}"
         );
     }
@@ -4493,6 +4521,64 @@ mod tests {
         assert_eq!(packaged_crate_has_bin_targets(&no_manifest), None);
     }
 
+    #[test]
+    fn packaged_crate_examples_count_as_installable_targets() {
+        // `cargo install --example` consumes the packaged lockfile just like
+        // a bin install, so an explicit [[example]] disqualifies the crate
+        // from the lib-only Cargo.lock forgiveness.
+        const EXAMPLE_MANIFEST: &[u8] = b"[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[lib]\nname = \"c\"\npath = \"src/lib.rs\"\n\n[[example]]\nname = \"demo\"\npath = \"examples/demo.rs\"\n";
+        let with_example = read_crate_entries(&make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", EXAMPLE_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/examples/demo.rs", b"fn main() {}"),
+        ]))
+        .expect("unpack");
+        assert_eq!(packaged_crate_has_bin_targets(&with_example), Some(true));
+
+        // Conventional examples/ sources count even without an explicit
+        // [[example]] (belt-and-braces against implicit auto-discovery).
+        let implicit_example = read_crate_entries(&make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/examples/demo.rs", b"fn main() {}"),
+        ]))
+        .expect("unpack");
+        assert_eq!(
+            packaged_crate_has_bin_targets(&implicit_example),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_lockfile_drift_on_example_crate_differs() {
+        // Lockfile drift on a crate carrying examples must NOT be forgiven:
+        // the packaged lockfile ships to `cargo install --example` consumers.
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/examples/demo.rs", b"fn main() {}"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v2\n"),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/examples/demo.rs", b"fn main() {}"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v1\n"),
+        ]);
+        match crates_equal_modulo_vcs(&local, &published, false).expect("compare") {
+            CrateContentMatch::Differs(files) => {
+                assert!(
+                    files.iter().any(
+                        |f| f.contains("Cargo.lock") && f.contains("binary or example targets")
+                    ),
+                    "lockfile drift must be flagged with the install-visibility \
+                     rationale: {files:?}"
+                );
+            }
+            other => panic!("example crate lockfile drift must differ, got {other:?}"),
+        }
+    }
+
     // ---- retry plumbing through is_already_published_at ------------------
     //
     // Pin: the sparse-index GET must route through retry_http_blocking so
@@ -4525,8 +4611,14 @@ mod tests {
         ]);
 
         let url = format!("http://{addr}/3/f/foo");
-        let result = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
-            .expect("retries 5xx then parses");
+        let result = is_already_published_at(
+            &url,
+            "foo",
+            "1.2.3",
+            &fast_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("retries 5xx then parses");
         assert_eq!(result, Some("abc123".to_string()));
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -4546,8 +4638,14 @@ mod tests {
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
         ]);
         let url = format!("http://{addr}/3/f/foo");
-        let result = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
-            .expect("404 is Ok(None)");
+        let result = is_already_published_at(
+            &url,
+            "foo",
+            "1.2.3",
+            &fast_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("404 is Ok(None)");
         assert_eq!(result, None);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "404 must NOT retry");
     }
@@ -4568,8 +4666,14 @@ mod tests {
         );
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
         let url = format!("http://{addr}/3/f/foo");
-        let err = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
-            .expect_err("401 must fast-fail");
+        let err = is_already_published_at(
+            &url,
+            "foo",
+            "1.2.3",
+            &fast_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("401 must fast-fail");
         let chain = format!("{err:#}");
         assert!(
             !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
@@ -4598,8 +4702,14 @@ mod tests {
         let url = format!("http://{addr}/3/m/myapp");
 
         // is_already_published_at should return Some(_), signalling skip.
-        let result = is_already_published_at(&url, "myapp", "1.2.3", &fast_retry_policy())
-            .expect("index check succeeds");
+        let result = is_already_published_at(
+            &url,
+            "myapp",
+            "1.2.3",
+            &fast_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("index check succeeds");
         assert!(
             result.is_some(),
             "index returned a version entry, expected Some"
@@ -6896,7 +7006,12 @@ mod partial_rollback_tests {
     /// Fetch closure that panics if invoked — for guard tests whose local
     /// cksum either matches the index (fast path) or must never reach the
     /// download at all (fail-closed-before-the-guard cases).
-    fn fetch_panics(_: &str, _: &str, _: &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>> {
+    fn fetch_panics(
+        _: &str,
+        _: &str,
+        _: &anodizer_core::retry::RetryPolicy,
+        _: &StageLogger,
+    ) -> Result<Vec<u8>> {
         panic!("fetch_published must not run on this path")
     }
 
@@ -6938,6 +7053,7 @@ mod partial_rollback_tests {
         _name: &str,
         _version: &str,
         _policy: &anodizer_core::retry::RetryPolicy,
+        _log: &StageLogger,
     ) -> Result<Option<String>> {
         Ok(None)
     }
@@ -6951,6 +7067,7 @@ mod partial_rollback_tests {
         name: &str,
         _version: &str,
         _policy: &anodizer_core::retry::RetryPolicy,
+        _log: &StageLogger,
     ) -> Result<Option<String>> {
         if name == "dep-crate" {
             Ok(Some("deadbeef".to_string()))
@@ -7441,7 +7558,8 @@ mod partial_rollback_tests {
         let always_published =
             |_n: &str,
              _v: &str,
-             _p: &anodizer_core::retry::RetryPolicy|
+             _p: &anodizer_core::retry::RetryPolicy,
+             _l: &StageLogger|
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
         let local_matches = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             Ok(Some(LocalCrate {
@@ -7500,7 +7618,8 @@ mod partial_rollback_tests {
 
         let index_errors = |_n: &str,
                             _v: &str,
-                            _p: &anodizer_core::retry::RetryPolicy|
+                            _p: &anodizer_core::retry::RetryPolicy,
+                            _l: &StageLogger|
          -> Result<Option<String>> {
             Err(anyhow::anyhow!("index transport blew up"))
         };
@@ -7723,7 +7842,8 @@ mod partial_rollback_tests {
         let always_published_1_0_0 =
             |_name: &str,
              _version: &str,
-             _policy: &anodizer_core::retry::RetryPolicy|
+             _policy: &anodizer_core::retry::RetryPolicy,
+             _l: &StageLogger|
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
@@ -7804,7 +7924,8 @@ mod partial_rollback_tests {
         let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
-        let index_absent = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(None);
+        let index_absent =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| Ok(None);
         // Local cksum must NEVER be consulted when the version is absent.
         let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             panic!("local cksum must not be computed when version is not published")
@@ -7853,7 +7974,8 @@ mod partial_rollback_tests {
 
         // The version is absent so a fail-OPEN guard would proceed to publish;
         // a correct fail-CLOSED guard aborts before ever probing the index.
-        let index_absent = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(None);
+        let index_absent =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| Ok(None);
         let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             panic!("guard must abort on an unverifiable tree, never package")
         };
@@ -7905,8 +8027,10 @@ mod partial_rollback_tests {
         let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
-        let index_match =
-            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("abc123".into()));
+        let index_match = |_n: &str,
+                           _v: &str,
+                           _p: &anodizer_core::retry::RetryPolicy,
+                           _l: &StageLogger| Ok(Some("abc123".into()));
         let local_match = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             Ok(Some(LocalCrate {
                 cksum: "ABC123".to_string(), // case-insensitive match
@@ -7977,9 +8101,10 @@ mod partial_rollback_tests {
         );
 
         let index_sha_for_closure = index_sha.clone();
-        let index_cksum = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(Some(index_sha_for_closure.clone()))
-        };
+        let index_cksum =
+            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(Some(index_sha_for_closure.clone()))
+            };
         let local_bytes_for_closure = local_bytes.clone();
         let local_differs = move |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             Ok(Some(LocalCrate {
@@ -7988,9 +8113,10 @@ mod partial_rollback_tests {
             }))
         };
         let published_bytes_for_closure = published_bytes.clone();
-        let fetch = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(published_bytes_for_closure.clone())
-        };
+        let fetch =
+            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(published_bytes_for_closure.clone())
+            };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
         init_clean_repo(tmp.path());
@@ -8043,9 +8169,10 @@ mod partial_rollback_tests {
         // seam; an Err there is treated as Unknown (never fails the guard), so
         // an unreachable index for a no-deps crate is benign until the skip
         // decision, where it must fail closed.
-        let index_unreachable = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Err(anyhow::anyhow!("connection refused"))
-        };
+        let index_unreachable =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Err(anyhow::anyhow!("connection refused"))
+            };
         let local_unused = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             Ok(Some(LocalCrate {
                 cksum: "unused".to_string(),
@@ -8099,9 +8226,10 @@ mod partial_rollback_tests {
         let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
-        let index_present = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(Some("published".into()))
-        };
+        let index_present =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(Some("published".into()))
+            };
         let local_errs = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             Err(anyhow::anyhow!("cargo package exploded"))
         };
@@ -8156,9 +8284,10 @@ mod partial_rollback_tests {
 
         // Even if crates.io reports the name+version as published, a custom
         // registry must NOT trust that: attempt publish anyway.
-        let index_says_published = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(Some("crates_io".into()))
-        };
+        let index_says_published =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(Some("crates_io".into()))
+            };
         let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             panic!("local cksum must not run for a non-crates.io registry")
         };
@@ -8234,12 +8363,14 @@ mod partial_rollback_tests {
 
         // Both already published; index cksums differ per crate.
         let ws_b_index_sha_for_closure = ws_b_index_sha.clone();
-        let index_per_crate =
-            move |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| match n {
-                "ws-a" => Ok(Some("a_published".into())),
-                "ws-b" => Ok(Some(ws_b_index_sha_for_closure.clone())),
-                _ => Ok(None),
-            };
+        let index_per_crate = move |n: &str,
+                                    _v: &str,
+                                    _p: &anodizer_core::retry::RetryPolicy,
+                                    _l: &StageLogger| match n {
+            "ws-a" => Ok(Some("a_published".into())),
+            "ws-b" => Ok(Some(ws_b_index_sha_for_closure.clone())),
+            _ => Ok(None),
+        };
         // a matches (safe skip, fast path); b misses the fast path and drifts
         // for real on the slow path (poison → hard fail).
         let ws_b_local_bytes_for_closure = ws_b_local_bytes.clone();
@@ -8256,10 +8387,11 @@ mod partial_rollback_tests {
                 _ => Ok(None),
             };
         let ws_b_published_bytes_for_closure = ws_b_published_bytes.clone();
-        let fetch = move |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            assert_eq!(n, "ws-b", "only ws-b's fast path should miss");
-            Ok(ws_b_published_bytes_for_closure.clone())
-        };
+        let fetch =
+            move |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                assert_eq!(n, "ws-b", "only ws-b's fast path should miss");
+                Ok(ws_b_published_bytes_for_closure.clone())
+            };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
         init_clean_repo(tmp.path());
@@ -9048,7 +9180,12 @@ mod binstall_on_publish_tests {
 
     /// Fetch closure that panics if invoked — for guard tests whose local
     /// cksum matches the index (fast path) or never reaches the download.
-    fn fetch_panics(_: &str, _: &str, _: &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>> {
+    fn fetch_panics(
+        _: &str,
+        _: &str,
+        _: &anodizer_core::retry::RetryPolicy,
+        _: &StageLogger,
+    ) -> Result<Vec<u8>> {
         panic!("fetch_published must not run on this path")
     }
 
@@ -9109,7 +9246,9 @@ mod binstall_on_publish_tests {
         // The version is on crates.io; its recorded cksum is the WITH-binstall
         // marker (what the original publish, which wrote the table, uploaded).
         let index_with_binstall =
-            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(Some("WITH".into()))
+            };
         // The local-cksum stub hashes the REAL on-disk tree: "WITH" iff the
         // binstall table is present at the moment the guard packages.
         let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
@@ -9186,7 +9325,7 @@ mod binstall_on_publish_tests {
 
         let index_sha_for_closure = index_sha.clone();
         let index_without_binstall =
-            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
                 Ok(Some(index_sha_for_closure.clone()))
             };
         let with_binstall_bytes_for_local = with_binstall_bytes.clone();
@@ -9208,9 +9347,10 @@ mod binstall_on_publish_tests {
                 }))
             };
         let fixed_tag = |_: &Context, _: &CrateConfig| Some("v9.9.9".to_string());
-        let fetch = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(without_binstall_bytes.clone())
-        };
+        let fetch =
+            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy, _l: &StageLogger| {
+                Ok(without_binstall_bytes.clone())
+            };
 
         let err = publish_to_cargo_with_guard(
             &mut ctx,
@@ -9262,8 +9402,10 @@ mod binstall_on_publish_tests {
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
         // Both already published with WITH-binstall content → both safe skip.
-        let index_with =
-            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+        let index_with = |_n: &str,
+                          _v: &str,
+                          _p: &anodizer_core::retry::RetryPolicy,
+                          _l: &StageLogger| Ok(Some("WITH".into()));
         let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             let m = if has_binstall_table(&c.path) {
                 "WITH"
@@ -9339,8 +9481,10 @@ mod binstall_on_publish_tests {
         let log = quiet_log();
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
-        let index_present =
-            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+        let index_present = |_n: &str,
+                             _v: &str,
+                             _p: &anodizer_core::retry::RetryPolicy,
+                             _l: &StageLogger| Ok(Some("WITH".into()));
         // Must never be reached — the dirty check aborts before packaging.
         let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
             panic!("local cksum must not run against a dirty tree")

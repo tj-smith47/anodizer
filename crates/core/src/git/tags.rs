@@ -494,7 +494,30 @@ pub fn create_tag_local_only(
         ));
         return Ok(());
     }
-    git_output_in(cwd, &["tag", "-a", tag, "-m", message])?;
+    if let Err(e) = git_output_in(cwd, &["tag", "-a", tag, "-m", message]) {
+        // A prior `tag` run that committed writeback and created the tag but
+        // failed to push leaves this exact debris behind; a re-run must be
+        // idempotent when the leftover tag already points at the commit we
+        // would tag, and actionable (not raw git noise) when it does not.
+        let tag_ref = format!("refs/tags/{}", tag);
+        if git_output_in(cwd, &["rev-parse", "--verify", "--quiet", &tag_ref]).is_ok() {
+            if tag_points_at_head_in(cwd, tag)? {
+                log.status(&format!(
+                    "tag {} already exists and points at HEAD; reusing it",
+                    tag
+                ));
+                return Ok(());
+            }
+            anyhow::bail!(
+                "tag {} already exists but points at a different commit than HEAD \
+                 (likely left behind by a previous run); run `anodizer tag rollback` \
+                 or delete the stale tag (`git tag -d {}`) and re-run",
+                tag,
+                tag
+            );
+        }
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -1111,5 +1134,96 @@ mod delete_tag_tests {
         delete_remote_tag_in(work.path(), "v1.2.3").expect("first remote delete must succeed");
         delete_remote_tag_in(work.path(), "v1.2.3")
             .expect("second remote delete must be a no-op (idempotent)");
+    }
+}
+
+#[cfg(test)]
+mod create_tag_local_only_tests {
+    use super::*;
+
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir.path())
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-b", "master"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.path().join("a"), "0").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        dir
+    }
+
+    fn commit_change(dir: &Path) {
+        let run = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "next"]);
+    }
+
+    #[test]
+    fn recreating_tag_at_same_head_is_idempotent() {
+        let repo = init_repo();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+            .expect("first create must succeed");
+        // Same tag, same HEAD — the leftover-from-failed-push case.
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+            .expect("re-creating a tag that already points at HEAD must be idempotent");
+    }
+
+    #[test]
+    fn recreating_tag_at_different_commit_fails_actionably() {
+        let repo = init_repo();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+            .expect("first create must succeed");
+        commit_change(repo.path());
+        let err = create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+            .expect_err("stale tag at a different commit must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("v1.0.0"), "error must name the tag: {msg}");
+        assert!(
+            msg.contains("different commit"),
+            "error must name the conflict: {msg}"
+        );
+        assert!(
+            msg.contains("anodizer tag rollback") && msg.contains("git tag -d v1.0.0"),
+            "error must suggest a remedy: {msg}"
+        );
     }
 }

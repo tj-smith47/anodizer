@@ -388,6 +388,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                     &format!("Bearer {token}"),
                     "preflight: npm whoami",
                     &policy,
+                    &ctx.logger("preflight"),
                 ) {
                     TokenAuth::Valid => PreflightCheck::Pass,
                     TokenAuth::Invalid => {
@@ -404,7 +405,12 @@ impl anodizer_core::Publisher for NpmPublisher {
                 "{registry}/{}/{version}",
                 super::publish::encode_package_path(name)
             );
-            if probe_version_published(&url, "preflight: npm version", &policy) {
+            if probe_version_published(
+                &url,
+                "preflight: npm version",
+                &policy,
+                &ctx.logger("preflight"),
+            ) {
                 acc = merge(
                     acc,
                     PreflightCheck::Warning(format!(

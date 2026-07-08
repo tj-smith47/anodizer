@@ -222,6 +222,7 @@ pub(crate) fn upload_artifact_set(
         &jobs,
         parallelism,
         "http upload",
+        log,
         |(artifact, url, rendered_headers)| {
             crate::artifactory::upload_single_artifact_prepared(
                 client,

@@ -131,6 +131,34 @@ pub fn parse_semver(tag: &str) -> Result<SemVer> {
 /// Strips everything up to and including the last `-` or `_` before the version
 /// portion, then delegates to [`parse_semver`]. Handles tags like
 /// "cfgd-core-v2.1.0", "my_project-v1.0.0-rc.1", or plain "v1.2.3".
+/// Canonical `Version` string a release tag stamps, whatever its family
+/// prefix (`v1.2.3`, `crd-v1.2.3`, `sub/v1.2.3` → `1.2.3`). `None` for an
+/// empty tag (no previous release) or a tag that does not parse as a
+/// semver tag. This is the one tag→version derivation shared by every
+/// consumer (version rewrites, burn-evidence filtering) so their
+/// semantics cannot drift.
+pub fn version_from_tag(tag: &str) -> Option<String> {
+    if tag.is_empty() {
+        return None;
+    }
+    parse_semver_tag(tag).ok().map(|sv| sv.version_string())
+}
+
+/// Split a release tag into its family prefix and the parsed version it
+/// stamps: `crd-v0.5.0` → (`"crd-v"`, 0.5.0), `v1.2.3` → (`"v"`, 1.2.3),
+/// `sub/v1.2.3-rc.1` → (`"sub/v"`, 1.2.3-rc.1). Two tags with equal
+/// prefixes belong to the same tag family (the same `tag_template`
+/// track). `None` when no semver version can be located in the tag.
+pub fn split_tag_family(tag: &str) -> Option<(&str, SemVer)> {
+    static FAMILY_RE: LazyLock<Regex> = LazyLock::new(|| {
+        crate::util::static_regex(r"^((?:|.*[-_/])v?)(\d+\.\d+\.\d+(?:-[^+]+)?(?:\+.+)?)$")
+    });
+    let caps = FAMILY_RE.captures(tag)?;
+    let prefix_len = caps.get(1)?.as_str().len();
+    let sv = parse_semver(caps.get(2)?.as_str()).ok()?;
+    Some((&tag[..prefix_len], sv))
+}
+
 pub fn parse_semver_tag(tag: &str) -> Result<SemVer> {
     // Try strict parse first (handles "v1.2.3" and "1.2.3")
     if let Ok(sv) = parse_semver(tag) {

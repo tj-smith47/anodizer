@@ -78,7 +78,8 @@ fn failure_var_values(
     result: &PublisherResult,
     error: &str,
     rollback_happened: bool,
-) -> [(&'static str, String); 5] {
+    run_report: &str,
+) -> [(&'static str, String); 6] {
     let bool_str = |b: bool| (if b { "true" } else { "false" }).to_string();
     [
         ("Publisher", result.name.clone()),
@@ -86,20 +87,25 @@ fn failure_var_values(
         ("Group", group_label(result.group).to_string()),
         ("Required", bool_str(result.required)),
         ("RolledBack", bool_str(rollback_happened)),
+        // `dist/run-<id>/report.json` for THIS run — already written when
+        // the hook fires; empty when the report was not persisted
+        // (snapshot / dry-run / write failure) so hooks can gate on it.
+        ("RunReport", run_report.to_string()),
     ]
 }
 
 /// Bind the failure-hook template surface ([`failure_var_values`]) on top
 /// of the standard per-crate vars: `{{ .Publisher }}`, `{{ .Error }}`,
-/// `{{ .Group }}`, `{{ .Required }}`, `{{ .RolledBack }}`.
+/// `{{ .Group }}`, `{{ .Required }}`, `{{ .RolledBack }}`, `{{ .RunReport }}`.
 fn bind_failure_vars(
     base: &TemplateVars,
     result: &PublisherResult,
     error: &str,
     rollback_happened: bool,
+    run_report: &str,
 ) -> TemplateVars {
     let mut vars = base.clone();
-    for (key, value) in failure_var_values(result, error, rollback_happened) {
+    for (key, value) in failure_var_values(result, error, rollback_happened, run_report) {
         vars.set(key, &value);
     }
     vars
@@ -111,7 +117,7 @@ fn bind_failure_vars(
 /// holds remote-controlled text (HTTP error bodies, git stderr), so
 /// interpolating it into the command string is a shell-injection vector,
 /// while an env var read (`"$ANODIZER_ERROR"`) is not.
-const FAILURE_ENV_VARS: [(&str, &str); 7] = [
+const FAILURE_ENV_VARS: [(&str, &str); 8] = [
     ("ANODIZER_PUBLISHER", "Publisher"),
     ("ANODIZER_ERROR", "Error"),
     ("ANODIZER_VERSION", "Version"),
@@ -119,6 +125,7 @@ const FAILURE_ENV_VARS: [(&str, &str); 7] = [
     ("ANODIZER_GROUP", "Group"),
     ("ANODIZER_REQUIRED", "Required"),
     ("ANODIZER_ROLLED_BACK", "RolledBack"),
+    ("ANODIZER_RUN_REPORT", "RunReport"),
 ];
 
 /// Project the bound vars into `ANODIZER_*` env pairs via `env_table`.
@@ -157,24 +164,42 @@ fn run_warn_only(
     }
 }
 
+/// Derive the `{{ .RunReport }}` / `ANODIZER_RUN_REPORT` value: the persisted
+/// run-report path, or empty when none exists (never a stale pointer).
+pub(crate) fn run_report_var(ctx: &Context) -> String {
+    crate::existing_run_report_path(ctx)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
+}
+
 /// Fire `on_error` hooks for a single FAILED publisher. Called from the
 /// dispatch failure path AFTER rollback has been attempted. `error` is the
 /// publisher's failure message (the `{{ .Error }}` value).
 /// `rollback_happened` is RUN-WIDE — true if any publisher was rolled back
 /// (or rollback was attempted and failed) during this run — and is exposed
 /// as `{{ .RolledBack }}` in the template surface.
+/// `run_report` is the `{{ .RunReport }}` value — the persisted run-report
+/// path, or empty when none exists. It is invariant across a run's fan-out,
+/// so the caller derives it once ([`run_report_var`]) and threads it down.
 pub(crate) fn fire_on_error(
     ctx: &Context,
     result: &PublisherResult,
     error: &str,
     rollback_happened: bool,
+    run_report: &str,
     log: &StageLogger,
 ) {
     let hooks = resolve_hooks(ctx, |p| p.on_error.as_deref());
     if hooks.is_empty() {
         return;
     }
-    let vars = bind_failure_vars(ctx.template_vars(), result, error, rollback_happened);
+    let vars = bind_failure_vars(
+        ctx.template_vars(),
+        result,
+        error,
+        rollback_happened,
+        run_report,
+    );
     run_warn_only(
         &hooks,
         "on-error",
@@ -386,7 +411,14 @@ mod tests {
             "fixture must be a pure-workspace config"
         );
         let res = result("homebrew", PublisherGroup::Manager, true);
-        fire_on_error(&ctx, &res, "tap push rejected", false, &log());
+        fire_on_error(
+            &ctx,
+            &res,
+            "tap push rejected",
+            false,
+            &run_report_var(&ctx),
+            &log(),
+        );
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(body, "ws-hook\n");
     }
@@ -433,7 +465,14 @@ mod tests {
             .crates(config.crates.clone())
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
-        fire_on_error(&ctx, &res, "tap push rejected", false, &log());
+        fire_on_error(
+            &ctx,
+            &res,
+            "tap push rejected",
+            false,
+            &run_report_var(&ctx),
+            &log(),
+        );
 
         let body = std::fs::read_to_string(&out).expect("hooks must have written output");
         assert_eq!(
@@ -459,7 +498,14 @@ mod tests {
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
 
-        fire_on_error(&ctx, &res, "tap push rejected", true, &log());
+        fire_on_error(
+            &ctx,
+            &res,
+            "tap push rejected",
+            true,
+            &run_report_var(&ctx),
+            &log(),
+        );
 
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(
@@ -483,7 +529,14 @@ mod tests {
             .build();
         let res = result("cargo", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, "publish failed", false, &log());
+        fire_on_error(
+            &ctx,
+            &res,
+            "publish failed",
+            false,
+            &run_report_var(&ctx),
+            &log(),
+        );
 
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(
@@ -510,7 +563,7 @@ mod tests {
 
         // Must not panic / propagate — the function has no Result to inspect;
         // reaching the assert proves it returned after warn-only handling.
-        fire_on_error(&ctx, &res, "boom", false, &log());
+        fire_on_error(&ctx, &res, "boom", false, &run_report_var(&ctx), &log());
     }
 
     #[test]
@@ -528,7 +581,7 @@ mod tests {
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
 
-        fire_on_error(&ctx, &res, "boom", false, &log());
+        fire_on_error(&ctx, &res, "boom", false, &run_report_var(&ctx), &log());
 
         assert!(
             !out.exists(),
@@ -536,7 +589,7 @@ mod tests {
         );
     }
 
-    const ALL_ENV_KEYS: [&str; 7] = [
+    const ALL_ENV_KEYS: [&str; 8] = [
         "ANODIZER_PUBLISHER",
         "ANODIZER_ERROR",
         "ANODIZER_VERSION",
@@ -544,13 +597,14 @@ mod tests {
         "ANODIZER_GROUP",
         "ANODIZER_REQUIRED",
         "ANODIZER_ROLLED_BACK",
+        "ANODIZER_RUN_REPORT",
     ];
 
     #[test]
     fn env_channel_mirrors_failure_var_surface_exactly() {
         use std::collections::BTreeSet;
         let res = result("homebrew", PublisherGroup::Manager, true);
-        let bound: BTreeSet<&str> = failure_var_values(&res, "boom", true)
+        let bound: BTreeSet<&str> = failure_var_values(&res, "boom", true, "")
             .iter()
             .map(|(key, _)| *key)
             .collect();
@@ -602,7 +656,14 @@ mod tests {
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
 
-        fire_on_error(&ctx, &res, "tap push rejected", true, &log());
+        fire_on_error(
+            &ctx,
+            &res,
+            "tap push rejected",
+            true,
+            &run_report_var(&ctx),
+            &log(),
+        );
 
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         for expected in [
@@ -613,6 +674,9 @@ mod tests {
             "ANODIZER_GROUP=Manager",
             "ANODIZER_REQUIRED=true",
             "ANODIZER_ROLLED_BACK=true",
+            // No report was persisted for this synthetic ctx, so the var is
+            // exported empty rather than pointing at a stale file.
+            "ANODIZER_RUN_REPORT=",
         ] {
             assert!(
                 body.lines().any(|l| l == expected),
@@ -644,7 +708,7 @@ mod tests {
             .build();
         let res = result("mcp-registry", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, &error, false, &log());
+        fire_on_error(&ctx, &res, &error, false, &run_report_var(&ctx), &log());
 
         assert!(
             !pwned.exists(),
@@ -683,7 +747,7 @@ mod tests {
             .build();
         let res = result("cargo", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, "boom", false, &log());
+        fire_on_error(&ctx, &res, "boom", false, &run_report_var(&ctx), &log());
 
         let body = std::fs::read_to_string(&out).expect("scoped crate hook must run");
         assert_eq!(
@@ -719,7 +783,7 @@ mod tests {
             .build();
         let res = result("cargo", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, "boom", false, &log());
+        fire_on_error(&ctx, &res, "boom", false, &run_report_var(&ctx), &log());
 
         let body = std::fs::read_to_string(&out).expect("scoped crate hook must run");
         assert_eq!(

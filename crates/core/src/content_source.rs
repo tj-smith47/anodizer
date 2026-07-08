@@ -14,7 +14,8 @@ use anyhow::{Context as _, Result};
 
 use crate::config::ContentSource;
 use crate::context::Context;
-use crate::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use crate::log::StageLogger;
+use crate::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Total per-request deadline. `reqwest::blocking::ClientBuilder` does
@@ -36,7 +37,12 @@ const POLICY: RetryPolicy = RetryPolicy {
 ///
 /// `kind` is a short label (e.g. `"release header"`, `"changelog footer"`)
 /// surfaced in error messages so misconfigured fields are easy to identify.
-pub fn resolve(source: &ContentSource, kind: &str, ctx: &Context) -> Result<String> {
+pub fn resolve(
+    source: &ContentSource,
+    kind: &str,
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<String> {
     match source {
         ContentSource::Inline(s) => Ok(s.clone()),
         ContentSource::FromFile { from_file } => {
@@ -93,7 +99,7 @@ pub fn resolve(source: &ContentSource, kind: &str, ctx: &Context) -> Result<Stri
             let label = format!("{kind} from_url {rendered_url}");
             let rendered_url_for_err = rendered_url.clone();
             let (_status, body) = retry_http_blocking(
-                &label,
+                RetryLog::new(&label, log),
                 &POLICY,
                 SuccessClass::Strict,
                 |_attempt| {
@@ -138,12 +144,17 @@ mod tests {
         Context::new(config, ContextOptions::default())
     }
 
+    fn tlog() -> &'static StageLogger {
+        static L: std::sync::OnceLock<StageLogger> = std::sync::OnceLock::new();
+        L.get_or_init(|| StageLogger::new("test", crate::log::Verbosity::Quiet))
+    }
+
     // ---- Inline ----
 
     #[test]
     fn inline_returns_string_verbatim() {
         let src = ContentSource::Inline("hello world".to_string());
-        assert_eq!(resolve(&src, "k", &ctx()).unwrap(), "hello world");
+        assert_eq!(resolve(&src, "k", &ctx(), tlog()).unwrap(), "hello world");
     }
 
     // ---- FromFile ----
@@ -161,7 +172,10 @@ mod tests {
         let src = ContentSource::FromFile {
             from_file: template,
         };
-        assert_eq!(resolve(&src, "release header", &ctx()).unwrap(), body);
+        assert_eq!(
+            resolve(&src, "release header", &ctx(), tlog()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -172,7 +186,7 @@ mod tests {
         let src = ContentSource::FromFile {
             from_file: "{{ ProjectName | nonexistent_filter }}".to_string(),
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("render from_file path"),
@@ -187,7 +201,7 @@ mod tests {
         let src = ContentSource::FromFile {
             from_file: missing.display().to_string(),
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(chain.contains("read from_file"), "context missing: {chain}");
     }
@@ -206,7 +220,7 @@ mod tests {
             from_url: format!("http://{addr}/header.md"),
             headers: None,
         };
-        let got = resolve(&src, "release header", &ctx()).unwrap();
+        let got = resolve(&src, "release header", &ctx(), tlog()).unwrap();
         assert_eq!(got, body);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "single attempt on 200");
     }
@@ -226,7 +240,7 @@ mod tests {
             from_url: format!("http://{addr}/h.md"),
             headers: Some(headers),
         };
-        let body = resolve(&src, "release header", &ctx()).unwrap();
+        let body = resolve(&src, "release header", &ctx(), tlog()).unwrap();
         assert_eq!(body, "ok");
 
         // Poll the capture briefly — the responder thread writes the
@@ -256,7 +270,7 @@ mod tests {
             from_url: "http://127.0.0.1:1/".to_string(),
             headers: Some(headers),
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("header key contains CR/LF"),
@@ -277,7 +291,7 @@ mod tests {
             from_url: "http://127.0.0.1:1/".to_string(),
             headers: Some(headers),
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("rendered to a value containing CR/LF"),
@@ -299,7 +313,7 @@ mod tests {
             from_url: format!("http://{addr}/big.md"),
             headers: None,
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("exceeds 256 KiB limit"),
@@ -316,7 +330,7 @@ mod tests {
             from_url: format!("http://{addr}/missing.md"),
             headers: None,
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(chain.contains("404"), "status missing from chain: {chain}");
         assert_eq!(
@@ -343,7 +357,7 @@ mod tests {
             from_url: format!("http://{addr}/flaky.md"),
             headers: None,
         };
-        let err = resolve(&src, "release header", &ctx()).unwrap_err();
+        let err = resolve(&src, "release header", &ctx(), tlog()).unwrap_err();
         let chain = format!("{err:#}");
         assert!(chain.contains("500"), "status missing from chain: {chain}");
         assert_eq!(

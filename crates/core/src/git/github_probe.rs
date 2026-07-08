@@ -14,7 +14,8 @@
 use std::ops::ControlFlow;
 
 use crate::PreflightCheck;
-use crate::retry::{RetryPolicy, is_retriable, retry_sync};
+use crate::log::StageLogger;
+use crate::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync};
 
 /// Timeout for a single `GET /repos/{owner}/{repo}` preflight probe request.
 /// Shared by every probe caller so the release and publish preflights place
@@ -36,6 +37,18 @@ pub enum RepoProbe {
     RateLimited,
     /// 5xx, an unexpected status, or a transport failure — verdict unknown.
     Inconclusive(String),
+}
+
+impl std::fmt::Display for RepoProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RepoProbe::Body(_) => f.write_str("probe succeeded"),
+            RepoProbe::Missing => f.write_str("repo not found (404)"),
+            RepoProbe::AuthDenied => f.write_str("access denied (401/403)"),
+            RepoProbe::RateLimited => f.write_str("rate limited"),
+            RepoProbe::Inconclusive(reason) => f.write_str(reason),
+        }
+    }
 }
 
 /// Whether a GitHub response's headers mark it as rate-limited: a `Retry-After`
@@ -133,6 +146,7 @@ pub fn github_repo_push_check(
     token: Option<&str>,
     policy: &RetryPolicy,
     outcomes: RepoAccessOutcomes,
+    log: &StageLogger,
 ) -> PreflightCheck {
     let client = match crate::http::blocking_client(REPO_PROBE_TIMEOUT) {
         Ok(c) => c,
@@ -143,7 +157,7 @@ pub fn github_repo_push_check(
         }
     };
     probe_to_push_check(
-        github_repo_probe(&client, url, token, policy),
+        github_repo_probe(&client, url, token, policy, log),
         owner,
         repo,
         outcomes,
@@ -200,9 +214,11 @@ pub fn github_repo_probe(
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> RepoProbe {
+    let rlog = RetryLog::new("github repo probe", log);
     let token = token.map(str::to_string);
-    let outcome = retry_sync(policy, |_attempt| {
+    let outcome = retry_sync(rlog, policy, |_attempt| {
         let mut b = client
             .get(url)
             .header("Accept", "application/vnd.github+json")

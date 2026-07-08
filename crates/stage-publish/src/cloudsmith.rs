@@ -2,7 +2,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::collections::HashMap;
 
@@ -407,7 +407,7 @@ where
 {
     let scope = format!("cloudsmith {label} for '{art_name}'");
     retry_http_blocking(
-        &scope,
+        RetryLog::new(&scope, log),
         policy,
         SuccessClass::Strict,
         |attempt| {
@@ -1770,6 +1770,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                     "preflight: cloudsmith",
                     fail,
                     &policy,
+                    &ctx.logger("preflight"),
                 ),
             );
         }

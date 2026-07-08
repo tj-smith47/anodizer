@@ -7,7 +7,7 @@ use anyhow::Result;
 use anodizer_core::context::Context;
 use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking};
 
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
@@ -75,7 +75,7 @@ pub(crate) fn fetch_gitea_commits(
     // (defaults: 10 attempts × 10s base × 5m cap).
     let policy = ctx.retry_policy();
     let (_, body_text) = retry_http_blocking(
-        "gitea changelog: compare API",
+        RetryLog::new("gitea changelog: compare API", log),
         &policy,
         SuccessClass::Strict,
         |_| {

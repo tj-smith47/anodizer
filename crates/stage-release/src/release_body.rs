@@ -242,7 +242,12 @@ pub(crate) fn resolve_content_source(
     source: &ContentSource,
     ctx: &anodizer_core::context::Context,
 ) -> Result<String> {
-    anodizer_core::content_source::resolve(source, "release header/footer", ctx)
+    anodizer_core::content_source::resolve(
+        source,
+        "release header/footer",
+        ctx,
+        &ctx.logger("release"),
+    )
 }
 
 /// Compose the final release body based on the release mode.

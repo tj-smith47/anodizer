@@ -18,7 +18,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{
-    RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync,
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync,
 };
 use anyhow::{Context as _, Result, bail};
 
@@ -286,7 +286,7 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     log.verbose(&format!("probing GET {}", url));
     let scope = format!("gemfury probe for {}@{}", package, version);
     let result = retry_http_blocking(
-        &scope,
+        RetryLog::new(&scope, log),
         policy,
         SuccessClass::AllowRedirects,
         |_| client.get(&url).basic_auth(push_token, Some("")).send(),
@@ -398,74 +398,70 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     // Idempotent pushes keep a transient-error retry floor even when a
     // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
     let push_policy = policy.with_idempotent_floor();
-    let max_attempts = push_policy.max_attempts;
     let mime = "application/octet-stream";
     // Set inside the retry closure when the push returns a 409/422
     // already-exists conflict, so the post-retry code can skip recording a
     // rollback target. `Cell` because the closure is `FnMut`.
     let conflict_skipped = std::cell::Cell::new(false);
-    retry_sync(&push_policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "gemfury push attempt {}/{} failed (transient), retrying…",
-                attempt - 1,
-                max_attempts
-            ));
-        }
-        let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
-            .file_name(art_name.clone())
-            .mime_str(mime)
-        {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(ControlFlow::Break(anyhow::Error::new(e).context(format!(
-                    "gemfury: build multipart part for '{}' (mime '{}')",
-                    art_name, mime
-                ))));
+    retry_sync(
+        RetryLog::new("gemfury push", log),
+        &push_policy,
+        |_attempt| {
+            let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
+                .file_name(art_name.clone())
+                .mime_str(mime)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(ControlFlow::Break(anyhow::Error::new(e).context(format!(
+                        "gemfury: build multipart part for '{}' (mime '{}')",
+                        art_name, mime
+                    ))));
+                }
+            };
+            let form = reqwest::blocking::multipart::Form::new().part("package", file_part);
+            let req = client
+                .post(push_url)
+                .basic_auth(push_token, Some(""))
+                .multipart(form);
+            let resp = match req.send() {
+                Ok(r) => r,
+                Err(e) => {
+                    // Transport-level failure — retry.
+                    return Err(ControlFlow::Continue(
+                        anyhow::Error::new(e).context(format!("gemfury: send POST {}", push_url)),
+                    ));
+                }
+            };
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(());
             }
-        };
-        let form = reqwest::blocking::multipart::Form::new().part("package", file_part);
-        let req = client
-            .post(push_url)
-            .basic_auth(push_token, Some(""))
-            .multipart(form);
-        let resp = match req.send() {
-            Ok(r) => r,
-            Err(e) => {
-                // Transport-level failure — retry.
-                return Err(ControlFlow::Continue(
-                    anyhow::Error::new(e).context(format!("gemfury: send POST {}", push_url)),
-                ));
+            // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
+            // version already exists on Fury — a re-run on an already-published
+            // tag, or a racing concurrent uploader. The operator's intent ("land
+            // this artifact") is satisfied, so treat it as success rather than a
+            // hard failure (mirrors the cloudsmith conflict-as-success guard).
+            if matches!(status.as_u16(), 409 | 422) {
+                conflict_skipped.set(true);
+                return Ok(());
             }
-        };
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
-        // version already exists on Fury — a re-run on an already-published
-        // tag, or a racing concurrent uploader. The operator's intent ("land
-        // this artifact") is satisfied, so treat it as success rather than a
-        // hard failure (mirrors the cloudsmith conflict-as-success guard).
-        if matches!(status.as_u16(), 409 | 422) {
-            conflict_skipped.set(true);
-            return Ok(());
-        }
-        let body = resp.text().unwrap_or_default();
-        let err_msg = format!(
-            "gemfury: POST {} for '{}' returned HTTP {}: {}",
-            push_url,
-            art_name,
-            status,
-            redact_bearer_tokens(body.trim())
-        );
-        let err = anyhow::anyhow!(err_msg);
-        if anodizer_core::retry::status_is_retriable(status.as_u16()) {
-            Err(ControlFlow::Continue(err))
-        } else {
-            Err(ControlFlow::Break(err))
-        }
-    })?;
+            let body = resp.text().unwrap_or_default();
+            let err_msg = format!(
+                "gemfury: POST {} for '{}' returned HTTP {}: {}",
+                push_url,
+                art_name,
+                status,
+                redact_bearer_tokens(body.trim())
+            );
+            let err = anyhow::anyhow!(err_msg);
+            if anodizer_core::retry::status_is_retriable(status.as_u16()) {
+                Err(ControlFlow::Continue(err))
+            } else {
+                Err(ControlFlow::Break(err))
+            }
+        },
+    )?;
 
     // A conflict-as-success push means the version was already present (re-run
     // / racing uploader); record NO rollback target — this run did not place
@@ -780,7 +776,7 @@ pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(
     log.verbose(&format!("DELETE {}", url));
     let scope = format!("gemfury delete for {}@{}", package, version);
     retry_http_blocking(
-        &scope,
+        RetryLog::new(&scope, log),
         policy,
         SuccessClass::AllowRedirects,
         |_| client.delete(&url).basic_auth(api_token, Some("")).send(),

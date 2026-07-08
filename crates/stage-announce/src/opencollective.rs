@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
@@ -166,9 +166,12 @@ fn do_mutation(
     token: &str,
     body_payload: String,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<String> {
-    retry_sync(policy, |_attempt| {
-        match client
+    retry_sync(
+        RetryLog::new("opencollective GraphQL request", log),
+        policy,
+        |_attempt| match client
             .post(opencollective_graphql_base())
             .header("Personal-Token", token)
             .header("Content-Type", "application/json")
@@ -205,8 +208,8 @@ fn do_mutation(
                     }
                 }
             }
-        }
-    })
+        },
+    )
     .with_context(|| format!("opencollective: {stage} exhausted retry attempts"))
 }
 
@@ -231,6 +234,7 @@ pub fn send_opencollective(
     title: &str,
     html: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let client = crate::http::blocking_client()?;
 
@@ -240,6 +244,7 @@ pub fn send_opencollective(
         token,
         build_create_body(slug, title, html).to_string(),
         policy,
+        log,
     )?;
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text).with_context(|| {
         format!("opencollective: createUpdate response was not valid JSON: {resp_text}")
@@ -252,6 +257,7 @@ pub fn send_opencollective(
         token,
         build_publish_body(&update_id).to_string(),
         policy,
+        log,
     )?;
     let publish_json: serde_json::Value =
         serde_json::from_str(&publish_text).with_context(|| {
@@ -518,6 +524,7 @@ mod tests {
             "MyApp v1.2.3",
             "MyApp v1.2.3 is out! see https://example.com/r",
             &ONE_SHOT,
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("two-step flow should succeed");
 
@@ -573,8 +580,15 @@ mod tests {
 
         let err = format!(
             "{:#}",
-            send_opencollective("tok-aaaaaaaaaaaaaaaa", "my-project", "t", "h", &ONE_SHOT)
-                .unwrap_err()
+            send_opencollective(
+                "tok-aaaaaaaaaaaaaaaa",
+                "my-project",
+                "t",
+                "h",
+                &ONE_SHOT,
+                anodizer_core::test_helpers::test_logger()
+            )
+            .unwrap_err()
         );
         assert!(err.contains("401"), "status must surface: {err}");
         assert!(
@@ -604,8 +618,15 @@ mod tests {
 
         let err = format!(
             "{:#}",
-            send_opencollective("tok-aaaaaaaaaaaaaaaa", "my-project", "t", "h", &ONE_SHOT)
-                .unwrap_err()
+            send_opencollective(
+                "tok-aaaaaaaaaaaaaaaa",
+                "my-project",
+                "t",
+                "h",
+                &ONE_SHOT,
+                anodizer_core::test_helpers::test_logger()
+            )
+            .unwrap_err()
         );
         assert!(
             err.contains("need admin"),

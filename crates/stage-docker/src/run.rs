@@ -1482,68 +1482,65 @@ fn run_manifest_create_with_retry(
     base_delay: Duration,
     max_delay: Option<Duration>,
 ) -> Result<()> {
-    use anodizer_core::retry::{RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts,
         base_delay,
         max_delay: max_delay.unwrap_or(Duration::MAX),
     };
-    retry_sync(&policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "manifest create attempt {}/{} failed, retrying…",
-                attempt - 1,
-                max_attempts,
-            ));
-        }
-        log.verbose(&format!("running {}", create_cmd.join(" ")));
-        let mut create_command = Command::new(&create_cmd[0]);
-        create_command.args(&create_cmd[1..]);
-        for (key, value) in manifest_env_vars {
-            create_command.env(key, value);
-        }
-        let output = match run_capture_timeout(
-            &mut create_command,
-            log,
-            "docker manifest create",
-            DOCKER_MANIFEST_CREATE_TIMEOUT,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                let e = e.context(format!(
-                    "docker: manifest create for crate {} manifest {} (attempt {}/{})",
-                    crate_name, midx, attempt, max_attempts
-                ));
-                // A deadline kill (registry stalled) is wrapped Retriable → retry
-                // within budget; a spawn failure is not transient → break.
-                if anodizer_core::retry::is_retriable(e.as_ref()) {
-                    return Err(ControlFlow::Continue(e));
-                }
-                return Err(ControlFlow::Break(e));
+    retry_sync(
+        RetryLog::new("docker manifest create", log),
+        &policy,
+        |attempt| {
+            log.verbose(&format!("running {}", create_cmd.join(" ")));
+            let mut create_command = Command::new(&create_cmd[0]);
+            create_command.args(&create_cmd[1..]);
+            for (key, value) in manifest_env_vars {
+                create_command.env(key, value);
             }
-        };
-        match log.check_output(output, "docker manifest create") {
-            Ok(_) => {
-                if attempt > 1 {
-                    log.status(&format!(
-                        "docker manifest create succeeded on attempt {}/{}",
-                        attempt, max_attempts
+            let output = match run_capture_timeout(
+                &mut create_command,
+                log,
+                "docker manifest create",
+                DOCKER_MANIFEST_CREATE_TIMEOUT,
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    let e = e.context(format!(
+                        "docker: manifest create for crate {} manifest {} (attempt {}/{})",
+                        crate_name, midx, attempt, max_attempts
                     ));
+                    // A deadline kill (registry stalled) is wrapped Retriable → retry
+                    // within budget; a spawn failure is not transient → break.
+                    if anodizer_core::retry::is_retriable(e.as_ref()) {
+                        return Err(ControlFlow::Continue(e));
+                    }
+                    return Err(ControlFlow::Break(e));
                 }
-                Ok(())
-            }
-            Err(e) => {
-                use super::detect::is_retriable_error;
-                let err_msg = format!("{:#}", e);
-                if is_retriable_error(&err_msg) {
-                    Err(ControlFlow::Continue(e))
-                } else {
-                    Err(ControlFlow::Break(e))
+            };
+            match log.check_output(output, "docker manifest create") {
+                Ok(_) => {
+                    if attempt > 1 {
+                        log.status(&format!(
+                            "docker manifest create succeeded on attempt {}/{}",
+                            attempt, max_attempts
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    use super::detect::is_retriable_error;
+                    let err_msg = format!("{:#}", e);
+                    if is_retriable_error(&err_msg) {
+                        Err(ControlFlow::Continue(e))
+                    } else {
+                        Err(ControlFlow::Break(e))
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
 
 /// Run `docker manifest push` with retry, capturing the pushed manifest's
@@ -1559,7 +1556,7 @@ fn run_manifest_push_with_retry(
     base_delay: Duration,
     max_delay: Option<Duration>,
 ) -> Result<Option<String>> {
-    use anodizer_core::retry::{RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts,
@@ -1567,72 +1564,69 @@ fn run_manifest_push_with_retry(
         max_delay: max_delay.unwrap_or(Duration::MAX),
     };
     let mut manifest_digest: Option<String> = None;
-    retry_sync(&policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "manifest push attempt {}/{} failed, retrying…",
-                attempt - 1,
-                max_attempts,
-            ));
-        }
-        log.verbose(&format!("running {}", push_cmd.join(" ")));
-        let mut push_command = Command::new(&push_cmd[0]);
-        push_command.args(&push_cmd[1..]);
-        for (key, value) in manifest_env_vars {
-            push_command.env(key, value);
-        }
-        let output = match run_capture_timeout(
-            &mut push_command,
-            log,
-            "docker manifest push",
-            DOCKER_MANIFEST_PUSH_TIMEOUT,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                let e = e.context(format!(
-                    "docker: manifest push for crate {} manifest {} (attempt {}/{})",
-                    crate_name, midx, attempt, max_attempts
-                ));
-                // A deadline kill (registry stalled) is wrapped Retriable → retry
-                // within budget; a spawn failure is not transient → break.
-                if anodizer_core::retry::is_retriable(e.as_ref()) {
-                    return Err(ControlFlow::Continue(e));
-                }
-                return Err(ControlFlow::Break(e));
+    retry_sync(
+        RetryLog::new("docker manifest push", log),
+        &policy,
+        |attempt| {
+            log.verbose(&format!("running {}", push_cmd.join(" ")));
+            let mut push_command = Command::new(&push_cmd[0]);
+            push_command.args(&push_cmd[1..]);
+            for (key, value) in manifest_env_vars {
+                push_command.env(key, value);
             }
-        };
-        // Capture stdout for digest extraction before checking status.
-        let push_stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        match log.check_output(output, "docker manifest push") {
-            Ok(_) => {
-                if attempt > 1 {
-                    log.status(&format!(
-                        "docker manifest push succeeded on attempt {}/{}",
-                        attempt, max_attempts
+            let output = match run_capture_timeout(
+                &mut push_command,
+                log,
+                "docker manifest push",
+                DOCKER_MANIFEST_PUSH_TIMEOUT,
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    let e = e.context(format!(
+                        "docker: manifest push for crate {} manifest {} (attempt {}/{})",
+                        crate_name, midx, attempt, max_attempts
                     ));
+                    // A deadline kill (registry stalled) is wrapped Retriable → retry
+                    // within budget; a spawn failure is not transient → break.
+                    if anodizer_core::retry::is_retriable(e.as_ref()) {
+                        return Err(ControlFlow::Continue(e));
+                    }
+                    return Err(ControlFlow::Break(e));
                 }
-                // Extract digest from push output (sha256:64hexchars).
-                if let Some(start) = push_stdout.find("sha256:") {
-                    let candidate = &push_stdout[start..];
-                    if candidate.len() >= 71
-                        && candidate[7..71].chars().all(|c| c.is_ascii_hexdigit())
-                    {
-                        manifest_digest = Some(candidate[..71].to_string());
+            };
+            // Capture stdout for digest extraction before checking status.
+            let push_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            match log.check_output(output, "docker manifest push") {
+                Ok(_) => {
+                    if attempt > 1 {
+                        log.status(&format!(
+                            "docker manifest push succeeded on attempt {}/{}",
+                            attempt, max_attempts
+                        ));
+                    }
+                    // Extract digest from push output (sha256:64hexchars).
+                    if let Some(start) = push_stdout.find("sha256:") {
+                        let candidate = &push_stdout[start..];
+                        if candidate.len() >= 71
+                            && candidate[7..71].chars().all(|c| c.is_ascii_hexdigit())
+                        {
+                            manifest_digest = Some(candidate[..71].to_string());
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    use super::detect::is_retriable_error;
+                    let err_msg = format!("{:#}", e);
+                    if is_retriable_error(&err_msg) {
+                        Err(ControlFlow::Continue(e))
+                    } else {
+                        Err(ControlFlow::Break(e))
                     }
                 }
-                Ok(())
             }
-            Err(e) => {
-                use super::detect::is_retriable_error;
-                let err_msg = format!("{:#}", e);
-                if is_retriable_error(&err_msg) {
-                    Err(ControlFlow::Continue(e))
-                } else {
-                    Err(ControlFlow::Break(e))
-                }
-            }
-        }
-    })?;
+        },
+    )?;
     Ok(manifest_digest)
 }
 

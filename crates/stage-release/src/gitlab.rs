@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result, bail};
@@ -42,6 +42,7 @@ pub(crate) struct GitlabCtx<'a> {
     pub api_url: &'a str,
     pub project_id: &'a str,
     pub policy: &'a RetryPolicy,
+    pub log: &'a anodizer_core::log::StageLogger,
 }
 
 /// Release metadata used by [`gitlab_create_release`].
@@ -236,6 +237,7 @@ pub(crate) async fn gitlab_create_release(
         api_url,
         project_id,
         policy,
+        log,
     } = *ctx;
     let GitlabReleaseSpec {
         tag,
@@ -279,7 +281,7 @@ pub(crate) async fn gitlab_create_release(
     // through to the create-POST. Anything else propagates.
     let get_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
     let get_outcome = retry_http_async(
-        "gitlab: GET release by tag",
+        RetryLog::new("gitlab: GET release by tag", log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&get_url).send(),
@@ -309,7 +311,7 @@ pub(crate) async fn gitlab_create_release(
             });
 
             retry_http_async(
-                "gitlab: PUT update release",
+                RetryLog::new("gitlab: PUT update release", log),
                 policy,
                 SuccessClass::Strict,
                 |_| client.put(&update_url).json(&payload).send(),
@@ -373,7 +375,7 @@ pub(crate) async fn gitlab_create_release(
         });
 
         retry_http_async(
-            "gitlab: POST create release",
+            RetryLog::new("gitlab: POST create release", log),
             policy,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
@@ -425,6 +427,7 @@ pub(crate) async fn gitlab_upload_asset(
         api_url,
         project_id,
         policy,
+        log,
     } = *ctx;
     let GitlabAssetSpec {
         file_path,
@@ -445,6 +448,7 @@ pub(crate) async fn gitlab_upload_asset(
             file_name,
             download_url,
             policy,
+            log,
         )
         .await?
     };
@@ -508,7 +512,7 @@ pub(crate) async fn gitlab_upload_asset(
 
         // Retry the POST after deleting the conflicting link.
         retry_http_async(
-            "gitlab: POST create release link (retry after delete)",
+            RetryLog::new("gitlab: POST create release link (retry after delete)", log),
             policy,
             SuccessClass::Strict,
             |_| client.post(&links_api).json(&payload).send(),
@@ -559,10 +563,11 @@ pub(crate) async fn gitlab_find_asset_link(
         api_url,
         project_id,
         policy,
+        log,
     } = *ctx;
     let links_api = gitlab_links_api(api_url, project_id, tag);
     let resp = retry_http_async(
-        "gitlab: GET existing release links",
+        RetryLog::new("gitlab: GET existing release links", log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&links_api).send(),
@@ -608,10 +613,11 @@ pub(crate) async fn gitlab_delete_asset_link(
         api_url,
         project_id,
         policy,
+        log,
     } = *ctx;
     let delete_url = format!("{}/{}", gitlab_links_api(api_url, project_id, tag), link_id);
     retry_http_async(
-        "gitlab: DELETE existing release link",
+        RetryLog::new("gitlab: DELETE existing release link", log),
         policy,
         SuccessClass::Strict,
         |_| client.delete(&delete_url).send(),
@@ -764,6 +770,7 @@ async fn upload_via_package_registry(
         client,
         api_url,
         policy,
+        log,
         ..
     } = *ctx;
     let GitlabAssetSpec {
@@ -791,7 +798,7 @@ async fn upload_via_package_registry(
     // Clone the body bytes per attempt — `RequestBuilder::body` consumes
     // them, and reqwest's reqwest::Body is move-only.
     retry_http_async(
-        "gitlab: PUT upload to package registry",
+        RetryLog::new("gitlab: PUT upload to package registry", log),
         policy,
         SuccessClass::Strict,
         |_| {
@@ -824,6 +831,7 @@ async fn upload_via_package_registry(
 ///
 /// Returns the full download URL constructed from the download base URL and
 /// the returned `full_path` field.
+#[allow(clippy::too_many_arguments)]
 async fn upload_via_project_uploads(
     client: &Client,
     api: &str,
@@ -832,6 +840,7 @@ async fn upload_via_project_uploads(
     file_name: &str,
     download_url: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<String> {
     let data = tokio::fs::read(file_path)
         .await
@@ -844,7 +853,7 @@ async fn upload_via_project_uploads(
     // structurally infallible (a valid RFC-2045 token) so the error arm is
     // marked unreachable — same pattern as cloudsmith.rs::retry_request.
     let resp = retry_http_async(
-        "gitlab: POST project upload",
+        RetryLog::new("gitlab: POST project upload", log),
         policy,
         SuccessClass::Strict,
         |_| {
@@ -916,6 +925,7 @@ pub(crate) struct GitlabAssetClient {
     /// Package Registry; `None` = Project Markdown Uploads.
     pub pkg: Option<(String, String)>,
     pub replace_existing_artifacts: bool,
+    pub log: anodizer_core::log::StageLogger,
 }
 
 impl GitlabAssetClient {
@@ -925,6 +935,7 @@ impl GitlabAssetClient {
             api_url: &self.api_url,
             project_id: &self.project_id,
             policy: &self.policy,
+            log: &self.log,
         }
     }
 }
@@ -984,7 +995,7 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
                 version,
             });
         let api_ctx = self.api_ctx();
-        crate::retry_upload(&op_name, || {
+        crate::retry_upload(&op_name, &self.log, || {
             gitlab_upload_asset(
                 &api_ctx,
                 &self.tag,
@@ -1144,6 +1155,7 @@ pub(crate) fn run_gitlab_backend(
             api_url: &api_url,
             project_id: &project_id,
             policy: &policy,
+            log,
         };
 
         // Create or update the release.
@@ -1187,6 +1199,7 @@ pub(crate) fn run_gitlab_backend(
                 pkg: use_pkg_registry
                     .then(|| (project_name_for_pkg.clone(), version_for_pkg.clone())),
                 replace_existing_artifacts,
+                log: log.clone(),
             });
             crate::forge::run_upload_loop(forge_client, &plan, artifact_entries, log).await?;
         }
@@ -1608,6 +1621,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -1668,6 +1682,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -1708,6 +1723,7 @@ mod tests {
             api_url: "http://unused.invalid",
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "",
@@ -1764,6 +1780,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -1860,6 +1877,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
 
         let tmp = tempfile::NamedTempFile::new().expect("create temp file");
@@ -1975,6 +1993,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -2036,6 +2055,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v2.0.0",
@@ -2075,6 +2095,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -2129,6 +2150,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -2189,6 +2211,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v3.0.0",
@@ -2253,6 +2276,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -2322,6 +2346,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2416,6 +2441,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2472,6 +2498,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2534,6 +2561,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2630,6 +2658,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2696,6 +2725,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2764,6 +2794,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -2919,6 +2950,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GitlabReleaseSpec {
             tag: "v1.0.0",
@@ -2971,6 +3003,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -3052,6 +3085,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -3139,6 +3173,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GitlabAssetSpec {
             file_path: &file,
@@ -3179,6 +3214,10 @@ mod tests {
     };
     use anodizer_core::context::Context;
     use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn tlog() -> &'static StageLogger {
+        anodizer_core::test_helpers::test_logger()
+    }
     use anodizer_core::scm::ScmTokenType;
     use anodizer_core::test_helpers::TestContextBuilder;
 

@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
@@ -78,74 +78,79 @@ pub fn send_telegram(
     parse_mode: Option<&str>,
     message_thread_id: Option<i64>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let url = format!("{}/bot{bot_token}/sendMessage", telegram_api_base());
     let payload = telegram_payload(chat_id, message, parse_mode, message_thread_id);
 
     let client = crate::http::blocking_client()?;
-    retry_sync(policy, |_attempt| {
-        let send_result = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .body(payload.clone())
-            .send();
+    retry_sync(
+        RetryLog::new("telegram announce", log),
+        policy,
+        |_attempt| {
+            let send_result = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(payload.clone())
+                .send();
 
-        match send_result {
-            Err(e) => {
-                let msg = redact_bot_token(&e.to_string(), bot_token);
-                let err = anyhow::Error::new(HttpError::from_response(e, None))
-                    .context(format!("telegram: failed to send POST request: {msg}"));
-                if is_retriable(err.as_ref()) {
-                    Err(ControlFlow::Continue(err))
-                } else {
-                    Err(ControlFlow::Break(err))
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body =
-                    redact_bot_token(&anodizer_core::http::body_of_blocking(resp), bot_token);
-
-                if !status.is_success() {
-                    let inner = anyhow::anyhow!("telegram: HTTP {} — {}", status, body);
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
-                    .context(inner);
-                    return if is_retriable(wrapped.as_ref()) {
-                        Err(ControlFlow::Continue(wrapped))
+            match send_result {
+                Err(e) => {
+                    let msg = redact_bot_token(&e.to_string(), bot_token);
+                    let err = anyhow::Error::new(HttpError::from_response(e, None))
+                        .context(format!("telegram: failed to send POST request: {msg}"));
+                    if is_retriable(err.as_ref()) {
+                        Err(ControlFlow::Continue(err))
                     } else {
-                        Err(ControlFlow::Break(wrapped))
-                    };
+                        Err(ControlFlow::Break(err))
+                    }
                 }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body =
+                        redact_bot_token(&anodizer_core::http::body_of_blocking(resp), bot_token);
 
-                // Telegram can return HTTP 200 with ok:false for logical errors.
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-                    && json.get("ok") == Some(&serde_json::Value::Bool(false))
-                {
-                    let error_code = json
-                        .get("error_code")
-                        .and_then(|v| v.as_i64())
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let description = json
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("no description");
-                    // API errors are not retriable — they describe a logical
-                    // rejection (bad chat_id, bad parse_mode, etc.) that
-                    // won't change on retry.
-                    return Err(ControlFlow::Break(anyhow::anyhow!(
-                        "telegram: API error (code {}): {}",
-                        error_code,
-                        description
-                    )));
+                    if !status.is_success() {
+                        let inner = anyhow::anyhow!("telegram: HTTP {} — {}", status, body);
+                        let wrapped = anyhow::Error::new(HttpError::new(
+                            std::io::Error::other(inner.to_string()),
+                            status.as_u16(),
+                        ))
+                        .context(inner);
+                        return if is_retriable(wrapped.as_ref()) {
+                            Err(ControlFlow::Continue(wrapped))
+                        } else {
+                            Err(ControlFlow::Break(wrapped))
+                        };
+                    }
+
+                    // Telegram can return HTTP 200 with ok:false for logical errors.
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+                        && json.get("ok") == Some(&serde_json::Value::Bool(false))
+                    {
+                        let error_code = json
+                            .get("error_code")
+                            .and_then(|v| v.as_i64())
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let description = json
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("no description");
+                        // API errors are not retriable — they describe a logical
+                        // rejection (bad chat_id, bad parse_mode, etc.) that
+                        // won't change on retry.
+                        return Err(ControlFlow::Break(anyhow::anyhow!(
+                            "telegram: API error (code {}): {}",
+                            error_code,
+                            description
+                        )));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
-        }
-    })
+        },
+    )
     .context("telegram: POST exhausted retry attempts")
 }
 
@@ -325,6 +330,7 @@ mod tests {
             Some("HTML"),
             Some(42),
             &ONE_SHOT,
+            anodizer_core::test_helpers::test_logger(),
         )
         .expect("happy path should succeed");
 
@@ -356,7 +362,16 @@ mod tests {
 
         let err = format!(
             "{:#}",
-            send_telegram("123:ABC", "-1", "hi", None, None, &ONE_SHOT).unwrap_err()
+            send_telegram(
+                "123:ABC",
+                "-1",
+                "hi",
+                None,
+                None,
+                &ONE_SHOT,
+                anodizer_core::test_helpers::test_logger()
+            )
+            .unwrap_err()
         );
         assert!(err.contains("401"), "status must surface: {err}");
         assert!(err.contains("bad tok"), "response body must surface: {err}");
@@ -381,7 +396,16 @@ mod tests {
 
         let err = format!(
             "{:#}",
-            send_telegram("T", "-1", "hi", None, None, &ONE_SHOT).unwrap_err()
+            send_telegram(
+                "T",
+                "-1",
+                "hi",
+                None,
+                None,
+                &ONE_SHOT,
+                anodizer_core::test_helpers::test_logger()
+            )
+            .unwrap_err()
         );
         assert!(err.contains("400"), "error_code must surface: {err}");
         assert!(

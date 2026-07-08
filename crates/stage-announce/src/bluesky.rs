@@ -15,6 +15,7 @@ pub fn send_bluesky(
     release_url: Option<&str>,
     pds_url: Option<&str>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let pds_url = pds_url
         .map(|s| s.trim_end_matches('/').to_string())
@@ -26,7 +27,7 @@ pub fn send_bluesky(
         "password": app_password,
     })
     .to_string();
-    let session_text = retry_http("bluesky", "createSession", policy, || {
+    let session_text = retry_http("bluesky", "createSession", policy, log, || {
         client
             .post(format!("{pds_url}/xrpc/com.atproto.server.createSession"))
             .header("Content-Type", "application/json")
@@ -67,7 +68,7 @@ pub fn send_bluesky(
     })
     .to_string();
 
-    let _ = retry_http("bluesky", "createRecord", policy, || {
+    let _ = retry_http("bluesky", "createRecord", policy, log, || {
         client
             .post(format!("{pds_url}/xrpc/com.atproto.repo.createRecord"))
             .bearer_auth(access_jwt)
@@ -147,6 +148,7 @@ mod tests {
             None,
             Some(&pds),
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         let entries = log.lock().unwrap();
@@ -207,6 +209,7 @@ mod tests {
             Some(url),
             Some(&pds),
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         let entries = log.lock().unwrap();
@@ -227,9 +230,17 @@ mod tests {
             times: None,
         }]);
         let pds = format!("http://{addr}");
-        let err = send_bluesky("a", "p", "msg", None, Some(&pds), &no_retry_policy())
-            .unwrap_err()
-            .to_string();
+        let err = send_bluesky(
+            "a",
+            "p",
+            "msg",
+            None,
+            Some(&pds),
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("accessJwt"),
             "expected accessJwt in err: {err}"
@@ -247,9 +258,17 @@ mod tests {
             times: None,
         }]);
         let pds = format!("http://{addr}");
-        let err = send_bluesky("a", "p", "msg", None, Some(&pds), &no_retry_policy())
-            .unwrap_err()
-            .to_string();
+        let err = send_bluesky(
+            "a",
+            "p",
+            "msg",
+            None,
+            Some(&pds),
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("did"), "expected did in err: {err}");
     }
 
@@ -264,9 +283,17 @@ mod tests {
             times: None,
         }]);
         let pds = format!("http://{addr}");
-        let err = send_bluesky("a", "p", "msg", None, Some(&pds), &no_retry_policy())
-            .unwrap_err()
-            .to_string();
+        let err = send_bluesky(
+            "a",
+            "p",
+            "msg",
+            None,
+            Some(&pds),
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("not valid JSON"),
             "expected invalid-json hint: {err}"
@@ -298,7 +325,16 @@ mod tests {
             },
         ]);
         let pds = format!("http://{addr}");
-        send_bluesky("a", "p", "msg", None, Some(&pds), &fast_policy()).unwrap();
+        send_bluesky(
+            "a",
+            "p",
+            "msg",
+            None,
+            Some(&pds),
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
         let entries = log.lock().unwrap();
         // 2 session attempts + 1 record attempt.
         assert_eq!(entries.len(), 3, "{entries:?}");

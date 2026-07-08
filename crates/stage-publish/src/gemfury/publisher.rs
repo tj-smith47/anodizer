@@ -348,6 +348,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
                 },
                 "preflight: gemfury",
                 &policy,
+                &ctx.logger("preflight"),
             );
             acc = merge(
                 acc,

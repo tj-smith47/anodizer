@@ -156,6 +156,21 @@ impl ResolvedConfig {
     }
 }
 
+/// Warn about a stale `Cargo.lock` after a version writeback.
+///
+/// Staleness is warn-and-continue by design (a missing/broken `cargo` on PATH
+/// must not block tagging), but the stale lockfile WILL break the release
+/// later — publish/determinism reject a lockfile that disagrees with the
+/// bumped manifests — so the warn names that consequence and the remedy.
+fn warn_cargo_lock_stale(log: &StageLogger, cause: &str) {
+    log.warn(&format!(
+        "{cause}; Cargo.lock is now stale relative to the bumped Cargo.toml, and \
+         `release` (publish / determinism) will fail on it later — run \
+         `cargo update --workspace` and fold Cargo.lock into the bump commit \
+         before releasing"
+    ));
+}
+
 /// `[skip ci]` suffix appended to a bump-commit subject, or empty when
 /// `skip_ci_on_bump` is off (the default). Returned with a leading space so
 /// callers can append it directly after the subject body.
@@ -196,6 +211,11 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
 
     let tag_config = loaded_config.tag.clone().unwrap_or_default();
     let git_config: Option<anodizer_core::config::GitConfig> = loaded_config.git.clone();
+
+    // tag_pre_hooks / tag_post_hooks apply to EVERY tagging shape; extracted
+    // before shape dispatch so the per-crate engine receives them too.
+    let pre_hooks = tag_config.tag_pre_hooks.clone().unwrap_or_default();
+    let post_hooks = tag_config.tag_post_hooks.clone().unwrap_or_default();
 
     // Refresh CHANGELOG.md into the version-bump commit (riding the same
     // `git add` as the Cargo.toml / version_files edits) when `changelog:` is
@@ -267,34 +287,29 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         crate_version_files = info.version_files;
     }
 
-    // Per-crate / hybrid-workspace dispatch: when no --crate is given and the
-    // repository has per-crate versions (anodizer workspaces: or multiple crates:
-    // entries without a lockstep [workspace.package].version), delegate to the
-    // multi-crate handler which runs change detection, bumps all selected crates
-    // in one commit, creates per-crate tags, and pushes atomically.
-    //
+    // Repo shape drives every multi-crate decision below — the
+    // custom-tag/--version validation errors, the `release_branches`
+    // guard's output dialect, and the per-crate dispatch itself. Resolve
+    // it ONCE, and fold it into the ONE dispatch decision
+    // (`dispatch_groups`), so those surfaces can never disagree.
+    let repo_shape = detect_repo_shape(
+        &workspace_root_path,
+        Some(&loaded_config),
+        loaded_workspace.as_ref(),
+    );
+
     // custom_tag is incompatible with per-crate mode: the whole point of a
     // custom tag is to override version computation for one unit. In per-crate
     // mode there is no single unit — use --crate to target a specific crate.
     if let Some(ref ct) = cfg.custom_tag
         && opts.crate_name.is_none()
+        && matches!(repo_shape, RepoShape::PerCrate(_))
     {
-        // Peek at the repo shape without consuming it, to surface a useful
-        // error rather than silently discarding the custom_tag value.
-        if matches!(
-            detect_repo_shape(
-                &workspace_root_path,
-                Some(&loaded_config),
-                loaded_workspace.as_ref()
-            ),
-            RepoShape::PerCrate(_)
-        ) {
-            anyhow::bail!(
-                "--custom-tag {:?} is incompatible with per-crate workspace mode; \
-                 pass --crate <name> to override a single crate's tag",
-                ct
-            );
-        }
+        anyhow::bail!(
+            "--custom-tag {:?} is incompatible with per-crate workspace mode; \
+             pass --crate <name> to override a single crate's tag",
+            ct
+        );
     }
 
     // `--version` pins ONE version. In per-crate / flat-aggregate dispatch there
@@ -305,11 +320,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     if let Some(ref v) = version_override
         && opts.crate_name.is_none()
         && matches!(
-            detect_repo_shape(
-                &workspace_root_path,
-                Some(&loaded_config),
-                loaded_workspace.as_ref()
-            ),
+            repo_shape,
             RepoShape::PerCrate(_) | RepoShape::FlatAggregate(_)
         )
     {
@@ -319,22 +330,26 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             v
         );
     }
-    if opts.crate_name.is_none() {
-        // A `FlatAggregate` (shared-prefix flat `crates:` list, no
-        // `[workspace.package].version`) has its versions in N per-crate
-        // `[package].version` manifests, so it is bumped by the per-crate engine
-        // applied as ONE group: that creates the single shared tag (its built-in
-        // dedup) and the one collapsed root changelog section. A custom tag names
-        // ONE explicit tag for the shared unit; it is honored by the lockstep
-        // custom-tag fall-through below, not the per-crate engine (which ignores
-        // `custom_tag`), so a `FlatAggregate` WITH a custom tag stays out of the
-        // group dispatch.
-        let mut is_flat_aggregate = false;
-        let groups = match detect_repo_shape(
-            &workspace_root_path,
-            Some(&loaded_config),
-            loaded_workspace.as_ref(),
-        ) {
+
+    // Per-crate / hybrid-workspace dispatch decision: when no --crate is given
+    // and the repository has per-crate versions (anodizer workspaces: or
+    // multiple crates: entries without a lockstep [workspace.package].version),
+    // delegate to the multi-crate handler which runs change detection, bumps
+    // all selected crates in one commit, creates per-crate tags, and pushes
+    // atomically.
+    //
+    // A `FlatAggregate` (shared-prefix flat `crates:` list, no
+    // `[workspace.package].version`) has its versions in N per-crate
+    // `[package].version` manifests, so it is bumped by the per-crate engine
+    // applied as ONE group: that creates the single shared tag (its built-in
+    // dedup) and the one collapsed root changelog section. A custom tag names
+    // ONE explicit tag for the shared unit; it is honored by the lockstep
+    // custom-tag fall-through below, not the per-crate engine (which ignores
+    // `custom_tag`), so a `FlatAggregate` WITH a custom tag stays out of the
+    // group dispatch.
+    let mut is_flat_aggregate = false;
+    let dispatch_groups: Option<Vec<Vec<CrateConfig>>> = if opts.crate_name.is_none() {
+        match repo_shape {
             RepoShape::PerCrate(groups) => Some(groups),
             RepoShape::FlatAggregate(crates) if cfg.custom_tag.is_none() => {
                 is_flat_aggregate = true;
@@ -344,41 +359,104 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             // `FlatAggregate` carrying a custom tag keep the existing
             // fall-through paths below.
             RepoShape::Single | RepoShape::Lockstep | RepoShape::FlatAggregate(_) => None,
-        };
+        }
+    } else {
+        None
+    };
 
-        if let Some(groups) = groups {
-            // Build log early so status messages are consistent.
-            let config_verbose = tag_config.verbose.unwrap_or(false);
-            let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
-            let log = StageLogger::new(
-                "tag",
-                Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
-            );
-            // Submitter moderation-queue advisories are verbose-only; emit them
-            // once off the single load (hidden at the default log level).
-            crate::pipeline::emit_config_advisories(&loaded_config, &log);
-            log.status(&format!(
-                "running auto-tag (per-crate){}",
-                if opts.dry_run { " (dry-run)" } else { "" }
+    // Merge verbose from config (config verbose=true enables verbose unless
+    // the CLI says quiet); built once here so the guard and both dispatch
+    // paths share one logger.
+    let config_verbose = tag_config.verbose.unwrap_or(false);
+    let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
+    let log = StageLogger::new(
+        "tag",
+        Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
+    );
+
+    // `release_branches` guard, BEFORE shape dispatch so it protects every
+    // tagging shape (per-crate and flat-aggregate push by default, so a
+    // path-specific guard is a real safety hole: feature-branch CI could cut
+    // and push live tags). Bypass semantics match the single/lockstep path:
+    // an explicit `--version` is an authoritative "tag exactly this" request,
+    // and a custom tag has always been created before the branch check ran.
+    // The output dialect follows the SAME dispatch decision the real dispatch
+    // below consumes.
+    if version_override.is_none() && cfg.custom_tag.is_none() && !cfg.release_branches.is_empty() {
+        let current_branch = git::get_current_branch()?;
+        if !branch_matches(&current_branch, &cfg.release_branches) {
+            if dispatch_groups.is_some() {
+                // Per-crate consumers parse the `anodizer-output` lines; empty
+                // payloads are the established "nothing tagged" shape.
+                log.status(&format!(
+                    "branch '{}' is not a release branch; skipping per-crate tagging",
+                    current_branch
+                ));
+                println!("anodizer-output crates=[]");
+                println!("anodizer-output versions={{}}");
+                return Ok(());
+            }
+            // Non-release branch: produce a hash-postfixed version, don't tag.
+            let short_commit = git::get_short_commit()?;
+            let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
+            let base_version = match &prev_tag {
+                Some(tag) => {
+                    let sv = git::parse_semver_tag(tag)?;
+                    format!("{}.{}.{}", sv.major, sv.minor, sv.patch)
+                }
+                None => cfg.initial_version.clone(),
+            };
+            let hash_tag = format!("{}{}-{}", cfg.tag_prefix, base_version, short_commit);
+            log.verbose(&format!(
+                "branch '{}' is not a release branch, producing hash-postfixed version: {}",
+                current_branch, hash_tag
             ));
-            return run_per_crate_tag(
-                PerCrateDispatch {
-                    groups,
-                    is_flat_aggregate,
-                    workspace_root: workspace_root_path.clone(),
-                },
-                &opts,
-                &cfg,
-                git_config.as_ref(),
-                Some(&loaded_config),
-                PushControls {
-                    remote: &remote,
-                    config_push,
-                    changelog_enabled,
-                },
-                &log,
+            println!("new_tag={}", hash_tag);
+            println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
+            println!("part=none");
+            return Ok(());
+        }
+    }
+
+    // Submitter moderation-queue advisories are verbose-only; emit them once
+    // off the single load (hidden at the default log level).
+    crate::pipeline::emit_config_advisories(&loaded_config, &log);
+
+    if let Some(groups) = dispatch_groups {
+        // Faithful GitHub-API tagging is incompatible with the per-crate
+        // engine's atomic branch+multi-tag push (per-tag API calls cannot
+        // be atomic with the bump commit); silently falling back to local
+        // tagging would ignore explicit config, so fail loudly instead.
+        if cfg.git_api_tagging {
+            anyhow::bail!(
+                "git_api_tagging: true is not supported with per-crate tagging \
+                 (per-crate tags are pushed atomically with the bump commit); \
+                 remove git_api_tagging or use --crate <name> to tag one crate"
             );
         }
+        log.status(&format!(
+            "running auto-tag (per-crate){}",
+            if opts.dry_run { " (dry-run)" } else { "" }
+        ));
+        return run_per_crate_tag(
+            PerCrateDispatch {
+                groups,
+                is_flat_aggregate,
+                workspace_root: workspace_root_path.clone(),
+            },
+            &opts,
+            &cfg,
+            git_config.as_ref(),
+            Some(&loaded_config),
+            PushControls {
+                remote: &remote,
+                config_push,
+                changelog_enabled,
+                pre_hooks: &pre_hooks,
+                post_hooks: &post_hooks,
+            },
+            &log,
+        );
     }
 
     // Workspace-mode: with no --crate, treat a Cargo workspace whose members
@@ -394,17 +472,6 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         None
     };
 
-    // Merge verbose from config: if config says verbose=true and CLI doesn't say quiet, enable verbose
-    let config_verbose = tag_config.verbose.unwrap_or(false);
-    let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
-    let log = StageLogger::new(
-        "tag",
-        Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
-    );
-    // Submitter moderation-queue advisories are verbose-only; emit them once
-    // off the single load (hidden at the default log level).
-    crate::pipeline::emit_config_advisories(&loaded_config, &log);
-
     log.status(&format!(
         "running auto-tag{}",
         if opts.dry_run { " (dry-run)" } else { "" }
@@ -416,8 +483,6 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // and process env `ANODIZER_CURRENT_TAG` / `ANODIZER_PREVIOUS_TAG`.
     let strict = opts.strict;
     let tag_prefix_for_hooks = cfg.tag_prefix.clone();
-    let pre_hooks = tag_config.tag_pre_hooks.clone().unwrap_or_default();
-    let post_hooks = tag_config.tag_post_hooks.clone().unwrap_or_default();
 
     // Single / lockstep / --crate share a `false` push default: today's
     // behavior pushes only the tag and leaves the bump commit local. `--push`,
@@ -441,26 +506,10 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     let cwd = workspace_root_path.clone();
 
     let create_tag = |tag: &str, message: &str, dry_run: bool, prev: Option<&str>| -> Result<()> {
-        let mut tv = TemplateVars::new();
-        tv.set("Tag", tag);
-        tv.set("PrefixedTag", tag);
         let version = tag
             .strip_prefix(tag_prefix_for_hooks.as_str())
             .unwrap_or(tag);
-        tv.set("Version", version);
-        if let Some(p) = prev {
-            tv.set("PreviousTag", p);
-        }
-
-        // SAFETY: the tag subcommand runs single-threaded — no worker threads
-        // exist here, so mutating the process env is safe. Hooks read these
-        // via their subprocess environment.
-        unsafe {
-            std::env::set_var("ANODIZER_CURRENT_TAG", tag);
-            if let Some(p) = prev {
-                std::env::set_var("ANODIZER_PREVIOUS_TAG", p);
-            }
-        }
+        let tv = tag_hook_context(tag, version, prev);
 
         if !pre_hooks.is_empty() {
             run_hooks(
@@ -564,34 +613,9 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Check release branches. An explicit `--version` is an authoritative
-    // "tag exactly this" request, so it bypasses the non-release-branch
-    // hash-postfix guard (recovery tagging often runs off the release branch).
-    let current_branch = git::get_current_branch()?;
-    if version_override.is_none()
-        && !cfg.release_branches.is_empty()
-        && !branch_matches(&current_branch, &cfg.release_branches)
-    {
-        // Non-release branch: produce a hash-postfixed version, don't tag
-        let short_commit = git::get_short_commit()?;
-        let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
-        let base_version = match &prev_tag {
-            Some(tag) => {
-                let sv = git::parse_semver_tag(tag)?;
-                format!("{}.{}.{}", sv.major, sv.minor, sv.patch)
-            }
-            None => cfg.initial_version.clone(),
-        };
-        let hash_tag = format!("{}{}-{}", cfg.tag_prefix, base_version, short_commit);
-        log.verbose(&format!(
-            "branch '{}' is not a release branch, producing hash-postfixed version: {}",
-            current_branch, hash_tag
-        ));
-        println!("new_tag={}", hash_tag);
-        println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
-        println!("part=none");
-        return Ok(());
-    }
+    // The `release_branches` guard already ran before shape dispatch (hoisted
+    // so every tagging shape shares it); from here the branch is a release
+    // branch or the guard was bypassed by --version / custom_tag.
 
     // Find previous tag
     let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
@@ -771,7 +795,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         // top-level `Config.version_files` list (no single crate to scope to)
         // is the enrollment, rewritten with the shared old→new.
         let ws_version_files = resolve_version_files(None, Some(&loaded_config));
-        let ws_old = bare_version_from_tag(old_tag_str);
+        let ws_old = git::version_from_tag(old_tag_str);
         let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
         let cl_config = changelog_config_for(Some(&loaded_config));
         let cl_routing = ChangelogRouting::from_config(&cl_config);
@@ -856,7 +880,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         // helper logs per-file replacement counts (and the zero-match warning)
         // either way, and under dry-run writes/stages nothing — so the preview
         // matches the lockstep and per-crate paths.
-        let vf_old = bare_version_from_tag(old_tag_str);
+        let vf_old = git::version_from_tag(old_tag_str);
         let vf_changed = match vf_old {
             Some(ref old) => rewrite_and_stage_version_files(
                 &workspace_root_path,
@@ -907,14 +931,18 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             // Without this, the tagged commit has Cargo.toml at the new version
             // but Cargo.lock at the old version, causing `cargo test` (from
             // before hooks) to update Cargo.lock and dirty the tree.
-            match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root_path.as_path())) {
+            match anodizer_core::cargo_lock::cargo_update_workspace(Some(
+                workspace_root_path.as_path(),
+            )) {
                 Ok(true) => {}
-                Ok(false) => log.warn(
-                    "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
+                Ok(false) => warn_cargo_lock_stale(
+                    &log,
+                    "`cargo update --workspace` exited non-zero after version sync",
                 ),
-                Err(e) => log.warn(&format!(
-                    "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
-                )),
+                Err(e) => warn_cargo_lock_stale(
+                    &log,
+                    &format!("could not spawn `cargo update --workspace` ({e})"),
+                ),
             }
 
             let cargo_toml = format!("{}/Cargo.toml", path);
@@ -1187,12 +1215,14 @@ fn apply_workspace_bump(
 
     match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root)) {
         Ok(true) => {}
-        Ok(false) => log.warn(
-            "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
+        Ok(false) => warn_cargo_lock_stale(
+            log,
+            "`cargo update --workspace` exited non-zero after version sync",
         ),
-        Err(e) => log.warn(&format!(
-            "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
-        )),
+        Err(e) => warn_cargo_lock_stale(
+            log,
+            &format!("could not spawn `cargo update --workspace` ({e})"),
+        ),
     }
 
     let mut staged: Vec<PathBuf> = Vec::new();
@@ -1767,13 +1797,16 @@ fn compute_per_crate_tags(
         // Scan commits across all paths in the group.
         let mut all_messages: Vec<String> = Vec::new();
         for crate_cfg in group {
+            // Propagate a failed scan: swallowing it here turned a git error
+            // into "no bump signal" and a silent no-release at default
+            // verbosity. `group_cfg` (not `cfg`) matches the sibling
+            // `detect_bump_demoted` call; only `branch_history` is read.
             let msgs = get_messages_for_bump(
                 workspace_root,
-                cfg,
+                &group_cfg,
                 prev_tag.as_deref(),
                 Some(&crate_cfg.path),
-            )
-            .unwrap_or_default();
+            )?;
             all_messages.extend(msgs);
         }
         let bump = detect_bump_demoted(&all_messages, &group_cfg, prev_tag.as_deref());
@@ -1863,7 +1896,7 @@ fn compute_per_crate_tags(
             crate_names: group.iter().map(|c| c.name.clone()).collect(),
             new_tags,
             version_updates,
-            old_version: bare_version_from_tag(old_tag_str),
+            old_version: git::version_from_tag(old_tag_str),
             prev_tag: (!old_tag_str.is_empty()).then(|| old_tag_str.to_string()),
             crate_version_files,
         });
@@ -1886,6 +1919,10 @@ struct PushControls<'a> {
     remote: &'a str,
     config_push: Option<bool>,
     changelog_enabled: bool,
+    /// `tag_pre_hooks` / `tag_post_hooks`, threaded in so the per-crate path
+    /// honors the same hook config as the single/lockstep `create_tag` closure.
+    pre_hooks: &'a [anodizer_core::config::HookEntry],
+    post_hooks: &'a [anodizer_core::config::HookEntry],
 }
 
 /// The per-crate engine's dispatched unit: the lockstep groups to tag plus
@@ -1900,6 +1937,74 @@ struct PerCrateDispatch {
     /// engine's git ops and cross-crate scans resolve the same root from a
     /// subdirectory as from the repo root.
     workspace_root: PathBuf,
+}
+
+/// Template vars + process env every tag hook surface provides: `Tag`,
+/// `PrefixedTag`, `Version`, `PreviousTag` plus `ANODIZER_CURRENT_TAG` /
+/// `ANODIZER_PREVIOUS_TAG`. One helper serves both the single/lockstep
+/// `create_tag` closure and the per-crate group loop so the two surfaces
+/// cannot drift. `ANODIZER_PREVIOUS_TAG` is REMOVED when there is no
+/// previous tag: the per-crate loop reuses one process env across groups,
+/// and a stale value left over from an earlier group would hand hooks a
+/// wrong-crate tag range.
+fn tag_hook_context(tag: &str, version: &str, prev: Option<&str>) -> TemplateVars {
+    let mut tv = TemplateVars::new();
+    tv.set("Tag", tag);
+    tv.set("PrefixedTag", tag);
+    tv.set("Version", version);
+    if let Some(p) = prev {
+        tv.set("PreviousTag", p);
+    }
+    // SAFETY: the tag subcommand runs single-threaded — no worker threads
+    // exist here, so mutating the process env is safe. Hooks read these
+    // via their subprocess environment.
+    unsafe {
+        std::env::set_var("ANODIZER_CURRENT_TAG", tag);
+        match prev {
+            Some(p) => std::env::set_var("ANODIZER_PREVIOUS_TAG", p),
+            None => std::env::remove_var("ANODIZER_PREVIOUS_TAG"),
+        }
+    }
+    tv
+}
+
+/// Run `tag_pre_hooks` / `tag_post_hooks` for one per-crate group, providing
+/// the same template vars and process env as the single/lockstep `create_tag`
+/// closure (via [`tag_hook_context`]). Runs once per UNIQUE tag: the group's
+/// first tag stands in for the group (all its tags share one version), and
+/// `fired` dedupes across groups — same-prefix groups bumping to the same
+/// version resolve to ONE shared tag (mirroring the tag-creation dedup), so
+/// its hooks must fire exactly once.
+fn run_group_tag_hooks(
+    hooks: &[anodizer_core::config::HookEntry],
+    label: &str,
+    group: &GroupTagResult,
+    dry_run: bool,
+    fired: &mut Vec<String>,
+    log: &StageLogger,
+) -> Result<()> {
+    if hooks.is_empty() {
+        return Ok(());
+    }
+    let Some((tag, _)) = group.new_tags.first() else {
+        return Ok(());
+    };
+    if fired.iter().any(|t| t == tag) {
+        return Ok(());
+    }
+    fired.push(tag.clone());
+    // Version derives from the tag itself (family prefix stripped), matching
+    // the single/lockstep closure's semantics; the group's version_updates
+    // back-stop a tag with no extractable version.
+    let version = git::version_from_tag(tag).unwrap_or_else(|| {
+        group
+            .version_updates
+            .first()
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    });
+    let tv = tag_hook_context(tag, &version, group.prev_tag.as_deref());
+    run_hooks(hooks, label, HookRunContext::new(dry_run, log, Some(&tv)))
 }
 
 fn run_per_crate_tag(
@@ -2065,10 +2170,15 @@ fn run_per_crate_tag(
 
         // Update Cargo.lock to match bumped manifests.
         match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root.as_path())) {
-            Ok(_) => {}
-            Err(e) => log.warn(&format!(
-                "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
-            )),
+            Ok(true) => {}
+            Ok(false) => warn_cargo_lock_stale(
+                log,
+                "`cargo update --workspace` exited non-zero after version sync",
+            ),
+            Err(e) => warn_cargo_lock_stale(
+                log,
+                &format!("could not spawn `cargo update --workspace` ({e})"),
+            ),
         }
 
         // Stage all bumped Cargo.toml files + intra-workspace dep rewrites +
@@ -2146,6 +2256,21 @@ fn run_per_crate_tag(
             &git::release_bump_subject(&bump_summary, skip_ci_suffix(cfg.skip_ci_on_bump)),
         )?;
 
+        // Pre hooks run once per unique tag, after the bump commit and before
+        // the group's tags exist — the same point in the lifecycle at which
+        // the single/lockstep closure runs them.
+        let mut pre_fired: Vec<String> = Vec::new();
+        for group_result in &tag_results {
+            run_group_tag_hooks(
+                controls.pre_hooks,
+                "tag-pre",
+                group_result,
+                false,
+                &mut pre_fired,
+                log,
+            )?;
+        }
+
         // Create all tags locally; push happens atomically below. Crates that
         // share one tag prefix AND bump to the same version resolve to the SAME
         // tag (a lockstep aggregate expressed as a flat `crates:` list); creating
@@ -2175,6 +2300,19 @@ fn run_per_crate_tag(
             )?;
         }
         render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
+        // Dry-run previews the pre hooks too, matching the single/lockstep
+        // closure (which invokes run_hooks in dry mode).
+        let mut pre_fired: Vec<String> = Vec::new();
+        for group_result in &tag_results {
+            run_group_tag_hooks(
+                controls.pre_hooks,
+                "tag-pre",
+                group_result,
+                true,
+                &mut pre_fired,
+                log,
+            )?;
+        }
     }
 
     // Build the structured-output payloads up front, but DON'T print them
@@ -2220,10 +2358,29 @@ fn run_per_crate_tag(
     )?;
 
     // Push succeeded (or was a dry-run/preview no-op that returns Ok). Now it
-    // is safe to advertise the tagged crates + versions. In dry-run the lines
-    // still appear so CI can observe what would be tagged.
+    // is safe to advertise the tagged crates + versions — and it must happen
+    // BEFORE the post hooks: the tags are live on the remote at this point, so
+    // a failing post hook must not abort the command with the payload
+    // unprinted (a CI consumer would read the missing payload as "nothing
+    // tagged" while live tags exist). In dry-run the lines still appear so CI
+    // can observe what would be tagged.
     println!("anodizer-output crates={}", crates_json);
     println!("anodizer-output versions={}", versions_json);
+
+    // Post hooks run only after the push succeeded, mirroring the closure's
+    // post-push placement (a failed push must not fire release-announce-style
+    // post hooks). A post-hook failure still errors the command.
+    let mut post_fired: Vec<String> = Vec::new();
+    for group_result in &tag_results {
+        run_group_tag_hooks(
+            controls.post_hooks,
+            "tag-post",
+            group_result,
+            opts.dry_run,
+            &mut post_fired,
+            log,
+        )?;
+    }
 
     Ok(())
 }
@@ -2548,22 +2705,6 @@ fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
             ConventionalLevel::Minor => BumpKind::Minor,
             ConventionalLevel::Patch => BumpKind::Patch,
         })
-}
-
-/// Bare semver version embedded in a tag string (the tag with its prefix
-/// stripped). Returns `None` for an empty tag (no previous release) or a tag
-/// that does not parse as a semver tag.
-fn bare_version_from_tag(tag: &str) -> Option<String> {
-    if tag.is_empty() {
-        return None;
-    }
-    let sv = git::parse_semver_tag(tag).ok()?;
-    let mut v = format!("{}.{}.{}", sv.major, sv.minor, sv.patch);
-    if let Some(pre) = sv.prerelease {
-        v.push('-');
-        v.push_str(&pre);
-    }
-    Some(v)
 }
 
 /// Rewrite the old version to the new version in every enrolled `version_files`
@@ -4602,41 +4743,6 @@ tag_post_hooks:
     #[test]
     fn shared_tag_prefix_empty_slice_returns_none() {
         assert_eq!(shared_tag_prefix(&[]), None);
-    }
-
-    // -----------------------------------------------------------------------
-    // bare_version_from_tag
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn bare_version_from_tag_strips_v_prefix() {
-        assert_eq!(bare_version_from_tag("v1.2.3"), Some("1.2.3".to_string()));
-    }
-
-    #[test]
-    fn bare_version_from_tag_keeps_prerelease() {
-        assert_eq!(
-            bare_version_from_tag("v0.4.0-beta.1"),
-            Some("0.4.0-beta.1".to_string())
-        );
-    }
-
-    #[test]
-    fn bare_version_from_tag_handles_monorepo_prefix() {
-        assert_eq!(
-            bare_version_from_tag("core-v2.0.1"),
-            Some("2.0.1".to_string())
-        );
-    }
-
-    #[test]
-    fn bare_version_from_tag_empty_is_none() {
-        assert_eq!(bare_version_from_tag(""), None);
-    }
-
-    #[test]
-    fn bare_version_from_tag_non_semver_is_none() {
-        assert_eq!(bare_version_from_tag("not-a-version"), None);
     }
 
     // -----------------------------------------------------------------------

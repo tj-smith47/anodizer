@@ -183,14 +183,18 @@ pub struct PublishConfig {
     /// attempted. Each entry is a standard hook (`cmd` / `dir` / `env` /
     /// `output`); the template surface adds `{{ .Publisher }}`,
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
-    /// (Assets/Manager/Submitter), `{{ .Required }}`, and
+    /// (Assets/Manager/Submitter), `{{ .Required }}`,
     /// `{{ .RolledBack }}` — true if any publisher was rolled back (or
-    /// rollback was attempted and failed) during this run. The same values
+    /// rollback was attempted and failed) during this run — and
+    /// `{{ .RunReport }}`, the path of this run's already-written
+    /// `dist/run-<id>/report.json` (per-publisher outcomes including
+    /// rollback results; empty in snapshot/dry-run or when the report
+    /// could not be persisted). The same values
     /// are also exported to the hook process as environment variables:
     /// `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`,
     /// `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`,
-    /// `ANODIZER_ROLLED_BACK`. A hook's own failure is logged as a warning
-    /// and never changes the release outcome.
+    /// `ANODIZER_ROLLED_BACK`, `ANODIZER_RUN_REPORT`. A hook's own
+    /// failure is logged as a warning and never changes the release outcome.
     ///
     /// Security: the rendered `cmd` string is parsed by `sh -c`, and
     /// `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git

@@ -1041,7 +1041,13 @@ fn package_feed_hash_absent_when_responder_returns_404() {
     let (addr, _calls) =
         spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
     let url = format!("http://{addr}");
-    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    let got = package_feed_hash(
+        &url,
+        "mytool",
+        "1.0.0",
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    );
     assert_eq!(got, FeedHashResult::Absent);
 }
 
@@ -1057,7 +1063,13 @@ fn package_feed_hash_absent_when_body_lacks_version_marker() {
     let resp_static: &'static str = Box::leak(resp.into_boxed_str());
     let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
     let url = format!("http://{addr}");
-    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    let got = package_feed_hash(
+        &url,
+        "mytool",
+        "1.0.0",
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    );
     assert_eq!(got, FeedHashResult::Absent);
 }
 
@@ -1080,7 +1092,13 @@ fn package_feed_hash_present_with_hash_and_algorithm() {
     let resp_static: &'static str = Box::leak(resp.into_boxed_str());
     let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
     let url = format!("http://{addr}");
-    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    let got = package_feed_hash(
+        &url,
+        "mytool",
+        "1.0.0",
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    );
     match got {
         FeedHashResult::Present {
             hash,
@@ -1114,7 +1132,13 @@ fn package_feed_hash_present_no_hash() {
     let resp_static: &'static str = Box::leak(resp.into_boxed_str());
     let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
     let url = format!("http://{addr}");
-    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    let got = package_feed_hash(
+        &url,
+        "mytool",
+        "1.0.0",
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    );
     assert_eq!(got, FeedHashResult::PresentNoHash);
 }
 

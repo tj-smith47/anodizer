@@ -5162,4 +5162,65 @@ mod cosign_retry_policy {
         assert!(!is_keyless_cosign("gpg", &keyless));
         assert!(!is_keyless_cosign("/usr/bin/gpg", &keyless));
     }
+
+    /// A deterministic signer failure (flag typo, unparseable key,
+    /// identity mismatch) is identical on every re-run — it must fail on
+    /// the first attempt with zero sleeps instead of burning the ladder.
+    #[test]
+    fn deterministic_failure_fast_fails_without_retry() {
+        for stderr in [
+            "unknown flag: --keyy",
+            "error: unknown command \"sing\" for \"cosign\"",
+            "error: unsupported pem type: CERTIFICATE",
+            "error: parsing private key: invalid pem block",
+            "none of the expected identities matched what was in the certificate",
+        ] {
+            let log = quiet_log();
+            let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+            let attempts = std::cell::Cell::new(0u32);
+            let result = retry_transient(
+                &COSIGN_TRANSIENT_RETRY,
+                &log,
+                "myapp.tar.gz",
+                &|d| sleeps.lock().expect("sleep recorder").push(d),
+                &mut || {
+                    attempts.set(attempts.get() + 1);
+                    Err(anyhow::anyhow!("{stderr}")
+                        .context("sign: 'cosign' failed for myapp.tar.gz"))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(attempts.get(), 1, "{stderr:?} must not be retried");
+            assert!(
+                sleeps.lock().expect("sleep recorder").is_empty(),
+                "{stderr:?} must not burn backoff budget"
+            );
+        }
+    }
+
+    /// The classifier is fail-open: TUF/flock/network phrasings — and any
+    /// unrecognized error — stay transient so retry keeps protecting the
+    /// ambiguous class.
+    #[test]
+    fn deterministic_classifier_leaves_transient_class_alone() {
+        use crate::process::is_deterministic_sign_failure;
+        for transient in [
+            "creating cached local store: resource temporarily unavailable",
+            "getting Fulcio SCT: context deadline exceeded",
+            "rekor entry: 503 Service Unavailable",
+            // Cold/racing ~/.sigstore TUF-cache read — an ENOENT that heals
+            // on retry; must never be classified deterministic by phrasing.
+            "open /home/runner/.sigstore/root/targets/rekor.pub: no such file or directory",
+            "open /missing/cosign.key: no such file or directory",
+            "some brand-new phrasing nobody has seen",
+        ] {
+            assert!(
+                !is_deterministic_sign_failure(&anyhow::anyhow!("{transient}")),
+                "{transient:?} must classify as transient"
+            );
+        }
+        assert!(is_deterministic_sign_failure(
+            &anyhow::anyhow!("unknown flag: --keyy").context("sign: 'cosign' failed")
+        ));
+    }
 }

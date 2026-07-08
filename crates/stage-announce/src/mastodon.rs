@@ -13,11 +13,12 @@ pub fn send_mastodon(
     access_token: &str,
     message: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let url = format!("{}/api/v1/statuses", server.trim_end_matches('/'));
     let client = crate::http::blocking_client()?;
 
-    let _ = retry_http("mastodon", "POST /api/v1/statuses", policy, || {
+    let _ = retry_http("mastodon", "POST /api/v1/statuses", policy, log, || {
         client
             .post(&url)
             .bearer_auth(access_token)
@@ -56,7 +57,13 @@ mod tests {
         let (addr, captured) =
             spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         let server = format!("http://{addr}");
-        let result = send_mastodon(&server, "tok", "hello world", &no_retry_policy());
+        let result = send_mastodon(
+            &server,
+            "tok",
+            "hello world",
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok(), "send failed: {result:?}");
         std::thread::sleep(Duration::from_millis(50));
         let req = captured.lock().unwrap().clone();
@@ -78,7 +85,14 @@ mod tests {
             spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         // Pass a trailing slash; URL should not double-slash before /api/v1/statuses.
         let server = format!("http://{addr}/");
-        send_mastodon(&server, "tok", "msg", &no_retry_policy()).unwrap();
+        send_mastodon(
+            &server,
+            "tok",
+            "msg",
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(50));
         let req = captured.lock().unwrap().clone();
         assert!(
@@ -94,7 +108,14 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
         ]);
         let server = format!("http://{addr}");
-        send_mastodon(&server, "tok", "hi", &fast_policy()).unwrap();
+        send_mastodon(
+            &server,
+            "tok",
+            "hi",
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
         let attempts = counter.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(attempts, 2, "expected exactly 2 attempts, got {attempts}");
     }
@@ -105,7 +126,14 @@ mod tests {
             "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
         ]);
         let server = format!("http://{addr}");
-        let err = send_mastodon(&server, "bad-tok", "hi", &fast_policy()).unwrap_err();
+        let err = send_mastodon(
+            &server,
+            "bad-tok",
+            "hi",
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap_err();
         let chain = format!("{err:#}");
         assert!(
             chain.contains("401"),

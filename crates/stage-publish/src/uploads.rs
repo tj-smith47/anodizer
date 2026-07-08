@@ -727,6 +727,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 &auth,
                 "preflight: uploads",
                 &policy,
+                &ctx.logger("preflight"),
             );
             acc = merge(
                 acc,

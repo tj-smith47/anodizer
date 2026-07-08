@@ -7,7 +7,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anodizer_core::run::run_capture_timeout;
 use anodizer_core::stage::Stage;
 use anodizer_core::{
@@ -467,14 +467,16 @@ fn run_uploads(
                     // mirroring the HTTP-upload, blob, and GitHub asset floors.
                     let upload_policy = retry_policy.with_idempotent_floor();
                     let max_attempts = upload_policy.max_attempts;
-                    retry_sync(&upload_policy, |attempt| {
-                        if attempt > 1 {
-                            log.warn(&format!(
-                                "snapcraft upload attempt {}/{} failed (5xx), retrying…",
-                                attempt - 1,
-                                max_attempts,
-                            ));
-                        }
+                    let retry_desc = format!("snapcraft upload '{snap_name}'");
+                    retry_sync(RetryLog::new(&retry_desc, log), &upload_policy, |attempt| {
+                        // Start-of-attempt marker at default visibility: the
+                        // upload is a captured subprocess that can run for many
+                        // minutes with no other output, so without this line the
+                        // stage looks hung until the first attempt ENDS.
+                        log.status(&format!(
+                            "uploading snap '{}' to the Snap Store (attempt {}/{})",
+                            snap_name, attempt, max_attempts
+                        )); // status-ok: per-attempt start of a multi-minute captured upload
                         log.verbose(&format!("running {}", upload_args.join(" ")));
                         let mut cmd = Command::new(&upload_args[0]);
                         cmd.args(&upload_args[1..]);

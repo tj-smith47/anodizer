@@ -20,7 +20,9 @@
 //!   enforced by chunking the job list and scoping threads per-chunk.
 //! - **Fail-fast within a chunk**: if any worker in a chunk fails, the whole
 //!   chunk still runs to completion (threads are already spawned), but the
-//!   caller receives the first error and processes no further chunks.
+//!   caller receives the first error and processes no further chunks. The
+//!   completed siblings' work is still accounted for: additional failures
+//!   in the batch are logged, and a warn summarizes partial progress.
 //! - **Panic-safe**: a worker panic becomes an `anyhow::Error` annotated
 //!   with `stage_name`, so a panicked thread doesn't leave the pool
 //!   deadlocked or drop all other results on the floor.
@@ -90,10 +92,18 @@ pub fn join_panic_to_err<T>(join_result: std::thread::Result<T>, label: &str) ->
 ///
 /// `parallelism` is clamped to `>= 1` internally, so callers can pass
 /// `ctx.options.parallelism` without pre-clamping.
+///
+/// On failure the FIRST error is returned and no further chunks run, but
+/// the failed chunk's completed siblings are never silently discarded:
+/// every additional failure in the chunk is logged as a warning (only the
+/// first error propagates), and a warn summarizes the partial progress —
+/// how many jobs in the batch succeeded before the failure and how many
+/// later jobs were never started.
 pub fn run_parallel_chunks<J, T, F>(
     jobs: &[J],
     parallelism: usize,
     stage_name: &'static str,
+    log: &StageLogger,
     run_job: F,
 ) -> Result<Vec<T>>
 where
@@ -116,8 +126,52 @@ where
                 .collect()
         });
 
+        // The whole chunk already ran to completion (its threads were
+        // spawned together), so account for EVERY result before propagating:
+        // a bare `push(r?)` would silently drop the completed siblings'
+        // work and any second/third failure in the same batch.
+        let mut first_err: Option<anyhow::Error> = None;
+        let mut chunk_ok = 0usize;
+        let chunk_len = chunk.len();
         for r in chunk_results {
-            results.push(r?);
+            match r {
+                Ok(t) => {
+                    chunk_ok += 1;
+                    results.push(t);
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    } else {
+                        // Warn with the root cause only: the full anyhow chain
+                        // can embed unredacted subprocess/HTTP detail (upload
+                        // URLs, response bodies) that the propagated error gets
+                        // caller-side redaction for but this path would not.
+                        let root = e.root_cause().to_string();
+                        let first = root.lines().next().unwrap_or("");
+                        let mut line: String = first.chars().take(200).collect();
+                        if first.chars().count() > 200 {
+                            line.push('…');
+                        }
+                        log.warn(&format!(
+                            "{stage_name}: additional failure in the same batch \
+                             (only the first is propagated): {line}"
+                        ));
+                        log.verbose(&format!("{stage_name}: additional failure detail: {e:#}"));
+                    }
+                }
+            }
+        }
+        if let Some(err) = first_err {
+            let not_started = jobs.len() - results.len() - (chunk_len - chunk_ok);
+            log.warn(&format!(
+                "{stage_name}: {chunk_ok} of {chunk_len} item(s) in this batch succeeded \
+                 before the failure ({completed} of {total} total completed, \
+                 {not_started} never started)",
+                completed = results.len(),
+                total = jobs.len(),
+            ));
+            return Err(err);
         }
     }
     Ok(results)
@@ -126,6 +180,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_logger;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -134,7 +189,8 @@ mod tests {
         // the input slice order so downstream artifact registration is
         // deterministic across runs.
         let jobs: Vec<u32> = (0..20).collect();
-        let out = run_parallel_chunks(&jobs, 4, "test", |job| Ok(*job * 10)).unwrap();
+        let out =
+            run_parallel_chunks(&jobs, 4, "test", test_logger(), |job| Ok(*job * 10)).unwrap();
         assert_eq!(out, (0..20).map(|i| i * 10).collect::<Vec<_>>());
     }
 
@@ -148,7 +204,7 @@ mod tests {
         let in_flight = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
 
-        run_parallel_chunks(&jobs, 2, "test", |_| {
+        run_parallel_chunks(&jobs, 2, "test", test_logger(), |_| {
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             peak.fetch_max(now, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -169,7 +225,7 @@ mod tests {
         // in the error payload asserts the failing worker is the one the
         // caller receives (not silently swallowed by a later success).
         let jobs: Vec<u32> = (0..4).collect();
-        let result = run_parallel_chunks(&jobs, 2, "test", |job| {
+        let result = run_parallel_chunks(&jobs, 2, "test", test_logger(), |job| {
             if *job == 2 {
                 Err(anyhow!("job 2 failed"))
             } else {
@@ -184,19 +240,96 @@ mod tests {
         );
     }
 
+    /// A failed chunk must not silently swallow its completed siblings'
+    /// work or the batch's additional failures: every job in the chunk
+    /// still runs, the extra failure is logged, and a warn summarizes the
+    /// partial progress (succeeded-in-batch / total-completed / never-started).
+    #[test]
+    fn failed_chunk_reports_partial_progress_and_sibling_failures() {
+        let jobs: Vec<u32> = (0..8).collect();
+        let executed = AtomicUsize::new(0);
+        let (log, cap) = StageLogger::with_capture("test", crate::log::Verbosity::Quiet);
+
+        // parallelism=4 → chunk [0,1,2,3]: jobs 1 and 3 fail, 0 and 2 succeed;
+        // chunks [4..] must never start.
+        let result = run_parallel_chunks(&jobs, 4, "partial-stage", &log, |job| {
+            executed.fetch_add(1, Ordering::SeqCst);
+            if *job == 1 || *job == 3 {
+                Err(anyhow!("job {} failed", job)
+                    .context("POST https://uploads.example/secret-token failed"))
+            } else {
+                Ok(*job)
+            }
+        });
+
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("job 1 failed"),
+            "the FIRST error (submission order) must propagate: {err:#}"
+        );
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            4,
+            "the whole failed chunk runs; later chunks never start"
+        );
+        let warns = cap.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("job 3 failed") && m.contains("only the first is propagated")),
+            "the sibling failure must be logged, not dropped: {warns:?}"
+        );
+        assert!(
+            !warns.iter().any(|m| m.contains("uploads.example")),
+            "the sibling warn must carry the root cause only, never the \
+             unredacted context chain: {warns:?}"
+        );
+        let details: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == crate::log::LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|m| m.contains("uploads.example") && m.contains("job 3 failed")),
+            "the full chain must still be available at verbose: {details:?}"
+        );
+        assert!(
+            warns.iter().any(|m| m.contains(
+                "partial-stage: 2 of 4 item(s) in this batch succeeded before the failure"
+            ) && m.contains("2 of 8 total completed")
+                && m.contains("4 never started")),
+            "partial-progress summary must be warned: {warns:?}"
+        );
+    }
+
+    /// A clean run must emit NO partial-progress warns — the summary is a
+    /// failure-path diagnostic, not routine chatter.
+    #[test]
+    fn successful_run_emits_no_warns() {
+        let jobs: Vec<u32> = (0..6).collect();
+        let (log, cap) = StageLogger::with_capture("test", crate::log::Verbosity::Quiet);
+        let out = run_parallel_chunks(&jobs, 3, "test", &log, |job| Ok(*job)).unwrap();
+        assert_eq!(out.len(), 6);
+        assert_eq!(cap.warn_count(), 0, "no warns on a clean run");
+    }
+
     #[test]
     fn zero_parallelism_clamps_to_one() {
         // `ctx.options.parallelism` can legitimately be 0 (unset) —
         // callers must not need to pre-clamp. Verify the helper runs
         // sequentially in that case rather than spawning 0 threads.
         let jobs: Vec<u32> = (0..3).collect();
-        let out = run_parallel_chunks(&jobs, 0, "test", |job| Ok(*job + 1)).unwrap();
+        let out = run_parallel_chunks(&jobs, 0, "test", test_logger(), |job| Ok(*job + 1)).unwrap();
         assert_eq!(out, vec![1, 2, 3]);
     }
 
     #[test]
     fn empty_jobs_returns_empty() {
-        let out: Vec<u32> = run_parallel_chunks::<u32, u32, _>(&[], 4, "test", |_| Ok(0)).unwrap();
+        let out: Vec<u32> =
+            run_parallel_chunks::<u32, u32, _>(&[], 4, "test", test_logger(), |_| Ok(0)).unwrap();
         assert!(out.is_empty());
     }
 
@@ -205,12 +338,18 @@ mod tests {
         // A panicking worker must not take down the whole thread::scope
         // silently — we want an attributable error with the stage name.
         let jobs: Vec<u32> = vec![1, 2, 3];
-        let result = run_parallel_chunks(&jobs, 2, "explode-stage", |job| -> Result<u32> {
-            if *job == 2 {
-                panic!("boom");
-            }
-            Ok(*job)
-        });
+        let result = run_parallel_chunks(
+            &jobs,
+            2,
+            "explode-stage",
+            test_logger(),
+            |job| -> Result<u32> {
+                if *job == 2 {
+                    panic!("boom");
+                }
+                Ok(*job)
+            },
+        );
         let err = result.unwrap_err();
         assert!(
             err.to_string()
@@ -226,10 +365,10 @@ mod tests {
     fn lock_recover_returns_inner_when_unpoisoned() {
         // Happy path: an unpoisoned Mutex yields its guard, the helper
         // adds no observable behavior over a bare `.lock().unwrap()`.
-        let log = StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let log = test_logger();
         let m = Mutex::new(0u32);
         {
-            let mut g = lock_recover(&m, &log, "test");
+            let mut g = lock_recover(&m, log, "test");
             *g = 42;
         }
         assert_eq!(*m.lock().unwrap(), 42);
@@ -240,7 +379,7 @@ mod tests {
         // A poisoned Mutex (sibling thread panicked while holding the
         // guard) must yield the inner state rather than panicking the
         // recovering thread too.
-        let log = StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let log = test_logger();
         let m = std::sync::Arc::new(Mutex::new(7u32));
         let m_for_thread = std::sync::Arc::clone(&m);
         let h = std::thread::spawn(move || {
@@ -249,7 +388,7 @@ mod tests {
         });
         let _ = h.join();
         assert!(m.is_poisoned(), "test setup: mutex should be poisoned");
-        let g = lock_recover(&m, &log, "test");
+        let g = lock_recover(&m, log, "test");
         assert_eq!(*g, 7);
     }
 

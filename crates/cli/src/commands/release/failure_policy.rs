@@ -123,6 +123,10 @@ pub(super) fn applies(opts: &ReleaseOpts) -> bool {
 pub(super) struct BurnEvidence {
     /// Submitter publishers whose publish action landed.
     pub names: Vec<String>,
+    /// Where each burned name came from (summary file + the release it
+    /// records, or the live report), so a degrade caused by evidence from
+    /// the wrong release is diagnosable from the operator message.
+    pub sources: Vec<String>,
 }
 
 impl BurnEvidence {
@@ -131,33 +135,104 @@ impl BurnEvidence {
     }
 }
 
-/// Gather burn evidence from every run summary under the dist tree plus
+/// Gather burn evidence from the run summaries under the dist tree plus
 /// the live in-memory publish report.
 ///
 /// The disk pass is what makes per-crate workspace mode safe: each
 /// crate's publish run persists its own `dist/<crate>/run-*/summary.json`,
 /// so a crate that burned the version before a later crate failed is
 /// still seen even though the live report only covers the failing run.
-/// Conservative on purpose — any landed Submitter anywhere under this
-/// run's dist degrades the rollback.
+///
+/// Disk-summary filtering is FAIL-CLOSED: a summary is kept unless it
+/// provably belongs to a DIFFERENT release — its tag is in the same tag
+/// family as this run's tag (equal family prefix, e.g. both `v…` or both
+/// `crd-v…`) AND stamps a different base version. That is the
+/// `--publish-only` preserved-dist case: a prior attempt of the same
+/// family sitting beside this run's summary, whose burn belongs to that
+/// other release and must not degrade this rollback. Everything else is
+/// kept: sibling per-crate summaries (different family prefixes carry
+/// different versions in one release train), tags whose family or
+/// version cannot be established, and same-base-version tags whose
+/// prerelease/build suffix differs from this run's (a representation
+/// mismatch must never weaken the guard). Kept-but-unverifiable
+/// summaries name their file in `sources` so a wrong-release degrade is
+/// diagnosable from the operator message.
 pub(super) fn gather_burn_evidence(ctx: &Context, log: &StageLogger) -> BurnEvidence {
+    let current_tag = ctx
+        .template_vars()
+        .get("Tag")
+        .cloned()
+        .filter(|t| !t.is_empty());
+    let current_family = current_tag
+        .as_deref()
+        .and_then(anodizer_core::git::split_tag_family);
     let mut names: Vec<String> = Vec::new();
+    let mut sources: Vec<String> = Vec::new();
     for path in collect_run_summary_paths(&ctx.config.dist) {
-        match std::fs::read_to_string(&path)
+        let summary = match std::fs::read_to_string(&path)
             .map_err(anyhow::Error::from)
             .and_then(|text| Ok(serde_json::from_str::<RunSummary>(&text)?))
         {
-            Ok(summary) => names.extend(summary.burned_submitter_names()),
-            Err(e) => log.warn(&format!(
-                "ignoring unreadable run summary {} for failure-policy evaluation: {e:#}",
-                path.display()
+            Ok(summary) => summary,
+            Err(e) => {
+                log.warn(&format!(
+                    "ignoring unreadable run summary {} for failure-policy evaluation: {e:#}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let burned = summary.burned_submitter_names();
+        if burned.is_empty() {
+            continue;
+        }
+        match (
+            anodizer_core::git::split_tag_family(&summary.tag),
+            &current_family,
+        ) {
+            // Provably a different release: same tag family as this run's
+            // tag, different base version. Prerelease/build suffixes are
+            // deliberately NOT compared — a suffix-only mismatch may be a
+            // representation difference within this release, and guessing
+            // wrong here flips the guard fail-open.
+            (Some((recorded_prefix, recorded_sv)), Some((current_prefix, current_sv)))
+                if recorded_prefix == *current_prefix
+                    && (recorded_sv.major, recorded_sv.minor, recorded_sv.patch)
+                        != (current_sv.major, current_sv.minor, current_sv.patch) =>
+            {
+                log.verbose(&format!(
+                    "ignoring run summary {} for failure-policy evaluation — it records \
+                     tag {} ({recorded_prefix}-family version {}), a different release \
+                     than the current {}",
+                    path.display(),
+                    summary.tag,
+                    recorded_sv.version_string(),
+                    current_sv.version_string()
+                ));
+                continue;
+            }
+            (Some(_), _) => sources.push(format!("{} (tag {})", path.display(), summary.tag)),
+            (None, _) => sources.push(format!(
+                "{} (no release version recorded{} — kept conservatively; verify it \
+                 belongs to this release)",
+                path.display(),
+                if summary.tag.is_empty() {
+                    String::new()
+                } else {
+                    format!("; tag field: {:?}", summary.tag)
+                }
             )),
         }
+        names.extend(burned);
     }
-    names.extend(RunSummary::from_context(ctx).burned_submitter_names());
+    let live = RunSummary::from_context(ctx).burned_submitter_names();
+    if !live.is_empty() {
+        sources.push("this run's live publish report".to_string());
+        names.extend(live);
+    }
     names.sort();
     names.dedup();
-    BurnEvidence { names }
+    BurnEvidence { names, sources }
 }
 
 /// Route a release-mode outcome through the failure policy. `Ok` passes
@@ -200,8 +275,10 @@ pub(super) fn finish(
                      twice, so the version is burned and rolling back the tag would only orphan \
                      the live published state. Fix forward: keep the tag, revert reversible \
                      publishers with `anodizer release --rollback-only --from-run=<id>` if \
-                     needed, repair the failure, and cut the NEXT version.",
-                    evidence.names.join(", ")
+                     needed, repair the failure, and cut the NEXT version.\n\
+                     Burn evidence came from:\n  {}",
+                    evidence.names.join(", "),
+                    evidence.sources.join("\n  ")
                 ));
             } else if publish_only {
                 log.status(
@@ -547,6 +624,192 @@ mod tests {
         assert_eq!(
             decide(OnFailureConfig::Rollback, evidence.burned(), false),
             FailureAction::Hold { degraded: true }
+        );
+    }
+
+    /// A preserved-dist (`--publish-only`) scenario: a prior attempt's
+    /// summary for a DIFFERENT version sits under dist. Its burn belongs
+    /// to that other release and must not degrade the current rollback.
+    #[test]
+    fn burn_evidence_ignores_stale_summaries_for_other_versions() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+
+        // Stale prior-attempt summary: cargo burned v1.0.0, not v2.0.0.
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        let mut stale = RunSummary::from_context_with_report(&ctx, Some(&report));
+        stale.tag = "v1.0.0".to_string();
+        let path = dist.path().join("run-v1.0.0").join("summary.json");
+        write_summary_json(&stale, &path).expect("write stale summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            !evidence.burned(),
+            "a burn recorded for a different version must not degrade this \
+             release's rollback; got {evidence:?}"
+        );
+
+        // Same summary re-stamped for the CURRENT version: now it counts.
+        let mut current = RunSummary::from_context_with_report(&ctx, Some(&report));
+        current.tag = "v2.0.0".to_string();
+        write_summary_json(&current, &path).expect("rewrite summary");
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(evidence.burned());
+        assert_eq!(evidence.names, vec!["cargo".to_string()]);
+        assert_eq!(evidence.sources.len(), 1);
+        assert!(
+            evidence.sources[0].contains("summary.json") && evidence.sources[0].contains("v2.0.0"),
+            "the source must name the file and the release it records: {:?}",
+            evidence.sources
+        );
+    }
+
+    /// A summary with no extractable version stamp stays evidence
+    /// (conservative), but its file must be named so a wrong-version
+    /// degrade is diagnosable from the operator message.
+    #[test]
+    fn burn_evidence_keeps_unstamped_summaries_and_names_the_source() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        // Tag empty: written by a run that never resolved a tag.
+        let unstamped = RunSummary::from_context_with_report(&ctx, Some(&report));
+        assert_eq!(unstamped.tag, "", "fixture precondition: no tag stamp");
+        let path = dist.path().join("run-unknown").join("summary.json");
+        write_summary_json(&unstamped, &path).expect("write unstamped summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            evidence.burned(),
+            "unverifiable evidence must still refuse the destructive path"
+        );
+        assert_eq!(evidence.names, vec!["cargo".to_string()]);
+        assert_eq!(evidence.sources.len(), 1);
+        assert!(
+            evidence.sources[0].contains("summary.json")
+                && evidence.sources[0].contains("kept conservatively"),
+            "the source must flag the missing version stamp: {:?}",
+            evidence.sources
+        );
+    }
+
+    /// Per-crate sibling evidence must be KEPT: in one release train the
+    /// sibling crates carry different tag families AND different versions
+    /// (`a-v1.0.0` beside `b-v2.5.0`), so a version-only filter would
+    /// silently drop the exact cross-crate evidence the disk pass exists
+    /// to union in.
+    #[test]
+    fn burn_evidence_keeps_per_crate_sibling_summaries() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        // Current run: crate b at 2.5.0.
+        ctx.template_vars_mut().set("Version", "2.5.0");
+        ctx.template_vars_mut().set("Tag", "b-v2.5.0");
+
+        // Sibling crate a burned its own (different) version earlier in
+        // the same release train.
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        let mut sibling = RunSummary::from_context_with_report(&ctx, Some(&report));
+        sibling.tag = "a-v1.0.0".to_string();
+        let path = dist
+            .path()
+            .join("a")
+            .join("run-a-v1.0.0")
+            .join("summary.json");
+        write_summary_json(&sibling, &path).expect("write sibling summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            evidence.burned(),
+            "a sibling crate's burn (different tag family) must be kept; got {evidence:?}"
+        );
+        assert_eq!(evidence.names, vec!["cargo".to_string()]);
+    }
+
+    /// A same-family tag whose base version matches but whose
+    /// prerelease/build suffix differs from the current tag's is KEPT: a
+    /// suffix-only representation mismatch cannot prove a different
+    /// release, and guessing wrong flips the guard fail-open.
+    #[test]
+    fn burn_evidence_keeps_same_base_version_with_suffix_mismatch() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        let mut summary = RunSummary::from_context_with_report(&ctx, Some(&report));
+        summary.tag = "v2.0.0-rc.1".to_string();
+        let path = dist.path().join("run-v2.0.0-rc.1").join("summary.json");
+        write_summary_json(&summary, &path).expect("write prerelease summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            evidence.burned(),
+            "same-family same-base-version evidence must be kept despite a \
+             prerelease suffix mismatch; got {evidence:?}"
+        );
+        assert_eq!(evidence.names, vec!["cargo".to_string()]);
+    }
+
+    /// When the current run's tag family cannot be established (no Tag
+    /// template var), NOTHING is discarded — with no family to compare
+    /// against, no summary can be proven to belong to a different release.
+    #[test]
+    fn burn_evidence_keeps_everything_without_a_current_tag() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        let mut summary = RunSummary::from_context_with_report(&ctx, Some(&report));
+        summary.tag = "v1.0.0".to_string();
+        let path = dist.path().join("run-v1.0.0").join("summary.json");
+        write_summary_json(&summary, &path).expect("write summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            evidence.burned(),
+            "with no current tag family the guard must keep everything; got {evidence:?}"
         );
     }
 

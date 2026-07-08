@@ -121,23 +121,31 @@ pub(crate) fn classify_asset_conflict(
 /// decision. We re-run [`is_retriable`] on the bubbled-up error and
 /// `Break` on non-retriable failures, matching the inner's policy and
 /// the intended retry envelope.
-pub(crate) async fn retry_upload<F, Fut>(operation_name: &str, mut f: F) -> Result<()>
+pub(crate) async fn retry_upload<F, Fut>(
+    operation_name: &str,
+    log: &anodizer_core::log::StageLogger,
+    mut f: F,
+) -> Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    use anodizer_core::retry::{RetryPolicy, is_retriable, retry_async};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_async};
     use std::ops::ControlFlow;
-    retry_async(&RetryPolicy::UPLOAD, |_attempt| {
-        let fut = f();
-        async move {
-            match fut.await {
-                Ok(()) => Ok(()),
-                Err(e) if is_retriable(e.as_ref()) => Err(ControlFlow::Continue(e)),
-                Err(e) => Err(ControlFlow::Break(e)),
+    retry_async(
+        RetryLog::new(operation_name, log),
+        &RetryPolicy::UPLOAD,
+        |_attempt| {
+            let fut = f();
+            async move {
+                match fut.await {
+                    Ok(()) => Ok(()),
+                    Err(e) if is_retriable(e.as_ref()) => Err(ControlFlow::Continue(e)),
+                    Err(e) => Err(ControlFlow::Break(e)),
+                }
             }
-        }
-    })
+        },
+    )
     .await
     .with_context(|| format!("{operation_name}: retry exhausted"))
 }

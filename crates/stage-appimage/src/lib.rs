@@ -1042,6 +1042,7 @@ impl Stage for AppImageStage {
             &jobs,
             parallelism,
             "appimage",
+            &log,
             |job: &AppImageJob| execute_appimage_job(job, verbosity),
         )?;
 

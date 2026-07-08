@@ -361,7 +361,14 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             }
             acc = merge(
                 acc,
-                choco_key_check(&choco_push_url(feed), feed, &api_key, &policy, fail),
+                choco_key_check(
+                    &choco_push_url(feed),
+                    feed,
+                    &api_key,
+                    &policy,
+                    fail,
+                    &ctx.logger("preflight"),
+                ),
             );
         }
         Ok(acc)
@@ -425,9 +432,10 @@ fn choco_key_check(
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
     fail: crate::publisher_preflight::FailSeverity,
+    log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
-    match probe_choco_key(push_url, api_key, policy) {
+    match probe_choco_key(push_url, api_key, policy, log) {
         ChocoKeyProbe::Valid => PreflightCheck::Pass,
         ChocoKeyProbe::Rejected => fail.apply(format!(
             "chocolatey API key rejected by {feed} (HTTP 401/403); the push will fail. \
@@ -458,6 +466,7 @@ fn probe_choco_key(
     push_url: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> ChocoKeyProbe {
     use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking};
     let client = match anodizer_core::http::blocking_client(CHOCO_PROBE_TIMEOUT) {
@@ -466,7 +475,7 @@ fn probe_choco_key(
     };
     let key = api_key.to_string();
     let result = retry_http_blocking(
-        "preflight: chocolatey api key",
+        anodizer_core::retry::RetryLog::new("preflight: chocolatey api key", log),
         policy,
         SuccessClass::Strict,
         |_| {

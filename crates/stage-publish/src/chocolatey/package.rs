@@ -7,7 +7,7 @@
 
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
 
 /// Content types XML — required by the OPC (Open Packaging Conventions) spec.
@@ -169,6 +169,7 @@ pub(crate) fn package_feed_hash(
     name: &str,
     version: &str,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> FeedHashResult {
     let query_base = if push_source.contains("push.chocolatey.org") {
         "https://community.chocolatey.org"
@@ -193,7 +194,7 @@ pub(crate) fn package_feed_hash(
     };
 
     let body = match retry_http_blocking(
-        "chocolatey: feed hash lookup",
+        RetryLog::new("chocolatey: feed hash lookup", log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&url).send(),
@@ -385,7 +386,7 @@ pub(super) fn push_nupkg(
     // hard-fail; wrap them in `Retriable` so the classifier overrides the
     // default 4xx-Break behaviour. 5xx + 429 retry on their own via
     // HttpError-classification.
-    retry_sync(policy, |attempt| {
+    retry_sync(RetryLog::new("chocolatey push", log), policy, |attempt| {
         let form_file = match reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
             .file_name(filename.clone())
             .mime_str("application/octet-stream")
@@ -751,7 +752,13 @@ mod tests {
         ]);
         let source = format!("http://{addr}/api/v2/package");
 
-        let result = package_feed_hash(&source, "foo", "1.0.0", &fast_policy());
+        let result = package_feed_hash(
+            &source,
+            "foo",
+            "1.0.0",
+            &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         match result {
             FeedHashResult::Present {
                 hash, algorithm, ..

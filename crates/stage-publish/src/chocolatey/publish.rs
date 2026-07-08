@@ -959,7 +959,7 @@ fn handle_feed_state(
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
 ) -> Result<Option<bool>> {
-    match package_feed_hash(source, pkg_name, version, policy) {
+    match package_feed_hash(source, pkg_name, version, policy, log) {
         FeedHashResult::Present {
             hash,
             algorithm,

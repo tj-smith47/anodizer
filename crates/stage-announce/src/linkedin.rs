@@ -3,7 +3,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::Result;
 use serde_json::json;
 
@@ -106,7 +106,7 @@ fn send_linkedin_to(
     policy: &RetryPolicy,
 ) -> Result<()> {
     let client = crate::http::blocking_client()?;
-    let profile_urn = get_profile_urn(&client, api_base, access_token, policy)?;
+    let profile_urn = get_profile_urn(&client, api_base, access_token, policy, log)?;
 
     let share = json!({
         "owner": profile_urn,
@@ -114,7 +114,7 @@ fn send_linkedin_to(
         "distribution": { "linkedInDistributionTarget": {} }
     });
 
-    let resp_text = retry_sync(policy, |_attempt| {
+    let resp_text = retry_sync(RetryLog::new("linkedin share", log), policy, |_attempt| {
         let send_result = client
             .post(format!("{api_base}/v2/shares"))
             .bearer_auth(access_token)
@@ -180,57 +180,62 @@ fn get_profile_urn(
     api_base: &str,
     access_token: &str,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<String> {
-    let outcome = retry_sync(policy, |_attempt| {
-        match client
-            .get(format!("{api_base}/v2/userinfo"))
-            .bearer_auth(access_token)
-            .send()
-        {
-            Err(e) => {
-                let err = anyhow::Error::new(HttpError::from_response(e, None))
-                    .context("linkedin: GET /v2/userinfo transport error");
-                if is_retriable(err.as_ref()) {
-                    Err(ControlFlow::Continue(err))
-                } else {
-                    Err(ControlFlow::Break(err))
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                if status == reqwest::StatusCode::FORBIDDEN {
-                    // Typed sentinel: 403 means "fall back to legacy
-                    // endpoint" rather than retry. The downcast at the
-                    // call-site is robust to error-message rewrites.
-                    return Err(ControlFlow::Break(anyhow::Error::new(LinkedinFallback)));
-                }
-                let body = anodizer_core::http::body_of_blocking(resp);
-                if status.is_success() {
-                    Ok(body)
-                } else {
-                    let inner = anyhow::anyhow!(
-                        "{}",
-                        format_linkedin_http_error("GET /v2/userinfo", status, &body)
-                    );
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
-                    .context(inner);
-                    if is_retriable(wrapped.as_ref()) {
-                        Err(ControlFlow::Continue(wrapped))
+    let outcome = retry_sync(
+        RetryLog::new("linkedin profile lookup", log),
+        policy,
+        |_attempt| {
+            match client
+                .get(format!("{api_base}/v2/userinfo"))
+                .bearer_auth(access_token)
+                .send()
+            {
+                Err(e) => {
+                    let err = anyhow::Error::new(HttpError::from_response(e, None))
+                        .context("linkedin: GET /v2/userinfo transport error");
+                    if is_retriable(err.as_ref()) {
+                        Err(ControlFlow::Continue(err))
                     } else {
-                        Err(ControlFlow::Break(wrapped))
+                        Err(ControlFlow::Break(err))
+                    }
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::FORBIDDEN {
+                        // Typed sentinel: 403 means "fall back to legacy
+                        // endpoint" rather than retry. The downcast at the
+                        // call-site is robust to error-message rewrites.
+                        return Err(ControlFlow::Break(anyhow::Error::new(LinkedinFallback)));
+                    }
+                    let body = anodizer_core::http::body_of_blocking(resp);
+                    if status.is_success() {
+                        Ok(body)
+                    } else {
+                        let inner = anyhow::anyhow!(
+                            "{}",
+                            format_linkedin_http_error("GET /v2/userinfo", status, &body)
+                        );
+                        let wrapped = anyhow::Error::new(HttpError::new(
+                            std::io::Error::other(inner.to_string()),
+                            status.as_u16(),
+                        ))
+                        .context(inner);
+                        if is_retriable(wrapped.as_ref()) {
+                            Err(ControlFlow::Continue(wrapped))
+                        } else {
+                            Err(ControlFlow::Break(wrapped))
+                        }
                     }
                 }
             }
-        }
-    });
+        },
+    );
 
     let text = match outcome {
         Ok(text) => text,
         Err(e) if e.downcast_ref::<LinkedinFallback>().is_some() => {
-            return get_profile_urn_legacy(client, api_base, access_token, policy);
+            return get_profile_urn_legacy(client, api_base, access_token, policy, log);
         }
         Err(e) => return Err(e),
     };
@@ -248,9 +253,12 @@ fn get_profile_urn_legacy(
     api_base: &str,
     access_token: &str,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<String> {
-    let text = retry_sync(policy, |_attempt| {
-        match client
+    let text = retry_sync(
+        RetryLog::new("linkedin legacy profile lookup", log),
+        policy,
+        |_attempt| match client
             .get(format!("{api_base}/v2/me"))
             .bearer_auth(access_token)
             .send()
@@ -291,8 +299,8 @@ fn get_profile_urn_legacy(
                     }
                 }
             }
-        }
-    })?;
+        },
+    )?;
 
     let json: serde_json::Value = serde_json::from_str(&text)?;
     let id = json["id"]

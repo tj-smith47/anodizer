@@ -207,12 +207,13 @@ pub fn send_teams(
     message: &str,
     opts: &TeamsOptions<'_>,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     if classify_teams_webhook(webhook_url) == TeamsWebhookKind::Legacy {
         warn_legacy_teams_webhook();
     }
     let payload = teams_payload(message, opts);
-    post_json(webhook_url, &payload, "teams", policy)
+    post_json(webhook_url, &payload, "teams", policy, log)
 }
 
 // ---------------------------------------------------------------------------

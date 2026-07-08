@@ -154,22 +154,15 @@ pub(crate) fn execute_docker_build(
 ) -> Result<DockerBuildResult> {
     log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
-    use anodizer_core::retry::{RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
         base_delay: job.base_delay,
         max_delay: job.max_delay.unwrap_or(Duration::MAX),
     };
-    retry_sync(&policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "attempt {}/{} failed, retrying…",
-                attempt - 1,
-                job.max_attempts,
-            ));
-        }
-
+    let retry_desc = format!("docker {}", job.backend_label);
+    retry_sync(RetryLog::new(&retry_desc, log), &policy, |attempt| {
         let mut cmd = Command::new(&job.cmd_args[0]);
         cmd.args(&job.cmd_args[1..])
             .stdout(std::process::Stdio::piped())
@@ -360,7 +353,7 @@ pub(crate) fn execute_docker_build(
 /// builds an image but never publishes it has shipped nothing, so the error is
 /// propagated with context, never swallowed.
 fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
-    use anodizer_core::retry::{RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
 
     let multi_platform = job.platforms_list.len() > 1;
@@ -373,15 +366,7 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
 
     for push_args in &push_cmds {
         log.verbose(&format!("running {}", push_args.join(" ")));
-        retry_sync(&policy, |attempt| {
-            if attempt > 1 {
-                log.warn(&format!(
-                    "podman push attempt {}/{} failed, retrying…",
-                    attempt - 1,
-                    job.max_attempts,
-                ));
-            }
-
+        retry_sync(RetryLog::new("podman push", log), &policy, |attempt| {
             let mut cmd = Command::new(&push_args[0]);
             cmd.args(&push_args[1..]);
             for (key, value) in &job.env_vars {

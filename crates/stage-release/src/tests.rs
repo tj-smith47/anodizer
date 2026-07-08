@@ -1,5 +1,9 @@
 #![allow(clippy::field_reassign_with_default)]
 
+fn tlog() -> &'static anodizer_core::log::StageLogger {
+    anodizer_core::test_helpers::test_logger()
+}
+
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
@@ -390,7 +394,7 @@ fn test_populate_artifact_download_urls_skips_other_crates() {
 
 #[tokio::test]
 async fn test_retry_upload_succeeds_immediately() {
-    let result = retry_upload("test", || async { Ok(()) }).await;
+    let result = retry_upload("test", tlog(), || async { Ok(()) }).await;
     assert!(result.is_ok());
 }
 
@@ -399,7 +403,7 @@ async fn test_retry_upload_retries_transient_errors() {
     // Network-substring errors are classified retriable by `is_retriable`.
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let attempt_clone = attempt.clone();
-    let result = retry_upload("test", move || {
+    let result = retry_upload("test", tlog(), move || {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -424,7 +428,7 @@ async fn retry_upload_fast_fails_4xx_via_inner_classifier() {
     use anodizer_core::retry::HttpError;
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let attempt_clone = attempt.clone();
-    let result = retry_upload("test", move || {
+    let result = retry_upload("test", tlog(), move || {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -448,7 +452,7 @@ async fn retry_upload_retries_5xx() {
     use anodizer_core::retry::HttpError;
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let attempt_clone = attempt.clone();
-    let result = retry_upload("test", move || {
+    let result = retry_upload("test", tlog(), move || {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

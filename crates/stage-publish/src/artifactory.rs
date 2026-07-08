@@ -3,7 +3,7 @@ use anodizer_core::context::Context;
 use anodizer_core::hashing::sha256_file;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::fs;
@@ -825,7 +825,7 @@ pub(crate) fn upload_single_artifact_prepared(
     let label = format!("{publisher}: upload of '{}'", artifact.name());
     let art_name = artifact.name().to_string();
     let (status, _body) = retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::AllowRedirects,
         |attempt| {
@@ -1686,6 +1686,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
                 &auth,
                 "preflight: artifactory",
                 &policy,
+                &ctx.logger("preflight"),
             );
             acc = merge(
                 acc,

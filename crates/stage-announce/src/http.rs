@@ -62,9 +62,10 @@ pub(crate) fn post_json(
     payload: &str,
     provider: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let client = blocking_client()?;
-    let _ = retry_http(provider, "POST", policy, || {
+    let _ = retry_http(provider, "POST", policy, log, || {
         client
             .post(url)
             .header("Content-Type", "application/json")

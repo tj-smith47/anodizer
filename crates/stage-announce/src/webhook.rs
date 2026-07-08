@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
@@ -56,6 +56,7 @@ pub(crate) fn format_unexpected_status_message(
 /// forbids semantically meaningful ordering for headers with distinct names;
 /// the user-supplied `headers.Authorization` precedence is enforced at the
 /// builder level (`resolve_webhook_headers`) before we get here.
+#[allow(clippy::too_many_arguments)]
 pub fn send_webhook(
     endpoint_url: &str,
     message: &str,
@@ -64,6 +65,7 @@ pub fn send_webhook(
     skip_tls_verify: bool,
     expected_status_codes: &[u16],
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let effective_ct = if content_type.is_empty() {
         "application/json; charset=utf-8"
@@ -73,7 +75,7 @@ pub fn send_webhook(
 
     let client = crate::http::blocking_client_accept_invalid_certs(skip_tls_verify)?;
 
-    retry_sync(policy, |_attempt| {
+    retry_sync(RetryLog::new("webhook announce", log), policy, |_attempt| {
         let mut builder = client
             .post(endpoint_url)
             .header("Content-Type", effective_ct)
@@ -212,6 +214,7 @@ mod tests {
             false,
             &default_expected_status_codes(),
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -238,6 +241,7 @@ mod tests {
             false,
             &default_expected_status_codes(),
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -265,6 +269,7 @@ mod tests {
             false,
             &[200],
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -288,6 +293,7 @@ mod tests {
             false,
             &[200, 201, 204],
             &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap_err();
         let chain = format!("{err:#}");
@@ -310,6 +316,7 @@ mod tests {
             false,
             &[200],
             &fast_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -329,6 +336,7 @@ mod tests {
             false,
             &[204],
             &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
         )
         .unwrap();
     }

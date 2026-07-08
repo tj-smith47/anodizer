@@ -197,10 +197,10 @@ fn apply_source_mutations_with_resolver(
             Vec::new()
         } else {
             let tag = resolve_tag(ctx, crate_cfg).with_context(|| {
-                format!(
-                    "crate '{}' is selected for version-sync/binstall but has no \
-                     release tag matching its tag_template; cannot derive its version",
-                    crate_cfg.name
+                anodizer_core::crate_scope::no_matching_tag_error(
+                    ctx,
+                    crate_cfg,
+                    "version-sync/binstall",
                 )
             })?;
             let overrides = crate_template_overrides(&crate_cfg.name, &tag)?;
@@ -1216,7 +1216,14 @@ mod source_mutation_tests {
             project_name: "first".to_string(),
             ..Default::default()
         };
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Anchor tag discovery on the (tagless, non-repo) tempdir; the
+        // default "." would leak the developer checkout's own tags into the
+        // zero-tags-branch assertion below.
+        let options = ContextOptions {
+            project_root: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, options);
         ctx.template_vars_mut().set("Version", "1.2.3");
         ctx.template_vars_mut().set("ProjectName", "first");
 
@@ -1230,6 +1237,16 @@ mod source_mutation_tests {
         assert!(
             msg.contains("orphan") && msg.contains("no release tag matching its tag_template"),
             "error must name the crate and the no-tag cause, got: {msg}"
+        );
+        // The test cwd is not a git repo, so the diagnosis must take the
+        // zero-tags branch: name the state and the remedies, not just the
+        // template mismatch.
+        assert!(
+            msg.contains("no git tags at all")
+                && msg.contains("git fetch --tags")
+                && msg.contains("--snapshot")
+                && msg.contains("orphan-v{{ .Version }}"),
+            "tagless-repo error must state the zero-tags cause, remedies, and the tag_template, got: {msg}"
         );
 
         // The crate's Cargo.toml must NOT have been stamped with the first

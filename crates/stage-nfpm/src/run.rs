@@ -1450,6 +1450,7 @@ fn execute_nfpm_jobs(
     parallelism: usize,
     verbosity: anodizer_core::log::Verbosity,
 ) -> Result<Vec<Artifact>> {
+    let log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
     let run_job = |job: &NfpmJob| -> Result<Artifact> {
         let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
 
@@ -1502,7 +1503,7 @@ fn execute_nfpm_jobs(
         })
     };
 
-    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", run_job)
+    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", &log, run_job)
 }
 
 /// One nfpm YAML config a build would feed to `nfpm pkg` for a single

@@ -1140,7 +1140,7 @@ fn run_snap_jobs(
         })
     };
 
-    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "snapcraft", run_job)
+    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "snapcraft", log, run_job)
 }
 
 #[cfg(test)]

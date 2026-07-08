@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 
@@ -244,6 +244,7 @@ pub(crate) fn retry_http<F>(
     provider: &str,
     stage: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
     mut send: F,
 ) -> Result<String>
 where
@@ -251,7 +252,7 @@ where
 {
     let label = format!("{provider}: {stage}");
     let (_status, body) = retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         |_attempt| send(),

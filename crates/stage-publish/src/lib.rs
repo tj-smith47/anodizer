@@ -130,6 +130,25 @@ pub fn report_path_for(ctx: &Context, run_id: &str) -> PathBuf {
     run_dir(ctx, run_id).join(anodizer_core::dist::REPORT_JSON)
 }
 
+/// This run's `report.json` path, only when [`write_report_to_run_dir`]
+/// can have written it: mirrors the writer's gates (snapshot / dry-run /
+/// empty report / invalid run id) AND requires the file to exist on disk,
+/// so a hook handed `$ANODIZER_RUN_REPORT` never reads a stale file left
+/// by an earlier run of the same tag.
+pub(crate) fn existing_run_report_path(ctx: &Context) -> Option<PathBuf> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return None;
+    }
+    let report = ctx.publish_report()?;
+    if report.results.is_empty() {
+        return None;
+    }
+    let run_id = derive_run_id(ctx);
+    rollback_only::validate_run_id(&run_id).ok()?;
+    let path = report_path_for(ctx, &run_id);
+    path.exists().then_some(path)
+}
+
 /// Load the prior run's `<dist>/run-<id>/report.json` into a
 /// [`anodizer_core::publish_report::PublishReport`].
 ///
@@ -695,8 +714,11 @@ fn fire_on_error_hooks(ctx: &Context, log: &StageLogger) {
         })
         .collect();
     let _ = report;
+    // Invariant across the fan-out — derive once instead of re-stat'ing the
+    // run report per failed publisher.
+    let run_report = failure_hooks::run_report_var(ctx);
     for (result, err) in targets {
-        failure_hooks::fire_on_error(ctx, &result, &err, rollback_happened, log);
+        failure_hooks::fire_on_error(ctx, &result, &err, rollback_happened, &run_report, log);
     }
 }
 
@@ -992,19 +1014,23 @@ impl PublishStage {
         // dispatch-time submitter gate).
         run_rollback_if_needed(ctx, publishers, log);
 
-        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
-        fire_on_error_hooks(ctx, log);
-
         // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
         //
         // Writer half of the `--rollback-only --from-run=<id>` contract
         // (`rollback_only::run` is the reader). Runs AFTER
         // `run_rollback_if_needed` so per-publisher rollback outcomes
         // (`RolledBack` / `RollbackFailed`) are captured — the file
-        // represents END-OF-PIPELINE state, not mid-pipeline. Snapshot /
+        // represents END-OF-PIPELINE state, not mid-pipeline — and BEFORE
+        // `fire_on_error_hooks`, so an operator hook reading the run report
+        // (via `$ANODIZER_RUN_REPORT`) observes THIS run's outcomes rather
+        // than a previous run's file (hooks only read `&Context`; nothing
+        // they do can change reportable state after the write). Snapshot /
         // dry-run modes and empty-result reports are no-ops; IO failure
         // is best-effort (warn + continue, never fail the pipeline).
         write_report_to_run_dir(ctx, log);
+
+        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
+        fire_on_error_hooks(ctx, log);
 
         // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
         //
@@ -2648,6 +2674,59 @@ mod tests {
             assert!(matches!(
                 parsed.results[0].outcome,
                 PublisherOutcome::Succeeded
+            ));
+        }
+
+        /// The write-then-fire ordering contract: an `on_error` hook reading
+        /// `$ANODIZER_RUN_REPORT` must observe THIS run's report.json — the
+        /// stale-file/no-file failure mode was the report being written after
+        /// the hooks fired.
+        #[test]
+        fn on_error_hook_sees_current_run_report_via_env() {
+            use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let out = tmp.path().join("hook-out.json");
+            let out_sh = out.display().to_string().replace('\\', "/");
+            let publish = PublishConfig {
+                on_error: Some(vec![HookEntry::Structured(StructuredHook {
+                    cmd: format!("cat \"$ANODIZER_RUN_REPORT\" > {out_sh}"),
+                    ..Default::default()
+                })]),
+                ..Default::default()
+            };
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .crates(vec![CrateConfig {
+                    name: "app".to_string(),
+                    path: ".".to_string(),
+                    publish: Some(publish),
+                    ..Default::default()
+                }])
+                .build();
+            let mut report = PublishReport::default();
+            report.results.push(PublisherResult {
+                name: "homebrew".to_string(),
+                group: PublisherGroup::Manager,
+                required: true,
+                outcome: PublisherOutcome::Failed("tap push rejected".to_string()),
+                evidence: None,
+            });
+            ctx.set_publish_report(report);
+
+            let log = ctx.logger("publish-test");
+            // Same order as run_publish_pipeline: persist, then fire.
+            write_report_to_run_dir(&ctx, &log);
+            fire_on_error_hooks(&ctx, &log);
+
+            let body = std::fs::read_to_string(&out)
+                .expect("hook must have read the run report via $ANODIZER_RUN_REPORT");
+            let parsed: PublishReport = serde_json::from_str(&body).expect("current-run JSON");
+            assert_eq!(parsed.results[0].name, "homebrew");
+            assert!(matches!(
+                parsed.results[0].outcome,
+                PublisherOutcome::Failed(_)
             ));
         }
 

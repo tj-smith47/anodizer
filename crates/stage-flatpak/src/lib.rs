@@ -1007,6 +1007,7 @@ impl Stage for FlatpakStage {
                 &jobs,
                 parallelism,
                 "flatpak",
+                &log,
                 |job| run_flatpak_job(job, verbosity),
             )?;
             new_artifacts.extend(results);

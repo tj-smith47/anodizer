@@ -75,6 +75,44 @@ fn test_parse_semver_tag_with_prerelease_prefix() {
 }
 
 #[test]
+fn test_version_from_tag_extracts_across_tag_families() {
+    use super::semver::version_from_tag;
+    assert_eq!(version_from_tag("v1.2.3"), Some("1.2.3".to_string()));
+    assert_eq!(version_from_tag("1.2.3"), Some("1.2.3".to_string()));
+    assert_eq!(version_from_tag("crd-v0.5.0"), Some("0.5.0".to_string()));
+    assert_eq!(
+        version_from_tag("sub/v1.2.3-rc.1"),
+        Some("1.2.3-rc.1".to_string())
+    );
+    assert_eq!(version_from_tag("core-v2.0.1"), Some("2.0.1".to_string()));
+    assert_eq!(
+        version_from_tag("v0.4.0-beta.1"),
+        Some("0.4.0-beta.1".to_string())
+    );
+    assert_eq!(version_from_tag(""), None);
+    assert_eq!(version_from_tag("nightly"), None);
+    assert_eq!(version_from_tag("not-a-version"), None);
+}
+
+#[test]
+fn test_split_tag_family_prefix_and_version() {
+    use super::semver::split_tag_family;
+    let (prefix, sv) = split_tag_family("v1.2.3").unwrap();
+    assert_eq!(prefix, "v");
+    assert_eq!(sv.version_string(), "1.2.3");
+    let (prefix, sv) = split_tag_family("crd-v0.5.0").unwrap();
+    assert_eq!(prefix, "crd-v");
+    assert_eq!(sv.version_string(), "0.5.0");
+    let (prefix, sv) = split_tag_family("sub/v1.2.3-rc.1").unwrap();
+    assert_eq!(prefix, "sub/v");
+    assert_eq!(sv.version_string(), "1.2.3-rc.1");
+    let (prefix, _) = split_tag_family("1.2.3").unwrap();
+    assert_eq!(prefix, "");
+    assert!(split_tag_family("").is_none());
+    assert!(split_tag_family("nightly").is_none());
+}
+
+#[test]
 fn test_is_prerelease() {
     assert!(parse_semver("v1.0.0-rc.1").unwrap().is_prerelease());
     assert!(!parse_semver("v1.0.0").unwrap().is_prerelease());

@@ -20,7 +20,7 @@
 use std::path::Path;
 
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
@@ -50,6 +50,7 @@ pub(crate) struct GiteaCtx<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
     pub policy: &'a RetryPolicy,
+    pub log: &'a anodizer_core::log::StageLogger,
 }
 
 /// Release metadata used by [`gitea_create_release`].
@@ -137,6 +138,7 @@ pub(crate) async fn gitea_create_release(
         owner,
         repo,
         policy,
+        log,
     } = *ctx;
     let GiteaReleaseSpec {
         tag,
@@ -184,7 +186,8 @@ pub(crate) async fn gitea_create_release(
     }
 
     // Try to find an existing release by listing all releases and matching tag.
-    let existing = find_release_by_tag(client, api, &enc_owner, &enc_repo, tag, policy).await?;
+    let existing =
+        find_release_by_tag(client, api, &enc_owner, &enc_repo, tag, policy, log).await?;
 
     if let Some((release_id, existing_body)) = existing {
         // Release exists — update it with mode-based body composition.
@@ -204,7 +207,7 @@ pub(crate) async fn gitea_create_release(
         });
 
         retry_http_async(
-            "gitea: PATCH update release",
+            RetryLog::new("gitea: PATCH update release", log),
             policy,
             SuccessClass::Strict,
             |_| client.patch(&update_url).json(&payload).send(),
@@ -231,7 +234,7 @@ pub(crate) async fn gitea_create_release(
         });
 
         let resp = retry_http_async(
-            "gitea: POST create release",
+            RetryLog::new("gitea: POST create release", log),
             policy,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
@@ -272,6 +275,7 @@ async fn find_release_by_tag(
     enc_repo: &str,
     tag: &str,
     policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Option<(u64, Option<String>)>> {
     const MAX_PAGES: u32 = 10;
     const PAGE_SIZE: u32 = 50;
@@ -283,7 +287,7 @@ async fn find_release_by_tag(
         );
 
         let resp = retry_http_async(
-            &format!("gitea: GET releases page {page}"),
+            RetryLog::new(&format!("gitea: GET releases page {page}"), log),
             policy,
             SuccessClass::Strict,
             |_| client.get(&url).send(),
@@ -343,6 +347,7 @@ pub(crate) async fn gitea_upload_asset(
         owner,
         repo,
         policy,
+        log,
     } = *ctx;
     let GiteaAssetSpec {
         file_path,
@@ -367,7 +372,7 @@ pub(crate) async fn gitea_upload_asset(
     // infallible (a valid RFC-2045 token); same pattern as gitlab.rs and
     // cloudsmith.rs::retry_request.
     retry_http_async(
-        "gitea: POST upload asset",
+        RetryLog::new("gitea: POST upload asset", log),
         policy,
         SuccessClass::Strict,
         |_| {
@@ -410,6 +415,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
         owner,
         repo,
         policy,
+        log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
@@ -422,7 +428,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
     );
 
     let resp = retry_http_async(
-        "gitea: GET release assets",
+        RetryLog::new("gitea: GET release assets", log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&list_url).send(),
@@ -452,7 +458,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
             );
 
             retry_http_async(
-                "gitea: DELETE asset",
+                RetryLog::new("gitea: DELETE asset", log),
                 policy,
                 SuccessClass::Strict,
                 |_| client.delete(&delete_url).send(),
@@ -492,6 +498,7 @@ pub(crate) async fn gitea_find_asset_size(
         owner,
         repo,
         policy,
+        log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
@@ -503,7 +510,7 @@ pub(crate) async fn gitea_find_asset_size(
     );
 
     let resp = retry_http_async(
-        "gitea: GET release assets (size probe)",
+        RetryLog::new("gitea: GET release assets (size probe)", log),
         policy,
         SuccessClass::Strict,
         |_| client.get(&list_url).send(),
@@ -552,6 +559,7 @@ pub(crate) struct GiteaAssetClient {
     pub policy: RetryPolicy,
     pub release_id: u64,
     pub tag: String,
+    pub log: anodizer_core::log::StageLogger,
 }
 
 impl GiteaAssetClient {
@@ -562,6 +570,7 @@ impl GiteaAssetClient {
             owner: &self.owner,
             repo: &self.repo,
             policy: &self.policy,
+            log: &self.log,
         }
     }
 }
@@ -611,7 +620,7 @@ impl crate::forge::ForgeAssetClient for GiteaAssetClient {
             file_name,
         };
         let api_ctx = self.api_ctx();
-        crate::retry_upload(&op_name, || {
+        crate::retry_upload(&op_name, &self.log, || {
             gitea_upload_asset(&api_ctx, self.release_id, &asset)
         })
         .await
@@ -744,6 +753,7 @@ pub(crate) fn run_gitea_backend(
             owner: &repo_cfg.owner,
             repo: &repo_cfg.name,
             policy: &policy,
+            log,
         };
 
         // Create or update the release.
@@ -786,6 +796,7 @@ pub(crate) fn run_gitea_backend(
                 policy,
                 release_id,
                 tag: tag.to_string(),
+                log: log.clone(),
             });
             crate::forge::run_upload_loop(forge_client, &plan, artifact_entries, log).await?;
         }
@@ -948,6 +959,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1007,6 +1019,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1054,6 +1067,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "",
@@ -1108,6 +1122,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1211,6 +1226,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1277,6 +1293,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1334,6 +1351,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1385,6 +1403,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1440,6 +1459,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1506,6 +1526,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v2.0.0",
@@ -1571,6 +1592,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let spec = GiteaReleaseSpec {
             tag: "v1.0.0",
@@ -1630,7 +1652,7 @@ mod tests {
         let client = test_client();
         let policy = fast_policy(2);
         let api_url = format!("http://{addr}");
-        let found = find_release_by_tag(&client, &api_url, "o", "r", "v9.9.9", &policy)
+        let found = find_release_by_tag(&client, &api_url, "o", "r", "v9.9.9", &policy, tlog())
             .await
             .expect("listing should succeed");
         assert_eq!(
@@ -1669,7 +1691,7 @@ mod tests {
         let client = test_client();
         let policy = fast_policy(2);
         let api_url = format!("http://{addr}");
-        let found = find_release_by_tag(&client, &api_url, "o", "r", "v2.0.0", &policy)
+        let found = find_release_by_tag(&client, &api_url, "o", "r", "v2.0.0", &policy, tlog())
             .await
             .expect("listing should succeed");
         assert_eq!(found, None, "tag absent on a short page => None");
@@ -1700,7 +1722,7 @@ mod tests {
         let client = test_client();
         let policy = fast_policy(1);
         let api_url = format!("http://{addr}");
-        let err = find_release_by_tag(&client, &api_url, "o", "r", "v1.0.0", &policy)
+        let err = find_release_by_tag(&client, &api_url, "o", "r", "v1.0.0", &policy, tlog())
             .await
             .expect_err("matched-but-id-less release must error");
         assert!(
@@ -1738,6 +1760,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GiteaAssetSpec {
             file_path: &file,
@@ -1800,6 +1823,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GiteaAssetSpec {
             file_path: &file,
@@ -1842,6 +1866,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
         let asset = GiteaAssetSpec {
             file_path: &file,
@@ -1893,6 +1918,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let deleted = gitea_delete_asset_by_name(&ctx, 9, "target.bin")
@@ -1934,6 +1960,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let deleted = gitea_delete_asset_by_name(&ctx, 9, "missing.bin")
@@ -1983,6 +2010,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let deleted = gitea_delete_asset_by_name(&ctx, 2, "t.bin")
@@ -2032,6 +2060,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let err = gitea_delete_asset_by_name(&ctx, 3, "target.bin")
@@ -2076,6 +2105,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let size = gitea_find_asset_size(&ctx, 5, "b.bin")
@@ -2107,6 +2137,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let size = gitea_find_asset_size(&ctx, 5, "missing.bin")
@@ -2140,6 +2171,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let size = gitea_find_asset_size(&ctx, 5, "a.bin")
@@ -2176,6 +2208,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            log: tlog(),
         };
 
         let err = gitea_find_asset_size(&ctx, 8, "a.bin")
@@ -2207,6 +2240,10 @@ mod tests {
     };
     use anodizer_core::context::Context;
     use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn tlog() -> &'static StageLogger {
+        anodizer_core::test_helpers::test_logger()
+    }
     use anodizer_core::scm::ScmTokenType;
     use anodizer_core::test_helpers::TestContextBuilder;
 

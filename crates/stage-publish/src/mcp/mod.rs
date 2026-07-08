@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
 
 use anodizer_core::config::{McpAuthMethod, McpConfig};
@@ -247,7 +247,7 @@ pub(crate) fn publish_with_registry(
     );
     provider.login().context("mcp: could not login")?;
     let token = provider
-        .get_token()
+        .get_token(log)
         .context("mcp: could not get registry token")?;
 
     let body = serde_json::to_string(&server).context("mcp: serialize ServerJSON")?;
@@ -823,7 +823,7 @@ fn publish_payload(
 
     // reqwest validates header values; CRLF in `token` surfaces as a send-error, not header injection.
     let result = retry_http_blocking(
-        "mcp: POST /v0/publish",
+        RetryLog::new("mcp: POST /v0/publish", log),
         policy,
         SuccessClass::Strict,
         |_| {

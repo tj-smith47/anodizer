@@ -18,7 +18,7 @@ use anodizer_core::context::Context;
 use anodizer_core::http::blocking_client;
 use anodizer_core::log::StageLogger;
 use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::Result;
 use std::time::Duration;
 
@@ -33,8 +33,9 @@ use crate::util;
 pub trait PreflightChecker: Send + Sync {
     /// Human-readable publisher name used in report entries.
     fn publisher_name(&self) -> &str;
-    /// Query the remote registry for `package` at `version`.
-    fn check(&self, package: &str, version: &str) -> PublisherState;
+    /// Query the remote registry for `package` at `version`. `log` surfaces
+    /// per-attempt retry warns from the underlying HTTP probes.
+    fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,9 +57,9 @@ impl PreflightChecker for CargoCratesIo {
         "cargo"
     }
 
-    fn check(&self, package: &str, version: &str) -> PublisherState {
+    fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
         let url = crate::cargo::sparse_index_url(package);
-        match query_crates_io(&url, package, version, &self.policy) {
+        match query_crates_io(&url, package, version, &self.policy, log) {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
@@ -75,11 +76,12 @@ fn query_crates_io(
     crate_name: &str,
     version: &str,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<bool> {
     let client = blocking_client(Duration::from_secs(10))?;
     let label = format!("preflight: crates.io index for '{}'", crate_name);
     let result = retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         |_| client.get(url).send(),
@@ -141,10 +143,10 @@ impl PreflightChecker for Chocolatey {
         "chocolatey"
     }
 
-    fn check(&self, package: &str, version: &str) -> PublisherState {
+    fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
         use crate::chocolatey::package::{FeedHashResult, classify_moderation, package_feed_hash};
 
-        match package_feed_hash(&self.source, package, version, &self.policy) {
+        match package_feed_hash(&self.source, package, version, &self.policy, log) {
             FeedHashResult::Present {
                 status,
                 is_approved,
@@ -193,13 +195,13 @@ impl PreflightChecker for Winget {
         "winget"
     }
 
-    fn check(&self, package: &str, version: &str) -> PublisherState {
+    fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
         // Search for an open PR in microsoft/winget-pkgs whose title contains
         // `<PackageIdentifier> <version>`. anodizer's convention is to title
         // the PR `"New version: <PackageIdentifier> version <Version>"`, but
         // GitHub's `in:title` matches words independently so the query
         // works for any title that mentions both tokens.
-        match query_winget_pr(package, version, self.token.as_deref(), &self.policy) {
+        match query_winget_pr(package, version, self.token.as_deref(), &self.policy, log) {
             Ok(WingetPrLookup::Found(url)) => PublisherState::PRPending(url),
             Ok(WingetPrLookup::NotFound) => PublisherState::Clean,
             Ok(WingetPrLookup::ItemWithoutUrl) => PublisherState::Unknown {
@@ -240,6 +242,7 @@ fn query_winget_pr(
     version: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<WingetPrLookup> {
     let query = format!(
         "repo:microsoft/winget-pkgs is:pr is:open {} {} in:title",
@@ -252,7 +255,7 @@ fn query_winget_pr(
     // URL via [`query_winget_pr_at`] instead.
     let base = anodizer_core::http::github_api_base(&anodizer_core::ProcessEnvSource);
     let url = format!("{}/search/issues?q={}&per_page=1", base, encoded);
-    query_winget_pr_at(&url, token, policy)
+    query_winget_pr_at(&url, token, policy, log)
 }
 
 /// Variant of [`query_winget_pr`] that takes a pre-built URL. Sole call site
@@ -263,6 +266,7 @@ fn query_winget_pr_at(
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    log: &StageLogger,
 ) -> Result<WingetPrLookup> {
     let token_clone = token.map(str::to_string);
     let url_clone = url.to_string();
@@ -270,7 +274,7 @@ fn query_winget_pr_at(
 
     let client = blocking_client(Duration::from_secs(15))?;
     let result = retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         move |_| {
@@ -380,8 +384,8 @@ impl PreflightChecker for Aur {
         "aur"
     }
 
-    fn check(&self, package: &str, version: &str) -> PublisherState {
-        match query_aur_rpc(package, version, &self.policy) {
+    fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
+        match query_aur_rpc(package, version, &self.policy, log) {
             // AUR allows the same version to be re-pushed (it's a git push to
             // the AUR repo), so the row's existence is informational rather
             // than a blocker. Surface as Unknown with a reason so the report
@@ -405,21 +409,31 @@ impl PreflightChecker for Aur {
 /// uses the `<pkgver>-<pkgrel>` format (e.g. `"12.5.7-1"`), so a parser
 /// looking for our semver alone must accept both an exact match and a
 /// `<version>-` prefix.
-fn query_aur_rpc(package: &str, version: &str, policy: &RetryPolicy) -> Result<bool> {
+fn query_aur_rpc(
+    package: &str,
+    version: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<bool> {
     let url = format!("https://aur.archlinux.org/rpc/v5/info?arg[]={}", package);
-    query_aur_rpc_at(&url, version, policy)
+    query_aur_rpc_at(&url, version, policy, log)
 }
 
 /// Variant of [`query_aur_rpc`] that takes a pre-built URL. Sole call site
 /// for the HTTP+parse plumbing — exposed so tests can substitute a local
 /// mock-server URL while still exercising the retry / parse pipeline
 /// end-to-end.
-fn query_aur_rpc_at(url: &str, version: &str, policy: &RetryPolicy) -> Result<bool> {
+fn query_aur_rpc_at(
+    url: &str,
+    version: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<bool> {
     let client = blocking_client(Duration::from_secs(10))?;
     let label = format!("preflight: AUR RPC ({})", url);
     let url_clone = url.to_string();
     let result = retry_http_blocking(
-        &label,
+        RetryLog::new(&label, log),
         policy,
         SuccessClass::Strict,
         move |_| client.get(&url_clone).send(),
@@ -603,7 +617,7 @@ fn run_preflight_inner(
         if publish.cargo.is_some() {
             log.verbose(&format!("checking cargo for '{}@{}'", krate.name, version));
             let checker = factory.cargo(policy);
-            let state = checker.check(&krate.name, &version);
+            let state = checker.check(&krate.name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
                 package: krate.name.clone(),
@@ -625,7 +639,7 @@ fn run_preflight_inner(
                 pkg_name, version
             ));
             let checker = factory.chocolatey(source, policy);
-            let state = checker.check(&pkg_name, &version);
+            let state = checker.check(&pkg_name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
                 package: pkg_name,
@@ -645,7 +659,7 @@ fn run_preflight_inner(
             let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
             log.verbose(&format!("checking winget for '{}@{}'", pkg_id, version));
             let checker = factory.winget(token, policy);
-            let state = checker.check(&pkg_id, &version);
+            let state = checker.check(&pkg_id, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
                 package: pkg_id,
@@ -663,7 +677,7 @@ fn run_preflight_inner(
                 .unwrap_or_else(|| format!("{}-bin", krate.name));
             log.verbose(&format!("checking AUR for '{}@{}'", pkg_name, version));
             let checker = factory.aur(policy);
-            let state = checker.check(&pkg_name, &version);
+            let state = checker.check(&pkg_name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
                 package: pkg_name,
@@ -750,7 +764,7 @@ fn run_cargo_publish_simulation(
 
     let policy = RetryPolicy::PREFLIGHT;
     let checker = factory.cargo(policy);
-    let index_query = |krate: &str, version: &str| checker.check(krate, version);
+    let index_query = |krate: &str, version: &str| checker.check(krate, version, log);
 
     run_cargo_publish_simulation_with(ctx, log, report, &index_query, dry_run_runner);
 }
@@ -1314,7 +1328,7 @@ mod tests {
         fn publisher_name(&self) -> &str {
             self.name
         }
-        fn check(&self, _package: &str, _version: &str) -> PublisherState {
+        fn check(&self, _package: &str, _version: &str, _log: &StageLogger) -> PublisherState {
             self.state.clone()
         }
     }
@@ -1323,7 +1337,11 @@ mod tests {
         let mut report = PreflightReport::new();
         for (name, state) in checkers {
             let checker = MockChecker { name, state };
-            let s = checker.check("testpkg", "1.0.0");
+            let s = checker.check(
+                "testpkg",
+                "1.0.0",
+                anodizer_core::test_helpers::test_logger(),
+            );
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
                 package: "testpkg".to_string(),
@@ -1414,7 +1432,13 @@ mod tests {
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
         ]);
         let url = format!("http://{}/", addr);
-        let result = query_crates_io(&url, "foo", "1.0.0", &fast_retry());
+        let result = query_crates_io(
+            &url,
+            "foo",
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok());
         assert!(!result.unwrap(), "absent on 404");
     }
@@ -1430,7 +1454,13 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/", addr);
-        let result = query_crates_io(&url, "foo", "1.0.0", &fast_retry());
+        let result = query_crates_io(
+            &url,
+            "foo",
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok());
         assert!(result.unwrap(), "present when version matches");
     }
@@ -1446,7 +1476,13 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/", addr);
-        let result = query_crates_io(&url, "foo", "1.0.0", &fast_retry());
+        let result = query_crates_io(
+            &url,
+            "foo",
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok());
         assert!(!result.unwrap(), "absent when version does not match");
     }
@@ -1464,7 +1500,12 @@ mod tests {
         let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
         // query_aur_rpc does GET to the URL directly; reuse it with overridden URL
         // by calling the lower-level function with the mock address.
-        let result = query_aur_rpc_at(&url, "1.0.0", &fast_retry());
+        let result = query_aur_rpc_at(
+            &url,
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok());
         assert!(!result.unwrap(), "absent on empty results");
     }
@@ -1480,7 +1521,12 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
-        let result = query_aur_rpc_at(&url, "1.0.0", &fast_retry());
+        let result = query_aur_rpc_at(
+            &url,
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -1502,7 +1548,13 @@ mod tests {
             "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
             addr
         );
-        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        let result = query_winget_pr_at(
+            &url,
+            None,
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("ok");
         assert!(
             matches!(result, WingetPrLookup::NotFound),
             "no PR when total_count=0"
@@ -1523,7 +1575,13 @@ mod tests {
             "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
             addr
         );
-        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        let result = query_winget_pr_at(
+            &url,
+            None,
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("ok");
         match result {
             WingetPrLookup::Found(u) => assert!(u.contains("pull/9999"), "correct PR URL: {u}"),
             other => panic!("expected Found, got: {:?}", std::mem::discriminant(&other)),
@@ -1543,7 +1601,13 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/search/issues", addr);
-        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        let result = query_winget_pr_at(
+            &url,
+            None,
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("ok");
         assert!(
             matches!(result, WingetPrLookup::ItemWithoutUrl),
             "items[0] without html_url must surface as a distinct outcome"
@@ -1563,7 +1627,13 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/search/issues", addr);
-        let err = query_winget_pr_at(&url, None, &fast_retry()).expect_err("must be Err");
+        let err = query_winget_pr_at(
+            &url,
+            None,
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("must be Err");
         assert!(
             err.to_string().contains("malformed winget search response"),
             "{err}"
@@ -1583,7 +1653,13 @@ mod tests {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
         let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
-        let err = query_aur_rpc_at(&url, "1.0.0", &fast_retry()).expect_err("must be Err");
+        let err = query_aur_rpc_at(
+            &url,
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect_err("must be Err");
         assert!(
             err.to_string().contains("malformed AUR RPC response"),
             "{err}"
@@ -1598,7 +1674,13 @@ mod tests {
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
         ]);
         let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
-        let result = query_aur_rpc_at(&url, "1.0.0", &fast_retry()).expect("ok");
+        let result = query_aur_rpc_at(
+            &url,
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("ok");
         assert!(
             !result,
             "404 must map to Ok(false) so the caller emits Clean"
@@ -1616,12 +1698,24 @@ mod tests {
         drop(listener);
 
         let url = format!("http://{}/", addr);
-        let result = query_crates_io(&url, "foo", "1.0.0", &fast_retry());
+        let result = query_crates_io(
+            &url,
+            "foo",
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        );
         let err = result.expect_err("must be Err on connect-refused");
 
         // The trait-level wrapper would surface this as Unknown { reason } —
         // exercise the path explicitly to confirm.
-        let checker_state = match query_crates_io(&url, "foo", "1.0.0", &fast_retry()) {
+        let checker_state = match query_crates_io(
+            &url,
+            "foo",
+            "1.0.0",
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        ) {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
@@ -1658,7 +1752,13 @@ mod tests {
         // `.expect()` propagates Result; discard the WingetPrLookup payload
         // — this test asserts on the captured Authorization header side
         // effect, not the response body.
-        query_winget_pr_at(&url, Some("secret-token"), &fast_retry()).expect("ok");
+        query_winget_pr_at(
+            &url,
+            Some("secret-token"),
+            &fast_retry(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .expect("ok");
 
         // reqwest lowercases header names on the wire (HTTP/2 style); match
         // case-insensitively so the assertion isn't brittle to that detail.
@@ -1741,7 +1841,7 @@ mod tests {
         let source = format!("http://{}/", addr);
 
         let checker = Chocolatey::new(source, fast_retry());
-        let state = checker.check("foo", "1.0.0");
+        let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
         match state {
             PublisherState::InModeration { reason } => assert!(
                 reason.contains("moderation"),
@@ -1760,7 +1860,7 @@ mod tests {
         let source = format!("http://{}/", addr);
 
         let checker = Chocolatey::new(source, fast_retry());
-        let state = checker.check("foo", "1.0.0");
+        let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
         assert!(
             matches!(state, PublisherState::Published),
             "approved row must be Published, got: {:?}",
@@ -1777,7 +1877,7 @@ mod tests {
         let source = format!("http://{}/", addr);
 
         let checker = Chocolatey::new(source, fast_retry());
-        let state = checker.check("foo", "1.0.0");
+        let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
         assert!(
             matches!(state, PublisherState::Clean),
             "absent row must be Clean, got: {:?}",
@@ -1801,7 +1901,7 @@ mod tests {
         let source = format!("http://{}/", addr);
 
         let checker = Chocolatey::new(source, fast_retry());
-        let state = checker.check("foo", "1.0.0");
+        let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
         assert!(
             matches!(state, PublisherState::Published),
             "present-but-hashless row must be Published, got: {:?}",
@@ -1822,7 +1922,7 @@ mod tests {
         fn publisher_name(&self) -> &str {
             self.name
         }
-        fn check(&self, _package: &str, _version: &str) -> PublisherState {
+        fn check(&self, _package: &str, _version: &str, _log: &StageLogger) -> PublisherState {
             self.state.clone()
         }
     }
@@ -2471,7 +2571,7 @@ mod tests {
             fn publisher_name(&self) -> &str {
                 "cargo"
             }
-            fn check(&self, _package: &str, _version: &str) -> PublisherState {
+            fn check(&self, _package: &str, _version: &str, _log: &StageLogger) -> PublisherState {
                 panic!("gated-out simulation must never query the index")
             }
         }

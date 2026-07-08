@@ -12,7 +12,82 @@ cold without re-investigating.
 
 ## Open
 
-_(No open code/config gaps. Both v0.15.0 npm findings — the retry-budget
+_(empty — the 2026-07-07/08 release-machinery audit's fix-now items are all
+fixed; see the audit Resolved entries below. Design/behavior decisions are
+pitched in `.claude/audits/2026-07-07-design-pitches.md` (D1–D9) and await the
+user's call.)_
+
+## Resolved (2026-07-08 release-machinery audit session)
+
+  (mode 0644) — RESOLVED 2026-07-08.** Found from cfgd (acceptance S0.5): the
+  published cfgd v0.5.0 images ship `/usr/local/bin/<bin>` as `-rw-r--r--`
+  because `fs::copy` preserves the source mode, CI artifact round-trips strip
+  the exec bit, and the documented plain-`COPY` Dockerfile pattern propagates
+  the stripped mode into the image (`executable file not found in $PATH`).
+  **Fixed** in `crates/stage-docker/src/staging.rs`: staging forces 0755 on
+  executable kinds (Binary, CShared); packages/archives keep their copied
+  mode. **Evidence (red→green):** `staged_binary_is_forced_executable` fails
+  with the chmod neutered (`staged binary must be executable`), passes with
+  the fix. **Note (user action, unchanged):** the already-published cfgd
+  v0.5.0 images are broken and need a patch re-release regardless.
+
+  tagging / rollback / retry / verification / hooks, all fixed — RESOLVED
+  2026-07-08.** Full map: `.claude/audits/2026-07-07-release-machinery-audit.md`.
+  Evidence: full workspace 10,419/10,419 tests green, clippy clean,
+  `task audit:log` clean; every fix carries new regression tests.
+  - **Tagging:** `release_branches` guard + `tag_pre_hooks`/`tag_post_hooks`
+    covered only single/lockstep — per-crate mode (pushes by default!)
+    bypassed all of them. Guard hoisted before shape dispatch; hooks wired
+    through one shared `tag_hook_context()`; per-crate `git_api_tagging` now
+    fails loudly as unsupported instead of being silently ignored. Per-crate
+    commit-scan git errors no longer swallowed into "no bump signal". Re-run
+    over a leftover local tag at HEAD is idempotent (actionable error
+    otherwise). Cargo.lock-stale warns unified + actionable. Repo shape now
+    detected ONCE (guard + dispatch share it).
+  - **Rollback/guards:** crates.io burn probe fails CLOSED on unloadable
+    config / failed tag→crate mapping (was silently fail-open — the exact
+    class the probe was added to close) with crate@version probe dedup;
+    lib-only `Cargo.lock` re-cut forgiveness now counts example targets as
+    bins (`cargo install --example` consumes the packaged lockfile);
+    `gather_burn_evidence` filters stale summaries by tag FAMILY (same prefix,
+    different base version) — the first cut compared raw version strings and
+    dropped per-crate sibling + prerelease-suffix evidence (fail-open on the
+    destructive rollback path; caught in this session's review round).
+  - **Retry:** silent retries are unrepresentable — core engine takes a
+    required `RetryLog` and warns `<desc> attempt n/max failed (<cause>);
+    retrying in <X.Y>s` for EVERY consumer (previously ~25min of silence was
+    possible at any verbosity across mcp/gemfury/choco/artifactory/
+    cloudsmith/http_upload/announcers/gitlab/gitea/milestones); snapcraft's
+    hardcoded "(5xx)" + missing attempt-start banner fixed (the v0.15.4
+    10-minute dead-air); sign fast-fails deterministic cosign errors
+    (flag/key-parse/identity) — review caught the first needle list matching
+    TUF-cache ENOENT (would have reintroduced the 3afd0f21 race, unretried);
+    generic ENOENT needle removed, both ENOENT flavors pinned TRANSIENT by
+    test; jitter no longer collapses to a constant under SOURCE_DATE_EPOCH
+    (Weyl sequence); attempt numbering true-1-based everywhere.
+  - **Verification/hooks:** the version-sync/binstall "no release tag
+    matching tag_template" bail now diagnoses the tagless-repo state (fresh
+    clone / shallow / rollback-deleted tags) with remedies, samples nearest
+    tags otherwise, and the wording is deduped by construction (shared
+    helper); `report.json` is written BEFORE `on_error` hooks fire, path
+    exposed as `{{ .RunReport }}` + `ANODIZER_RUN_REPORT`; failed parallel
+    chunks no longer drop completed siblings' results (partial-progress
+    warns; additional-failure lines log root cause only at warn, full chain
+    at verbose — upload URLs/bodies stay out of default CI logs); stale
+    publish-only ChecksumStage doc corrected.
+  - **Review round (10 verified findings, all fixed):** burn-evidence family
+    filter + TUF ENOENT needle (above); `ANODIZER_PREVIOUS_TAG` no longer
+    leaks across per-crate hook groups (cleared when a group has no previous
+    tag); per-crate hook firing deduped per unique shared tag; the CI-parsed
+    `anodizer-output` payload prints before post hooks can abort (a flaky
+    post hook no longer makes pushed tags look like "nothing tagged");
+    rollback's config-refusal message names that `--force` skips ALL
+    published-state layers; `tag_version`/`bare_version_from_tag`
+    consolidated into `git::version_from_tag` + `split_tag_family`; LinkedIn
+    profile-lookup retry desc unmislabeled; duplicated test-logger helpers
+    and a pattern-replace-corrupted comment cleaned.
+
+_(Both v0.15.0 npm findings — the retry-budget
 guillotine and the OIDC-fallback — are fixed and proven; see Resolved. Every
 non-paid dogfooding field
 is landed in `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN
@@ -55,7 +130,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
 
 ## Resolved
 
-- [x] **Chocolatey's prepublish guard hard-requires `xmllint` but no
   requirement ever declared it — release died AFTER signing + GitHub
   release (cfgd v0.5.0 run 28853272910, Publish cfgd leg, 2026-07-07
   15:27Z) — RESOLVED 2026-07-07.** The strict pre-publish schema floor
@@ -96,7 +170,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   chocolatey+homebrew+nfpm config: xmllint/git/cargo/nfpm required,
   ruby/dpkg-deb/rpm/zig recommended, stdout pure JSON.
 
-- [x] **Parallel keyless cosign signing races on the cold TUF cache and
   fast-fail retries lose every round (cfgd v0.5.0 run 28853272910, Publish
   cfgd leg, 3×: 09:42Z + 10:05Z + retry 2026-07-07) — RESOLVED
   2026-07-07.** The sign stage fanned out `signing 22 artifacts with
@@ -135,7 +208,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   stage-sign suite 174/174, cli suite 1114/1114 + all integration suites
   green.
 
-- [x] **Cargo poison guard dead-ends every re-cut of a partially-published
   workspace release (cfgd v0.5.0 attempt #5, 2026-07-07) — RESOLVED
   2026-07-07.** cfgd-crd@0.5.0 was published to
   crates.io by a PRIOR release run; the re-cut's locally-packaged tarball
@@ -175,7 +247,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   `packaged_crate_has_bin_targets_reads_the_normalized_manifest`;
   stage-publish suite 2524/2524.
 
-- [x] **Tag rollback consulted only the per-run summary, deleting tags whose
   versions were burned on crates.io by a PRIOR run (cfgd crd-v0.5.0, attempt
   #5) — RESOLVED 2026-07-07.** Attempt #5's
   rollback logged "no one-way-door publisher landed for crd-v0.5.0 (per run
@@ -212,7 +283,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   against a local 404 index responder and asserts exactly one probe hit
   during the auto-rollback path. cli suite fully green.
 
-- [x] **npm publisher's transient-retry budget could exceed the `publish-npm`
   job `timeout-minutes`, guillotining the loop mid-publish (partial release) —
   RESOLVED 2026-07-06 (`b0eea2f1` + `4d7e2068`).** v0.15.0 run 28766146134
   stormed on one package (`npm publish attempt 1/10 … 7/10 failed (transient)`)
@@ -231,7 +301,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   retry tests — core 75/75, stage-publish 2506/2506. **0.15.0 recovery:**
   re-ran publish-npm run 28766146134 → success; full package set live.
 
-- [x] **npm Trusted Publishing (OIDC provenance) fell back to `NPM_TOKEN` for
   every package (no provenance) — RESOLVED 2026-07-06 (anodizer-action
   `5629a41`).** NOT a server-side gap (the Trusted Publisher was configured):
   the anodizer-action dependency detector (`resolve_requirement` in
@@ -249,7 +318,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   packages that published token-only on the first 0.15.0 run stay
   provenance-less and immutable; v0.15.1 publishes all fresh with provenance.)
 
-- [x] **`release.ids` silently drops signature/certificate/SBOM uploads —
   RESOLVED 2026-06-11 (review-fix pass on fb7e5a16).** Found while building
   the verify-release signature-expectation derivation:
   `collect_release_upload_candidates` applied `matches_id_filter` to every
@@ -271,7 +339,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   `release_ids_subject_verdict_filters_expectations`; verify-release
   `derived_expectations_follow_subject_verdict_under_release_ids`.
 
-- [x] **Test-suite PATH race — RESOLVED 2026-06-11 (bc2e553e + review
   pass).** Originally: tests simulating missing tools
   replaced the process-global `PATH` with an empty tempdir under `env_mutex`,
   which serialises mutators only — concurrent spawn-via-PATH tests
@@ -303,7 +370,6 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
   Moved to Resolved 2026-06-11.
 
 
-- [x] **`if:` boolean context vars are injected as strings, so `not IsSnapshot` /
   bare `{% if IsSnapshot %}` silently misbehave (GoReleaser-migration footgun).** A
   user-written `if: "{{ not .IsSnapshot }}"` renders `"false"` in EVERY mode — snapshot
   *and* release — and the if-engine skips the stage with no warning. Root cause:

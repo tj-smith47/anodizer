@@ -383,6 +383,7 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
                 &policy,
                 ctx.config.github_urls.as_ref(),
                 ctx.env_source(),
+                &ctx.logger("preflight"),
             ),
         );
     }
@@ -401,10 +402,11 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
     policy: &anodizer_core::retry::RetryPolicy,
     github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
     env: &E,
+    log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
     let url = format!("{base}/repos/{owner}/{repo}");
-    repo_push_check_at(&url, owner, repo, token, policy)
+    repo_push_check_at(&url, owner, repo, token, policy, log)
 }
 
 /// `url`-taking core of [`repo_push_check`] so a unit test can drive the
@@ -427,6 +429,7 @@ fn repo_push_check_at(
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
     anodizer_core::git::github_repo_push_check(
@@ -447,6 +450,7 @@ fn repo_push_check_at(
                  cannot create the release"
             )),
         },
+        log,
     )
 }
 
@@ -834,6 +838,10 @@ mod gh_cli_client {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
+
+    fn tlog() -> &'static anodizer_core::log::StageLogger {
+        anodizer_core::test_helpers::test_logger()
+    }
     use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig};
     use anodizer_core::github_client::MockGitHubClient;
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -919,7 +927,7 @@ mod publisher_tests {
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
         assert!(matches!(
-            repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()),
+            repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()),
             PreflightCheck::Pass
         ));
     }
@@ -930,7 +938,7 @@ mod publisher_tests {
         let (addr, _c) =
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":false}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
             PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
             _ => panic!("expected Blocker when permissions.push is false"),
         }
@@ -947,7 +955,15 @@ mod publisher_tests {
         let env = anodizer_core::MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
         assert!(matches!(
-            repo_push_check("acme", "widget", "tok", &one_attempt_policy(), None, &env),
+            repo_push_check(
+                "acme",
+                "widget",
+                "tok",
+                &one_attempt_policy(),
+                None,
+                &env,
+                tlog()
+            ),
             PreflightCheck::Pass
         ));
         assert_eq!(
@@ -977,6 +993,7 @@ mod publisher_tests {
                 &one_attempt_policy(),
                 Some(&urls),
                 &anodizer_core::MapEnvSource::new(),
+                tlog(),
             ),
             PreflightCheck::Pass
         ));
@@ -993,7 +1010,7 @@ mod publisher_tests {
         // A 401 with no rate-limit header ⇒ the token cannot access the repo.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("401 Unauthorized", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "bad", &one_attempt_policy()) {
+        match repo_push_check_at(&url, "acme", "widget", "bad", &one_attempt_policy(), tlog()) {
             PreflightCheck::Blocker(m) => assert!(m.contains("acme/widget"), "{m}"),
             _ => panic!("expected Blocker on a 401"),
         }
@@ -1021,7 +1038,7 @@ mod publisher_tests {
             "",
         )]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
             PreflightCheck::Warning(m) => assert!(m.contains("rate-limited"), "{m}"),
             other => panic!("rate-limited 403 must degrade to Warning, not {other:?}"),
         }
@@ -1035,7 +1052,7 @@ mod publisher_tests {
         // whose token is fine.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy(), tlog()) {
             PreflightCheck::Warning(m) => assert!(m.contains("acme/widget"), "{m}"),
             other => panic!("inconclusive 5xx must degrade to Warning, not {other:?}"),
         }

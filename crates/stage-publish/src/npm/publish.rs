@@ -49,7 +49,7 @@ use anodizer_core::config::{
 };
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, retry_sync_deadline};
+use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
 use anodizer_core::template_file_render::render_templated_file_entry;
 use anyhow::{Context as _, Result, bail};
 use tempfile::TempDir;
@@ -1300,19 +1300,17 @@ where
     let max_attempts = policy.max_attempts.max(1);
     let mut last_attempt = 0u32;
     let mut last_was_continue = false;
-    let result = retry_sync_deadline(policy, deadline, |attempt| {
-        last_attempt = attempt;
-        if attempt > 1 {
-            log.warn(&format!(
-                "npm publish attempt {}/{} failed (transient), retrying…",
-                attempt - 1,
-                max_attempts
-            ));
-        }
-        let r = attempt_op(attempt);
-        last_was_continue = matches!(r, Err(ControlFlow::Continue(_)));
-        r
-    });
+    let result = retry_sync_deadline(
+        RetryLog::new("npm publish", log),
+        policy,
+        deadline,
+        |attempt| {
+            last_attempt = attempt;
+            let r = attempt_op(attempt);
+            last_was_continue = matches!(r, Err(ControlFlow::Continue(_)));
+            r
+        },
+    );
     // A budget stop is the ONLY way to end with Err + a deadline set + the last
     // op returning Continue + fewer than max_attempts used: attempts-exhausted
     // ends at last_attempt == max_attempts, and a fatal Break sets

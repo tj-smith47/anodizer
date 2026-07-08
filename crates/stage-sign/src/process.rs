@@ -430,7 +430,14 @@ pub(crate) const COSIGN_TRANSIENT_RETRY: anodizer_core::retry::RetryPolicy =
 ///
 /// A spawn failure with `ErrorKind::NotFound` fast-fails: a missing signer
 /// binary cannot heal, and burning the full backoff budget on it would turn a
-/// one-line config error into a half-minute stall.
+/// one-line config error into a half-minute stall. Deterministic signer
+/// failures ([`is_deterministic_sign_failure`]) fast-fail for the same
+/// reason: a flag typo, an unparseable key, or a certificate-identity
+/// mismatch is identical on attempt 5, and the full ladder burns ~29s per
+/// artifact. Anything unmatched keeps retrying (fail-open): the retry
+/// exists for the ambiguous network/TUF/flock class, and mis-classifying a
+/// transient failure as deterministic would break signing outright, while
+/// mis-classifying a deterministic failure as transient only costs time.
 pub(crate) fn retry_transient(
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
@@ -448,7 +455,7 @@ pub(crate) fn retry_transient(
                     .root_cause()
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-                if unspawnable || attempt >= max {
+                if unspawnable || is_deterministic_sign_failure(&e) || attempt >= max {
                     return Err(e);
                 }
                 let delay = anodizer_core::retry::jitter_duration(policy.delay_for(attempt + 1));
@@ -462,6 +469,50 @@ pub(crate) fn retry_transient(
             }
         }
     }
+}
+
+/// True when a signer failure is deterministic — re-running the identical
+/// command must produce the identical failure — so retrying only burns the
+/// backoff budget.
+///
+/// Matches against the full error chain (`{:#}`), which carries the signer's
+/// captured stderr via `StageLogger::check_output`, lowercased. The needle
+/// classes, with the cosign stderr they pin:
+///
+/// * CLI usage errors — cosign/gpg flag or subcommand typos
+///   (`unknown flag: --keyy`, `unknown command "sing" for "cosign"`,
+///   `flag needs an argument`, `accepts at most 1 arg(s)`).
+/// * key/credential material that cannot parse —
+///   `unsupported pem type`, `parsing private key`.
+/// * verification-policy mismatches — `none of the expected identities
+///   matched what was in the certificate` (cosign's certificate-identity
+///   check).
+///
+/// Deliberately NOT matched: TUF/flock/Fulcio/Rekor/network failures
+/// (`resource temporarily unavailable`, `creating cached local store`,
+/// timeouts) — the retry ladder exists precisely for those, and the
+/// unmatched default is retry, so new transient phrasings stay safe.
+/// `no such file or directory` is also NOT matched: cosign surfaces the
+/// same ENOENT phrasing for a cold or racing `~/.sigstore` TUF-cache read
+/// (`open ~/.sigstore/...: no such file or directory`), which heals on
+/// retry — a substring match would fast-fail the exact race the ladder
+/// exists for. A genuinely-missing key/artifact path only costs the
+/// backoff budget, never correctness.
+pub(crate) fn is_deterministic_sign_failure(err: &anyhow::Error) -> bool {
+    const DETERMINISTIC_NEEDLES: &[&str] = &[
+        "unknown flag",
+        "unknown command",
+        "unknown shorthand flag",
+        "flag needs an argument",
+        "accepts at most",
+        "accepts 1 arg(s)",
+        "required flag(s)",
+        "unsupported pem type",
+        "parsing private key",
+        "none of the expected identities matched",
+    ];
+    let chain = format!("{err:#}").to_lowercase();
+    DETERMINISTIC_NEEDLES.iter().any(|n| chain.contains(n))
 }
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
@@ -994,6 +1045,7 @@ pub(crate) fn process_sign_configs(
             parallel_jobs,
             parallelism,
             stage_name,
+            log,
             run_job,
         )?;
 
@@ -1270,7 +1322,7 @@ fn process_authenticode_config(
     // stage name rather than re-matching the same two arms.
     let static_label = label_to_static(label);
     let verbosity = log.verbosity();
-    anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, static_label, |job| {
+    anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, static_label, log, |job| {
         let thread_log = anodizer_core::log::StageLogger::new(static_label, verbosity);
         execute_sign_job(job, &thread_log)
     })?;
