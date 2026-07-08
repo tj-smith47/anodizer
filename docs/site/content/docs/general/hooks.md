@@ -19,6 +19,10 @@ after:
   hooks:
     - "echo 'Release complete'"
     - "./scripts/notify.sh"
+
+on_error:
+  hooks:
+    - "./scripts/notify-release-failed.sh"
 ```
 
 ## Behavior
@@ -31,6 +35,15 @@ after:
   `$ANODIZER_ARTIFACT` bound), or **once** with run-level vars when
   `run_once: true` — see [Before-Publish Hooks](/docs/publish/before-publish/)
   for the full reference
+- **`on_error` hooks** run when the pipeline fails at **any** stage
+  (build, sign, package, publish, ...), after the failure policy
+  (rollback / hold) has executed. The failure context is exported as
+  environment variables — `$ANODIZER_ERROR` (the pipeline error),
+  `$ANODIZER_ROLLED_BACK` (`true` when the failure policy rolled the tag
+  back), `$ANODIZER_VERSION`, `$ANODIZER_TAG` — and as template vars
+  (`{{ .Error }}`, `{{ .RolledBack }}`). Read the error via the env var,
+  not template interpolation, to stay shell-injection-safe. An `on_error`
+  hook's own failure is logged and never masks the pipeline error
 - Each hook is executed via `sh -c "<command>"`
 - If any `before` or `before_publish` hook fails (non-zero exit), the
   pipeline aborts before any subsequent stage runs

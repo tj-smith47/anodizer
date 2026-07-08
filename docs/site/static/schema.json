@@ -395,6 +395,18 @@
         "$ref": "#/definitions/NpmConfig"
       }
     },
+    "on_error": {
+      "description": "Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...), after the failure policy (rollback / hold) has executed, so `{{ .RolledBack }}` reflects the taken path.\n\nNotification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.\n\n```yaml on_error: hooks: - cmd: ./notify-release-failed.sh ```",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "partial": {
       "description": "Partial/split build configuration for fan-out CI pipelines.",
       "default": null,
@@ -404,6 +416,17 @@
         },
         {
           "type": "null"
+        }
+      ]
+    },
+    "preflight": {
+      "description": "Pre-publish preflight tuning. `preflight.strict: true` promotes indeterminate probe outcomes (5xx / rate-limit / network failure / undeterminable permissions) from warnings to hard blockers. The probes themselves always run read-only before any publisher mutates a registry; the default (lenient) behavior needs no config.",
+      "default": {
+        "strict": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/PreflightConfig"
         }
       ]
     },
@@ -582,6 +605,7 @@
       "default": {
         "enabled": false,
         "assert_assets": true,
+        "assert_landing": true,
         "install_smoke": null
       },
       "allOf": [
@@ -5692,6 +5716,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "verify": {
+          "description": "Post-sign verification knobs — see [`SignVerifyConfig`]. Docker signatures are verified with `cosign verify` against the registry the sign just pushed to.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SignVerifyConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -11535,6 +11571,18 @@
       },
       "additionalProperties": false
     },
+    "PreflightConfig": {
+      "description": "Top-level `preflight:` block.",
+      "type": "object",
+      "properties": {
+        "strict": {
+          "description": "Promote INDETERMINATE preflight outcomes to hard blockers. An indeterminate outcome is one where a probe could not reach a verdict — a 5xx, a 429 / rate-limit, a transport failure, or a response that hides the permission the publish path needs. By default those degrade to warnings so a transient upstream blip cannot abort a release whose credentials are actually valid; `strict: true` makes them abort instead (fail-closed). Definitive failures (credentials rejected, target missing) keep their required→blocker / optional→warning severity regardless of this setting. Equivalent to passing `--strict-preflight` (or the global `--strict`) on every run.",
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "PublishConfig": {
       "type": "object",
       "properties": {
@@ -13192,6 +13240,57 @@
           "default": null,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "verify": {
+          "description": "Post-sign verification knobs. Verification is ON by default wherever its inputs are derivable (keyed cosign, keyless cosign on GitHub Actions, gpg); set `verify: { enabled: false }` to disable, or supply the keyless certificate identity / issuer when they cannot be derived from the environment.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SignVerifyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SignVerifyConfig": {
+      "description": "Post-sign verification settings shared by [`SignConfig`] and [`DockerSignConfig`].\n\nAfter each signature is produced, the sign stage re-verifies it with the matching verifier (`cosign verify-blob` for detached cosign signatures, `cosign verify` for registry-attached docker signatures, `gpg --verify` for gpg) so \"the signer exited 0\" is upgraded to \"the signature actually verifies\". Everything is derived when possible:\n\n- **keyed cosign** — the public key is derived once per run via `cosign public-key --key <ref>`; nothing to configure. - **keyless cosign** — the certificate identity/issuer are derived from the ambient GitHub Actions OIDC environment (`GITHUB_SERVER_URL`/`GITHUB_WORKFLOW_REF`); outside GitHub Actions, supply them here or verification skips with a named reason. - **gpg** — verified against the same keyring that signed.\n\n```yaml signs: - cmd: cosign args: [\"sign-blob\", \"--bundle={{ Signature }}\", \"--yes\", \"{{ Artifact }}\"] verify: certificate_identity: \"https://github.com/acme/app/.github/workflows/release.yml@refs/tags/v1.0.0\" certificate_oidc_issuer: \"https://token.actions.githubusercontent.com\" ```",
+      "type": "object",
+      "properties": {
+        "certificate_identity": {
+          "description": "Exact certificate identity (SAN) expected in a keyless signing certificate (`cosign --certificate-identity`). Overrides the value derived from the GitHub Actions environment.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "certificate_identity_regexp": {
+          "description": "Regular expression matched against the keyless certificate identity (`cosign --certificate-identity-regexp`). Ignored when [`certificate_identity`](Self::certificate_identity) is set.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "certificate_oidc_issuer": {
+          "description": "Expected OIDC issuer of the keyless signing certificate (`cosign --certificate-oidc-issuer`). Overrides the derived GitHub Actions issuer.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "description": "Whether to verify each produced signature (default: `true`).",
+          "default": null,
+          "type": [
+            "boolean",
             "null"
           ]
         }
@@ -15264,6 +15363,11 @@
       "properties": {
         "assert_assets": {
           "description": "Assert that every produced artifact has a matching uploaded asset on the published release, and that every signature / certificate / SBOM asset the resolved `signs:` / `sboms:` config demands exists there too (derived from config + the artifact set, so a sign or SBOM stage that silently produced nothing still fails the gate with the exact missing names; intentional skips — `if:` falsy, `skip:` truthy, `--skip=sign` — create no expectations). Default `true` (no extra config: anodizer already knows the produced set and can fetch the release's asset list). Independent of Docker and the network smoke-test.",
+          "default": true,
+          "type": "boolean"
+        },
+        "assert_landing": {
+          "description": "Assert that every publisher that succeeded this run actually LANDED: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, and each uploaded blob object exists in its bucket. Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped.",
           "default": true,
           "type": "boolean"
         },

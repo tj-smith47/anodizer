@@ -10,24 +10,27 @@ The `anodizer tag` command reads commit messages for bump directives, finds the 
 ## Usage
 
 ```bash
-anodizer tag                    # create and push the tag (bump commit stays local)
-anodizer tag --push             # also push the version-sync bump commit, atomically
+anodizer tag                    # create the tag locally (nothing is pushed)
+anodizer tag --push             # push the version-sync bump commit + tag, atomically
 anodizer tag --dry-run          # show what would happen
 anodizer tag --custom-tag v2.0  # override with specific tag
 ```
 
 ## Pushing the bump commit (`--push`)
 
-By default `anodizer tag` pushes only the **tag** and leaves the
-version-sync `chore(release): bump …` commit on the local branch — so you can
-inspect the bump before publishing the branch. Pass `--push` to push the bump
-commit to the release branch **atomically with the tag** (`git push --atomic`),
-so neither an orphan tag nor an orphan commit can ever exist on the remote.
+By default `anodizer tag` is fully **local**: the tag and the version-sync
+`chore(release): bump …` commit both stay in your clone, so you can inspect the
+bump before publishing anything. Pass `--push` to push the bump commit to the
+release branch **atomically with the tag** (`git push --atomic`). There is no
+tag-only-push mode — a run either pushes branch + tag together or pushes
+nothing, so an orphan tag (a remote tag whose bump commit is absent from the
+remote branch) can never exist.
 
 | Flag | Effect |
 |------|--------|
 | `--push` | Push the bump commit (branch HEAD) atomically with the tag |
-| `--no-push` | Push the tag only; leave the bump commit local (the per-crate path's opt-out, since it pushes branch+tags by default) |
+| `--no-push` | Push nothing; the tag(s) and bump commit stay local (the per-crate path's opt-out, since it pushes branch+tags by default) |
+| `--push-tags-only` | Push the tag(s) but not the bump commit — the deferred-branch CI pattern: the pipeline is triggered by the tag, and the branch is fast-forwarded onto the bump commit only after publish succeeds. The branch **must** be advanced separately or the tag permanently references a commit missing from every branch |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
 | `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
 | `--changelog` | Refresh `CHANGELOG.md` as part of this tag — opt-in; requires a `changelog:` config block |
@@ -160,8 +163,7 @@ tagging too.
 A non-fast-forward rejection is the most likely `--push` failure (someone
 pushed to the release branch after your checkout). Because the push is atomic,
 neither the branch nor the tag lands when it's rejected, and the error names
-the stale ref and tells you to pull/rebase and re-run (or drop `--push` to
-publish the tag only).
+the stale ref and tells you to pull/rebase and re-run.
 
 ## Commit message directives
 
@@ -345,11 +347,11 @@ back to `tag.initial_version` when the manifest carries no literal version.
 **Push behavior differs by mode.** The per-crate auto-dispatch path (a
 multi-crate config with no `--crate`) pushes the single bump commit **and**
 every per-crate tag atomically by default — `--no-push` opts out of pushing
-the branch (tags still go up). The `--crate <name>` path follows the
-single-crate/lockstep default: it pushes the tag only and leaves the bump
-commit local unless you pass `--push` (or set `tag.push: true`), at which point
-the bump commit and tag push atomically. Use `--push-remote <name>` to target a
-remote other than `origin`.
+entirely (the tags and bump commit stay local). The `--crate <name>` path
+follows the single-crate/lockstep default: fully local unless you pass
+`--push` (or set `tag.push: true`), at which point the bump commit and tag
+push atomically. Use `--push-remote <name>` to target a remote other than
+`origin`.
 
 ### `[skip ci]` on the bump commit (`skip_ci_on_bump`)
 

@@ -22,7 +22,9 @@ validation proves the *assembled artifact* is one the registry will accept.
 ## How it runs
 
 Artifact validation runs automatically — no config needed — as part of the
-snapshot/dry-run emission-validate pass:
+emission-validate pass, which runs in every mode: snapshot, dry-run, nightly,
+and real releases (the render is a millisecond in-memory check, so production
+manifests get the same scrutiny):
 
 ```bash
 $ anodizer release --snapshot

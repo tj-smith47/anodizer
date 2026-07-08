@@ -53,7 +53,13 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `nightly` | NightlyConfig | — | Nightly release configuration. |
 | `notarize` | NotarizeConfig | — | macOS code signing and notarization configuration. |
 | `npms` | list of NpmConfig | — | NPM package registry publishing configurations. One entry per published package. In the default `optional-deps` mode anodizer emits npm's native per-platform packages (biome / git-cliff pattern); in `postinstall` mode it emits a download shim (the `npms:` parity). |
+| `on_error` | HooksConfig | — | Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...), after the failure policy (rollback / hold) has executed, so `{{ .RolledBack }}` reflects the taken path.
+
+Notification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.
+
+```yaml on_error: hooks: - cmd: ./notify-release-failed.sh ``` |
 | `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |
+| `preflight` | PreflightConfig | `{"strict":false}` | Pre-publish preflight tuning. `preflight.strict: true` promotes indeterminate probe outcomes (5xx / rate-limit / network failure / undeterminable permissions) from warnings to hard blockers. The probes themselves always run read-only before any publisher mutates a registry; the default (lenient) behavior needs no config. |
 | `project_name` | string | — | Human-readable project name used in templates and release titles. |
 | `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
 | `release` | ReleaseConfig | — | GitHub release configuration shared by all crates. |
@@ -72,7 +78,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `variables` | map | — | Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
 
 Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
-| `verify_release` | VerifyReleaseConfig | `{"enabled":false,"assert_assets":true,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
+| `verify_release` | VerifyReleaseConfig | `{"enabled":false,"assert_assets":true,"assert_landing":true,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
 
@@ -265,6 +271,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
+| `verify` | SignVerifyConfig | — | Post-sign verification knobs. Verification is ON by default wherever its inputs are derivable (keyed cosign, keyless cosign on GitHub Actions, gpg); set `verify: { enabled: false }` to disable, or supply the keyless certificate identity / issuer when they cannot be derived from the environment. |
 
 ## `changelog`
 | Field | Type | Default | Description |
@@ -409,6 +416,7 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
+| `verify` | SignVerifyConfig | — | Post-sign verification knobs — see `SignVerifyConfig`. Docker signatures are verified with `cosign verify` against the registry the sign just pushed to. |
 
 ## `dockerhub`
 DockerHub description sync configuration. Pushes image descriptions and README content to DockerHub repositories.
@@ -685,12 +693,27 @@ Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish 
 | `token` | string | — | Auth token for the registry. Falls back to the `NPM_TOKEN` env var when unset. Stored in `.npmrc` as `//<registry>/:_authToken=...` at publish time and never passed via argv. |
 | `url_template` | string | — | Override the download URL emitted into the postinstall script (templated). When unset, anodizer derives the URL from the release context. Only consulted in `postinstall` mode. |
 
+## `on_error`
+Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+
+The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
+| `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
+
 ## `partial`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job.
 
 The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded at parse time, with a deprecation warning); imported configs keep loading. |
+
+## `preflight`
+Top-level `preflight:` block.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strict` | bool | `false` | Promote INDETERMINATE preflight outcomes to hard blockers. An indeterminate outcome is one where a probe could not reach a verdict — a 5xx, a 429 / rate-limit, a transport failure, or a response that hides the permission the publish path needs. By default those degrade to warnings so a transient upstream blip cannot abort a release whose credentials are actually valid; `strict: true` makes them abort instead (fail-closed). Definitive failures (credentials rejected, target missing) keep their required→blocker / optional→warning severity regardless of this setting. Equivalent to passing `--strict-preflight` (or the global `--strict`) on every run. |
 
 ## `publishers`
 | Field | Type | Default | Description |
@@ -812,6 +835,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
+| `verify` | SignVerifyConfig | — | Post-sign verification knobs. Verification is ON by default wherever its inputs are derivable (keyed cosign, keyless cosign on GitHub Actions, gpg); set `verify: { enabled: false }` to disable, or supply the keyless certificate identity / issuer when they cannot be derived from the environment. |
 
 ## `snapshot`
 | Field | Type | Default | Description |
@@ -957,6 +981,7 @@ See the module-level docs for the verification lifecycle. The gate is a no-op un
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `assert_assets` | bool | `true` | Assert that every produced artifact has a matching uploaded asset on the published release, and that every signature / certificate / SBOM asset the resolved `signs:` / `sboms:` config demands exists there too (derived from config + the artifact set, so a sign or SBOM stage that silently produced nothing still fails the gate with the exact missing names; intentional skips — `if:` falsy, `skip:` truthy, `--skip=sign` — create no expectations). Default `true` (no extra config: anodizer already knows the produced set and can fetch the release's asset list). Independent of Docker and the network smoke-test. |
+| `assert_landing` | bool | `true` | Assert that every publisher that succeeded this run actually LANDED: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, and each uploaded blob object exists in its bucket. Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped. |
 | `enabled` | bool | `false` | Whether to run the post-release verification gate at all. Default `false` — the gate is opt-in because it needs the published release to already exist (it runs after publish) and, for install-smoke, a Docker daemon. |
 | `glibc_ceiling` | string | — | glibc version ceiling, e.g. `"2.36"`. When any glibc-linked `.deb` requires a glibc NEWER than this floor, the gate reports it and exits non-zero. `None` (the default) disables the libc check entirely. musl binaries have no glibc requirement and are skipped. |
 | `install_smoke` | InstallSmokeConfig | — | Per-package install smoke-test images. When `None`, smoke-testing is off. When present, each package type that produced an artifact is installed in its (configured or default) container and `<bin> --version` is run. |

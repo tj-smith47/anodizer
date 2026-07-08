@@ -67,7 +67,7 @@ is safe.
 
 | Publisher | Group | required (default) | Rollback action | Token scope |
 |---|---|---|---|---|
-| github-release | Assets | true | delete release + delete tag + delete assets | `contents:write` |
+| github-release | Assets | true | delete release + delete assets (tag ref owned by `tag rollback`) | `contents:write` |
 | dockerhub | Assets | false | warn-only (description PATCH manual-cleanup checklist; prior description not snapshotted) | `DOCKER_TOKEN description snapshot+restore` |
 | artifactory | Assets | false | DELETE artifact path | `ARTIFACTORY_TOKEN delete` |
 | cloudsmith | Assets | false | DELETE `/v1/packages/<id>` | `CLOUDSMITH_API_KEY package_delete` |
@@ -138,7 +138,7 @@ report still records `RolledBack` or `RollbackSkippedNoScope` accordingly.
 ### Per-publisher rollback shapes
 
 ```
-github-release  delete release + delete tag + delete uploaded assets
+github-release  delete release + delete uploaded assets (the tag ref has a single owner — `anodizer tag rollback` / the failure policy)
 cargo           cargo yank (version stays reserved; consumers cannot install fresh)
 dockerhub       manual cleanup checklist (description PATCH cannot be un-done programmatically)
 artifactory     parallel HTTP DELETE per uploaded URL (404/410 treated as already-absent)
@@ -315,7 +315,7 @@ release:
 
 | Value | Behavior on a pipeline failure |
 |---|---|
-| `rollback` | Deletes the run's release tag(s) and reverts the version-bump commit — the same execution path as `anodizer tag rollback` — so the same version can be re-cut after the fix lands. |
+| `rollback` | Deletes the run's release tag(s), deletes the GitHub release published at each rolled-back tag (it belongs to the aborted attempt and is reversible), and reverts the version-bump commit — the same execution path as `anodizer tag rollback` — so the same version can be re-cut after the fix lands. |
 | `hold` | Leaves tags, commits, and published state in place for forensics. Exit is still nonzero; recover with `release --rollback-only --from-run=<id>` and/or `tag rollback` once investigated. |
 
 This policy operates on the git-level state (`tag` + bump commit). It is
@@ -369,9 +369,16 @@ states how the failure was handled:
 }
 ```
 
-`action` is `rolled-back`, `held`, or `rollback-failed` (rollback was
-attempted but refused or errored — state is effectively held; the error text
-lands in `rollback_error`). A killed run (SIGKILL, runner eviction) cannot
+`action` is `rolled-back`, `held`, `rollback-refused`, or `rollback-failed`.
+`rollback-refused` means the published-state guard declined the rollback by
+design — the version is live on a one-way-door registry (or a published
+release exists with no corroborating summary), so the tags were kept to
+protect the published state; the refusal renders as status lines with a
+`next step:` (fix forward and cut the NEXT version; `anodizer tag rollback
+--force` overrides). `rollback-failed` is a mechanical error (git push
+failure, unreachable probe) and renders as a warning. Both put the refusal /
+error text in `rollback_error`, and state is effectively held either way. A
+killed run (SIGKILL, runner eviction) cannot
 execute its own policy; the per-publisher summary snapshots persisted during
 dispatch are the forensics trail for manual recovery in that case.
 
@@ -579,7 +586,8 @@ Contrast: if homebrew had been marked `required: true`, the Submitter gate
 would have closed before cargo dispatched. `cargo` would appear as
 `{ "Skipped": "SubmitterGated" }`, announce would be `announce-gated`, and
 running `--rollback-only --from-run=<id>` would unwind the github-release
-upload (delete release + tag + assets) and the cloudsmith upload.
+upload (delete release + assets; the tag ref belongs to `tag rollback`) and
+the cloudsmith upload.
 
 ### Recovery flow
 

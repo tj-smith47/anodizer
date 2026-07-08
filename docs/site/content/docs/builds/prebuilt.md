@@ -286,10 +286,11 @@ crates:
       enabled: true   # that's it — overrides are derived from archive.name_template
 ```
 
-In snapshot/dry-run the [emission-validate stage](@/docs/publish/snapshots.md#emission-validate)
+The [emission-validate stage](@/docs/publish/snapshots.md#emission-validate)
 cross-checks each emitted binstall URL against the artifacts the run produced
-and fails loud if any reference drifts, so a broken binstall block is caught
-locally before a release.
+and fails loud if any reference drifts — in every mode (snapshot, dry-run,
+nightly, and real releases), so a broken binstall block is caught locally
+before a release and aborts a real release before any publisher ships it.
 
 ### Escape hatch: explicit per-target `pkg_url` overrides
 

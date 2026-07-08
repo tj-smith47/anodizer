@@ -55,10 +55,12 @@ emission — a binstall URL pointing at an asset the release never produces, a
 nix system mapped to a missing asset — passed every local check and only blew
 up later at `cargo binstall` / `nix build` time on a consumer's machine.
 
-Snapshot/dry-run closes that blindspot. anodizer renders the would-be emission
-in-memory (never mutating source, never cloning, never pushing) and
-cross-checks it against the asset set the run actually produced. A mismatch
-fails the snapshot loud, naming the crate, the emission, and what's wrong:
+The emission-validate stage closes that blindspot. anodizer renders the
+would-be emission in-memory (never mutating source, never cloning, never
+pushing) and cross-checks it against the asset set the run actually produced
+— in snapshot, dry-run, nightly, AND real releases, where a mismatch aborts
+before any publisher ships. A mismatch fails the run loud, naming the crate,
+the emission, and what's wrong:
 
 ```bash
 $ anodizer release --snapshot --host-targets

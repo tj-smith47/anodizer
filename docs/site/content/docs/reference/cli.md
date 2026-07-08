@@ -51,7 +51,7 @@ Run the full release pipeline
 | `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
 | `--no-preflight` | — | — | Skip the automatic pre-flight publisher-state check |
 | `--preflight-secrets` | — | — | Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline. |
-| `--strict-preflight` | — | — | Alias for --strict (also treats Unknown publisher state as a blocker during pre-flight) |
+| `--strict-preflight` | — | — | Strict pre-flight: treat Unknown publisher state and indeterminate probe results (5xx / rate-limit / network failure / undeterminable permissions) as blockers. Implied by --strict; configurable per-project via preflight.strict |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |
 | `--release-header-tmpl` | — | — | Path to a template file for release header (rendered with template variables) |
@@ -252,13 +252,14 @@ Auto-tag based on commit message directives
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--dry-run` | — | — | Show what tag would be created without pushing |
+| `--dry-run` | — | — | Show what tag would be created, without creating it |
 | `--custom-tag` | — | — | Override bump logic with a specific tag value |
 | `--version` | — | — | Tag exactly this semver version, bypassing autotag derivation and the Cargo.toml-ahead guard |
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
 | `--push` | — | — | Push the version-sync bump commit to the release branch atomically with the tag |
-| `--no-push` | — | — | Push the tag only, leaving the version-sync bump commit local |
+| `--no-push` | — | — | Do not push anything; the tag(s) and version-sync bump commit stay local |
+| `--push-tags-only` | — | — | Push the tag(s) but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately) |
 | `--push-remote` | — | — | Remote to push to (default: origin) |
 | `--push-dry-run` | — | — | Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging |
 | `--changelog` | — | — | Refresh CHANGELOG.md as part of this tag (requires a `changelog:` config block) |

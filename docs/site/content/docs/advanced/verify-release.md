@@ -1,6 +1,6 @@
 +++
 title = "Post-release verification"
-description = "Opt-in gate that REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations"
+description = "Opt-in gate that REPORTS post-publish defects — missing or corrupted assets, unlanded publishes, failed install smoke-tests, glibc-ceiling violations"
 weight = 56
 template = "docs.html"
 +++
@@ -18,11 +18,12 @@ packages.
 
 ## What it checks
 
-Three independently-toggleable checks:
+Four independently-toggleable checks:
 
 | Check | What it catches | Needs |
 |---|---|---|
-| **asset-existence** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
+| **asset existence + content** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), an uploaded asset whose **size or sha256 digest** doesn't match the local bytes (truncated/corrupted uploads, stale assets from a prior re-cut), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
+| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a blob object absent from its bucket | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -33,17 +34,19 @@ verify_release:
   enabled: true
 ```
 
-With just `enabled: true`, asset-existence runs (it needs no extra config —
-anodizer already knows what it produced and can fetch the release's asset
-list). The smoke-test and libc-ceiling checks stay off until you configure
-them.
+With just `enabled: true`, the asset check and the landing checks run (they
+need no extra config — anodizer already knows what it produced, can fetch the
+release's asset list, and the run's own publish report carries every landing
+coordinate). The smoke-test and libc-ceiling checks stay off until you
+configure them.
 
 ## Full config reference
 
 ```yaml
 verify_release:
   enabled: true            # default false — the whole gate is opt-in
-  assert_assets: true      # default true — diff produced vs. uploaded assets
+  assert_assets: true      # default true — diff produced vs. uploaded assets + size/digest
+  assert_landing: true     # default true — probe cargo/npm/blob landings
   install_smoke:           # absent => smoke-test off
     deb: { image: "debian:12" }      # default debian:stable-slim
     rpm: { image: "fedora:40" }      # default fedora:latest
@@ -51,7 +54,7 @@ verify_release:
   glibc_ceiling: "2.36"    # absent => libc check off
 ```
 
-## (a) asset-existence
+## (a) asset existence + content
 
 ```yaml
 verify_release:
@@ -76,6 +79,29 @@ Error: verify-release: post-publish verification found 1 issue(s);
 
 Extra assets on the release (orphans from a prior re-cut) are reported as an
 advisory, never a failure on their own.
+
+### Size + digest verification
+
+Every expected asset that **is** present also gets a byte-level check: the
+stored size must equal the local artifact's size, and the stored sha256 digest
+(GitHub computes one server-side for every uploaded asset) must equal the
+local sha256 — the checksum stage's already-computed hash is reused when
+available. A clean pass emits one result line:
+
+```
+[verify-release] github: crate 'myapp' 22/22 assets present, sizes+digests match
+```
+
+A mismatch names the asset and both values:
+
+```
+- asset 'myapp_1.0.0_linux_amd64.tar.gz' of crate 'myapp' size mismatch: local 4194304 B vs
+  published 1048576 B — the uploaded asset does not match the produced artifact
+```
+
+When the release serves no digest for an asset (older GitHub Enterprise),
+anodizer downloads the asset and hashes it — capped at 64 MiB per asset;
+beyond the cap the asset is verified by size only, with a verbose notice.
 
 ### Config-derived signature / SBOM expectations
 
@@ -109,7 +135,43 @@ Under a `release.ids` upload filter, expectations follow the SUBJECT's
 verdict — a signature or SBOM is expected exactly when the artifact it
 derives from is uploaded.
 
-## (b) install smoke-test
+## (b) publisher landing checks
+
+```yaml
+verify_release:
+  enabled: true
+  assert_landing: true   # the default
+```
+
+Every publisher that **succeeded this run** is probed to confirm the publish
+actually landed — using the coordinates the run's own publish report recorded,
+so no extra config is needed:
+
+| Publisher | Probe |
+|---|---|
+| `cargo` | crates.io **sparse index** lookup for every published `crate@version` (custom `registry:`/`index:` targets are skipped — the crates.io index says nothing about them) |
+| `npm` | registry metadata `GET <registry>/<pkg>/<version>` for every published package |
+| `blob` | `HEAD` on every uploaded object, through the **same store backend and ambient credentials** the upload used — works for private buckets with no public URL |
+
+One result line per publisher:
+
+```
+[verify-release] cargo: anodizer-core@0.15.4 visible on crates.io index
+[verify-release] npm: myapp@0.15.4 visible on registry.npmjs.org
+[verify-release] blob: 22/22 uploaded object(s) present in bucket
+```
+
+A publisher that was skipped, deselected, or failed is not probed — it landed
+nothing this run. A probe that **cannot run** (index unreachable, store build
+failure) is reported as an issue, never silently passed: an unverifiable
+landing is a finding.
+
+```
+- cargo: myapp@1.0.0 reported published but is not visible on the crates.io index
+- blob: s3://my-bucket/v1.0.0/myapp.tar.gz reported uploaded but is missing from the bucket
+```
+
+## (c) install smoke-test
 
 ```yaml
 verify_release:
@@ -156,7 +218,7 @@ it does not hard-fail the gate, and asset-existence and libc-ceiling still run:
 [verify-release] Docker unavailable — skipping install smoke-test (asset-existence and libc-ceiling still run)
 ```
 
-## (c) libc ceiling
+## (d) libc ceiling
 
 ```yaml
 verify_release:
@@ -190,8 +252,12 @@ to be meaningful.
 - The wording is always explicit: **the release IS published** — the gate never
   implies the publish failed and never attempts to undo it.
 - Each check is **best-effort and independent**: Docker-unavailable skips only
-  the smoke-test; the asset and libc checks need neither Docker nor extra
-  config.
+  the smoke-test; the asset, landing, and libc checks need neither Docker nor
+  extra config.
+- Check axes are gated on **their own** publisher's selection: a
+  `--publishers npm` run still verifies the npm landing while skipping the
+  GitHub asset check; only a run that selects none of `github-release`,
+  `cargo`, `npm`, `blob` self-skips the whole gate.
 
 ## Workspaces
 
