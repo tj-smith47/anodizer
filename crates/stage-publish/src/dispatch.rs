@@ -235,6 +235,10 @@ pub fn dispatch(
                 // outcome or evidence forward.
                 let _ = ctx.take_pending_outcome();
                 let _ = ctx.take_pending_evidence();
+                // Attribute any retry backoff this publisher incurs to its name
+                // so the run summary can name the flaky remote. Serial dispatch
+                // makes the scope exact — one publisher runs at a time.
+                let _retry_scope = anodizer_core::retry::RetryScope::enter(p.name());
                 match p.run(ctx) {
                     Ok(evidence) => {
                         // If `run` recorded an outcome override (e.g.

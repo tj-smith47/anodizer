@@ -99,8 +99,26 @@ pub struct RunSummary {
     /// from the JSON on runs that never backed off.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub retry_backoff_secs: f64,
+    /// Per-publisher/stage breakdown of `retry_backoff_secs`, biggest offender
+    /// first — so a summary reader sees WHICH remote was flaky, not just that
+    /// the run backed off. Sums to `retry_backoff_secs`; empty on runs that
+    /// never backed off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_by_scope: Vec<RetryScopeStat>,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
+}
+
+/// One publisher/stage's retry tally within a run. `scope` is the publisher
+/// name (`cargo`, `homebrew`, …) or the stage label (`release`); `retries` is
+/// the number of backoff sleeps it incurred and `backoff_secs` their summed
+/// wait. See `RunSummary::retry_by_scope`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RetryScopeStat {
+    pub scope: String,
+    pub retries: u32,
+    pub backoff_secs: f64,
 }
 
 /// The verify-release gate's verdict for the run. See `verify_release:`.
@@ -277,6 +295,14 @@ impl RunSummary {
             failure_policy: None,
             verify_release,
             retry_backoff_secs: anodizer_core::retry::total_retry_backoff().as_secs_f64(),
+            retry_by_scope: anodizer_core::retry::retry_scope_breakdown()
+                .into_iter()
+                .map(|(scope, retries, backoff)| RetryScopeStat {
+                    scope,
+                    retries,
+                    backoff_secs: backoff.as_secs_f64(),
+                })
+                .collect(),
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -663,6 +689,15 @@ pub fn status_table_rows(
             "retry backoff".to_string(),
             format!("spent {:.1}s in retry backoff", summary.retry_backoff_secs),
         ));
+        // Fold each publisher/stage that backed off into its own indented
+        // sub-row (biggest offender first) so the operator sees WHICH remote
+        // was flaky without opening summary.json.
+        for s in &summary.retry_by_scope {
+            rows.push((
+                String::new(),
+                format!("{}  {} retries  {:.1}s", s.scope, s.retries, s.backoff_secs),
+            ));
+        }
     }
     rows.push((
         "run flags".to_string(),
@@ -693,6 +728,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -1326,10 +1362,45 @@ mod tests {
             rows[idx].1, "spent 12.4s in retry backoff",
             "row text: {rows:?}"
         );
+        // With no per-scope breakdown, the total row is immediately followed
+        // by run flags.
         assert_eq!(
             rows[idx + 1].0,
             "run flags",
             "retry-backoff row must sit directly before run flags: {rows:?}"
+        );
+
+        // Per-scope breakdown renders as indented sub-rows (blank key), in the
+        // order given, between the total row and run flags.
+        s.retry_by_scope = vec![
+            RetryScopeStat {
+                scope: "release".to_string(),
+                retries: 3,
+                backoff_secs: 130.0,
+            },
+            RetryScopeStat {
+                scope: "cargo".to_string(),
+                retries: 2,
+                backoff_secs: 15.0,
+            },
+        ];
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        let idx = rows
+            .iter()
+            .position(|(k, _)| k == "retry backoff")
+            .expect("total row present");
+        assert_eq!(
+            rows[idx + 1],
+            (String::new(), "release  3 retries  130.0s".to_string())
+        );
+        assert_eq!(
+            rows[idx + 2],
+            (String::new(), "cargo  2 retries  15.0s".to_string())
+        );
+        assert_eq!(
+            rows[idx + 3].0,
+            "run flags",
+            "sub-rows precede run flags: {rows:?}"
         );
     }
 
@@ -1372,6 +1443,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1419,6 +1491,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1450,6 +1523,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results: vec![
                 RunSummaryResult {
                     name: "custom-publisher-with-long-id".to_string(), // 29 chars
@@ -1502,6 +1576,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,

@@ -2203,6 +2203,7 @@ mod tests {
             failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
             results,
             determinism_allowlist: DeterminismAllowlist::default(),
         };

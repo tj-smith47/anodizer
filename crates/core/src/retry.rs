@@ -197,13 +197,75 @@ pub const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(15 * 60);
 /// field and an operator status line.
 static RETRY_BACKOFF_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Record a backoff sleep of `d` against this run's total. Callers that sleep
-/// for retry should prefer [`sleep_backoff_blocking`] / [`sleep_backoff_async`]
-/// (which record and sleep together); use this directly only when the sleep is
-/// performed elsewhere (e.g. an injected `sleep` callback in stage-sign).
+/// Per-scope retry tally (backoff sleeps + summed wait), keyed by the label of
+/// the enclosing [`RetryScope`]. Backoff recorded with no active scope lands
+/// under [`UNATTRIBUTED_SCOPE`] so the per-scope rows always sum to the global
+/// total. A `Mutex` (not a lock-free map) is ample: retry sleeps are seconds
+/// apart, so contention among the parallel upload workers is negligible.
+static PER_SCOPE_RETRY: std::sync::Mutex<std::collections::BTreeMap<String, ScopeRetry>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The label backoff is attributed to while a [`RetryScope`] is active. Stages
+/// run serially and each installs one scope, so a single global cell suffices:
+/// the release stage's parallel upload tasks all read the same constant value
+/// ("release") for the stage's duration, and the serial publish loop swaps it
+/// per publisher. No task-local is needed because the value never differs
+/// between two concurrently-running sleeps.
+static CURRENT_SCOPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Bucket key for backoff recorded outside any [`RetryScope`].
+const UNATTRIBUTED_SCOPE: &str = "(unattributed)";
+
+#[derive(Clone, Copy, Default)]
+struct ScopeRetry {
+    /// Number of backoff sleeps (i.e. retries) recorded against this scope.
+    retries: u32,
+    /// Summed backoff wait for this scope, in milliseconds.
+    backoff_ms: u64,
+}
+
+/// RAII scope that attributes every backoff sleep recorded during its lifetime
+/// to `name` (a publisher or stage label). Restores the previous scope on drop,
+/// so nested/sequential scopes compose. Install one around each publisher's
+/// `run` and around a stage's whole retrying section.
+#[must_use = "the scope only applies while the guard is alive"]
+pub struct RetryScope {
+    prev: Option<String>,
+}
+
+impl RetryScope {
+    /// Enter a retry-attribution scope named `name`.
+    pub fn enter(name: impl Into<String>) -> Self {
+        let mut cur = CURRENT_SCOPE.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = cur.replace(name.into());
+        RetryScope { prev }
+    }
+}
+
+impl Drop for RetryScope {
+    fn drop(&mut self) {
+        *CURRENT_SCOPE.lock().unwrap_or_else(|e| e.into_inner()) = self.prev.take();
+    }
+}
+
+/// Record a backoff sleep of `d` against this run's total and the active scope.
+/// Callers that sleep for retry should prefer [`sleep_backoff_blocking`] /
+/// [`sleep_backoff_async`] (which record and sleep together); use this directly
+/// only when the sleep is performed elsewhere (e.g. an injected `sleep`
+/// callback in stage-sign).
 pub fn record_retry_backoff(d: Duration) {
     let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     RETRY_BACKOFF_MILLIS.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
+
+    let key = CURRENT_SCOPE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| UNATTRIBUTED_SCOPE.to_string());
+    let mut map = PER_SCOPE_RETRY.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = map.entry(key).or_default();
+    entry.retries = entry.retries.saturating_add(1);
+    entry.backoff_ms = entry.backoff_ms.saturating_add(ms);
 }
 
 /// Sleep `d` (blocking) and record it as retry backoff.
@@ -221,6 +283,20 @@ pub async fn sleep_backoff_async(d: Duration) {
 /// Total wall-clock time slept in retry backoff so far this run.
 pub fn total_retry_backoff() -> Duration {
     Duration::from_millis(RETRY_BACKOFF_MILLIS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Per-scope retry breakdown so far this run: `(scope, retries, backoff)` per
+/// publisher/stage that backed off, sorted by backoff descending (biggest
+/// offender first). Their backoff sums to [`total_retry_backoff`].
+pub fn retry_scope_breakdown() -> Vec<(String, u32, Duration)> {
+    let map = PER_SCOPE_RETRY.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rows: Vec<(String, u32, Duration)> = map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.retries, Duration::from_millis(v.backoff_ms)))
+        .collect();
+    // Descending by backoff, then name for a stable tie-break.
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    rows
 }
 
 /// Retry a synchronous operation according to `policy`.
@@ -1031,6 +1107,45 @@ mod tests {
         assert!(
             total_retry_backoff().saturating_sub(before_sleep) >= Duration::from_millis(30),
             "sleep_backoff_blocking must record its sleep"
+        );
+    }
+
+    #[test]
+    fn retry_scope_attributes_backoff_to_its_label() {
+        // Isolation rests on the unique scope name plus `>=` delta assertions,
+        // not on serialization: no other test in this crate enters a
+        // `RetryScope`, so nothing swaps `CURRENT_SCOPE` away between the two
+        // records here, and a uniquely-named key can only grow inside this
+        // test's guarded block.
+        let scope_name = "test-scope-attributes-2f9c";
+        let read = |name: &str| -> (u32, Duration) {
+            retry_scope_breakdown()
+                .into_iter()
+                .find(|(k, _, _)| k == name)
+                .map(|(_, r, d)| (r, d))
+                .unwrap_or((0, Duration::ZERO))
+        };
+
+        let (r0, d0) = read(scope_name);
+        {
+            let _scope = RetryScope::enter(scope_name);
+            record_retry_backoff(Duration::from_millis(40));
+            record_retry_backoff(Duration::from_millis(60));
+        }
+        let (r1, d1) = read(scope_name);
+        assert!(r1 >= r0 + 2, "two records must add at least two retries");
+        assert!(
+            d1.saturating_sub(d0) >= Duration::from_millis(100),
+            "scope backoff must sum the recorded sleeps"
+        );
+
+        // After the guard drops, backoff falls back to the unattributed bucket,
+        // not this scope — so a later record does not grow this scope's tally.
+        record_retry_backoff(Duration::from_millis(10));
+        assert_eq!(
+            read(scope_name).0,
+            r1,
+            "records outside the scope must not attribute to it"
         );
     }
 

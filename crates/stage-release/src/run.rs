@@ -71,6 +71,12 @@ impl Stage for super::ReleaseStage {
 
         validate_nightly_config(ctx, &log);
 
+        // Attribute the release stage's asset-upload backoff to a single
+        // "release" scope. The upload fan-out spawns tasks on `rt` that may
+        // migrate across worker threads, but every one reads the same constant
+        // scope value for the stage's duration, so no task-local is needed.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter("release");
+
         for crate_cfg in &crates {
             let Some(release_cfg) = crate_cfg.release.as_ref() else {
                 continue;
