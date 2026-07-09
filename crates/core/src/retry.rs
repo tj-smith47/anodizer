@@ -186,6 +186,43 @@ pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 /// `retry.max_elapsed`, and a caller that threads `None` is still unbounded.
 pub const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(15 * 60);
 
+/// Wall-clock time slept in retry backoff so far this run, in milliseconds.
+///
+/// A release runs as one process, so a single process-global accumulator
+/// captures every stage's backoff without threading a handle through the many
+/// independent per-stage retry loops — several of which sleep via an injected
+/// callback that has no path to carry a handle. Parallel upload workers add
+/// concurrently through the atomic. Read once at summary time via
+/// [`total_retry_backoff`]; the run surfaces it as a `retry_backoff_secs`
+/// field and an operator status line.
+static RETRY_BACKOFF_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record a backoff sleep of `d` against this run's total. Callers that sleep
+/// for retry should prefer [`sleep_backoff_blocking`] / [`sleep_backoff_async`]
+/// (which record and sleep together); use this directly only when the sleep is
+/// performed elsewhere (e.g. an injected `sleep` callback in stage-sign).
+pub fn record_retry_backoff(d: Duration) {
+    let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    RETRY_BACKOFF_MILLIS.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sleep `d` (blocking) and record it as retry backoff.
+pub fn sleep_backoff_blocking(d: Duration) {
+    record_retry_backoff(d);
+    std::thread::sleep(d);
+}
+
+/// Sleep `d` (async) and record it as retry backoff.
+pub async fn sleep_backoff_async(d: Duration) {
+    record_retry_backoff(d);
+    tokio::time::sleep(d).await;
+}
+
+/// Total wall-clock time slept in retry backoff so far this run.
+pub fn total_retry_backoff() -> Duration {
+    Duration::from_millis(RETRY_BACKOFF_MILLIS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Retry a synchronous operation according to `policy`.
 ///
 /// `op` returns:
@@ -231,7 +268,7 @@ where
     let mut attempt: u32 = 1;
     loop {
         if attempt > 1 {
-            std::thread::sleep(policy.delay_for(attempt));
+            sleep_backoff_blocking(policy.delay_for(attempt));
         }
         match op(attempt) {
             Ok(v) => return Ok(v),
@@ -288,7 +325,7 @@ where
     let mut attempt: u32 = 1;
     loop {
         if attempt > 1 {
-            tokio::time::sleep(policy.delay_for(attempt)).await;
+            sleep_backoff_async(policy.delay_for(attempt)).await;
         }
         match op(attempt).await {
             Ok(v) => return Ok(v),
@@ -969,6 +1006,33 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use crate::test_helpers::{test_logger, test_retry_log as tlog};
+
+    #[test]
+    fn backoff_accumulator_is_monotonic_and_sleep_helper_records() {
+        // The accumulator is process-global and other retry tests run
+        // concurrently against it, so assert on the DELTA (never smaller than
+        // this test's own contribution) rather than an absolute total — a reset
+        // would race those tests. `record_retry_backoff` adds without sleeping;
+        // `sleep_backoff_blocking` both sleeps the duration and records it.
+        let before = total_retry_backoff();
+        record_retry_backoff(Duration::from_millis(250));
+        assert!(
+            total_retry_backoff().saturating_sub(before) >= Duration::from_millis(250),
+            "record_retry_backoff must add at least its duration"
+        );
+
+        let before_sleep = total_retry_backoff();
+        let start = std::time::Instant::now();
+        sleep_backoff_blocking(Duration::from_millis(30));
+        assert!(
+            start.elapsed() >= Duration::from_millis(30),
+            "helper must sleep"
+        );
+        assert!(
+            total_retry_backoff().saturating_sub(before_sleep) >= Duration::from_millis(30),
+            "sleep_backoff_blocking must record its sleep"
+        );
+    }
 
     fn fast_policy() -> RetryPolicy {
         RetryPolicy {

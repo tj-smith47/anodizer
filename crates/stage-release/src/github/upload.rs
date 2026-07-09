@@ -372,7 +372,7 @@ pub(crate) async fn upload_release_asset(
                                 initial_retry_delay * 2u32.pow(attempt - 1),
                                 max_retry_delay,
                             );
-                            tokio::time::sleep(jitter_duration(base)).await;
+                            anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
                         }
                         continue;
                     }
@@ -419,7 +419,7 @@ pub(crate) async fn upload_release_asset(
                     max_upload_attempts,
                 ));
                 if attempt < max_upload_attempts {
-                    tokio::time::sleep(delay).await;
+                    anodizer_core::retry::sleep_backoff_async(delay).await;
                 }
                 last_err = Some(anyhow::anyhow!(err));
                 continue;
@@ -463,7 +463,7 @@ pub(crate) async fn upload_release_asset(
                 if attempt < max_upload_attempts {
                     let base =
                         std::cmp::min(initial_retry_delay * 2u32.pow(attempt - 1), max_retry_delay);
-                    tokio::time::sleep(jitter_duration(base)).await;
+                    anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
                 }
                 continue;
             }
@@ -493,7 +493,7 @@ pub(crate) async fn upload_release_asset(
                 if attempt < max_upload_attempts {
                     let base =
                         std::cmp::min(initial_retry_delay * 2u32.pow(attempt - 1), max_retry_delay);
-                    tokio::time::sleep(jitter_duration(base)).await;
+                    anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
                 }
                 continue;
             }

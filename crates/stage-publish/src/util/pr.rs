@@ -288,7 +288,9 @@ fn create_pr_via_gh_cli(
                 log.warn(&format!(
                     "gh pr create for {label} hit transient error (attempt {attempt}/3); retrying..."
                 ));
-                std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
+                anodizer_core::retry::sleep_backoff_blocking(std::time::Duration::from_secs(
+                    5 * attempt,
+                ));
             }
             Err(e) => {
                 // A deadline kill (the API call stalled) is Retriable and
@@ -299,7 +301,9 @@ fn create_pr_via_gh_cli(
                     log.warn(&format!(
                         "gh pr create for {label} timed out (attempt {attempt}/3); retrying..."
                     ));
-                    std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
+                    anodizer_core::retry::sleep_backoff_blocking(std::time::Duration::from_secs(
+                        5 * attempt,
+                    ));
                     continue;
                 }
                 let msg = format!(

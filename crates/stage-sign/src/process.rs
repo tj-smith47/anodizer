@@ -1111,7 +1111,7 @@ pub(crate) fn process_sign_configs(
                     &COSIGN_TRANSIENT_RETRY,
                     &thread_log,
                     &job.artifact_display,
-                    &|d| std::thread::sleep(d),
+                    &|d| anodizer_core::retry::sleep_backoff_blocking(d),
                     &mut || execute_sign_job(job, &thread_log),
                 )?;
             } else {
@@ -1130,7 +1130,7 @@ pub(crate) fn process_sign_configs(
                         &COSIGN_TRANSIENT_RETRY,
                         &thread_log,
                         &format!("verification of {}", v.what),
-                        &|d| std::thread::sleep(d),
+                        &|d| anodizer_core::retry::sleep_backoff_blocking(d),
                         &mut || crate::verify::execute_verify_job(v, &thread_log),
                     )?;
                 } else {

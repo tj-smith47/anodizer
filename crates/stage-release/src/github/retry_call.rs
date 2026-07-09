@@ -135,7 +135,7 @@ where
         // case we already slept the secondary-RL duration below).
         let skip_policy_sleep = last_err.as_ref().is_some_and(is_secondary_rate_limit);
         if attempt > 1 && !skip_policy_sleep {
-            tokio::time::sleep(policy.delay_for(attempt)).await;
+            anodizer_core::retry::sleep_backoff_async(policy.delay_for(attempt)).await;
         }
 
         match make_call().await {
@@ -193,7 +193,7 @@ where
                          sleeping {:.1}s before retry (attempt {attempt}/{max})",
                         delay.as_secs_f64(),
                     ));
-                    tokio::time::sleep(delay).await;
+                    anodizer_core::retry::sleep_backoff_async(delay).await;
                 } else if deadline.is_some_and(|d| policy.budget_exhausted(attempt + 1, d)) {
                     release_log().warn(&format_retry_giving_up(label, attempt));
                     return Err(err);

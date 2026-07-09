@@ -18,7 +18,15 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// `skip_serializing_if` predicate for `retry_backoff_secs`: a run that never
+/// backed off omits the field entirely rather than emitting `0.0`.
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+// No `Eq`: `retry_backoff_secs` is an f64 (wall-clock seconds), which is
+// PartialEq but not Eq.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunSummary {
     pub schema_version: u32,
@@ -77,6 +85,20 @@ pub struct RunSummary {
     /// versions parseable by newer readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_release: Option<VerifyReleaseRecord>,
+    /// Wall-clock seconds the run spent sleeping between retry attempts of
+    /// failed operations — the retry engine plus the bespoke publisher
+    /// ladders (github asset upload + octocrab, cargo-publish propagation,
+    /// gh-pr-create, sign/notarize/rate-limit backoff). Excludes deliberate
+    /// pacing (`upload_pace`) and readiness polls (crates.io index wait,
+    /// post-publish moderation) — those are expected waiting, not backoff
+    /// after a failure. A high value flags a flaky remote worth investigating
+    /// even when the run ultimately succeeded.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers; `skip_serializing_if` omits it
+    /// from the JSON on runs that never backed off.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub retry_backoff_secs: f64,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
 }
@@ -254,6 +276,7 @@ impl RunSummary {
             irreversibly_published,
             failure_policy: None,
             verify_release,
+            retry_backoff_secs: anodizer_core::retry::total_retry_backoff().as_secs_f64(),
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -632,6 +655,15 @@ pub fn status_table_rows(
             rows.push((String::new(), format!("- {issue}")));
         }
     }
+    // Only surface the retry-backoff row when the run actually backed off:
+    // a clean run reads noise-free, while a flaky remote leaves a visible
+    // "spent Ns retrying" trace even though the run ultimately succeeded.
+    if summary.retry_backoff_secs > 0.0 {
+        rows.push((
+            "retry backoff".to_string(),
+            format!("spent {:.1}s in retry backoff", summary.retry_backoff_secs),
+        ));
+    }
     rows.push((
         "run flags".to_string(),
         format!(
@@ -660,6 +692,7 @@ mod tests {
             irreversibly_published: false,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -1270,6 +1303,59 @@ mod tests {
     }
 
     #[test]
+    fn retry_backoff_row_appears_only_when_nonzero_and_precedes_run_flags() {
+        // Zero backoff: no row (the baseline render test already asserts the
+        // row count is results + 1). Nonzero: exactly one "retry backoff" row,
+        // sitting immediately before the closing "run flags" row so the two
+        // run-level rows stay grouped at the foot of the table.
+        let mut s = populated_summary();
+        assert!(
+            !status_table_rows(&s, PublishDisposition::Ran)
+                .iter()
+                .any(|(k, _)| k == "retry backoff"),
+            "a zero-backoff run must not emit a retry-backoff row"
+        );
+
+        s.retry_backoff_secs = 12.4;
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        let idx = rows
+            .iter()
+            .position(|(k, _)| k == "retry backoff")
+            .expect("nonzero backoff must emit a retry-backoff row");
+        assert_eq!(
+            rows[idx].1, "spent 12.4s in retry backoff",
+            "row text: {rows:?}"
+        );
+        assert_eq!(
+            rows[idx + 1].0,
+            "run flags",
+            "retry-backoff row must sit directly before run flags: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn retry_backoff_secs_round_trips_and_omits_zero() {
+        // Nonzero persists across a JSON round-trip; zero is omitted from the
+        // serialized form (skip_serializing_if) yet deserializes back to 0.0
+        // via `#[serde(default)]`, so older summaries stay readable.
+        let mut s = populated_summary();
+        s.retry_backoff_secs = 7.5;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"retry_backoff_secs\":7.5"), "json: {json}");
+        let back: RunSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.retry_backoff_secs, 7.5);
+
+        let zero = populated_summary();
+        let zjson = serde_json::to_string(&zero).unwrap();
+        assert!(
+            !zjson.contains("retry_backoff_secs"),
+            "zero backoff must be omitted: {zjson}"
+        );
+        let zback: RunSummary = serde_json::from_str(&zjson).unwrap();
+        assert_eq!(zback.retry_backoff_secs, 0.0);
+    }
+
+    #[test]
     fn status_table_rows_empty_results_state_why() {
         // Zero publisher results must yield an explicit placeholder row,
         // not an empty table — the operator should read WHY nothing is
@@ -1285,6 +1371,7 @@ mod tests {
             irreversibly_published: false,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1331,6 +1418,7 @@ mod tests {
             irreversibly_published: false,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1361,6 +1449,7 @@ mod tests {
             irreversibly_published: false,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results: vec![
                 RunSummaryResult {
                     name: "custom-publisher-with-long-id".to_string(), // 29 chars
@@ -1412,6 +1501,7 @@ mod tests {
             irreversibly_published: false,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,

@@ -647,7 +647,7 @@ impl Stage for DockerSignStage {
                             &crate::process::COSIGN_TRANSIENT_RETRY,
                             &log,
                             &format!("verification of {signed_ref}"),
-                            &|d| std::thread::sleep(d),
+                            &|d| anodizer_core::retry::sleep_backoff_blocking(d),
                             &mut || crate::verify::execute_verify_job(&vjob, &log),
                         )?;
                         log.status(&format!("verified image signature {signed_ref}")); // status-ok: per-image verification result

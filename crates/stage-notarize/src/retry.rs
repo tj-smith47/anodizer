@@ -157,7 +157,7 @@ pub(super) fn run_with_retry(
 
 /// Default delay function for the retry helpers (real `thread::sleep`).
 pub(super) fn real_sleep(d: std::time::Duration) {
-    std::thread::sleep(d);
+    anodizer_core::retry::sleep_backoff_blocking(d);
 }
 
 /// Variant of `run_with_retry` for callers that only need the exit status

@@ -2202,6 +2202,7 @@ mod tests {
             irreversibly_published,
             failure_policy: None,
             verify_release: None,
+            retry_backoff_secs: 0.0,
             results,
             determinism_allowlist: DeterminismAllowlist::default(),
         };

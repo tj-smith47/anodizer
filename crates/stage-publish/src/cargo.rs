@@ -1899,7 +1899,7 @@ fn run_cargo_publish_with_retry(
             PUBLISH_PROPAGATION_RETRIES,
             backoff.as_secs()
         ));
-        std::thread::sleep(backoff);
+        anodizer_core::retry::sleep_backoff_blocking(backoff);
     }
 
     // All retries exhausted — surface the last failure through check_output

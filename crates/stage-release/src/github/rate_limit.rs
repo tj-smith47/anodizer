@@ -33,7 +33,7 @@ pub(crate) type SleepFn = Box<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()
 
 /// Production sleep callback — delegates to [`tokio::time::sleep`].
 pub(crate) fn tokio_sleep() -> SleepFn {
-    Box::new(|d| Box::pin(tokio::time::sleep(d)))
+    Box::new(|d| Box::pin(anodizer_core::retry::sleep_backoff_async(d)))
 }
 
 /// Compute the seconds to sleep waiting for the GitHub rate-limit window
