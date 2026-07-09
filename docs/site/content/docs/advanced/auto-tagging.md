@@ -16,20 +16,27 @@ anodizer tag --dry-run          # show what would happen
 anodizer tag --custom-tag v2.0  # override with specific tag
 ```
 
-## Pushing the bump commit (`--push`)
+## Pushing (`--push`, `--push-tags-only`)
 
-By default `anodizer tag` is fully **local**: the tag and the version-sync
-`chore(release): bump …` commit both stay in your clone, so you can inspect the
-bump before publishing anything. Pass `--push` to push the bump commit to the
-release branch **atomically with the tag** (`git push --atomic`). There is no
-tag-only-push mode — a run either pushes branch + tag together or pushes
-nothing, so an orphan tag (a remote tag whose bump commit is absent from the
-remote branch) can never exist.
+`anodizer tag` is fully **local** in every configuration — single-crate,
+lockstep, `--crate`, and per-crate auto-dispatch alike. The tag and the
+version-sync `chore(release): bump …` commit both stay in your clone, so you can
+inspect the bump before anything reaches the remote, exactly like `git tag`.
+Reaching the remote is always an explicit opt-in:
+
+- **`--push`** pushes the bump commit to the release branch **atomically with
+  the tag** (`git push --atomic`) — branch HEAD and tag land together or not at
+  all, so this mode can never leave an orphan tag (a remote tag whose bump
+  commit is absent from the remote branch).
+- **`--push-tags-only`** pushes the tag(s) but *not* the bump commit — the
+  deferred-branch CI pattern (see the table). This is the one mode that
+  deliberately creates a remote tag ahead of its branch, so the branch must be
+  fast-forwarded onto the bump commit after publish succeeds.
 
 | Flag | Effect |
 |------|--------|
 | `--push` | Push the bump commit (branch HEAD) atomically with the tag |
-| `--no-push` | Push nothing; the tag(s) and bump commit stay local (the per-crate path's opt-out, since it pushes branch+tags by default) |
+| `--no-push` | Push nothing — the explicit, redundant form of the default (the tag(s) and bump commit stay local) |
 | `--push-tags-only` | Push the tag(s) but not the bump commit — the deferred-branch CI pattern: the pipeline is triggered by the tag, and the branch is fast-forwarded onto the bump commit only after publish succeeds. The branch **must** be advanced separately or the tag permanently references a commit missing from every branch |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
 | `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
@@ -247,7 +254,7 @@ tag:
 | `minor_string_token` | string | `#minor` | Custom minor bump trigger |
 | `patch_string_token` | string | `#patch` | Custom patch bump trigger |
 | `none_string_token` | string | `#none` | Custom skip trigger |
-| `git_api_tagging` | string | none (disabled) | Use GitHub API (`github`) or git CLI (`git`) to create tags |
+| `git_api_tagging` | bool | `false` | Create the tag through the GitHub API instead of the git CLI when pushing. Not supported with per-crate auto-dispatch (its atomic branch+multi-tag push has no API equivalent) |
 | `push` | bool | `false` | Also push the version-sync bump commit atomically with the tag (CLI `--push` / `--no-push` override) |
 | `skip_ci_on_bump` | bool | `false` | Append `[skip ci]` to the bump commit subject. Only safe with a `workflow_run`-triggered release (see below) |
 
@@ -326,12 +333,15 @@ A bare `anodizer tag` groups this shape as follows:
   singleton tracks.
 
 ```bash
-$ anodizer tag --dry-run   # feat on alpha + fix on beta, prev tag v0.1.0
+$ anodizer tag --push --dry-run   # feat on alpha + fix on beta, prev tag v0.1.0
    • running auto-tag (per-crate) (dry-run)
    • (dry-run) would push branch 'master' + tags [v0.2.0] to 'origin' atomically
 anodizer-output crates=["alpha","beta"]
 anodizer-output versions={"alpha":"0.2.0","beta":"0.2.0"}
 ```
+
+A bare `anodizer tag --dry-run` (no `--push`) prints the same
+`anodizer-output` lines with no push line — the tags would be created locally.
 
 One shared `v0.2.0` tag covers both members — never `v0.2.0` AND `v0.1.1`
 in the same namespace.
@@ -344,14 +354,12 @@ the first run after the upgrade. A track's first tag starts from the crate's
 own `[package].version` (the Cargo-ahead guard, same as lockstep), falling
 back to `tag.initial_version` when the manifest carries no literal version.
 
-**Push behavior differs by mode.** The per-crate auto-dispatch path (a
-multi-crate config with no `--crate`) pushes the single bump commit **and**
-every per-crate tag atomically by default — `--no-push` opts out of pushing
-entirely (the tags and bump commit stay local). The `--crate <name>` path
-follows the single-crate/lockstep default: fully local unless you pass
-`--push` (or set `tag.push: true`), at which point the bump commit and tag
-push atomically. Use `--push-remote <name>` to target a remote other than
-`origin`.
+**Push behavior is uniform across modes.** Every dispatch shape — single,
+lockstep, `--crate`, and per-crate auto-dispatch — is fully **local** by
+default: a bare `anodizer tag` creates the tag(s) and bump commit in your clone
+and pushes nothing. Pass `--push` (or set `tag.push: true`) to push the bump
+commit and every tag atomically, or `--push-tags-only` for the deferred-branch
+CI pattern. Use `--push-remote <name>` to target a remote other than `origin`.
 
 ### `[skip ci]` on the bump commit (`skip_ci_on_bump`)
 
@@ -384,7 +392,7 @@ trigger styles.
 ```yaml
 - uses: tj-smith47/anodizer-action@v1
   with:
-    args: tag
+    args: tag --push
   env:
     GITHUB_TOKEN: ${{ secrets.GH_PAT }}     # PAT, not GITHUB_TOKEN
 ```

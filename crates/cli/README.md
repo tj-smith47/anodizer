@@ -27,7 +27,7 @@ See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/)
 
 Your release is a Cargo workspace — not a bag of loose binaries. anodizer is built that way from the ground up.
 
-- **It speaks Cargo.** Per-crate release cadences, per-crate tags, and a tag resolver let a single crate and a thirty-crate monorepo share one config. `anodizer tag` and `anodizer bump` rewrite `Cargo.toml` *and* `Cargo.lock`, then commit, tag, and push atomically — no orphaned bump commit, no hand-rolled `git push`, no lockfile drift.
+- **It speaks Cargo.** Per-crate release cadences, per-crate tags, and a tag resolver let a single crate and a thirty-crate monorepo share one config. `anodizer tag` and `anodizer bump` rewrite `Cargo.toml` *and* `Cargo.lock`, then commit and tag — locally by default, and (on `--push`) push the bump commit and tag atomically — no orphaned bump commit, no hand-rolled `git push`, no lockfile drift.
 - **crates.io, published in the right order.** Dependency-aware ordering with sparse-index polling holds each crate until the ones it depends on have propagated — so a workspace publish never races itself into a transient "version not found."
 - **Cross-compiles without the toolchain tax.** musl, glibc, Windows, and macOS from one machine via `cargo-zigbuild` or `cross`. No `rustup target add` rituals, no per-target CI shards to babysit.
 - **Reproducible — and it proves it.** Deterministic artifacts by default, then `anodizer check determinism` rebuilds them and byte-compares. "Reproducible" becomes a fact your CI enforces, not a claim in your release notes.
@@ -143,7 +143,7 @@ anodizer release --dry-run
 # Auto-tag from commit directives
 # (Conventional Commits: feat: → minor, fix: → patch, BREAKING CHANGE: → major)
 anodizer tag --dry-run   # preview what tag would be created
-anodizer tag             # create + push the tag, which triggers the release workflow
+anodizer tag --push      # create + push the tag, which triggers the release workflow
 
 # Or force a specific tag value:
 anodizer tag --custom-tag v0.1.0

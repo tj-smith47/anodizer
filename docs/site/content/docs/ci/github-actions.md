@@ -67,7 +67,7 @@ The preflight parses every configured key (GPG, cosign, SSH) before any stage ru
 
 ## Auto-tag on push to main
 
-Run `anodizer tag` on every push to the default branch. Use a PAT (not `GITHUB_TOKEN`) so the pushed tag triggers downstream tag-scoped workflows like `release.yml`:
+Run `anodizer tag --push` on every push to the default branch (`--push` lands the tag on the remote — a bare `tag` stays local). Use a PAT (not `GITHUB_TOKEN`) so the pushed tag triggers downstream tag-scoped workflows like `release.yml`:
 
 ```yaml
 name: CI
@@ -97,12 +97,16 @@ jobs:
 
       - uses: tj-smith47/anodizer-action@v1
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
 
-The tag command reads commit messages for `#major` / `#minor` / `#patch` / `#none` directives, finds the latest semver tag for the crate, bumps accordingly, and pushes the new tag. See [Auto-Tagging](@/docs/advanced/auto-tagging.md) for details.
+`anodizer tag` is fully local by default; `--push` is what advances the branch
+and lands the tag on the remote (atomically) so `release.yml` fires. The tag
+command reads commit messages for `#major` / `#minor` / `#patch` / `#none`
+directives, finds the latest semver tag for the crate, bumps accordingly, and
+pushes the new tag. See [Auto-Tagging](@/docs/advanced/auto-tagging.md) for details.
 
 ## Workspace-aware auto-tag (monorepo)
 
@@ -119,14 +123,14 @@ For multi-crate workspaces, tag each crate independently so each gets its own `r
         run: |
           for crate in my-core my-cli my-operator; do
             echo "--- tagging $crate ---"
-            if anodizer tag --crate "$crate"; then
+            # --push lands the bump commit + tag atomically; without it the
+            # tag stays local and release.yml never fires.
+            if anodizer tag --crate "$crate" --push; then
               echo "::notice::$crate: tagged"
             else
               echo "::warning::$crate: skipped or failed"
             fi
           done
-          # Push any version_sync commits created by the tag step.
-          git push origin HEAD || true
 ```
 
 Each crate uses its own `tag_template` (e.g., `my-core-v{{ Version }}`) for both lookup and creation, so tags never collide across workspaces.

@@ -31,7 +31,7 @@ When `.anodizer.yaml` contains a non-empty `workspaces:` block, that wins over `
 | `anodizer release --preserve-dist` | — | hermetic dist tree; per-crate subdir when `--crate` is also set |
 | `anodizer release --publish-only` | preserved-dist `context.json` (flat or per-crate subdirs) | consume existing dist, publish in topo order |
 
-`anodizer tag` detects which crates have changed since their last tag, bumps versions, creates per-crate tags in one commit, and pushes everything atomically. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
+`anodizer tag` detects which crates have changed since their last tag, bumps versions, and creates per-crate tags in one commit — locally by default. Pass `--push` (as every recipe below does) to advance the branch and land the tags atomically so the release job can see them. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
 
 Every strategy below is two steps end-to-end: tag, then release. Environment validation and failure handling are in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) (tag + bump rollback by default, auto-degrading to `hold` once a one-way-door publisher has landed). No preflight or rollback steps belong in the workflow YAML:
 
@@ -84,7 +84,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -162,7 +162,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -239,7 +239,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -364,7 +364,7 @@ makes its dependent resolve `skipped`, and a naive
 
 ### Strategy C-hybrid — Multiple workspace groups
 
-**Use when:** `.anodizer.yaml` has a `workspaces:` block defining named groups. Each group behaves like a mini-lockstep workspace; `anodizer tag` handles all groups in one invocation and one atomic push. The `crates` output lists every crate that received a new tag, regardless of which group it belongs to.
+**Use when:** `.anodizer.yaml` has a `workspaces:` block defining named groups. Each group behaves like a mini-lockstep workspace; `anodizer tag --push` handles all groups in one invocation and one atomic push. The `crates` output lists every crate that received a new tag, regardless of which group it belongs to.
 
 ```yaml
 # .anodizer.yaml (excerpt)
@@ -415,7 +415,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -638,7 +638,7 @@ jobs:
           from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -809,7 +809,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
@@ -846,7 +846,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: t
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 

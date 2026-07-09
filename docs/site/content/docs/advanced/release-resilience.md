@@ -625,10 +625,10 @@ anodizer release --rollback-only --from-run=v0.2.1
 #         for the ones that need manual cleanup — those entries name
 #         the publisher and the error).
 
-# Step 3: cut a new tag (anodizer tag creates and pushes the next
+# Step 3: cut a new tag (anodizer tag --push creates and pushes the next
 #         semver from your commit log; release.yml triggers on the
 #         pushed tag and re-runs the pipeline).
-anodizer tag
+anodizer tag --push
 ```
 
 ### Recovering a poisoned tag with `tag rollback`

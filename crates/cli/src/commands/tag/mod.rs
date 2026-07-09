@@ -56,35 +56,17 @@ pub struct TagOpts {
 /// nothing — a remote tag referencing an unpushed bump commit (an orphan
 /// tag) is not a representable outcome.
 ///
-/// `--no-push` always wins; then an explicit `--push` or `tag.push = true`
-/// selects the atomic push; otherwise the per-path default applies (`false`
-/// — fully local — for the single / lockstep / `--crate` paths, `true` for
-/// per-crate auto-dispatch, whose atomic branch+tags push is the
-/// long-standing default).
-fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_default: bool) -> bool {
+/// Every dispatch shape — single, lockstep, `--crate`, and per-crate
+/// auto-dispatch — shares one default: **fully local**. Cutting a tag never
+/// touches the remote unless a push is explicitly requested, mirroring
+/// `git tag`. `--no-push` always wins (redundant with the default); then an
+/// explicit `--push` or `tag.push = true` selects the atomic push; otherwise
+/// nothing is pushed.
+fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>) -> bool {
     if opts.no_push {
         false
-    } else if opts.push || config_push == Some(true) {
-        true
     } else {
-        path_default
-    }
-}
-
-/// Resolve the branch to push the bump commit to, or `None` when nothing
-/// is pushed (the tag(s) and bump commit stay local).
-///
-/// Returns `Some(current_branch)` when [`resolve_effective_push`] selects a
-/// branch push for the given `path_default`; otherwise `None`.
-fn resolve_tag_push_branch(
-    opts: &TagOpts,
-    config_push: Option<bool>,
-    path_default: bool,
-) -> Result<Option<String>> {
-    if resolve_effective_push(opts, config_push, path_default) {
-        Ok(Some(git::get_current_branch()?))
-    } else {
-        Ok(None)
+        opts.push || config_push == Some(true)
     }
 }
 
@@ -409,9 +391,9 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         };
 
     // `release_branches` guard, BEFORE shape dispatch so it protects every
-    // tagging shape (per-crate and flat-aggregate push by default, so a
-    // path-specific guard is a real safety hole: feature-branch CI could cut
-    // and push live tags). Bypass semantics match the single/lockstep path:
+    // tagging shape uniformly: a feature-branch run that opts into `--push`
+    // could otherwise cut and push live tags off a non-release branch.
+    // Bypass semantics match the single/lockstep path:
     // an explicit `--version` is an authoritative "tag exactly this" request,
     // and a custom tag has always been created before the branch check ran.
     // The output dialect follows the SAME dispatch decision the real dispatch
@@ -519,12 +501,12 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     let strict = opts.strict;
     let tag_prefix_for_hooks = cfg.tag_prefix.clone();
 
-    // Single / lockstep / --crate share a `false` push default: a bare run is
-    // fully LOCAL (tag + bump commit both stay in the clone). `--push`,
-    // `tag.push=true`, or `--push-dry-run` (preview) opt into pushing the bump
-    // commit (the branch HEAD) atomically with the tag. A tag pushed without
-    // its bump commit (an orphan tag) is only producible through the explicit
-    // `--push-tags-only` opt-in, never as a silent default.
+    // A bare run is fully LOCAL (tag + bump commit both stay in the clone) in
+    // every dispatch shape. `--push`, `tag.push=true`, or `--push-dry-run`
+    // (preview) opt into pushing the bump commit (the branch HEAD) atomically
+    // with the tag. A tag pushed without its bump commit (an orphan tag) is
+    // only producible through the explicit `--push-tags-only` opt-in, never as
+    // a silent default.
     //
     // `--push-dry-run` previews the push commands `--push` would run: treat it
     // as push-mode-on, but every `git push` is replaced by a "(dry-run) would
@@ -532,8 +514,8 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // `--push-tags-only` overrides `tag.push = true` config (an explicit CLI
     // choice beats persisted config, matching --no-push) and combines with
     // `--push-dry-run` as a preview of the tags-only push.
-    let push_mode = !opts.push_tags_only
-        && (resolve_effective_push(&opts, config_push, false) || opts.push_dry_run);
+    let push_mode =
+        !opts.push_tags_only && (resolve_effective_push(&opts, config_push) || opts.push_dry_run);
     let push_preview = opts.push_dry_run;
     let push_branch = if push_mode {
         Some(git::get_current_branch()?)
@@ -2424,16 +2406,22 @@ fn run_per_crate_tag(
         .collect();
     let versions_json = serde_json::to_string(&versions_map).unwrap_or_else(|_| "{}".to_string());
 
-    // Per-crate auto-dispatch defaults to pushing the bump commit + tags
-    // atomically (path_default = true). `--no-push` keeps everything local
-    // (pushing the tags without the bump commit would orphan them on the
-    // remote); `--push-tags-only` opts into exactly that orphan-and-advance-
-    // later pattern explicitly; `--push-dry-run` previews the push.
+    // Per-crate auto-dispatch shares the fully-local default: a bare run pushes
+    // nothing. `--push` / `tag.push=true` opts into the atomic branch+tags push;
+    // `--push-tags-only` opts into the deferred-branch pattern (push the tags
+    // now, advance the branch after publish succeeds); `--push-dry-run` previews
+    // the atomic push without executing it. Pushing tags without their bump
+    // commit (an orphan tag) is reachable only through explicit `--push-tags-only`.
     let push_dry = opts.dry_run || opts.push_dry_run;
     let push_branch = if opts.push_tags_only {
         None
+    } else if resolve_effective_push(opts, controls.config_push) || opts.push_dry_run {
+        // `--push-dry-run` selects the atomic branch+tags push even without
+        // `--push`, mirroring the single/lockstep path; the push leg below then
+        // runs in preview mode via `push_dry`.
+        Some(git::get_current_branch()?)
     } else {
-        resolve_tag_push_branch(opts, controls.config_push, true)?
+        None
     };
     if push_branch.is_some() || opts.push_tags_only {
         git::push_branch_and_tags_atomic_in(
@@ -2449,7 +2437,8 @@ fn run_per_crate_tag(
         )?;
     } else if !opts.dry_run {
         log.status(&format!(
-            "created {} locally; nothing was pushed (--no-push)",
+            "created {} locally; nothing was pushed — \
+             pass --push to push the bump commit + tags atomically",
             all_new_tags.join(", ")
         ));
     }
@@ -3066,29 +3055,28 @@ mod tests {
 
     #[test]
     fn resolve_effective_push_matrix() {
-        // (push, no_push, config_push, path_default) -> expected
-        let cases: &[(bool, bool, Option<bool>, bool, bool)] = &[
+        // (push, no_push, config_push) -> expected. Every dispatch shape shares
+        // this one resolution: fully local unless a push is explicitly asked for.
+        let cases: &[(bool, bool, Option<bool>, bool)] = &[
             // --no-push wins over everything.
-            (false, true, Some(true), true, false),
-            (true, true, Some(true), true, false), // (clap forbids push+no_push, but the resolver must still be safe)
-            (false, true, None, true, false),
-            // --push forces a branch push even on a false default.
-            (true, false, None, false, true),
-            // config push=true forces a branch push on a false default.
-            (false, false, Some(true), false, true),
-            // config push=false does not force; default passes through.
-            (false, false, Some(false), false, false),
-            (false, false, Some(false), true, true),
-            // No signal: the per-path default passes through (both polarities).
-            (false, false, None, false, false),
-            (false, false, None, true, true),
+            (false, true, Some(true), false),
+            (true, true, Some(true), false), // (clap forbids push+no_push, but the resolver must still be safe)
+            (false, true, None, false),
+            // --push forces a branch push.
+            (true, false, None, true),
+            // config push=true forces a branch push.
+            (false, false, Some(true), true),
+            // config push=false is inert; the local default stands.
+            (false, false, Some(false), false),
+            // No signal: fully local.
+            (false, false, None, false),
         ];
-        for &(push, no_push, config_push, path_default, expected) in cases {
+        for &(push, no_push, config_push, expected) in cases {
             let opts = push_opts(push, no_push);
             assert_eq!(
-                resolve_effective_push(&opts, config_push, path_default),
+                resolve_effective_push(&opts, config_push),
                 expected,
-                "push={push} no_push={no_push} config_push={config_push:?} path_default={path_default}"
+                "push={push} no_push={no_push} config_push={config_push:?}"
             );
         }
     }

@@ -565,10 +565,11 @@ workspaces:
 fn per_crate_no_output_when_push_fails() {
     // The `anodizer-output crates=…` / `versions=…` lines advertise a
     // successful tag+push to a downstream consumer. They must be emitted
-    // only AFTER the atomic push succeeds — never before it. Point `origin`
-    // at an unreachable URL and run under `--strict` so the atomic push hard-
-    // fails; the command must exit non-zero AND emit no `anodizer-output`
-    // line (a pre-push emission would advertise tags that never landed).
+    // only AFTER the atomic push succeeds — never before it. Push is opt-in
+    // (`--push`), so drive the push explicitly; point `origin` at an
+    // unreachable URL and run under `--strict` so the atomic push hard-fails;
+    // the command must exit non-zero AND emit no `anodizer-output` line (a
+    // pre-push emission would advertise tags that never landed).
     let tmp = TempDir::new().unwrap();
     flat_two_crate_workspace(tmp.path());
     git_init(tmp.path());
@@ -594,7 +595,7 @@ fn per_crate_no_output_when_push_fails() {
 
     let out = anodizer()
         .current_dir(tmp.path())
-        .args(["--strict", "tag"])
+        .args(["--strict", "tag", "--push"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1019,7 +1020,7 @@ workspaces:
 }
 
 #[test]
-fn per_crate_rerun_after_failed_push_is_idempotent() {
+fn per_crate_rerun_over_leftover_local_tag_is_idempotent() {
     // A prior run's leftover local tag at the same commit must not kill
     // the re-run with git's raw "tag already exists".
     let tmp = TempDir::new().unwrap();
@@ -1039,9 +1040,10 @@ fn per_crate_rerun_after_failed_push_is_idempotent() {
     assert!(first.status.success());
     assert!(git_tag_exists(tmp.path(), "core-v0.1.1"));
 
-    // Simulate "writeback committed + tag created, push failed": the bump
-    // commit and local tag exist. Re-running must reuse the tag (it points at
-    // HEAD — the bump commit is the last commit) instead of dying.
+    // The bump commit and local tag from the first run already exist (a bare
+    // run is fully local). Re-running must reuse the tag (it points at HEAD —
+    // the bump commit is the last commit) instead of dying on "tag already
+    // exists".
     let second = anodizer()
         .current_dir(tmp.path())
         .args(["tag"])

@@ -906,7 +906,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 
 Off by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run. |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
-| `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`. |
+| `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates the tag (and, when a push was requested, pushes it). Env and template vars same as `tag_pre_hooks`. |
 | `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`, `{{ PrefixedTag }}` are available. |
 | `tag_prefix` | string | — | Prefix prepended to version tags (e.g., "v" produces "v1.2.3"). |
 | `verbose` | bool | — | When true, print verbose tag calculation output. |

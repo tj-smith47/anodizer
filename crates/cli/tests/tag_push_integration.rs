@@ -657,8 +657,8 @@ fn push_remote_targets_named_remote() {
 
 #[test]
 fn per_crate_no_push_pushes_nothing() {
-    // Per-crate auto-dispatch defaults to pushing branch+tags. With --no-push
-    // everything stays local — pushing the tags alone would orphan them.
+    // Per-crate is fully local by default; --no-push is the explicit,
+    // redundant form of that same outcome — nothing reaches the remote.
     let (work, bare) = per_crate_with_origin();
     let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
 
@@ -726,10 +726,13 @@ fn per_crate_push_tags_only_pushes_tags_without_branch() {
 }
 
 #[test]
-fn per_crate_default_pushes_branch_and_tags_atomically() {
-    // Guard the per-crate default (push=true) against regression: branch+tags
-    // both reach the remote without any flag.
+fn per_crate_default_is_fully_local() {
+    // Every dispatch shape shares one default: a bare run pushes NOTHING.
+    // Per-crate is no exception — the tag is created locally, the remote is
+    // untouched, and reaching the remote requires an explicit --push /
+    // --push-tags-only (mirroring `git tag`).
     let (work, bare) = per_crate_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
 
     let out = anodizer()
         .current_dir(work.path())
@@ -745,14 +748,20 @@ fn per_crate_default_pushes_branch_and_tags_atomically() {
 
     let local_head = head_sha(work.path());
     assert_eq!(
-        remote_branch_sha(bare.path(), "master").as_deref(),
-        Some(local_head.as_str()),
-        "per-crate default must advance remote master to the bump commit"
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "bare per-crate tag must NOT advance remote master"
     );
     assert_eq!(
-        remote_tag_target(bare.path(), "core-v0.1.1").as_deref(),
-        Some(local_head.as_str()),
-        "per-crate default must push the tag"
+        remote_tag_target(bare.path(), "core-v0.1.1"),
+        None,
+        "bare per-crate tag must NOT push the tag"
+    );
+    // The tag exists locally at the bump commit.
+    let local_tag = git_out(work.path(), &["rev-parse", "refs/tags/core-v0.1.1^{}"]);
+    assert_eq!(
+        local_tag, local_head,
+        "local per-crate tag must target the bump commit"
     );
 }
 
@@ -886,6 +895,49 @@ fn push_dry_run_creates_tag_locally_but_pushes_nothing() {
     );
     assert_eq!(
         remote_tag_target(bare.path(), "v0.1.1"),
+        None,
+        "--push-dry-run must NOT push the tag"
+    );
+}
+
+#[test]
+fn per_crate_push_dry_run_previews_atomic_push_without_pushing() {
+    // Standalone --push-dry-run (no --push) must preview the atomic branch+tags
+    // push in per-crate dispatch too, mirroring single/lockstep — not fall
+    // through to the fully-local "nothing was pushed" path.
+    let (work, bare) = per_crate_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push-dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "per-crate tag --push-dry-run must exit 0: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("(dry-run) would push branch"),
+        "expected an atomic branch+tags push preview: {combined}"
+    );
+
+    // The remote must be untouched.
+    assert_eq!(
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "--push-dry-run must NOT advance remote master"
+    );
+    assert_eq!(
+        remote_tag_target(bare.path(), "core-v0.1.1"),
         None,
         "--push-dry-run must NOT push the tag"
     );
@@ -1227,15 +1279,16 @@ fn single_crate_recut_after_remote_tag_delete_remints_same_version() {
 fn per_crate_recut_after_remote_tag_delete_remints_same_version() {
     let (work, bare) = per_crate_with_origin();
 
-    // Full per-crate run pushes branch + core-v0.1.1 atomically.
+    // Land core-v0.1.1 on the remote (explicit --push) so the re-cut path has a
+    // remote tag to delete.
     let out = anodizer()
         .current_dir(work.path())
-        .args(["tag"])
+        .args(["tag", "--push"])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "initial per-crate tag failed: stdout={} stderr={}",
+        "initial per-crate tag --push failed: stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );

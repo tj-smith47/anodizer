@@ -12,7 +12,7 @@ If you're coming from GoReleaser, anodizer will feel familiar. The config struct
 GoReleaser builds Rust binaries, but anodizer is Rust-first — it understands the Cargo ecosystem your release lives in:
 
 - **Cargo workspaces** as a first-class unit: per-crate release cadences, per-crate tags, a tag resolver, and cross-crate version syncing.
-- **`Cargo.toml` / `Cargo.lock`-aware version bumps** (`anodizer tag` / `bump`) that commit, tag, and push the bump atomically.
+- **`Cargo.toml` / `Cargo.lock`-aware version bumps** (`anodizer tag` / `bump`) that commit and tag locally, and (with `--push`) push the bump atomically.
 - **crates.io publishing** with dependency-aware ordering and sparse-index polling.
 - **A determinism harness** that rebuilds and byte-compares artifacts to prove reproducibility.
 - **Zero-config Rust cross-compilation** via `cargo-zigbuild` / `cross`.

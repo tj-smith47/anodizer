@@ -14731,7 +14731,7 @@
           ]
         },
         "tag_post_hooks": {
-          "description": "Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`.",
+          "description": "Commands to run after `anodizer tag` successfully creates the tag (and, when a push was requested, pushes it). Env and template vars same as `tag_pre_hooks`.",
           "default": null,
           "type": [
             "array",

@@ -81,7 +81,8 @@ pub struct TagConfig {
     /// template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`,
     /// `{{ PrefixedTag }}` are available.
     pub tag_pre_hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after `anodizer tag` successfully creates and pushes the
-    /// tag. Env and template vars same as `tag_pre_hooks`.
+    /// Commands to run after `anodizer tag` successfully creates the tag (and,
+    /// when a push was requested, pushes it). Env and template vars same as
+    /// `tag_pre_hooks`.
     pub tag_post_hooks: Option<Vec<HookEntry>>,
 }

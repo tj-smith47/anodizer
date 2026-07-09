@@ -184,7 +184,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - uses: tj-smith47/anodizer-action@v1
         with:
-          args: tag
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
