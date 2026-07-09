@@ -117,6 +117,7 @@ pub(crate) fn format_retry_giving_up(label: &str, attempts: u32) -> String {
 /// for secondary-RL attempts to avoid doubling the sleep.
 pub(crate) async fn retry_octocrab_call<T, F, Fut>(
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     label: &'static str,
     retry_after: Option<&RetryAfterCapture>,
     mut make_call: F,
@@ -167,16 +168,35 @@ where
                     release_log().warn(&format_retry_giving_up(label, attempt));
                     return Err(err);
                 }
-                // Secondary rate-limit: sleep the dedicated RL delay (with
-                // jitter) instead of the policy's exp-backoff delay.
+                // Stop once the sleep that would precede the next attempt
+                // crosses the run's retry budget, so a long 5xx/secondary-RL
+                // ladder can't outlive the deadline set via `retry.max_elapsed`.
+                // The two paths sleep different amounts, so each projects its
+                // own delay: the exp-backoff path sleeps `delay_for(attempt+1)`
+                // at the loop top, while a secondary rate-limit sleeps a
+                // dedicated 60–600s slot here — projecting the exp-backoff delay
+                // for the latter would let a far longer RL sleep overshoot.
                 if secondary_rl {
                     let delay = jitter_duration(secondary_rl_delay(retry_after));
+                    let overshoots = deadline.is_some_and(|d| {
+                        match std::time::Instant::now().checked_add(delay) {
+                            Some(projected) => projected > d,
+                            None => true,
+                        }
+                    });
+                    if overshoots {
+                        release_log().warn(&format_retry_giving_up(label, attempt));
+                        return Err(err);
+                    }
                     release_log().warn(&format!(
                         "{label} hit GitHub secondary rate limit; \
                          sleeping {:.1}s before retry (attempt {attempt}/{max})",
                         delay.as_secs_f64(),
                     ));
                     tokio::time::sleep(delay).await;
+                } else if deadline.is_some_and(|d| policy.budget_exhausted(attempt + 1, d)) {
+                    release_log().warn(&format_retry_giving_up(label, attempt));
+                    return Err(err);
                 }
                 last_err = Some(err);
             }
@@ -285,7 +305,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", None, || async {
+            retry_octocrab_call(&policy, None, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -314,7 +334,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", None, || async {
+            retry_octocrab_call(&policy, None, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -341,7 +361,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", None, || async {
+            retry_octocrab_call(&policy, None, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -350,6 +370,43 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "attempts=1 must produce exactly one octocrab call"
+        );
+    }
+
+    #[tokio::test]
+    async fn already_elapsed_deadline_stops_before_the_retry() {
+        // An already-spent retry budget must stop the ladder after the first
+        // failed attempt even when the policy still permits more attempts.
+        // Count invocations of the closure `retry_octocrab_call` drives (not
+        // octocrab's internal transport retries): a transport-class error is
+        // always retriable, so with `max_attempts: 5` and a `None` deadline the
+        // closure would be called 5 times — an elapsed deadline must cap it at
+        // one. A `.invalid` host yields a transport error with no HTTP response
+        // (same fixture as the transport-classifier test).
+        anodizer_core::tls::install_default_crypto_provider();
+        let octo = octocrab::OctocrabBuilder::new()
+            .base_uri("http://nonexistent.invalid/")
+            .expect("base_uri must accept RFC 2606 .invalid URL")
+            .build()
+            .expect("OctocrabBuilder::build");
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let elapsed = std::time::Instant::now() - Duration::from_secs(1);
+        let closure_calls = std::sync::atomic::AtomicU32::new(0);
+        let result: Result<serde_json::Value, octocrab::Error> =
+            retry_octocrab_call(&policy, Some(elapsed), "test list", None, || {
+                closure_calls.fetch_add(1, Ordering::SeqCst);
+                async { octo.get("/", None::<&()>).await }
+            })
+            .await;
+        assert!(result.is_err(), "transport error must surface as Err");
+        assert_eq!(
+            closure_calls.load(Ordering::SeqCst),
+            1,
+            "an elapsed deadline must stop after the first attempt (no retry)"
         );
     }
 
@@ -551,7 +608,7 @@ mod tests {
 
         let t0 = Instant::now();
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test upload", None, || async {
+            retry_octocrab_call(&policy, None, "test upload", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -577,6 +634,62 @@ mod tests {
             elapsed >= Duration::from_millis(800),
             "secondary-RL delay must hold for at least 800 ms (jitter floor is 80 % of 1 s; \
              elapsed: {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(secondary_rl_env)]
+    async fn secondary_rate_limit_sleep_is_bounded_by_the_deadline() {
+        use std::time::Instant;
+
+        // A secondary-RL slot is 60–600s (here overridden to 1s), far larger
+        // than the exp-backoff delay the non-RL path projects. With a deadline
+        // only 100ms out, projecting the real 1s slot must stop the ladder
+        // BEFORE the sleep — proving the guard bounds the dedicated RL sleep,
+        // not just the exp-backoff path.
+        let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
+        let resp_403 = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body_403}",
+                body_403.len()
+            )
+            .into_boxed_str(),
+        );
+        let (addr, calls) = spawn_oneshot_http_responder(vec![resp_403]);
+        let octo = build_test_octocrab(addr);
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        // SAFETY: test-only env mutation; unique key, serialized window.
+        unsafe {
+            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
+            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
+        }
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let t0 = Instant::now();
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
+            retry_octocrab_call(&policy, Some(deadline), "test upload", None, || async {
+                octo.get("/test", None::<&()>).await
+            })
+            .await;
+        let elapsed = t0.elapsed();
+        // SAFETY: test-only env mutation; unique key, serialized window.
+        unsafe {
+            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
+            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
+        }
+        assert!(result.is_err(), "spent budget must surface Err");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the RL sleep must be skipped: exactly one 403 served, no retry"
+        );
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "the 1s RL slot must NOT be slept when it would cross the deadline \
+             (elapsed: {elapsed:?})"
         );
     }
 }

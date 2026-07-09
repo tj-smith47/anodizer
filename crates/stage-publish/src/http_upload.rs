@@ -200,6 +200,7 @@ pub(crate) fn upload_artifact_set(
     // Idempotent uploads keep a transient-error retry floor even when a
     // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
     let policy = policy.with_idempotent_floor();
+    let deadline = ctx.retry_deadline();
 
     // Render every target URL AND custom-header set serially: both touch the
     // non-`Sync` `ctx` (URL rewrite hook = Artifactory's Debian matrix-param
@@ -240,6 +241,7 @@ pub(crate) fn upload_artifact_set(
                 req.overwrite,
                 rendered_headers,
                 &policy,
+                deadline,
                 log,
             )
         },

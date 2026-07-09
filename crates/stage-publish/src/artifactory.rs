@@ -3,7 +3,7 @@ use anodizer_core::context::Context;
 use anodizer_core::hashing::sha256_file;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::fs;
@@ -697,6 +697,7 @@ pub(crate) fn upload_single_artifact(
         overwrite,
         &rendered_headers,
         policy,
+        ctx.retry_deadline(),
         log,
     )
 }
@@ -747,6 +748,7 @@ pub(crate) fn upload_single_artifact_prepared(
     overwrite: bool,
     rendered_headers: &[(String, String)],
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<UploadOutcome> {
     let UploadHeaders {
@@ -824,9 +826,10 @@ pub(crate) fn upload_single_artifact_prepared(
 
     let label = format!("{publisher}: upload of '{}'", artifact.name());
     let art_name = artifact.name().to_string();
-    let (status, _body) = retry_http_blocking(
+    let (status, _body) = retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::AllowRedirects,
         |attempt| {
             if attempt > 1 {

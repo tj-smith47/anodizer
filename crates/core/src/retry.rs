@@ -162,7 +162,7 @@ impl RetryPolicy {
     /// project a backoff so large that `Instant::now() + delay` would overflow;
     /// an overflowing projection is treated as past any real deadline (the ladder
     /// stops) rather than panicking.
-    fn budget_exhausted(&self, next_attempt: u32, deadline: std::time::Instant) -> bool {
+    pub fn budget_exhausted(&self, next_attempt: u32, deadline: std::time::Instant) -> bool {
         match std::time::Instant::now().checked_add(self.delay_for(next_attempt)) {
             Some(projected) => projected > deadline,
             None => true,

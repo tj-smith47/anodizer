@@ -982,6 +982,7 @@ fn queue_v2_build_for_platforms(
             staging_dir: staging_dir.to_path_buf(),
             id: v2_cfg.id.clone(),
             use_backend: Some(backend_label.to_string()),
+            deadline: ctx.retry_deadline(),
             is_podman,
             push: should_push,
             dist: dist.to_path_buf(),
@@ -1357,6 +1358,7 @@ pub(crate) fn process_docker_manifest(
             manifest_max_attempts,
             manifest_base_delay,
             manifest_max_delay,
+            ctx.retry_deadline(),
         )?;
 
         if !manifest_skip_push {
@@ -1379,6 +1381,7 @@ pub(crate) fn process_docker_manifest(
                 manifest_max_attempts,
                 manifest_base_delay,
                 manifest_max_delay,
+                ctx.retry_deadline(),
             )?;
             log.status(&format!("pushed manifest {}", manifest_name));
         } else {
@@ -1481,17 +1484,19 @@ fn run_manifest_create_with_retry(
     max_attempts: u32,
     base_delay: Duration,
     max_delay: Option<Duration>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<()> {
-    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts,
         base_delay,
-        max_delay: max_delay.unwrap_or(Duration::MAX),
+        max_delay: max_delay.unwrap_or(anodizer_core::config::RetryConfig::DEFAULT_MAX_DELAY),
     };
-    retry_sync(
+    retry_sync_deadline(
         RetryLog::new("docker manifest create", log),
         &policy,
+        deadline,
         |attempt| {
             log.verbose(&format!("running {}", create_cmd.join(" ")));
             let mut create_command = Command::new(&create_cmd[0]);
@@ -1555,18 +1560,20 @@ fn run_manifest_push_with_retry(
     max_attempts: u32,
     base_delay: Duration,
     max_delay: Option<Duration>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Option<String>> {
-    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts,
         base_delay,
-        max_delay: max_delay.unwrap_or(Duration::MAX),
+        max_delay: max_delay.unwrap_or(anodizer_core::config::RetryConfig::DEFAULT_MAX_DELAY),
     };
     let mut manifest_digest: Option<String> = None;
-    retry_sync(
+    retry_sync_deadline(
         RetryLog::new("docker manifest push", log),
         &policy,
+        deadline,
         |attempt| {
             log.verbose(&format!("running {}", push_cmd.join(" ")));
             let mut push_command = Command::new(&push_cmd[0]);

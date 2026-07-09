@@ -33,7 +33,7 @@ use super::spec::{AlreadyExistsAction, classify_already_exists, upload_retry_loc
 use super::upload_outcome::{UploadAttemptOutcome, classify_upload_attempt};
 use super::{
     check_github_rate_limit_with_env, delete_release_asset_by_name, find_release_asset_probe,
-    format_retry_warn,
+    format_retry_giving_up, format_retry_warn,
 };
 use crate::forge::AssetPresence;
 use crate::release_log;
@@ -55,6 +55,7 @@ pub(crate) struct GithubAssetClient {
     pub tag: String,
     pub replace_existing_artifacts: bool,
     pub policy: RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub retry_after: RetryAfterCapture,
     /// Token forwarded to the primary-rate-limit `/rate_limit` probe.
     pub token: String,
@@ -119,6 +120,7 @@ impl crate::forge::ForgeAssetClient for GithubAssetClient {
             file_name,
             replace_existing_artifacts: self.replace_existing_artifacts,
             policy: &self.policy,
+            deadline: self.deadline,
             retry_after: Some(&self.retry_after),
             token: &self.token,
             env_source: self.env_source.as_ref(),
@@ -164,6 +166,7 @@ pub(crate) struct UploadAssetRequest<'a> {
     pub file_name: &'a str,
     pub replace_existing_artifacts: bool,
     pub policy: &'a RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub retry_after: Option<&'a RetryAfterCapture>,
     /// Token forwarded to the primary-rate-limit `/rate_limit` probe.
     pub token: &'a str,
@@ -195,6 +198,7 @@ pub(crate) async fn upload_release_asset(
         file_name,
         replace_existing_artifacts,
         policy,
+        deadline,
         retry_after,
         token,
         env_source,
@@ -230,6 +234,19 @@ pub(crate) async fn upload_release_asset(
     // rewrite it before breaking.
     let mut disposition = crate::forge::UploadOutcome::Uploaded(file_name.to_string());
     for attempt in 1..=max_upload_attempts {
+        // Honor the run's absolute retry budget: once the prior attempt's
+        // backoff has carried the clock past the deadline, stop retrying so a
+        // long transient / secondary-RL ladder can't outlive the budget the
+        // operator set via `retry.max_elapsed`. Attempt 1 always runs — there
+        // is no prior failure to bound, and `deadline` is None only when retry
+        // is fully unbounded.
+        if attempt > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            release_log().warn(&format_retry_giving_up(
+                &format!("upload of '{file_name}'"),
+                attempt - 1,
+            ));
+            break;
+        }
         let data = std::fs::read(path)
             .with_context(|| format!("release: read artifact {}", path.display()))?;
         let local_size = data.len() as u64;
@@ -644,6 +661,7 @@ mod tests {
             file_name: "app.tar.gz",
             replace_existing_artifacts,
             policy: &policy,
+            deadline: None,
             retry_after: None,
             token: "test-token",
             env_source,

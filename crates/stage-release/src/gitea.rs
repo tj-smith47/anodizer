@@ -20,7 +20,9 @@
 use std::path::Path;
 
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_async};
+use anodizer_core::retry::{
+    RetryLog, RetryPolicy, SuccessClass, retry_http_async, retry_http_async_deadline,
+};
 use anodizer_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
@@ -50,6 +52,7 @@ pub(crate) struct GiteaCtx<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
     pub policy: &'a RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub log: &'a anodizer_core::log::StageLogger,
 }
 
@@ -138,6 +141,7 @@ pub(crate) async fn gitea_create_release(
         owner,
         repo,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let GiteaReleaseSpec {
@@ -347,6 +351,7 @@ pub(crate) async fn gitea_upload_asset(
         owner,
         repo,
         policy,
+        deadline,
         log,
     } = *ctx;
     let GiteaAssetSpec {
@@ -371,9 +376,10 @@ pub(crate) async fn gitea_upload_asset(
     // body bytes. `mime_str("application/octet-stream")` is structurally
     // infallible (a valid RFC-2045 token); same pattern as gitlab.rs and
     // cloudsmith.rs::retry_request.
-    retry_http_async(
+    retry_http_async_deadline(
         RetryLog::new("gitea: POST upload asset", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             let file_part = match reqwest::multipart::Part::bytes(data.clone())
@@ -415,6 +421,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
         owner,
         repo,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
@@ -498,6 +505,7 @@ pub(crate) async fn gitea_find_asset_size(
         owner,
         repo,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
@@ -557,6 +565,7 @@ pub(crate) struct GiteaAssetClient {
     pub owner: String,
     pub repo: String,
     pub policy: RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub release_id: u64,
     pub tag: String,
     pub log: anodizer_core::log::StageLogger,
@@ -570,6 +579,7 @@ impl GiteaAssetClient {
             owner: &self.owner,
             repo: &self.repo,
             policy: &self.policy,
+            deadline: self.deadline,
             log: &self.log,
         }
     }
@@ -735,6 +745,7 @@ pub(crate) fn run_gitea_backend(
 
     // Per-publisher retry policy. Same shape and rationale as GitLab.
     let policy = ctx.retry_policy();
+    let deadline = ctx.retry_deadline();
     let tag = spec.tag;
     let release_name = spec.release_name;
     let release_body = spec.release_body;
@@ -753,6 +764,7 @@ pub(crate) fn run_gitea_backend(
             owner: &repo_cfg.owner,
             repo: &repo_cfg.name,
             policy: &policy,
+            deadline,
             log,
         };
 
@@ -794,6 +806,7 @@ pub(crate) fn run_gitea_backend(
                 owner: repo_cfg.owner.clone(),
                 repo: repo_cfg.name.clone(),
                 policy,
+                deadline,
                 release_id,
                 tag: tag.to_string(),
                 log: log.clone(),
@@ -959,6 +972,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1019,6 +1033,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1067,6 +1082,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1122,6 +1138,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1226,6 +1243,7 @@ mod tests {
             owner: "myorg",
             repo: "myrepo",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1293,6 +1311,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1351,6 +1370,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1403,6 +1423,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1459,6 +1480,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1526,6 +1548,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1592,6 +1615,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GiteaReleaseSpec {
@@ -1760,6 +1784,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GiteaAssetSpec {
@@ -1823,6 +1848,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GiteaAssetSpec {
@@ -1866,6 +1892,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GiteaAssetSpec {
@@ -1918,6 +1945,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -1960,6 +1988,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2010,6 +2039,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2060,6 +2090,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2105,6 +2136,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2137,6 +2169,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2171,6 +2204,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -2208,6 +2242,7 @@ mod tests {
             owner: "o",
             repo: "r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 

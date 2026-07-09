@@ -39,7 +39,7 @@ pub(crate) async fn delete_release_asset_by_name(
             owner, repo, release_id, page
         );
         let assets: Vec<octocrab::models::repos::Asset> =
-            retry_octocrab_call(policy, "list assets", retry_after, || {
+            retry_octocrab_call(policy, None, "list assets", retry_after, || {
                 let route = route.clone();
                 let octo = octo.clone();
                 async move { octo.get(route, None::<&()>).await }
@@ -57,7 +57,7 @@ pub(crate) async fn delete_release_asset_by_name(
                 let asset_id = asset.id.into_inner();
                 let owner_s = owner.to_string();
                 let repo_s = repo.to_string();
-                retry_octocrab_call(policy, "delete asset", retry_after, || {
+                retry_octocrab_call(policy, None, "delete asset", retry_after, || {
                     let octo = octo.clone();
                     let owner_s = owner_s.clone();
                     let repo_s = repo_s.clone();
@@ -138,7 +138,7 @@ pub(crate) async fn find_release_asset_probe(
             owner, repo, release_id, page
         );
         let assets: Vec<octocrab::models::repos::Asset> =
-            retry_octocrab_call(policy, "list assets", retry_after, || {
+            retry_octocrab_call(policy, None, "list assets", retry_after, || {
                 let route = route.clone();
                 let octo = octo.clone();
                 async move { octo.get(route, None::<&()>).await }

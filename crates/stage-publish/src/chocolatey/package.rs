@@ -350,8 +350,9 @@ pub(super) fn push_nupkg(
     api_key: &str,
     log: &StageLogger,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
 ) -> Result<()> {
-    use anodizer_core::retry::{HttpError, Retriable, retry_sync};
+    use anodizer_core::retry::{HttpError, Retriable, retry_sync_deadline};
     use std::ops::ControlFlow;
 
     let filename = nupkg_path
@@ -386,111 +387,116 @@ pub(super) fn push_nupkg(
     // hard-fail; wrap them in `Retriable` so the classifier overrides the
     // default 4xx-Break behaviour. 5xx + 429 retry on their own via
     // HttpError-classification.
-    retry_sync(RetryLog::new("chocolatey push", log), policy, |attempt| {
-        let form_file = match reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
-            .file_name(filename.clone())
-            .mime_str("application/octet-stream")
-            .context("chocolatey: build multipart part")
-        {
-            Ok(p) => p,
-            Err(e) => return Err(ControlFlow::Break(e)),
-        };
-        let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
+    retry_sync_deadline(
+        RetryLog::new("chocolatey push", log),
+        policy,
+        deadline,
+        |attempt| {
+            let form_file = match reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
+                .file_name(filename.clone())
+                .mime_str("application/octet-stream")
+                .context("chocolatey: build multipart part")
+            {
+                Ok(p) => p,
+                Err(e) => return Err(ControlFlow::Break(e)),
+            };
+            let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
 
-        let response = match client
-            .put(&push_url)
-            .header("X-NuGet-ApiKey", api_key)
-            .header("X-NuGet-Client-Version", "6.10.0")
-            .header("X-NuGet-Protocol-Version", "4.1.0")
-            .multipart(form)
-            .send()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                // Transport-layer failure: unconditionally retry. Matches the
-                // historical 3-attempt loop's behavior. The surrounding
-                // retry_sync helper doesn't invoke is_retriable, so we own the
-                // classification.
-                let wrapped =
-                    anyhow::Error::new(e).context(format!("chocolatey: push to {}", push_url));
-                return Err(ControlFlow::Continue(wrapped));
+            let response = match client
+                .put(&push_url)
+                .header("X-NuGet-ApiKey", api_key)
+                .header("X-NuGet-Client-Version", "6.10.0")
+                .header("X-NuGet-Protocol-Version", "4.1.0")
+                .multipart(form)
+                .send()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Transport-layer failure: unconditionally retry. Matches the
+                    // historical 3-attempt loop's behavior. The surrounding
+                    // retry_sync helper doesn't invoke is_retriable, so the
+                    // classification is owned here.
+                    let wrapped =
+                        anyhow::Error::new(e).context(format!("chocolatey: push to {}", push_url));
+                    return Err(ControlFlow::Continue(wrapped));
+                }
+            };
+
+            let status = response.status();
+            if status.is_success() || status.as_u16() == 201 {
+                return Ok(());
             }
-        };
 
-        let status = response.status();
-        if status.is_success() || status.as_u16() == 201 {
-            return Ok(());
-        }
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let body = anodizer_core::http::body_of_blocking(response);
+            let body_looks_html =
+                content_type.contains("text/html") || body.trim_start().starts_with('<');
 
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let body = anodizer_core::http::body_of_blocking(response);
-        let body_looks_html =
-            content_type.contains("text/html") || body.trim_start().starts_with('<');
+            // Only 502/503/504 are transient: the edge could not reach the NuGet
+            // backend, and the identical request succeeds once it can. A 403 is NOT
+            // transient — it is an authorization decision the registry already made,
+            // and an automated push client cannot satisfy a Cloudflare 403 challenge
+            // by retrying (it runs no JavaScript). Retrying a 403 only wastes minutes
+            // and buries a real rejection behind an optimistic "edge challenge" guess.
+            let gateway_transient = matches!(status.as_u16(), 502..=504) && body_looks_html;
 
-        // Only 502/503/504 are transient: the edge could not reach the NuGet
-        // backend, and the identical request succeeds once it can. A 403 is NOT
-        // transient — it is an authorization decision the registry already made,
-        // and an automated push client cannot satisfy a Cloudflare 403 challenge
-        // by retrying (it runs no JavaScript). Retrying a 403 only wastes minutes
-        // and buries a real rejection behind an optimistic "edge challenge" guess.
-        let gateway_transient = matches!(status.as_u16(), 502..=504) && body_looks_html;
-
-        if gateway_transient {
-            log.warn(&format!(
-                "chocolatey gateway returned HTTP {} (attempt {}); retrying",
-                status, attempt
-            ));
-            let base_err = anyhow::anyhow!(
-                "chocolatey: push failed with HTTP {} to {} (attempt {}) — transient \
+            if gateway_transient {
+                log.warn(&format!(
+                    "chocolatey gateway returned HTTP {} (attempt {}); retrying",
+                    status, attempt
+                ));
+                let base_err = anyhow::anyhow!(
+                    "chocolatey: push failed with HTTP {} to {} (attempt {}) — transient \
                  gateway error: {}",
+                    status,
+                    push_url,
+                    attempt,
+                    redact_bearer_tokens(&summarize_response_body(&body)),
+                );
+                let http_err =
+                    HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
+                return Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
+                    http_err,
+                ))));
+            }
+
+            if status.as_u16() == 403 {
+                // Surface what the registry actually said plus the concrete things to
+                // check, in order. The causes are listed, not asserted: a generic
+                // IIS/Cloudflare 403 body does not on its own disambiguate a bad key
+                // from a permissions gap from a full moderation queue.
+                return Err(ControlFlow::Break(anyhow::anyhow!(
+                    "chocolatey: push to {} was rejected with HTTP 403 Forbidden (not retried — \
+                 403 is an authorization decision, not a transient error). Check, in order: \
+                 (1) CHOCO_API_KEY is valid and unexpired, (2) the account may push this \
+                 package id, (3) the package is not over its moderation-queue limit \
+                 (community.chocolatey.org/packages/<id>). Registry response: {}",
+                    push_url,
+                    redact_bearer_tokens(&summarize_response_body(&body)),
+                )));
+            }
+
+            let base_err = anyhow::anyhow!(
+                "chocolatey: push failed with HTTP {} to {} (attempt {}): {}",
                 status,
                 push_url,
                 attempt,
                 redact_bearer_tokens(&summarize_response_body(&body)),
             );
-            let http_err =
-                HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
-            return Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
-                http_err,
-            ))));
-        }
-
-        if status.as_u16() == 403 {
-            // Surface what the registry actually said plus the concrete things to
-            // check, in order. The causes are listed, not asserted: a generic
-            // IIS/Cloudflare 403 body does not on its own disambiguate a bad key
-            // from a permissions gap from a full moderation queue.
-            return Err(ControlFlow::Break(anyhow::anyhow!(
-                "chocolatey: push to {} was rejected with HTTP 403 Forbidden (not retried — \
-                 403 is an authorization decision, not a transient error). Check, in order: \
-                 (1) CHOCO_API_KEY is valid and unexpired, (2) the account may push this \
-                 package id, (3) the package is not over its moderation-queue limit \
-                 (community.chocolatey.org/packages/<id>). Registry response: {}",
-                push_url,
-                redact_bearer_tokens(&summarize_response_body(&body)),
-            )));
-        }
-
-        let base_err = anyhow::anyhow!(
-            "chocolatey: push failed with HTTP {} to {} (attempt {}): {}",
-            status,
-            push_url,
-            attempt,
-            redact_bearer_tokens(&summarize_response_body(&body)),
-        );
-        if anodizer_core::retry::status_is_retriable(status.as_u16()) {
-            // 5xx / 429 retry naturally.
-            Err(ControlFlow::Continue(base_err))
-        } else {
-            // Real 4xx (auth failure, malformed package, etc.) — fast-fail.
-            Err(ControlFlow::Break(base_err))
-        }
-    })
+            if anodizer_core::retry::status_is_retriable(status.as_u16()) {
+                // 5xx / 429 retry naturally.
+                Err(ControlFlow::Continue(base_err))
+            } else {
+                // Real 4xx (auth failure, malformed package, etc.) — fast-fail.
+                Err(ControlFlow::Break(base_err))
+            }
+        },
+    )
 }
 
 /// Reduce an HTTP error-response body to the operator-facing essentials. IIS /
@@ -597,7 +603,8 @@ mod tests {
         let source = format!("http://{addr}/api/v2/package");
         let log = StageLogger::new("test", Verbosity::Normal);
 
-        push_nupkg(&path, &source, "apikey", &log, &fast_policy()).expect("retries 5xx then 201");
+        push_nupkg(&path, &source, "apikey", &log, &fast_policy(), None)
+            .expect("retries 5xx then 201");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,
@@ -636,7 +643,7 @@ mod tests {
         let source = format!("http://{addr}/api/v2/package");
         let log = StageLogger::new("test", Verbosity::Normal);
 
-        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy(), None)
             .expect_err("403 must fast-fail, not retry");
         let msg = format!("{err:#}");
         assert!(msg.contains("403"), "error must mention 403: {msg}");
@@ -675,7 +682,7 @@ mod tests {
         let source = format!("http://{addr}/api/v2/package");
         let log = StageLogger::new("test", Verbosity::Normal);
 
-        push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+        push_nupkg(&path, &source, "apikey", &log, &fast_policy(), None)
             .expect("503 gateway error retries to 201");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "one 503 retry then 201");
     }
@@ -715,7 +722,7 @@ mod tests {
         let source = format!("http://{addr}/api/v2/package");
         let log = StageLogger::new("test", Verbosity::Normal);
 
-        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy(), None)
             .expect_err("401 must fast-fail");
         assert!(
             err.to_string().contains("401"),
@@ -793,7 +800,7 @@ mod tests {
         let source = format!("http://{addr}/api/v2/package");
         let log = StageLogger::new("test", Verbosity::Normal);
 
-        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy(), None)
             .expect_err("401 must fast-fail");
         let chain = format!("{err:#}");
         assert!(

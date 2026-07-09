@@ -18,7 +18,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{
-    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync,
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync_deadline,
 };
 use anyhow::{Context as _, Result, bail};
 
@@ -363,6 +363,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     api_token_env: &str,
     job: &PushJob<'_>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     env: &E,
 ) -> Result<PushOutcome> {
@@ -403,9 +404,10 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     // already-exists conflict, so the post-retry code can skip recording a
     // rollback target. `Cell` because the closure is `FnMut`.
     let conflict_skipped = std::cell::Cell::new(false);
-    retry_sync(
+    retry_sync_deadline(
         RetryLog::new("gemfury push", log),
         &push_policy,
+        deadline,
         |_attempt| {
             let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
                 .file_name(art_name.clone())
@@ -508,6 +510,7 @@ pub fn publish_to_gemfury(
     };
 
     let policy = ctx.retry_policy();
+    let deadline = ctx.retry_deadline();
 
     for (idx, cfg) in entries.iter().enumerate() {
         let label = cfg
@@ -704,6 +707,7 @@ pub fn publish_to_gemfury(
                                 &api_token_env,
                                 job,
                                 &policy,
+                                deadline,
                                 log,
                                 env.as_ref(),
                             )

@@ -2,7 +2,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::collections::HashMap;
 
@@ -361,13 +361,14 @@ pub(crate) fn check_cloudsmith_package_exists(
     art_name: &str,
     local_md5: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<CloudsmithPackageState> {
     log.verbose(&format!(
         "checking existing cloudsmith package for '{}' (query={})",
         art_name, query
     ));
-    let result = retry_request("packages/list", art_name, policy, log, || {
+    let result = retry_request("packages/list", art_name, policy, deadline, log, || {
         client
             .get(list_url)
             .query(&[("query", query), ("page_size", "100")])
@@ -399,6 +400,7 @@ fn retry_request<F>(
     label: &str,
     art_name: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     mut build_send: F,
 ) -> Result<(reqwest::StatusCode, String)>
@@ -406,9 +408,10 @@ where
     F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
 {
     let scope = format!("cloudsmith {label} for '{art_name}'");
-    retry_http_blocking(
+    retry_http_blocking_deadline(
         RetryLog::new(&scope, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |attempt| {
             if attempt > 1 {
@@ -445,6 +448,7 @@ fn stage_cloudsmith_file(
     file_bytes: &[u8],
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<String> {
     // --- Step 1/3: request a files/create slot ---
@@ -462,7 +466,7 @@ fn stage_cloudsmith_file(
 
     log.verbose(&format!("POST {} (step 1 of 3)", files_create_url));
     let (_create_status, create_body) =
-        retry_request("files/create", art_name, policy, log, || {
+        retry_request("files/create", art_name, policy, deadline, log, || {
             client
                 .post(&files_create_url)
                 .header("Authorization", format!("token {}", token))
@@ -514,7 +518,7 @@ fn stage_cloudsmith_file(
     // Multipart Form is move-only, so we rebuild it on every retry attempt.
     // Cloning `file_bytes` and `upload_fields` per-attempt is the price of
     // retriability; the bytes are already in memory.
-    let _ = retry_request("presigned upload", art_name, policy, log, || {
+    let _ = retry_request("presigned upload", art_name, policy, deadline, log, || {
         let mut form = reqwest::blocking::multipart::Form::new();
         for (k, v) in &upload_fields {
             let val = v
@@ -591,6 +595,7 @@ pub(crate) fn publish_to_cloudsmith(
     // packages/upload). The retry policy is set
     // once per pipe invocation.
     let policy = ctx.retry_policy();
+    let deadline = ctx.retry_deadline();
 
     for entry in entries {
         // Check skip flag.
@@ -876,6 +881,7 @@ pub(crate) fn publish_to_cloudsmith(
                     art_name,
                     &md5_hex,
                     &policy,
+                    deadline,
                     log,
                 )? {
                     CloudsmithPackageState::SkipIdempotent => {
@@ -995,6 +1001,7 @@ pub(crate) fn publish_to_cloudsmith(
                     &file_bytes,
                     &token,
                     &policy,
+                    deadline,
                     log,
                 )?;
 
@@ -1016,7 +1023,7 @@ pub(crate) fn publish_to_cloudsmith(
                     package_upload_url, identifier, distro
                 ));
                 let label = format!("packages/upload/{}", fmt);
-                let step3_result = retry_request(&label, art_name, &policy, log, || {
+                let step3_result = retry_request(&label, art_name, &policy, deadline, log, || {
                     client
                         .post(&package_upload_url)
                         .header("Authorization", format!("token {}", token))
@@ -1060,6 +1067,7 @@ pub(crate) fn publish_to_cloudsmith(
                             art_name,
                             &md5_hex,
                             &policy,
+                            deadline,
                             log,
                         )? {
                             CloudsmithPackageState::SkipIdempotent => {
@@ -1204,6 +1212,7 @@ pub(crate) fn publish_to_cloudsmith(
                         keep,
                         &token,
                         &policy,
+                        deadline,
                         log,
                     );
                 }
@@ -1234,6 +1243,7 @@ fn prune_cloudsmith_versions(
     keep: u32,
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) {
     let list_url = format!("{}/packages/{}/{}/", api_base, organization, repository);
@@ -1248,6 +1258,7 @@ fn prune_cloudsmith_versions(
         package_name,
         token,
         policy,
+        deadline,
         log,
     ) {
         Ok(e) => e,
@@ -1279,13 +1290,20 @@ fn prune_cloudsmith_versions(
             api_base, organization, repository, slug
         );
         log.verbose(&format!("DELETE {} (keep_versions prune)", url));
-        match retry_request("packages/prune-delete", package_name, policy, log, || {
-            client
-                .delete(&url)
-                .header("Authorization", format!("token {}", token))
-                .header("Accept", "application/json")
-                .send()
-        }) {
+        match retry_request(
+            "packages/prune-delete",
+            package_name,
+            policy,
+            deadline,
+            log,
+            || {
+                client
+                    .delete(&url)
+                    .header("Authorization", format!("token {}", token))
+                    .header("Accept", "application/json")
+                    .send()
+            },
+        ) {
             Ok(_) => deleted += 1,
             Err(err) => {
                 // 404/410 = already gone (concurrent prune / manual delete):
@@ -1350,6 +1368,7 @@ fn retained_version_summary(
 /// versions × formats × arches can exceed one page in a long-lived repo, so
 /// this walks pages until a short (< page_size) page is returned. 4xx
 /// fast-fails; 5xx/429/transport retry via the shared helper.
+#[allow(clippy::too_many_arguments)]
 fn list_cloudsmith_package_versions(
     client: &reqwest::blocking::Client,
     list_url: &str,
@@ -1357,6 +1376,7 @@ fn list_cloudsmith_package_versions(
     package_name: &str,
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Vec<CloudsmithVersionEntry>> {
     const PAGE_SIZE: usize = 100;
@@ -1365,8 +1385,13 @@ fn list_cloudsmith_package_versions(
     loop {
         let page_str = page.to_string();
         let page_size_str = PAGE_SIZE.to_string();
-        let (_status, body) =
-            retry_request("packages/list (prune)", package_name, policy, log, || {
+        let (_status, body) = retry_request(
+            "packages/list (prune)",
+            package_name,
+            policy,
+            deadline,
+            log,
+            || {
                 client
                     .get(list_url)
                     .query(&[
@@ -1377,7 +1402,8 @@ fn list_cloudsmith_package_versions(
                     .header("Authorization", format!("token {}", token))
                     .header("Accept", "application/json")
                     .send()
-            })?;
+            },
+        )?;
         let parsed: serde_json::Value = serde_json::from_str(&body)
             .with_context(|| format!("cloudsmith: parse packages-list page {}", page))?;
         let array = match parsed.as_array() {
@@ -1609,6 +1635,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
             .context("cloudsmith: failed to build HTTP client for rollback")?;
         let policy = ctx.retry_policy();
+        let deadline = ctx.retry_deadline();
         let env = ctx.env_source_arc();
 
         let mut deleted = 0usize;
@@ -1641,7 +1668,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             );
             log.verbose(&format!("DELETE {}", url));
             let label = "packages/delete";
-            match retry_request(label, &target.filename, &policy, &log, || {
+            match retry_request(label, &target.filename, &policy, deadline, &log, || {
                 client
                     .delete(&url)
                     .header("Authorization", format!("token {}", tok))
@@ -2430,7 +2457,7 @@ mod tests {
             .build()
             .expect("client");
         let url = format!("http://{addr}/files/");
-        let err = retry_request("upload", "test.deb", &policy, &log, || {
+        let err = retry_request("upload", "test.deb", &policy, None, &log, || {
             client.post(&url).send()
         })
         .expect_err("500 must exhaust + error");

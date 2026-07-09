@@ -61,7 +61,7 @@ pub(crate) async fn find_draft_by_name(
             owner, repo, LIST_RELEASES_PAGE_SIZE, page
         );
         let releases: Vec<octocrab::models::repos::Release> =
-            retry_octocrab_call(policy, "list releases", retry_after, || {
+            retry_octocrab_call(policy, None, "list releases", retry_after, || {
                 let route = route.clone();
                 let octo = octo.clone();
                 async move { octo.get(route, None::<&()>).await }
@@ -107,7 +107,7 @@ pub(super) async fn find_release_by_tag(
     let repo = repo.to_string();
     let tag = tag.to_string();
     let result: Result<octocrab::models::repos::Release, octocrab::Error> =
-        retry_octocrab_call(policy, label, retry_after, || {
+        retry_octocrab_call(policy, None, label, retry_after, || {
             let octo = octo.clone();
             let owner = owner.clone();
             let repo = repo.clone();
@@ -329,19 +329,24 @@ pub(super) async fn list_releases_by_name(
             "/repos/{}/{}/releases?per_page={}&page={}",
             owner, repo, LIST_RELEASES_PAGE_SIZE, page
         );
-        let releases: Vec<octocrab::models::repos::Release> =
-            retry_octocrab_call(policy, "list releases (retention)", retry_after, || {
+        let releases: Vec<octocrab::models::repos::Release> = retry_octocrab_call(
+            policy,
+            None,
+            "list releases (retention)",
+            retry_after,
+            || {
                 let route = route.clone();
                 let octo = octo.clone();
                 async move { octo.get(route, None::<&()>).await }
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "release: list releases on {}/{} for retention (page {})",
-                    owner, repo, page
-                )
-            })?;
+            },
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "release: list releases on {}/{} for retention (page {})",
+                owner, repo, page
+            )
+        })?;
         let page_len = releases.len();
         for r in releases {
             if r.name.as_deref() == Some(name) {
@@ -710,7 +715,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", None, || async {
+            retry_octocrab_call(&policy, None, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })
@@ -746,7 +751,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<serde_json::Value, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", None, || async {
+            retry_octocrab_call(&policy, None, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })
@@ -783,7 +788,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<serde_json::Value, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", None, || async {
+            retry_octocrab_call(&policy, None, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })

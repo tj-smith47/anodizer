@@ -11,7 +11,9 @@
 use std::path::Path;
 
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_async};
+use anodizer_core::retry::{
+    RetryLog, RetryPolicy, SuccessClass, retry_http_async, retry_http_async_deadline,
+};
 use anodizer_core::url::percent_encode_path_segment;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result, bail};
@@ -42,6 +44,7 @@ pub(crate) struct GitlabCtx<'a> {
     pub api_url: &'a str,
     pub project_id: &'a str,
     pub policy: &'a RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub log: &'a anodizer_core::log::StageLogger,
 }
 
@@ -237,6 +240,7 @@ pub(crate) async fn gitlab_create_release(
         api_url,
         project_id,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let GitlabReleaseSpec {
@@ -427,6 +431,7 @@ pub(crate) async fn gitlab_upload_asset(
         api_url,
         project_id,
         policy,
+        deadline,
         log,
     } = *ctx;
     let GitlabAssetSpec {
@@ -448,6 +453,7 @@ pub(crate) async fn gitlab_upload_asset(
             file_name,
             download_url,
             policy,
+            deadline,
             log,
         )
         .await?
@@ -563,6 +569,7 @@ pub(crate) async fn gitlab_find_asset_link(
         api_url,
         project_id,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let links_api = gitlab_links_api(api_url, project_id, tag);
@@ -613,6 +620,7 @@ pub(crate) async fn gitlab_delete_asset_link(
         api_url,
         project_id,
         policy,
+        deadline: _,
         log,
     } = *ctx;
     let delete_url = format!("{}/{}", gitlab_links_api(api_url, project_id, tag), link_id);
@@ -770,6 +778,7 @@ async fn upload_via_package_registry(
         client,
         api_url,
         policy,
+        deadline,
         log,
         ..
     } = *ctx;
@@ -797,9 +806,10 @@ async fn upload_via_package_registry(
 
     // Clone the body bytes per attempt — `RequestBuilder::body` consumes
     // them, and reqwest's reqwest::Body is move-only.
-    retry_http_async(
+    retry_http_async_deadline(
         RetryLog::new("gitlab: PUT upload to package registry", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client
@@ -840,6 +850,7 @@ async fn upload_via_project_uploads(
     file_name: &str,
     download_url: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<String> {
     let data = tokio::fs::read(file_path)
@@ -852,9 +863,10 @@ async fn upload_via_project_uploads(
     // the cloned body bytes. `mime_str("application/octet-stream")` is
     // structurally infallible (a valid RFC-2045 token) so the error arm is
     // marked unreachable — same pattern as cloudsmith.rs::retry_request.
-    let resp = retry_http_async(
+    let resp = retry_http_async_deadline(
         RetryLog::new("gitlab: POST project upload", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             let file_part = match reqwest::multipart::Part::bytes(data.clone())
@@ -919,6 +931,7 @@ pub(crate) struct GitlabAssetClient {
     pub api_url: String,
     pub project_id: String,
     pub policy: RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
     pub tag: String,
     pub download_url: String,
     /// `(project_name, version)` when uploads route through the Generic
@@ -935,6 +948,7 @@ impl GitlabAssetClient {
             api_url: &self.api_url,
             project_id: &self.project_id,
             policy: &self.policy,
+            deadline: self.deadline,
             log: &self.log,
         }
     }
@@ -1140,6 +1154,7 @@ pub(crate) fn run_gitlab_backend(
     // function. Default: 10 attempts × 10s base × 5m cap (the
     // `pkg/config.Retry` defaults).
     let policy = ctx.retry_policy();
+    let deadline = ctx.retry_deadline();
     let tag = spec.tag;
     let release_name = spec.release_name;
     let release_body = spec.release_body;
@@ -1155,6 +1170,7 @@ pub(crate) fn run_gitlab_backend(
             api_url: &api_url,
             project_id: &project_id,
             policy: &policy,
+            deadline,
             log,
         };
 
@@ -1194,6 +1210,7 @@ pub(crate) fn run_gitlab_backend(
                 api_url: api_url.clone(),
                 project_id: project_id.clone(),
                 policy,
+                deadline,
                 tag: tag.to_string(),
                 download_url: download_url.clone(),
                 pkg: use_pkg_registry
@@ -1621,6 +1638,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -1682,6 +1700,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -1723,6 +1742,7 @@ mod tests {
             api_url: "http://unused.invalid",
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -1780,6 +1800,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -1877,6 +1898,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
 
@@ -1993,6 +2015,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2055,6 +2078,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2095,6 +2119,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2150,6 +2175,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2211,6 +2237,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2276,6 +2303,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -2346,6 +2374,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2441,6 +2470,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2498,6 +2528,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2561,6 +2592,7 @@ mod tests {
             api_url: &api_url,
             project_id: "myorg/myproj",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2658,6 +2690,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2725,6 +2758,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2794,6 +2828,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -2950,6 +2985,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let spec = GitlabReleaseSpec {
@@ -3003,6 +3039,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -3085,6 +3122,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {
@@ -3173,6 +3211,7 @@ mod tests {
             api_url: &api_url,
             project_id: "o/r",
             policy: &policy,
+            deadline: None,
             log: tlog(),
         };
         let asset = GitlabAssetSpec {

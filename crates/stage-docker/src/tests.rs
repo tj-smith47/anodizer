@@ -3186,6 +3186,7 @@ fn test_docker_build_job_env_vars_field() {
         skip_digest: false,
         digest_name_template: None,
         env_vars: env,
+        deadline: None,
     };
 
     assert_eq!(job.env_vars.len(), 2);
@@ -3288,6 +3289,7 @@ fn test_podman_real_publish_pushes_every_tag() {
         skip_digest: false,
         digest_name_template: None,
         env_vars: BTreeMap::new(),
+        deadline: None,
     };
 
     assert!(
@@ -3332,6 +3334,7 @@ fn test_podman_multi_platform_real_publish_pushes_manifest_all() {
         skip_digest: false,
         digest_name_template: None,
         env_vars: BTreeMap::new(),
+        deadline: None,
     };
 
     let multi_platform = job.platforms_list.len() > 1;
@@ -3373,6 +3376,7 @@ fn test_podman_snapshot_and_dry_run_do_not_push() {
         skip_digest: false,
         digest_name_template: None,
         env_vars: BTreeMap::new(),
+        deadline: None,
     };
 
     // Snapshot/dry-run: should_push resolves false → no publish.

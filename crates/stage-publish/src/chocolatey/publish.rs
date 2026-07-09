@@ -198,7 +198,14 @@ pub fn publish_to_chocolatey(
     }
 
     // Push via NuGet V2 API — same protocol as `choco push`.
-    push_nupkg(&staged.nupkg_path, source, &api_key, log, &policy)?;
+    push_nupkg(
+        &staged.nupkg_path,
+        source,
+        &api_key,
+        log,
+        &policy,
+        ctx.retry_deadline(),
+    )?;
 
     log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
     Ok(true)

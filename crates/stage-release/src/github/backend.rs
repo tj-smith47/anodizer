@@ -122,6 +122,10 @@ pub(crate) fn run_github_backend(
     // `retry_octocrab_call` helper so a `retry:` block in the project config
     // controls every transient-failure path uniformly.
     let policy = ctx.retry_policy();
+    // Absolute retry budget for this run (defaults to 15m, raisable via
+    // `retry.max_elapsed`); threaded into the release-mutating octocrab calls
+    // and the asset upload so a long 5xx/secondary-RL ladder can't outlive it.
+    let deadline = ctx.retry_deadline();
 
     // Resolve the env source as an `Arc` so spawned upload tasks can
     // clone-and-move it into their `'static` futures, while in-block
@@ -161,7 +165,7 @@ pub(crate) fn run_github_backend(
             let existing_id = existing.id.into_inner();
             let owner = github.owner.clone();
             let repo = github.name.clone();
-            retry_octocrab_call(&policy, "delete release", Some(&retry_after_capture), || {
+            retry_octocrab_call(&policy, deadline, "delete release", Some(&retry_after_capture), || {
                 let octo = octo.clone();
                 let owner = owner.clone();
                 let repo = repo.clone();
@@ -347,7 +351,7 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, existing.id
             );
-            retry_octocrab_call(&policy, "update draft release", Some(&retry_after_capture), || {
+            retry_octocrab_call(&policy, deadline, "update draft release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = json_body.clone();
                 let octo = octo.clone();
@@ -394,7 +398,7 @@ pub(crate) fn run_github_backend(
                     serde_json::Value::Bool(existing.draft),
                 );
             }
-            retry_octocrab_call(&policy, "update existing release", Some(&retry_after_capture), || {
+            retry_octocrab_call(&policy, deadline, "update existing release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = patch_body.clone();
                 let octo = octo.clone();
@@ -413,7 +417,7 @@ pub(crate) fn run_github_backend(
         } else {
             // Create a new release via POST.
             let route = format!("/repos/{}/{}/releases", github.owner, github.name);
-            retry_octocrab_call(&policy, "create release", Some(&retry_after_capture), || {
+            retry_octocrab_call(&policy, deadline, "create release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = json_body.clone();
                 let octo = octo.clone();
@@ -493,6 +497,7 @@ pub(crate) fn run_github_backend(
                 tag: tag.to_string(),
                 replace_existing_artifacts,
                 policy,
+                deadline,
                 retry_after: retry_after_capture.clone(),
                 token: token_str.clone(),
                 env_source: Arc::clone(&env_source_arc),
@@ -532,7 +537,7 @@ pub(crate) fn run_github_backend(
             // controls how aggressively to retry. Defaults (10 attempts, 10s
             // base, 5m cap) are the retry defaults.
             let _published: octocrab::models::repos::Release =
-                retry_octocrab_call(&policy, "publish PATCH", Some(&retry_after_capture), || {
+                retry_octocrab_call(&policy, deadline, "publish PATCH", Some(&retry_after_capture), || {
                     let publish_route = publish_route.clone();
                     let publish_body = publish_body.clone();
                     let octo = octo.clone();
@@ -593,7 +598,7 @@ pub(crate) fn run_github_backend(
                 log.status(&format!(
                     "deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}') for nightly retention (keep_last={keep_last})"
                 ));
-                let delete_result = retry_octocrab_call(&policy, "delete release (retention)", Some(&retry_after_capture), || {
+                let delete_result = retry_octocrab_call(&policy, deadline, "delete release (retention)", Some(&retry_after_capture), || {
                     let octo = octo.clone();
                     let owner = github.owner.clone();
                     let repo = github.name.clone();
@@ -631,7 +636,7 @@ pub(crate) fn run_github_backend(
                         github.owner, github.name, rel_tag
                     );
                     let tag_delete: std::result::Result<(), octocrab::Error> =
-                        retry_octocrab_call(&policy, "delete tag (retention)", Some(&retry_after_capture), || {
+                        retry_octocrab_call(&policy, deadline, "delete tag (retention)", Some(&retry_after_capture), || {
                             let octo = octo.clone();
                             let route = tag_route.clone();
                             async move {

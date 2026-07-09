@@ -7,7 +7,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync_deadline};
 use anodizer_core::run::run_capture_timeout;
 use anodizer_core::stage::Stage;
 use anodizer_core::{
@@ -468,82 +468,90 @@ fn run_uploads(
                     let upload_policy = retry_policy.with_idempotent_floor();
                     let max_attempts = upload_policy.max_attempts;
                     let retry_desc = format!("snapcraft upload '{snap_name}'");
-                    retry_sync(RetryLog::new(&retry_desc, log), &upload_policy, |attempt| {
-                        // Start-of-attempt marker at default visibility: the
-                        // upload is a captured subprocess that can run for many
-                        // minutes with no other output, so without this line the
-                        // stage looks hung until the first attempt ENDS.
-                        log.status(&format!(
-                            "uploading snap '{}' to the Snap Store (attempt {}/{})",
-                            snap_name, attempt, max_attempts
-                        )); // status-ok: per-attempt start of a multi-minute captured upload
-                        log.verbose(&format!("running {}", upload_args.join(" ")));
-                        let mut cmd = Command::new(&upload_args[0]);
-                        cmd.args(&upload_args[1..]);
-                        let upload_output = match run_capture_timeout(
-                            &mut cmd,
-                            log,
-                            "snapcraft upload",
-                            SNAPCRAFT_UPLOAD_TIMEOUT,
-                        ) {
-                            Ok(o) => o,
-                            Err(e) => {
-                                let e = e.context(format!(
-                                    "execute snapcraft upload for crate {} snap {}",
-                                    krate.name, snap_path
-                                ));
-                                // A deadline kill (upload stalled) is wrapped
-                                // Retriable → retry within budget rather than
-                                // hang forever. A spawn failure (binary missing,
-                                // permission denied) is not transient → break
-                                // without burning the retry budget.
-                                if is_retriable(e.as_ref()) {
-                                    return Err(ControlFlow::Continue(e));
+                    retry_sync_deadline(
+                        RetryLog::new(&retry_desc, log),
+                        &upload_policy,
+                        ctx.retry_deadline(),
+                        |attempt| {
+                            // Start-of-attempt marker at default visibility: the
+                            // upload is a captured subprocess that can run for many
+                            // minutes with no other output, so without this line the
+                            // stage looks hung until the first attempt ENDS.
+                            log.status(&format!(
+                                "uploading snap '{}' to the Snap Store (attempt {}/{})",
+                                snap_name, attempt, max_attempts
+                            )); // status-ok: per-attempt start of a multi-minute captured upload
+                            log.verbose(&format!("running {}", upload_args.join(" ")));
+                            let mut cmd = Command::new(&upload_args[0]);
+                            cmd.args(&upload_args[1..]);
+                            let upload_output = match run_capture_timeout(
+                                &mut cmd,
+                                log,
+                                "snapcraft upload",
+                                SNAPCRAFT_UPLOAD_TIMEOUT,
+                            ) {
+                                Ok(o) => o,
+                                Err(e) => {
+                                    let e = e.context(format!(
+                                        "execute snapcraft upload for crate {} snap {}",
+                                        krate.name, snap_path
+                                    ));
+                                    // A deadline kill (upload stalled) is wrapped
+                                    // Retriable → retry within budget rather than
+                                    // hang forever. A spawn failure (binary missing,
+                                    // permission denied) is not transient → break
+                                    // without burning the retry budget.
+                                    if is_retriable(e.as_ref()) {
+                                        return Err(ControlFlow::Continue(e));
+                                    }
+                                    return Err(ControlFlow::Break(e));
                                 }
-                                return Err(ControlFlow::Break(e));
+                            };
+
+                            if upload_output.status.success() {
+                                return Ok(());
                             }
-                        };
 
-                        if upload_output.status.success() {
-                            return Ok(());
-                        }
+                            // Review-pending responses from the Snap Store should be
+                            // warnings, not fatal errors — the snap was uploaded
+                            // successfully but needs human review.
+                            const REVIEW_PENDING_STRINGS: &[&str] = &[
+                                "Waiting for previous upload",
+                                "A human will soon review your snap",
+                                "(NEEDS REVIEW)",
+                            ];
+                            // Redact before any warn-logging — `log.warn` ships
+                            // straight to the operator, whereas `log.check_output`
+                            // (called below on the fall-through path) already
+                            // redacts internally. Without this hop the
+                            // review-pending branch would leak any auth tokens
+                            // snapcraft happens to echo on stderr.
+                            let combined = log.redact(&format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&upload_output.stdout),
+                                String::from_utf8_lossy(&upload_output.stderr),
+                            ));
+                            if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
+                                log.warn(&format!(
+                                    "snap upload pending review — {}",
+                                    combined.trim()
+                                ));
+                                return Ok(());
+                            }
 
-                        // Review-pending responses from the Snap Store should be
-                        // warnings, not fatal errors — the snap was uploaded
-                        // successfully but needs human review.
-                        const REVIEW_PENDING_STRINGS: &[&str] = &[
-                            "Waiting for previous upload",
-                            "A human will soon review your snap",
-                            "(NEEDS REVIEW)",
-                        ];
-                        // Redact before any warn-logging — `log.warn` ships
-                        // straight to the operator, whereas `log.check_output`
-                        // (called below on the fall-through path) already
-                        // redacts internally. Without this hop the
-                        // review-pending branch would leak any auth tokens
-                        // snapcraft happens to echo on stderr.
-                        let combined = log.redact(&format!(
-                            "{}{}",
-                            String::from_utf8_lossy(&upload_output.stdout),
-                            String::from_utf8_lossy(&upload_output.stderr),
-                        ));
-                        if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
-                            log.warn(&format!("snap upload pending review — {}", combined.trim()));
-                            return Ok(());
-                        }
-
-                        let err = match log.check_output(upload_output, "snapcraft upload") {
-                            Ok(_) => return Ok(()),
-                            Err(e) => e,
-                        };
-                        if is_retriable_snap_push(&combined) {
-                            Err(ControlFlow::Continue(err))
-                        } else {
-                            // Auth failures, malformed snap, quota errors, etc.
-                            // fast-fail without burning retry budget.
-                            Err(ControlFlow::Break(err))
-                        }
-                    })?;
+                            let err = match log.check_output(upload_output, "snapcraft upload") {
+                                Ok(_) => return Ok(()),
+                                Err(e) => e,
+                            };
+                            if is_retriable_snap_push(&combined) {
+                                Err(ControlFlow::Continue(err))
+                            } else {
+                                // Auth failures, malformed snap, quota errors, etc.
+                                // fast-fail without burning retry budget.
+                                Err(ControlFlow::Break(err))
+                            }
+                        },
+                    )?;
                     log.status(&format!("uploaded snap {} {}", snap_name, version));
                 }
             }

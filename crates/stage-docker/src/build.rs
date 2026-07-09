@@ -132,6 +132,12 @@ pub(crate) struct DockerBuildJob {
     /// determinism harness: any env-iteration leak into command argv or
     /// log lines would otherwise drift).
     pub(crate) env_vars: BTreeMap<String, String>,
+    /// Wall-clock retry budget (`Context::retry_deadline`), resolved at job
+    /// construction where the `Context` is in scope. `execute_docker_build` /
+    /// `push_podman_tags` are free functions with no `Context` access, so the
+    /// deadline rides on the job to bound their `buildx build` / `podman push`
+    /// retry ladders. `None` leaves them attempt-count-bounded only.
+    pub(crate) deadline: Option<std::time::Instant>,
 }
 
 /// Result of executing a single docker build job.
@@ -154,119 +160,130 @@ pub(crate) fn execute_docker_build(
 ) -> Result<DockerBuildResult> {
     log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
-    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
         base_delay: job.base_delay,
-        max_delay: job.max_delay.unwrap_or(Duration::MAX),
+        max_delay: job
+            .max_delay
+            .unwrap_or(anodizer_core::config::RetryConfig::DEFAULT_MAX_DELAY),
     };
     let retry_desc = format!("docker {}", job.backend_label);
-    retry_sync(RetryLog::new(&retry_desc, log), &policy, |attempt| {
-        let mut cmd = Command::new(&job.cmd_args[0]);
-        cmd.args(&job.cmd_args[1..])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        for (key, value) in &job.env_vars {
-            cmd.env(key, value);
-        }
-        let mut output = match run_capture_timeout(
-            &mut cmd,
-            log,
-            &format!("docker {}", job.backend_label),
-            DOCKER_BUILD_TIMEOUT,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                let e = e.context(format!(
-                    "docker: execute {} for crate {} index {} (attempt {}/{})",
-                    job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
-                ));
-                // A deadline kill (build/push stalled past the whole-build
-                // ceiling) is wrapped Retriable → retry within the build budget;
-                // a spawn failure (binary missing) is fatal → break without
-                // burning retries.
-                if anodizer_core::retry::is_retriable(e.as_ref()) {
-                    return Err(ControlFlow::Continue(e));
-                }
-                return Err(ControlFlow::Break(e));
+    retry_sync_deadline(
+        RetryLog::new(&retry_desc, log),
+        &policy,
+        job.deadline,
+        |attempt| {
+            let mut cmd = Command::new(&job.cmd_args[0]);
+            cmd.args(&job.cmd_args[1..])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for (key, value) in &job.env_vars {
+                cmd.env(key, value);
             }
-        };
-
-        // Redact secrets from stdout/stderr before any output or logging.
-        let env_pairs: Vec<(String, String)> = job
-            .env_vars
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .chain(std::env::vars())
-            .collect();
-
-        if !output.stdout.is_empty() {
-            let redacted =
-                anodizer_core::redact::string(&String::from_utf8_lossy(&output.stdout), &env_pairs);
-            output.stdout = redacted.into_bytes();
-        }
-        if !output.stderr.is_empty() {
-            let redacted =
-                anodizer_core::redact::string(&String::from_utf8_lossy(&output.stderr), &env_pairs);
-            output.stderr = redacted.into_bytes();
-        }
-
-        // The captured per-layer buildx progress (≈hundreds of lines, plus the
-        // ephemeral `/tmp/.tmpXXXX` staging-context path) is a firehose that
-        // drowns the default register; the concise "created images" summary
-        // below is the default-verbosity signal. `run_capture_timeout` already
-        // teed the raw stream live (redacted) to stderr under `-v`; on the
-        // failure path `check_output` re-emits the redacted output regardless of
-        // verbosity, so a build error still surfaces its context.
-        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
-
-        match log.check_output(output, &format!("docker {}", job.backend_label)) {
-            Ok(_) => {
-                if attempt > 1 {
-                    log.status(&format!(
-                        "docker {} succeeded on attempt {}/{}",
-                        job.backend_label, attempt, job.max_attempts
+            let mut output = match run_capture_timeout(
+                &mut cmd,
+                log,
+                &format!("docker {}", job.backend_label),
+                DOCKER_BUILD_TIMEOUT,
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    let e = e.context(format!(
+                        "docker: execute {} for crate {} index {} (attempt {}/{})",
+                        job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
                     ));
+                    // A deadline kill (build/push stalled past the whole-build
+                    // ceiling) is wrapped Retriable → retry within the build budget;
+                    // a spawn failure (binary missing) is fatal → break without
+                    // burning retries.
+                    if anodizer_core::retry::is_retriable(e.as_ref()) {
+                        return Err(ControlFlow::Continue(e));
+                    }
+                    return Err(ControlFlow::Break(e));
                 }
-                Ok(())
+            };
+
+            // Redact secrets from stdout/stderr before any output or logging.
+            let env_pairs: Vec<(String, String)> = job
+                .env_vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .chain(std::env::vars())
+                .collect();
+
+            if !output.stdout.is_empty() {
+                let redacted = anodizer_core::redact::string(
+                    &String::from_utf8_lossy(&output.stdout),
+                    &env_pairs,
+                );
+                output.stdout = redacted.into_bytes();
             }
-            Err(e) => {
-                let err_msg = format!("{:#}", e);
-                let is_retriable = is_retriable_error_v2(&err_msg);
-                if !is_retriable {
-                    if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
-                        log.warn(
-                            "the Dockerfile COPY/ADD failed — check that the \
+            if !output.stderr.is_empty() {
+                let redacted = anodizer_core::redact::string(
+                    &String::from_utf8_lossy(&output.stderr),
+                    &env_pairs,
+                );
+                output.stderr = redacted.into_bytes();
+            }
+
+            // The captured per-layer buildx progress (≈hundreds of lines, plus the
+            // ephemeral `/tmp/.tmpXXXX` staging-context path) is a firehose that
+            // drowns the default register; the concise "created images" summary
+            // below is the default-verbosity signal. `run_capture_timeout` already
+            // teed the raw stream live (redacted) to stderr under `-v`; on the
+            // failure path `check_output` re-emits the redacted output regardless of
+            // verbosity, so a build error still surfaces its context.
+            let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+
+            match log.check_output(output, &format!("docker {}", job.backend_label)) {
+                Ok(_) => {
+                    if attempt > 1 {
+                        log.status(&format!(
+                            "docker {} succeeded on attempt {}/{}",
+                            job.backend_label, attempt, job.max_attempts
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    let err_msg = format!("{:#}", e);
+                    let is_retriable = is_retriable_error_v2(&err_msg);
+                    if !is_retriable {
+                        if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
+                            log.warn(
+                                "the Dockerfile COPY/ADD failed — check that the \
                              files referenced in your Dockerfile exist in the \
                              staging directory; the available files may not match \
                              what the Dockerfile expects",
-                        );
-                        log.warn("files in the staging directory:");
-                        list_staging_dir_recursive(&job.staging_dir, &job.staging_dir, log);
-                    }
-                    if stderr_text.contains("could not read certificates")
-                        || stderr_text.contains("server gave HTTP response to HTTPS client")
-                    {
-                        log.warn(
-                            "this may be a Docker context issue — \
+                            );
+                            log.warn("files in the staging directory:");
+                            list_staging_dir_recursive(&job.staging_dir, &job.staging_dir, log);
+                        }
+                        if stderr_text.contains("could not read certificates")
+                            || stderr_text.contains("server gave HTTP response to HTTPS client")
+                        {
+                            log.warn(
+                                "this may be a Docker context issue — \
                              try running: docker context use default",
-                        );
+                            );
+                        }
+                        log.warn(&format!(
+                            "docker {} failed with non-retriable error, not retrying",
+                            job.backend_label
+                        ));
+                        Err(ControlFlow::Break(e.context(format!(
+                            "docker: non-retriable failure for crate {} index {}",
+                            job.crate_name, job.idx
+                        ))))
+                    } else {
+                        Err(ControlFlow::Continue(e))
                     }
-                    log.warn(&format!(
-                        "docker {} failed with non-retriable error, not retrying",
-                        job.backend_label
-                    ));
-                    Err(ControlFlow::Break(e.context(format!(
-                        "docker: non-retriable failure for crate {} index {}",
-                        job.crate_name, job.idx
-                    ))))
-                } else {
-                    Err(ControlFlow::Continue(e))
                 }
             }
-        }
-    })
+        },
+    )
     .with_context(|| {
         format!(
             "docker: all {} attempts failed for crate {} index {}",
@@ -353,7 +370,7 @@ pub(crate) fn execute_docker_build(
 /// builds an image but never publishes it has shipped nothing, so the error is
 /// propagated with context, never swallowed.
 fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
-    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
 
     let multi_platform = job.platforms_list.len() > 1;
@@ -361,79 +378,86 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
         base_delay: job.base_delay,
-        max_delay: job.max_delay.unwrap_or(Duration::MAX),
+        max_delay: job
+            .max_delay
+            .unwrap_or(anodizer_core::config::RetryConfig::DEFAULT_MAX_DELAY),
     };
 
     for push_args in &push_cmds {
         log.verbose(&format!("running {}", push_args.join(" ")));
-        retry_sync(RetryLog::new("podman push", log), &policy, |attempt| {
-            let mut cmd = Command::new(&push_args[0]);
-            cmd.args(&push_args[1..]);
-            for (key, value) in &job.env_vars {
-                cmd.env(key, value);
-            }
-            let mut output =
-                match run_capture_timeout(&mut cmd, log, "podman push", PODMAN_PUSH_TIMEOUT) {
-                    Ok(o) => o,
-                    Err(e) => {
-                        let e = e.context(format!(
-                            "podman push: execute for crate {} index {} (attempt {}/{})",
-                            job.crate_name, job.idx, attempt, job.max_attempts
-                        ));
-                        // A deadline kill (push stalled on the registry) is wrapped
-                        // Retriable → retry within budget. A spawn failure (binary
-                        // missing) is not transient → break without burning retries.
-                        if anodizer_core::retry::is_retriable(e.as_ref()) {
-                            return Err(ControlFlow::Continue(e));
+        retry_sync_deadline(
+            RetryLog::new("podman push", log),
+            &policy,
+            job.deadline,
+            |attempt| {
+                let mut cmd = Command::new(&push_args[0]);
+                cmd.args(&push_args[1..]);
+                for (key, value) in &job.env_vars {
+                    cmd.env(key, value);
+                }
+                let mut output =
+                    match run_capture_timeout(&mut cmd, log, "podman push", PODMAN_PUSH_TIMEOUT) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            let e = e.context(format!(
+                                "podman push: execute for crate {} index {} (attempt {}/{})",
+                                job.crate_name, job.idx, attempt, job.max_attempts
+                            ));
+                            // A deadline kill (push stalled on the registry) is wrapped
+                            // Retriable → retry within budget. A spawn failure (binary
+                            // missing) is not transient → break without burning retries.
+                            if anodizer_core::retry::is_retriable(e.as_ref()) {
+                                return Err(ControlFlow::Continue(e));
+                            }
+                            return Err(ControlFlow::Break(e));
                         }
-                        return Err(ControlFlow::Break(e));
-                    }
-                };
+                    };
 
-            // Redact secrets from stdout/stderr before any output or logging,
-            // mirroring the build path's redaction (registry auth tokens can
-            // appear in podman push diagnostics).
-            let env_pairs: Vec<(String, String)> = job
-                .env_vars
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .chain(std::env::vars())
-                .collect();
-            if !output.stdout.is_empty() {
-                let redacted = anodizer_core::redact::string(
-                    &String::from_utf8_lossy(&output.stdout),
-                    &env_pairs,
-                );
-                output.stdout = redacted.into_bytes();
-            }
-            if !output.stderr.is_empty() {
-                let redacted = anodizer_core::redact::string(
-                    &String::from_utf8_lossy(&output.stderr),
-                    &env_pairs,
-                );
-                output.stderr = redacted.into_bytes();
-            }
-            {
-                use std::io::Write;
-                std::io::stdout().write_all(&output.stdout).ok();
-                std::io::stderr().write_all(&output.stderr).ok();
-            }
+                // Redact secrets from stdout/stderr before any output or logging,
+                // mirroring the build path's redaction (registry auth tokens can
+                // appear in podman push diagnostics).
+                let env_pairs: Vec<(String, String)> = job
+                    .env_vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .chain(std::env::vars())
+                    .collect();
+                if !output.stdout.is_empty() {
+                    let redacted = anodizer_core::redact::string(
+                        &String::from_utf8_lossy(&output.stdout),
+                        &env_pairs,
+                    );
+                    output.stdout = redacted.into_bytes();
+                }
+                if !output.stderr.is_empty() {
+                    let redacted = anodizer_core::redact::string(
+                        &String::from_utf8_lossy(&output.stderr),
+                        &env_pairs,
+                    );
+                    output.stderr = redacted.into_bytes();
+                }
+                {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&output.stdout).ok();
+                    std::io::stderr().write_all(&output.stderr).ok();
+                }
 
-            match log.check_output(output, "podman push") {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    let err_msg = format!("{:#}", e);
-                    if is_retriable_error_v2(&err_msg) {
-                        Err(ControlFlow::Continue(e))
-                    } else {
-                        Err(ControlFlow::Break(e.context(format!(
-                            "podman push: non-retriable failure for crate {} index {}",
-                            job.crate_name, job.idx
-                        ))))
+                match log.check_output(output, "podman push") {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        let err_msg = format!("{:#}", e);
+                        if is_retriable_error_v2(&err_msg) {
+                            Err(ControlFlow::Continue(e))
+                        } else {
+                            Err(ControlFlow::Break(e.context(format!(
+                                "podman push: non-retriable failure for crate {} index {}",
+                                job.crate_name, job.idx
+                            ))))
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .with_context(|| {
             format!(
                 "podman push: all {} attempts failed for crate {} index {} ({})",
