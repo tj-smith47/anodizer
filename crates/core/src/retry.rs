@@ -65,6 +65,30 @@ impl<'a> RetryLog<'a> {
             delay.as_secs_f64()
         ));
     }
+
+    /// Warn that the ladder exhausted its attempts (or wall-clock budget) and is
+    /// giving up after `attempts` tries. Paired with the error the engine then
+    /// returns: the error names *what* failed, this line records that the
+    /// retries themselves are spent so a watcher does not wait for more.
+    fn warn_giving_up(&self, attempts: u32) {
+        self.log.warn(&format!(
+            "{} failed after {} attempt(s), giving up",
+            self.desc, attempts
+        ));
+    }
+
+    /// Note (default-visible) that the operation recovered after `attempts`
+    /// tries — the transient failure cleared. Only emitted once at least one
+    /// retry has happened, so a clean first attempt stays silent.
+    fn note_succeeded(&self, attempts: u32) {
+        // status, not warn: a recovered transient is a positive per-operation
+        // result an operator wants at default verbosity, mirroring the
+        // rollback/dry-run default events — not a command echo.
+        self.log.status(&format!(
+            "{} succeeded after {} attempt(s)",
+            self.desc, attempts
+        )); // status-ok: recovered-after-retry is a per-operation result event
+    }
 }
 
 /// Retry policy used by `retry_sync` / `retry_async`.
@@ -269,13 +293,26 @@ pub fn record_retry_backoff(d: Duration) {
 }
 
 /// Sleep `d` (blocking) and record it as retry backoff.
+///
+/// A zero `d` is a no-op: it neither sleeps nor records. A caller that owns its
+/// own wait (a rate-limit reset probe that already blocked until quota returned)
+/// passes `Duration::ZERO` to re-attempt immediately, and such a re-attempt must
+/// not inflate the per-scope "backoff sleeps" counter with a sleep that never
+/// happened.
 pub fn sleep_backoff_blocking(d: Duration) {
+    if d.is_zero() {
+        return;
+    }
     record_retry_backoff(d);
     std::thread::sleep(d);
 }
 
-/// Sleep `d` (async) and record it as retry backoff.
+/// Sleep `d` (async) and record it as retry backoff. A zero `d` is a no-op —
+/// see [`sleep_backoff_blocking`].
 pub async fn sleep_backoff_async(d: Duration) {
+    if d.is_zero() {
+        return;
+    }
     record_retry_backoff(d);
     tokio::time::sleep(d).await;
 }
@@ -340,28 +377,32 @@ where
     E: fmt::Display,
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
-    let max = policy.max_attempts.max(1);
-    let mut attempt: u32 = 1;
-    loop {
-        if attempt > 1 {
-            sleep_backoff_blocking(policy.delay_for(attempt));
-        }
-        match op(attempt) {
-            Ok(v) => return Ok(v),
-            Err(ControlFlow::Break(e)) => return Err(e),
-            Err(ControlFlow::Continue(e)) => {
-                if attempt >= max {
-                    return Err(e);
-                }
-                if let Some(deadline) = deadline {
-                    if policy.budget_exhausted(attempt + 1, deadline) {
-                        return Err(e);
-                    }
-                }
-                rlog.warn_retry(attempt, max, &e, policy.delay_for(attempt + 1));
+    retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
+        controlflow_to_step(policy, attempt, op(attempt))
+    })
+}
+
+/// Adapt a [`ControlFlow`]-classified result into a [`RetryStep`], using
+/// `policy` for the backoff shape: `Ok` → `Done`, `Break` → `Fail` (fast-fail),
+/// `Continue(e)` → `Retry` sleeping `policy.delay_for(attempt + 1)` with `e`'s
+/// `Display` as the per-attempt cause. Single-sources the mapping the sync and
+/// async [`ControlFlow`] adapters share.
+fn controlflow_to_step<T, E: fmt::Display>(
+    policy: &RetryPolicy,
+    attempt: u32,
+    result: Result<T, ControlFlow<E, E>>,
+) -> RetryStep<T, E> {
+    match result {
+        Ok(v) => RetryStep::Done(v),
+        Err(ControlFlow::Break(e)) => RetryStep::Fail(e),
+        Err(ControlFlow::Continue(e)) => {
+            let cause = e.to_string();
+            RetryStep::Retry {
+                error: e,
+                delay: policy.delay_for(attempt + 1),
+                cause,
             }
         }
-        attempt += 1;
     }
 }
 
@@ -397,29 +438,156 @@ where
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = Result<T, ControlFlow<E, E>>>,
 {
-    let max = policy.max_attempts.max(1);
+    retry_steps_async(rlog, policy.max_attempts, deadline, |attempt| {
+        let fut = op(attempt);
+        async move { controlflow_to_step(policy, attempt, fut.await) }
+    })
+    .await
+}
+
+/// One attempt's outcome for the step-based retry engines
+/// ([`retry_steps_sync`] / [`retry_steps_async`]).
+///
+/// The operation closure owns *both* classification and the backoff duration;
+/// the engine owns everything a hand-rolled loop repeatedly gets wrong — the
+/// attempt cap, the wall-clock deadline, backoff accounting, and the full
+/// warn / giving-up / succeeded log lifecycle. This is the single primitive
+/// every retry ladder in the tree routes through: a publisher that needs a
+/// bespoke delay (unjittered exponential, a linear `5·attempt` ladder, a
+/// rate-limit reset window) or a bespoke classifier (transient-output markers,
+/// index-propagation lag, a partial-upload probe) expresses it in the closure
+/// instead of re-implementing the loop and drifting from the others.
+///
+/// The [`ControlFlow`]-based [`retry_sync`] / [`retry_async`] adapters and the
+/// HTTP wrappers are themselves thin layers over these engines, so a fixed
+/// [`RetryPolicy`] and a caller-owned delay share one loop, one deadline check,
+/// and one set of log lines.
+pub enum RetryStep<T, E> {
+    /// Stop and succeed with this value. When at least one retry preceded it,
+    /// the engine emits the recovery ("succeeded after N attempt(s)") line —
+    /// so reserve `Done` for a *clean* success the operator wants confirmed.
+    Done(T),
+    /// Stop and succeed with this value, but suppress the recovery line. For a
+    /// terminal outcome that is success-valued yet carries its own narrative —
+    /// an idempotent skip, a tolerated degraded disposition (a kept-stale
+    /// asset) — where a "succeeded after N attempt(s)" note would contradict
+    /// the closure's own log line rather than confirm a recovery.
+    DoneQuiet(T),
+    /// Stop and fail with this non-retriable error (a 4xx-style fast-fail).
+    /// The engine emits no giving-up line: the operation already classified
+    /// this as terminal and knows why.
+    Fail(E),
+    /// A retriable failure. If an attempt and the wall-clock budget both
+    /// remain, the engine sleeps `delay` (recorded as run backoff) and re-runs
+    /// the closure; otherwise it stops and returns `error`. `cause` is the
+    /// compact, human-readable reason rendered in the per-attempt warn line
+    /// (e.g. `"status=503"`, `"sparse-index propagation lag"`).
+    Retry {
+        error: E,
+        delay: Duration,
+        cause: String,
+    },
+}
+
+/// Retry a synchronous operation whose closure owns classification and backoff.
+///
+/// `max_attempts` bounds the attempt count (clamped to ≥1). `deadline`
+/// optionally bounds wall-clock time: before each backoff sleep the engine
+/// checks whether `now + delay` would pass it and, if so, stops with the last
+/// error (an idempotent write then recovers on re-run instead of being killed
+/// mid-attempt by an outer timeout). Every retriable failure emits a
+/// default-visible warn before its sleep, an exhausted ladder emits a
+/// giving-up warn, and a recovery after ≥1 retry emits a succeeded line — the
+/// one retry-log lifecycle shared by every ladder.
+pub fn retry_steps_sync<T, E, F>(
+    rlog: RetryLog<'_>,
+    max_attempts: u32,
+    deadline: Option<std::time::Instant>,
+    mut op: F,
+) -> Result<T, E>
+where
+    F: FnMut(u32) -> RetryStep<T, E>,
+{
+    let max = max_attempts.max(1);
     let mut attempt: u32 = 1;
     loop {
-        if attempt > 1 {
-            sleep_backoff_async(policy.delay_for(attempt)).await;
-        }
-        match op(attempt).await {
-            Ok(v) => return Ok(v),
-            Err(ControlFlow::Break(e)) => return Err(e),
-            Err(ControlFlow::Continue(e)) => {
-                if attempt >= max {
-                    return Err(e);
+        match op(attempt) {
+            RetryStep::Done(v) => {
+                if attempt > 1 {
+                    rlog.note_succeeded(attempt);
                 }
-                if let Some(deadline) = deadline {
-                    if policy.budget_exhausted(attempt + 1, deadline) {
-                        return Err(e);
-                    }
+                return Ok(v);
+            }
+            RetryStep::DoneQuiet(v) => return Ok(v),
+            RetryStep::Fail(e) => return Err(e),
+            RetryStep::Retry {
+                error,
+                delay,
+                cause,
+            } => {
+                if attempt >= max || deadline_exhausted(deadline, delay) {
+                    rlog.warn_giving_up(attempt);
+                    return Err(error);
                 }
-                rlog.warn_retry(attempt, max, &e, policy.delay_for(attempt + 1));
+                rlog.warn_retry(attempt, max, &cause, delay);
+                sleep_backoff_blocking(delay);
             }
         }
         attempt += 1;
     }
+}
+
+/// Async counterpart of [`retry_steps_sync`]; sleeps via [`sleep_backoff_async`]
+/// so async ladders honor the same deadline and backoff accounting.
+pub async fn retry_steps_async<T, E, F, Fut>(
+    rlog: RetryLog<'_>,
+    max_attempts: u32,
+    deadline: Option<std::time::Instant>,
+    mut op: F,
+) -> Result<T, E>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = RetryStep<T, E>>,
+{
+    let max = max_attempts.max(1);
+    let mut attempt: u32 = 1;
+    loop {
+        match op(attempt).await {
+            RetryStep::Done(v) => {
+                if attempt > 1 {
+                    rlog.note_succeeded(attempt);
+                }
+                return Ok(v);
+            }
+            RetryStep::DoneQuiet(v) => return Ok(v),
+            RetryStep::Fail(e) => return Err(e),
+            RetryStep::Retry {
+                error,
+                delay,
+                cause,
+            } => {
+                if attempt >= max || deadline_exhausted(deadline, delay) {
+                    rlog.warn_giving_up(attempt);
+                    return Err(error);
+                }
+                rlog.warn_retry(attempt, max, &cause, delay);
+                sleep_backoff_async(delay).await;
+            }
+        }
+        attempt += 1;
+    }
+}
+
+/// Whether sleeping `delay` now would carry total wall-time past `deadline`.
+/// A saturating check: a projection that overflows `Instant` is treated as
+/// past any real deadline (stop) rather than panicking. `None` deadline is
+/// never exhausted (attempt-count-only bound).
+fn deadline_exhausted(deadline: Option<std::time::Instant>, delay: Duration) -> bool {
+    deadline.is_some_and(|d| {
+        std::time::Instant::now()
+            .checked_add(delay)
+            .is_none_or(|projected| projected > d)
+    })
 }
 
 /// Whether to consider 3xx redirects a success outcome (most upload-style
@@ -1321,6 +1489,200 @@ mod tests {
         });
         assert_eq!(result, Err("fail 4".to_string()));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    /// Build a captured logger + a `RetryLog` borrowing it, so the lifecycle
+    /// tests can assert on the exact warn / status lines the engine emits.
+    fn captured() -> (StageLogger, crate::log::LogCapture) {
+        StageLogger::with_capture("test", crate::log::Verbosity::Normal)
+    }
+
+    const TINY: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn steps_sync_first_try_done_is_silent() {
+        let (log, cap) = captured();
+        let out: Result<u32, &str> =
+            retry_steps_sync(RetryLog::new("op", &log), 4, None, |_| RetryStep::Done(7));
+        assert_eq!(out, Ok(7));
+        assert_eq!(cap.total_count(), 0, "a clean first attempt must not log");
+    }
+
+    #[test]
+    fn steps_sync_retry_then_done_emits_succeeded() {
+        let (log, cap) = captured();
+        let out: Result<u32, &str> =
+            retry_steps_sync(RetryLog::new("op", &log), 5, None, |attempt| {
+                if attempt < 3 {
+                    RetryStep::Retry {
+                        error: "transient",
+                        delay: TINY,
+                        cause: format!("blip {attempt}"),
+                    }
+                } else {
+                    RetryStep::Done(attempt)
+                }
+            });
+        assert_eq!(out, Ok(3));
+        assert_eq!(cap.warn_count(), 2, "one warn per retried attempt");
+        assert!(
+            cap.all_messages()
+                .iter()
+                .any(|(lvl, m)| *lvl == crate::log::LogLevel::Status
+                    && m.contains("op succeeded after 3 attempt(s)")),
+            "recovery after retries must emit a succeeded status line: {:?}",
+            cap.all_messages()
+        );
+    }
+
+    #[test]
+    fn steps_sync_done_quiet_recovers_without_succeeded_line() {
+        // DoneQuiet returns the value like Done, but a recovery after retries
+        // must NOT emit the "succeeded after N" note — the closure owns its own
+        // resolution narrative (a tolerated skip / degraded disposition).
+        let (log, cap) = captured();
+        let out: Result<u32, &str> =
+            retry_steps_sync(RetryLog::new("op", &log), 5, None, |attempt| {
+                if attempt < 3 {
+                    RetryStep::Retry {
+                        error: "transient",
+                        delay: TINY,
+                        cause: "blip".into(),
+                    }
+                } else {
+                    RetryStep::DoneQuiet(attempt)
+                }
+            });
+        assert_eq!(out, Ok(3));
+        assert_eq!(cap.warn_count(), 2, "per-attempt warns still fire");
+        assert!(
+            !cap.all_messages()
+                .iter()
+                .any(|(_, m)| m.contains("succeeded after")),
+            "DoneQuiet must suppress the recovery line: {:?}",
+            cap.all_messages()
+        );
+    }
+
+    #[test]
+    fn zero_delay_retry_is_not_counted_as_a_backoff_sleep() {
+        // A caller that owns its own wait (a rate-limit reset probe) passes a
+        // zero delay to re-attempt immediately; that must not inflate the
+        // per-scope backoff-sleep count with a sleep that never happened.
+        let (log, _cap) = captured();
+        let scope = "zero-delay-accounting-probe";
+        let _guard = RetryScope::enter(scope);
+        let out: Result<u32, &str> =
+            retry_steps_sync(RetryLog::new("op", &log), 5, None, |attempt| {
+                if attempt < 3 {
+                    RetryStep::Retry {
+                        error: "transient",
+                        delay: Duration::ZERO,
+                        cause: "inline wait already served".into(),
+                    }
+                } else {
+                    RetryStep::Done(attempt)
+                }
+            });
+        assert_eq!(out, Ok(3));
+        let recorded = retry_scope_breakdown()
+            .into_iter()
+            .find(|(name, _, _)| name == scope);
+        assert!(
+            recorded.is_none(),
+            "two zero-delay retries must record no backoff sleeps: {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn steps_sync_fail_fast_is_terminal_and_quiet() {
+        let (log, cap) = captured();
+        let calls = AtomicU32::new(0);
+        let out: Result<(), &str> = retry_steps_sync(RetryLog::new("op", &log), 5, None, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            RetryStep::Fail("fatal")
+        });
+        assert_eq!(out, Err("fatal"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "Fail must not retry");
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "a fast-fail owns its own reason; the engine emits no giving-up line"
+        );
+    }
+
+    #[test]
+    fn steps_sync_exhaustion_emits_giving_up() {
+        let (log, cap) = captured();
+        let calls = AtomicU32::new(0);
+        let out: Result<(), String> =
+            retry_steps_sync(RetryLog::new("op", &log), 3, None, |attempt| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                RetryStep::Retry {
+                    error: format!("fail {attempt}"),
+                    delay: TINY,
+                    cause: "blip".into(),
+                }
+            });
+        assert_eq!(out, Err("fail 3".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(
+            cap.warn_messages()
+                .iter()
+                .any(|m| m.contains("op failed after 3 attempt(s), giving up")),
+            "exhausting the ladder must emit a giving-up warn: {:?}",
+            cap.warn_messages()
+        );
+    }
+
+    #[test]
+    fn steps_sync_caller_delay_honors_deadline() {
+        let (log, _cap) = captured();
+        let calls = AtomicU32::new(0);
+        // Deadline already elapsed: the caller-owned delay pushes `now + delay`
+        // past it on the first classification, so the ladder stops after one op.
+        let deadline = std::time::Instant::now();
+        let out: Result<(), &str> =
+            retry_steps_sync(RetryLog::new("op", &log), 10, Some(deadline), |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                RetryStep::Retry {
+                    error: "transient",
+                    delay: Duration::from_secs(10),
+                    cause: "blip".into(),
+                }
+            });
+        assert_eq!(out, Err("transient"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a delay that overshoots the deadline stops after one attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn steps_async_retry_then_done_emits_succeeded() {
+        let (log, cap) = captured();
+        let out: Result<u32, &str> =
+            retry_steps_async(RetryLog::new("op", &log), 5, None, |attempt| async move {
+                if attempt < 2 {
+                    RetryStep::Retry {
+                        error: "transient",
+                        delay: TINY,
+                        cause: "blip".into(),
+                    }
+                } else {
+                    RetryStep::Done(attempt)
+                }
+            })
+            .await;
+        assert_eq!(out, Ok(2));
+        assert_eq!(cap.warn_count(), 1);
+        assert!(
+            cap.all_messages()
+                .iter()
+                .any(|(lvl, m)| *lvl == crate::log::LogLevel::Status
+                    && m.contains("op succeeded after 2 attempt(s)"))
+        );
     }
 
     #[test]
