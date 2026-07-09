@@ -214,6 +214,9 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
         }
         let sem = semaphore.clone();
         let client = client.clone();
+        // Owned clone moved into the `'static` upload task so its slow-upload
+        // heartbeat can reach the shared stderr stream.
+        let log = log.clone();
 
         join_set.spawn(async move {
             let _permit = sem
@@ -270,7 +273,15 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                 }
             }
 
-            client.upload_asset(&path, &file_name).await
+            // A large asset over a slow link is a pure-async HTTP wait with no
+            // subprocess for `core::run`'s ticker to narrate, so heartbeat it
+            // here: `still uploading <asset> (<elapsed>)` until the POST returns.
+            anodizer_core::progress::with_heartbeat(
+                &log,
+                &format!("uploading {file_name}"),
+                client.upload_asset(&path, &file_name),
+            )
+            .await
         });
     }
 

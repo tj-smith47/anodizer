@@ -524,7 +524,11 @@ pub(crate) fn run_sequential(
             .verbose(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
         let mut command = Command::new(&cmd.program);
         command.args(&cmd.args).envs(&cmd.env).current_dir(&cmd.cwd);
-        anodizer_core::run::run_checked(&mut command, exec.log, &cmd.program)?;
+        // Target-qualify the label so the liveness heartbeat attributes a slow
+        // build to its target (`still running cargo (aarch64-…)`) instead of a
+        // bare `cargo` that is ambiguous once builds run concurrently.
+        let label = format!("{} ({})", cmd.program, job.target);
+        anodizer_core::run::run_checked(&mut command, exec.log, &label)?;
         exec.log.status(&format!(
             "built {}/{} for {}",
             job.crate_name, job.binary_name, job.target
@@ -702,7 +706,11 @@ pub(crate) fn run_parallel(
                         thread_log.verbose(&format!("running {} {}", program, args.join(" ")));
                         let mut command = Command::new(&program);
                         command.args(&args).envs(&env).current_dir(&cwd);
-                        anodizer_core::run::run_checked(&mut command, &thread_log, &program)?;
+                        // Target-qualify the label so concurrent build heartbeats
+                        // are distinguishable (`still running cargo (aarch64-…)`)
+                        // rather than an ambiguous bare `cargo` shared by all jobs.
+                        let label = format!("{program} ({target})");
+                        anodizer_core::run::run_checked(&mut command, &thread_log, &label)?;
 
                         let bin_path = resolve_binary_path(&bin_path, &job_crate_path);
 

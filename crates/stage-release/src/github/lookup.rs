@@ -277,34 +277,46 @@ pub(super) async fn wait_for_release_readable(
     release_id: u64,
     log: &StageLogger,
 ) -> Result<bool> {
-    let mut delay = READINESS_GUARD_BASE_DELAY;
-    for attempt in 1..=READINESS_GUARD_ATTEMPTS {
-        let route = format!("/repos/{owner}/{repo}/releases/{release_id}");
-        let result = octo
-            .get::<octocrab::models::repos::Release, _, _>(route, None::<&()>)
-            .await;
-        match result {
-            Ok(_) => {
-                if attempt > 1 {
-                    log.verbose(&format!(
-                        "release {release_id} became readable after {attempt} probe(s) \
-                         (GitHub post-create propagation lag)"
-                    ));
+    // Heartbeat-wrapped so EVERY pure-async wait in the release path narrates
+    // itself by construction. At the default cadence the guard's ≤ ~6s bound
+    // finishes silently; the wrap matters when the cadence is tuned down or the
+    // bound is ever widened.
+    let probe_loop = async {
+        let mut delay = READINESS_GUARD_BASE_DELAY;
+        for attempt in 1..=READINESS_GUARD_ATTEMPTS {
+            let route = format!("/repos/{owner}/{repo}/releases/{release_id}");
+            let result = octo
+                .get::<octocrab::models::repos::Release, _, _>(route, None::<&()>)
+                .await;
+            match result {
+                Ok(_) => {
+                    if attempt > 1 {
+                        log.verbose(&format!(
+                            "release {release_id} became readable after {attempt} probe(s) \
+                             (GitHub post-create propagation lag)"
+                        ));
+                    }
+                    return Ok(true);
                 }
-                return Ok(true);
-            }
-            Err(err) if is_octocrab_404(&err) => {
-                if attempt < READINESS_GUARD_ATTEMPTS {
-                    tokio::time::sleep(jitter_duration(delay)).await;
-                    delay = std::cmp::min(delay * 2, READINESS_GUARD_MAX_DELAY);
+                Err(err) if is_octocrab_404(&err) => {
+                    if attempt < READINESS_GUARD_ATTEMPTS {
+                        tokio::time::sleep(jitter_duration(delay)).await;
+                        delay = std::cmp::min(delay * 2, READINESS_GUARD_MAX_DELAY);
+                    }
                 }
+                // A non-404 hard error (auth, validation) is not a propagation
+                // lag; surface it rather than silently consuming the budget.
+                Err(err) => return Err(anyhow::Error::new(err)),
             }
-            // A non-404 hard error (auth, validation) is not a propagation
-            // lag; surface it rather than silently consuming the budget.
-            Err(err) => return Err(anyhow::Error::new(err)),
         }
-    }
-    Ok(false)
+        Ok(false)
+    };
+    anodizer_core::progress::with_heartbeat(
+        log,
+        &format!("waiting for release {release_id} to become readable"),
+        probe_loop,
+    )
+    .await
 }
 
 /// List all releases on `{owner}/{repo}` whose `name` field equals `name`,

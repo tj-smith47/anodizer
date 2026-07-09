@@ -102,7 +102,11 @@ pub(super) fn run_with_retry(
         NOTARIZE_RETRY_ATTEMPTS,
         None,
         |attempt| -> RetryStep<std::process::Output, NotarizeTerminal<std::process::Output>> {
-            match build_command_from_args(args).output() {
+            // `run_capture` routes through the shared capture loop so a
+            // multi-minute `notarytool … --wait` earns the liveness heartbeat;
+            // it returns the raw Output on any exit (for classification) and
+            // Errs only on spawn/wait failure.
+            match anodizer_core::run::run_capture(&mut build_command_from_args(args), log, label) {
                 Ok(output) if output.status.success() => RetryStep::Done(output),
                 Ok(output) if !is_retriable_notarize_output(&output, log) => {
                     // Non-retriable Apple-side rejection: terminal. Routed through
@@ -118,8 +122,7 @@ pub(super) fn run_with_retry(
                 },
                 Err(e) => RetryStep::Retry {
                     error: NotarizeTerminal::Spawn(
-                        anyhow::Error::new(e)
-                            .context(format!("notarize: failed to execute {label}")),
+                        e.context(format!("notarize: failed to execute {label}")),
                     ),
                     delay: notarize_backoff(initial_delay, attempt),
                     cause: "spawn error".to_string(),
@@ -174,30 +177,19 @@ pub(super) fn run_status_with_retry(
         NOTARIZE_RETRY_ATTEMPTS,
         None,
         |attempt| -> RetryStep<std::process::ExitStatus, NotarizeTerminal<std::process::ExitStatus>> {
-            // `.output()` pipes both streams (no inherited stdio), so rcodesign's
-            // chatter never leaks to the default log; surface it only at `-v`,
-            // matching the `status` vs `verbose` register every subprocess obeys.
-            let captured = build_command_from_args(args).output().map(|out| {
-                if log.is_verbose() {
-                    for line in String::from_utf8_lossy(&out.stdout).lines() {
-                        log.stream_child_stdout(line);
-                    }
-                    for line in String::from_utf8_lossy(&out.stderr).lines() {
-                        log.stream_child_stderr(line);
-                    }
-                }
-                out.status
-            });
-            match captured {
-                Ok(status) if status.success() => RetryStep::Done(status),
-                Ok(status) => RetryStep::Retry {
-                    error: NotarizeTerminal::Exited(status),
+            // `run_capture` pipes both streams (rcodesign's chatter never leaks
+            // to the default log — surfaced only at `-v`), earns the liveness
+            // heartbeat, and returns the raw Output; take just the exit status.
+            match anodizer_core::run::run_capture(&mut build_command_from_args(args), log, label) {
+                Ok(output) if output.status.success() => RetryStep::Done(output.status),
+                Ok(output) => RetryStep::Retry {
+                    error: NotarizeTerminal::Exited(output.status),
                     delay: notarize_backoff(initial_delay, attempt),
                     cause: "non-success exit".to_string(),
                 },
                 Err(e) => RetryStep::Retry {
                     error: NotarizeTerminal::Spawn(
-                        anyhow::Error::new(e).context(format!("notarize: failed to execute {label}")),
+                        e.context(format!("notarize: failed to execute {label}")),
                     ),
                     delay: notarize_backoff(initial_delay, attempt),
                     cause: "spawn error".to_string(),
