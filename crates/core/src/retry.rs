@@ -151,6 +151,23 @@ impl RetryPolicy {
             ..self
         }
     }
+
+    /// Whether the wait before `next_attempt` would carry total wall-time past
+    /// `deadline`. Checked before each backoff so a long registry storm exits
+    /// cleanly (the last error is returned, and an idempotent write recovers on
+    /// re-run) instead of being SIGKILLed mid-publish by the outer job timeout.
+    /// Shared by the sync and async ladders so both bound identically.
+    ///
+    /// A saturating check: an uncapped policy (`max_delay: Duration::MAX`) can
+    /// project a backoff so large that `Instant::now() + delay` would overflow;
+    /// an overflowing projection is treated as past any real deadline (the ladder
+    /// stops) rather than panicking.
+    fn budget_exhausted(&self, next_attempt: u32, deadline: std::time::Instant) -> bool {
+        match std::time::Instant::now().checked_add(self.delay_for(next_attempt)) {
+            Some(projected) => projected > deadline,
+            None => true,
+        }
+    }
 }
 
 /// Total attempt floor for an idempotent PUT/POST, single-sourcing the
@@ -161,6 +178,14 @@ impl RetryPolicy {
 /// transient retry, while an operator-set higher cap is preserved.
 pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 
+/// Default wall-clock budget for a retry ladder when `retry.max_elapsed` is not
+/// set. Resolved into an absolute deadline by [`crate::Context::retry_deadline`]
+/// and threaded into the engine by publishers, so a ladder bounded only by
+/// attempt count cannot run unbounded on a slow-but-not-failing endpoint. It is
+/// a *default*, not a hard ceiling: an operator raises (or lowers) it with
+/// `retry.max_elapsed`, and a caller that threads `None` is still unbounded.
+pub const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(15 * 60);
+
 /// Retry a synchronous operation according to `policy`.
 ///
 /// `op` returns:
@@ -169,6 +194,11 @@ pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 /// - `Err(ControlFlow::Break(e))` to stop immediately (4xx-style fast-fail).
 ///
 /// Returns the last error if all attempts are exhausted.
+///
+/// This variant is attempt-count-bounded only; a caller that wants a wall-clock
+/// budget (a shorter or operator-raised [`DEFAULT_MAX_ELAPSED`]) uses
+/// [`retry_sync_deadline`] with the deadline from
+/// [`crate::Context::retry_deadline`].
 ///
 /// Every failed attempt that will be retried emits a default-visible warn
 /// (`<desc> attempt n/max failed (<cause>); retrying in <X.Y>s`) via `rlog`
@@ -185,8 +215,8 @@ where
 /// push total wall-time past `deadline`. On budget exhaustion it returns the
 /// last error observed before the budget was hit, so a caller whose write is
 /// idempotent recovers on re-run instead of being killed mid-attempt by an
-/// outer timeout. `deadline: None` is byte-for-byte the old attempt-count-only
-/// behavior.
+/// outer timeout. `deadline: None` is byte-for-byte the attempt-count-only
+/// behavior of [`retry_sync`].
 pub fn retry_sync_deadline<T, E, F>(
     rlog: RetryLog<'_>,
     policy: &RetryPolicy,
@@ -211,10 +241,7 @@ where
                     return Err(e);
                 }
                 if let Some(deadline) = deadline {
-                    // Give up before the NEXT backoff would blow the budget, so
-                    // a long registry storm exits cleanly (resumable) rather than
-                    // being SIGKILLed mid-publish by the job timeout.
-                    if std::time::Instant::now() + policy.delay_for(attempt + 1) > deadline {
+                    if policy.budget_exhausted(attempt + 1, deadline) {
                         return Err(e);
                     }
                 }
@@ -231,6 +258,25 @@ where
 pub async fn retry_async<T, E, F, Fut>(
     rlog: RetryLog<'_>,
     policy: &RetryPolicy,
+    op: F,
+) -> Result<T, E>
+where
+    E: fmt::Display,
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<T, ControlFlow<E, E>>>,
+{
+    retry_async_deadline(rlog, policy, None, op).await
+}
+
+/// Like [`retry_async`], but stops once the next backoff would push total
+/// wall-time past `deadline` — the async counterpart of [`retry_sync_deadline`],
+/// so async publishers (release-asset uploads, GitLab/Gitea API calls layered on
+/// [`retry_http_async`]) can honor the same [`crate::Context::retry_deadline`]
+/// budget. `deadline: None` is byte-for-byte the attempt-count-only behavior.
+pub async fn retry_async_deadline<T, E, F, Fut>(
+    rlog: RetryLog<'_>,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     mut op: F,
 ) -> Result<T, E>
 where
@@ -250,6 +296,11 @@ where
             Err(ControlFlow::Continue(e)) => {
                 if attempt >= max {
                     return Err(e);
+                }
+                if let Some(deadline) = deadline {
+                    if policy.budget_exhausted(attempt + 1, deadline) {
+                        return Err(e);
+                    }
                 }
                 rlog.warn_retry(attempt, max, &e, policy.delay_for(attempt + 1));
             }
@@ -1109,6 +1160,82 @@ mod tests {
             });
         assert_eq!(result, Ok(3));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn budget_exhausted_fires_on_a_past_deadline_and_not_a_future_one() {
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        let now = std::time::Instant::now();
+        assert!(policy.budget_exhausted(2, now - Duration::from_secs(1)));
+        assert!(!policy.budget_exhausted(2, now + Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn budget_exhausted_saturates_instead_of_panicking_on_uncapped_backoff() {
+        // An uncapped policy projects a backoff near Duration::MAX; the check must
+        // treat the (overflowing) projection as past the deadline, never panic on
+        // `Instant + Duration` overflow (the docker/podman `max_delay: MAX` path).
+        let policy = RetryPolicy {
+            max_attempts: 100,
+            base_delay: Duration::from_secs(30),
+            max_delay: Duration::MAX,
+        };
+        let now = std::time::Instant::now();
+        assert!(policy.budget_exhausted(64, now + Duration::from_secs(3600)));
+    }
+
+    #[tokio::test]
+    async fn async_deadline_none_is_unbounded_and_exhausts_by_count() {
+        // retry_async keeps the attempt-count-only contract: a None deadline runs
+        // every configured attempt regardless of wall-time.
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let result: Result<(), &str> = retry_async(tlog(), &policy, move |_| {
+            let c = calls_inner.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(ControlFlow::Continue("transient"))
+            }
+        })
+        .await;
+        assert_eq!(result, Err("transient"));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn async_deadline_already_elapsed_stops_after_one_attempt() {
+        // The async budget check mirrors the sync one: a past deadline stops the
+        // ladder after the first Continue without sleeping the 10s backoff.
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(300),
+        };
+        let deadline = std::time::Instant::now();
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let start = std::time::Instant::now();
+        let result: Result<(), &str> =
+            retry_async_deadline(tlog(), &policy, Some(deadline), move |_| {
+                let c = calls_inner.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Err(ControlFlow::Continue("transient"))
+                }
+            })
+            .await;
+        assert_eq!(result, Err("transient"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

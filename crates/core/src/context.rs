@@ -1048,19 +1048,24 @@ impl Context {
         self.config.retry.unwrap_or_default().to_policy()
     }
 
-    /// Resolve the user's `retry.max_elapsed` budget into an absolute
-    /// wall-clock deadline anchored at the moment of this call, or `None`
-    /// when no budget is configured. Publishers whose surrounding CI job
-    /// has a hard timeout compute this once at the start of a publish
-    /// sequence and pass it to [`crate::retry::retry_sync_deadline`] so a
-    /// long transient storm exits cleanly (resumable) instead of being
-    /// killed mid-write by the outer timeout.
+    /// Resolve the retry wall-clock budget into an absolute deadline anchored at
+    /// the moment of this call. Always `Some`: `retry.max_elapsed` when the user
+    /// sets it, otherwise [`crate::retry::DEFAULT_MAX_ELAPSED`] (15 min) — so a
+    /// publisher that threads this into [`crate::retry::retry_sync_deadline`] /
+    /// [`crate::retry::retry_async_deadline`] is bounded by default and the
+    /// operator can raise or lower the ceiling with one config field. The
+    /// `Option` return lets it feed those engines verbatim (their `None` means
+    /// unbounded, reserved for callers with no context). Computed once at the
+    /// start of a publish sequence so a long transient storm exits cleanly
+    /// (resumable) instead of being SIGKILLed mid-write by the outer job timeout.
     pub fn retry_deadline(&self) -> Option<std::time::Instant> {
-        self.config
+        let budget = self
+            .config
             .retry
             .unwrap_or_default()
             .max_elapsed_duration()
-            .map(|budget| std::time::Instant::now() + budget)
+            .unwrap_or(crate::retry::DEFAULT_MAX_ELAPSED);
+        Some(std::time::Instant::now() + budget)
     }
 
     /// Create a [`StageLogger`] for the given stage name, pre-attached to
@@ -3493,12 +3498,16 @@ mod tests {
     }
 
     #[test]
-    fn retry_deadline_is_none_when_config_omits_retry() {
+    fn retry_deadline_defaults_to_the_built_in_budget_when_config_omits_retry() {
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(
-            ctx.retry_deadline().is_none(),
-            "no retry config must leave the deadline unbounded"
-        );
+        let before = std::time::Instant::now() + crate::retry::DEFAULT_MAX_ELAPSED;
+        let deadline = ctx
+            .retry_deadline()
+            .expect("an omitted retry config must still yield the default budget");
+        let after = std::time::Instant::now() + crate::retry::DEFAULT_MAX_ELAPSED;
+        // The deadline anchors at call time + the 15m default, so it lands within
+        // the [before, after] window bracketing this call.
+        assert!(deadline >= before && deadline <= after);
     }
 
     #[test]
