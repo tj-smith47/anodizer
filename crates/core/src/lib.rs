@@ -44,6 +44,7 @@ pub mod partial;
 pub mod path_util;
 pub mod pipe_skip;
 pub mod preflight;
+pub mod progress;
 pub mod publish_evidence;
 pub mod publish_report;
 pub mod publisher;

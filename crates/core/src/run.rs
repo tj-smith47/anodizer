@@ -605,19 +605,24 @@ mod windows_termination {
 /// line redacted) while still being captured, so the failure embed keeps the
 /// full output and the live stream is not double-printed.
 ///
-/// stdin is left untouched, preserving the sign stage's `Stdio::inherit()`
-/// stdin (gpg pinentry reads the tty). Use [`run_checked_with_stdin`] to feed
-/// bytes to the child's stdin.
+/// The child's stdin is detached (`Stdio::null`) inside the capture loop, so a
+/// tool that would otherwise prompt on the inherited tty (a stray `cargo login`,
+/// a git credential helper) fails fast instead of blocking on input that never
+/// arrives. Use [`run_checked_with_stdin`] to feed bytes to the child's stdin.
 pub fn run_checked(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if log.is_verbose() {
-        run_streamed(cmd, log, label)
-    } else {
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to spawn {label}"))?;
-        log.check_output(output, label)
-    }
+    // Route BOTH verbosities through the shared `capture_inner` loop (via
+    // `run_inner`), which runs the liveness heartbeat ticker: a slow silent
+    // child (`cargo publish`, a registry push) is now narrated at DEFAULT
+    // verbosity too, not only under `-v`. Matches the former non-verbose
+    // `cmd.output()` fast-path byte-for-byte on capture and `check_output`
+    // decision; the single deliberate drift is that the verbose path's stdin is
+    // now null instead of inherited (see the stdin note in `capture_inner`), so
+    // stdin semantics no longer vary by verbosity. A single code path is worth
+    // the two reader-thread spawns per call — every production caller is a
+    // heavyweight subprocess (cargo, docker, notarytool) where thread setup is
+    // noise, and the deleted dual path is exactly where the stdin drift hid.
+    run_inner(cmd, None, log, label, None)
 }
 
 /// Like [`run_checked`], but writes `stdin` to the child's standard input
@@ -665,11 +670,6 @@ pub fn run_checked_with_stdin_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     run_inner(cmd, Some(stdin), log, label, Some(timeout))
-}
-
-/// Verbose path for [`run_checked`] with no stdin to feed.
-fn run_streamed(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
-    run_inner(cmd, None, log, label, None)
 }
 
 /// Like [`run_checked`] (no stdin; a non-zero exit becomes an `Err`) but bounds
@@ -793,6 +793,18 @@ fn capture_inner(
     if timeout.is_some() {
         set_own_process_group(cmd);
     }
+    // With no stdin payload, detach the child's stdin — deliberately for EVERY
+    // no-payload path, not just the former non-verbose `cmd.output()` sites
+    // (which nulled stdin implicitly). The verbose and `*_timeout` paths used
+    // to inherit the parent's stdin; that let a tool that reads fd 0 (a stray
+    // `cargo login`, a git credential helper honoring piped input) block
+    // forever on input that never arrives, and made stdin semantics differ by
+    // verbosity. Tools that genuinely prompt interactively (gpg pinentry, ssh
+    // passphrases) read `/dev/tty`, not fd 0, so they are unaffected. When
+    // `stdin` is Some the caller already set `Stdio::piped()`.
+    if stdin.is_none() {
+        cmd.stdin(Stdio::null());
+    }
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn {label}"))?;
@@ -911,6 +923,32 @@ fn capture_inner(
         let watchdog =
             timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, readers_done_ref, 2, t, tree)));
 
+        // Heartbeat ticker: at default verbosity the tee prints nothing, so a
+        // legitimately slow child (cargo publish, a large asset upload,
+        // notarytool polling Apple) is indistinguishable from a hang. This
+        // thread emits `still running <label> (<elapsed>)` every cadence until
+        // the `stop` channel disconnects. The channel's Sender is held below and
+        // dropped on EVERY scope exit edge — normal return, the watchdog/stdin
+        // error `if let`s, AND a panic unwind — so `recv_timeout` returns
+        // `Disconnected` and the ticker terminates promptly with no risk of
+        // `thread::scope` hanging on a ticker that never stops. Off entirely
+        // outside Normal verbosity (see `heartbeat_period`). The ticker
+        // deliberately outlives the child's own exit into the pipe-drain window:
+        // a drain that spans a cadence means output is still flowing (a leaked
+        // grandchild, a large buffered tail), which IS the pipeline still
+        // running from the operator's seat.
+        let heartbeat_stop = crate::progress::heartbeat_period(log).map(|interval| {
+            let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+            let start = Instant::now();
+            let action = format!("running {label}");
+            s.spawn(move || {
+                crate::progress::run_ticker(&stop_rx, interval, || {
+                    log.heartbeat(&crate::progress::heartbeat_message(&action, start));
+                });
+            });
+            stop_tx
+        });
+
         // A reader-thread panic must not vanish the captured stream (it drives
         // the failure embed). Warn loudly and fall back to an empty buffer
         // instead of silently swallowing it.
@@ -936,6 +974,11 @@ fn capture_inner(
                 Err(_) => log.warn(&format!("{label}: stdin writer thread panicked")),
             }
         }
+
+        // Child has exited and its streams are drained: drop the heartbeat
+        // Sender so its ticker observes `Disconnected` and stops, letting the
+        // scope join return promptly instead of waiting out a full cadence.
+        drop(heartbeat_stop);
     });
 
     // Always reap the (now-exited-or-killed) child so no zombie leaks, even on
@@ -1016,8 +1059,34 @@ pub fn run_capture_timeout(
     label: &str,
     timeout: Duration,
 ) -> Result<Output> {
+    capture_impl(cmd, log, label, Some(timeout))
+}
+
+/// Capture `cmd`'s raw [`Output`] (both streams buffered) WITHOUT treating a
+/// non-zero exit as an error — the caller classifies the result — and WITHOUT a
+/// wall-clock timeout. The unbounded sibling of [`run_capture_timeout`]: for a
+/// subprocess a caller must inspect (exit code + stdout/stderr) that has no
+/// natural deadline yet can run long enough to look hung — notarytool polling
+/// Apple can take many minutes — so routing it through the shared capture loop
+/// earns the liveness heartbeat for free. Errors only on spawn / wait failure.
+///
+/// Verbose streaming, secret redaction, and heartbeat behavior are identical to
+/// every other `run_*` entry point, since all share [`capture_inner`].
+pub fn run_capture(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
+    capture_impl(cmd, log, label, None)
+}
+
+/// Shared body of [`run_capture`] / [`run_capture_timeout`]: the piped-stdio
+/// setup lives once so a future stdio default cannot diverge between the
+/// bounded and unbounded entry points.
+fn capture_impl(
+    cmd: &mut Command,
+    log: &StageLogger,
+    label: &str,
+    timeout: Option<Duration>,
+) -> Result<Output> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    capture_inner(cmd, None, log, label, Some(timeout))
+    capture_inner(cmd, None, log, label, timeout)
 }
 
 /// Join a reader thread, returning its captured buffer. On a thread panic,
@@ -1640,6 +1709,34 @@ mod tests {
             status.signal(),
             Some(libc::SIGTERM),
             "the registered child must die from the watcher's group SIGTERM, not outlive us; got {status:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn slow_subprocess_heartbeats_fast_subprocess_does_not() {
+        use crate::test_helpers::env::{EnvGuard, env_mutex};
+        let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // A 40ms cadence over a ~350ms child yields several heartbeats; assert
+        // ≥1 so the test is robust to scheduler jitter. The RAII guard restores
+        // the prior env even if an assertion below panics.
+        let _g = EnvGuard::set(crate::progress::HEARTBEAT_INTERVAL_ENV, "40");
+
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let out = run_checked(&mut sh("sleep 0.35"), &log, "sleep").expect("sleep must succeed");
+        assert!(out.status.success());
+        assert!(
+            cap.heartbeat_count() >= 1,
+            "a slow silent child must emit at least one heartbeat; got {}",
+            cap.heartbeat_count()
+        );
+
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        run_checked(&mut sh("true"), &log, "true").expect("true must succeed");
+        assert_eq!(
+            cap.heartbeat_count(),
+            0,
+            "an instant child must not emit a heartbeat"
         );
     }
 }

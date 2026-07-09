@@ -34,3 +34,32 @@ pub fn env_mutex() -> &'static Mutex<()> {
     static M: OnceLock<Mutex<()>> = OnceLock::new();
     M.get_or_init(|| Mutex::new(()))
 }
+
+/// RAII env-var override that restores the prior value on drop, so a panicking
+/// assertion cannot leak a mutated env into a sibling test — the scope guard
+/// the module doc above says is otherwise the test author's responsibility.
+/// Callers must hold [`env_mutex`] for the guard's lifetime so the
+/// process-global env is mutated by one test at a time.
+pub struct EnvGuard(&'static str, Option<String>);
+
+impl EnvGuard {
+    /// Set `key=val`, remembering the prior value for restoration on drop.
+    pub fn set(key: &'static str, val: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: serialized by env_mutex (caller-held); restored on drop.
+        unsafe { std::env::set_var(key, val) };
+        Self(key, prev)
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: serialized by env_mutex (caller-held for the guard's life).
+        unsafe {
+            match &self.1 {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+}

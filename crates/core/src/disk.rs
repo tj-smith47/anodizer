@@ -308,29 +308,21 @@ impl FreeSpaceSampler {
     /// Start sampling free space on the volume backing `vol`, polling every
     /// `interval`.
     pub fn start(vol: &Path, interval: Duration) -> Self {
-        use std::sync::mpsc::{RecvTimeoutError, channel};
-        let (stop_tx, stop_rx) = channel::<()>();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let min_free = Arc::new(AtomicU64::new(Self::NO_SAMPLE));
         let min_t = Arc::clone(&min_free);
         let vol: PathBuf = vol.to_path_buf();
         let handle = std::thread::spawn(move || {
-            // Take an immediate reading so a build shorter than one
-            // interval still records a sample, then poll on a timeout that
-            // a stop-send interrupts at once.
-            loop {
+            let sample = || {
                 if let Some(free) = available_bytes(&vol) {
                     min_t.fetch_min(free, Ordering::Relaxed);
                 }
-                // `recv_timeout` returns `Ok`/`Disconnected` the instant
-                // `stop()` sends or drops the sender → prompt shutdown;
-                // `Timeout` means the interval elapsed → take another
-                // sample. Sampling cadence stays at `interval`; only stop
-                // responsiveness improves.
-                match stop_rx.recv_timeout(interval) {
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
-                }
-            }
+            };
+            // Take an immediate reading so a build shorter than one interval
+            // still records a sample, then tick on the shared stop-interruptible
+            // cadence — `stop()`'s send (or sender-drop) wakes it at once.
+            sample();
+            crate::progress::run_ticker(&stop_rx, interval, sample);
         });
         Self {
             stop_tx: Some(stop_tx),

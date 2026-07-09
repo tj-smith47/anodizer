@@ -56,13 +56,15 @@ impl<'a> RetryLog<'a> {
     }
 
     fn warn_retry(&self, attempt: u32, max: u32, cause: &dyn fmt::Display, delay: Duration) {
+        // Spelled through the tool's one duration format (`45s`, `2m15s`) so a
+        // retry line and an adjacent heartbeat line read the same way.
         self.log.warn(&format!(
-            "{} attempt {}/{} failed ({}); retrying in {:.1}s",
+            "{} attempt {}/{} failed ({}); retrying in {}",
             self.desc,
             attempt,
             max,
             cause,
-            delay.as_secs_f64()
+            crate::progress::format_elapsed(delay)
         ));
     }
 
@@ -351,7 +353,7 @@ pub fn retry_scope_breakdown() -> Vec<(String, u32, Duration)> {
 /// [`crate::Context::retry_deadline`].
 ///
 /// Every failed attempt that will be retried emits a default-visible warn
-/// (`<desc> attempt n/max failed (<cause>); retrying in <X.Y>s`) via `rlog`
+/// (`<desc> attempt n/max failed (<cause>); retrying in <delay>`) via `rlog`
 /// before the backoff sleep, so a multi-minute ladder is never silent.
 pub fn retry_sync<T, E, F>(rlog: RetryLog<'_>, policy: &RetryPolicy, op: F) -> Result<T, E>
 where

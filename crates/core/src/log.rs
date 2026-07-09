@@ -418,6 +418,10 @@ pub enum LogLevel {
     Error,
     Warn,
     Status,
+    /// Liveness / progress line from [`StageLogger::heartbeat`], surfaced
+    /// during a slow subprocess or upload. A level of its own so a heartbeat is
+    /// never counted as a status result line.
+    Heartbeat,
     Verbose,
     Debug,
 }
@@ -470,6 +474,11 @@ impl LogCapture {
     /// Number of [`LogLevel::Warn`] lines recorded.
     pub fn warn_count(&self) -> usize {
         self.count(LogLevel::Warn)
+    }
+
+    /// Number of [`LogLevel::Heartbeat`] lines recorded.
+    pub fn heartbeat_count(&self) -> usize {
+        self.count(LogLevel::Heartbeat)
     }
 
     /// Number of [`LogLevel::Error`] lines recorded.
@@ -781,6 +790,37 @@ impl StageLogger {
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Status, msg);
+        }
+    }
+
+    /// Whether liveness heartbeats should surface: only at exactly Normal
+    /// verbosity. Quiet shows errors only, and at Verbose/Debug the live
+    /// subprocess tee already conveys progress, so a heartbeat there would
+    /// double the signal. The single authority for the suppression policy:
+    /// the drivers consult it via `progress::heartbeat_period` before spawning
+    /// any ticker, and [`Self::heartbeat`] re-checks it as defense-in-depth for
+    /// a direct caller — both gates read this one predicate, never a second
+    /// copy of the rule.
+    pub fn heartbeats_enabled(&self) -> bool {
+        self.verbosity == Verbosity::Normal
+    }
+
+    /// Heartbeat / liveness body line — a cyan `•` marker, then `msg`. Renders a
+    /// slow operation (`still running cargo publish (2m15s)`) so it is not
+    /// mistaken for a hang. Shown only when [`Self::heartbeats_enabled`], and
+    /// recorded at its own [`LogLevel::Heartbeat`] level.
+    pub fn heartbeat(&self, msg: &str) {
+        if !self.heartbeats_enabled() {
+            return;
+        }
+        flush_pending();
+        eprintln!(
+            "{}",
+            Self::render_body(&MARKER_DETAIL.cyan().to_string(), msg)
+        );
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Heartbeat, msg);
         }
     }
 
