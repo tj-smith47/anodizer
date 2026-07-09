@@ -424,14 +424,15 @@ pub(crate) const COSIGN_TRANSIENT_RETRY: anodizer_core::retry::RetryPolicy =
         max_delay: std::time::Duration::from_secs(15),
     };
 
-/// Retry `op` per `policy` with jittered exponential backoff, warning on each
-/// failed attempt.
+/// Retry `op` per `policy` with jittered exponential backoff, routed through
+/// the shared step engine ([`anodizer_core::retry::retry_steps_sync`]).
 ///
-/// Not [`anodizer_core::retry::retry_sync`]: that helper sleeps internally
-/// (unpinnable in tests — this policy spreads ~29s) and does not jitter,
-/// while concurrent sign workers retrying a shared-lock collision must
-/// de-synchronize or they re-collide every round. `sleep` is injected so
-/// tests assert the spacing without serving it.
+/// The engine owns the attempt cap, the per-attempt warn, and the backoff sleep
+/// (with the run's retry accounting); this wrapper owns only the classification
+/// and the jittered delay. The jitter is caller-owned via [`sign_retry_delay`]
+/// because concurrent sign workers retrying a shared-lock collision must
+/// de-synchronize or they re-collide every round — a property a fixed policy
+/// delay cannot express.
 ///
 /// A spawn failure with `ErrorKind::NotFound` fast-fails: a missing signer
 /// binary cannot heal, and burning the full backoff budget on it would turn a
@@ -447,33 +448,47 @@ pub(crate) fn retry_transient(
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
     what: &str,
-    sleep: &(dyn Fn(std::time::Duration) + Sync),
     op: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
-    let max = policy.max_attempts.max(1);
-    let mut attempt: u32 = 1;
-    loop {
-        match op() {
-            Ok(()) => return Ok(()),
+    use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
+    let desc = format!("sign {what}");
+    retry_steps_sync(
+        RetryLog::new(&desc, log),
+        policy.max_attempts,
+        None,
+        |attempt| match op() {
+            Ok(()) => RetryStep::Done(()),
             Err(e) => {
                 let unspawnable = e
                     .root_cause()
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-                if unspawnable || is_deterministic_sign_failure(&e) || attempt >= max {
-                    return Err(e);
+                if unspawnable || is_deterministic_sign_failure(&e) {
+                    RetryStep::Fail(e)
+                } else {
+                    let cause = e.root_cause().to_string();
+                    RetryStep::Retry {
+                        error: e,
+                        delay: sign_retry_delay(policy, attempt + 1),
+                        cause,
+                    }
                 }
-                let delay = anodizer_core::retry::jitter_duration(policy.delay_for(attempt + 1));
-                log.warn(&format!(
-                    "sign attempt {attempt}/{max} for {what} failed ({}); retrying in {:.1}s",
-                    e.root_cause(),
-                    delay.as_secs_f64()
-                ));
-                sleep(delay);
-                attempt += 1;
             }
-        }
-    }
+        },
+    )
+}
+
+/// Jittered backoff before sign attempt `next_attempt`: the policy's
+/// exponential delay spread ±20% by [`anodizer_core::retry::jitter_duration`].
+///
+/// A pure helper so the schedule's contention-window envelope (each delay
+/// within ±20% of nominal, nominal spread ≥15s to outlive the cold-TUF flock
+/// race) is testable without driving the multi-second retry loop.
+pub(crate) fn sign_retry_delay(
+    policy: &anodizer_core::retry::RetryPolicy,
+    next_attempt: u32,
+) -> std::time::Duration {
+    anodizer_core::retry::jitter_duration(policy.delay_for(next_attempt))
 }
 
 /// True when a signer failure is deterministic — re-running the identical
@@ -1111,7 +1126,6 @@ pub(crate) fn process_sign_configs(
                     &COSIGN_TRANSIENT_RETRY,
                     &thread_log,
                     &job.artifact_display,
-                    &|d| anodizer_core::retry::sleep_backoff_blocking(d),
                     &mut || execute_sign_job(job, &thread_log),
                 )?;
             } else {
@@ -1130,7 +1144,6 @@ pub(crate) fn process_sign_configs(
                         &COSIGN_TRANSIENT_RETRY,
                         &thread_log,
                         &format!("verification of {}", v.what),
-                        &|d| anodizer_core::retry::sleep_backoff_blocking(d),
                         &mut || crate::verify::execute_verify_job(v, &thread_log),
                     )?;
                 } else {

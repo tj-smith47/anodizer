@@ -1856,59 +1856,68 @@ fn run_cargo_publish_with_retry(
     log: &StageLogger,
     backoff: std::time::Duration,
 ) -> Result<std::process::Output> {
-    let mut last_output: Option<std::process::Output> = None;
-    for attempt in 1..=PUBLISH_PROPAGATION_RETRIES {
-        let output = Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .output()
-            .with_context(|| format!("publish: spawn `{}`", cmd.join(" ")))?;
+    use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
 
-        if output.status.success() {
-            return log.check_output(output, label);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let propagation = is_index_propagation_failure(&stderr);
-        let transient_net = is_transient_network_failure(&stderr);
-        if !propagation && !transient_net {
-            // Neither recoverable class — surface immediately. check_output
-            // performs redaction + error formatting consistently with the
-            // single-attempt path.
-            return log.check_output(output, label);
-        }
-
-        // Name which recoverable class fired so the operator can tell an
-        // edge-skew retry from a network-blip retry in the run log.
-        let kind = if propagation {
-            "sparse-index propagation lag"
-        } else {
-            "transient network error"
-        };
-
-        if attempt >= PUBLISH_PROPAGATION_RETRIES {
-            log.warn(&format!(
-                "{kind} for {label} persists after {attempt} attempts; surfacing"
-            ));
-            last_output = Some(output);
-            break;
-        }
-
-        log.status(&format!(
-            "{kind} detected for {label} (attempt {}/{}); retrying in {}s",
-            attempt,
-            PUBLISH_PROPAGATION_RETRIES,
-            backoff.as_secs()
-        ));
-        anodizer_core::retry::sleep_backoff_blocking(backoff);
+    // Terminal failure the shared step engine carries out of the ladder. A
+    // spawn error bubbles verbatim; an exited process (fast-fail on a
+    // non-recoverable class, or the last output after exhaustion) is finalized
+    // through `check_output` exactly once — never on an intermediate retry,
+    // whose error lines would otherwise spam the log for a failure that then
+    // clears.
+    enum PublishFailure {
+        Spawn(anyhow::Error),
+        Exited(std::process::Output),
     }
 
-    // All retries exhausted — surface the last failure through check_output
-    // so the operator sees the same redacted error envelope as the
-    // single-attempt path.
-    log.check_output(
-        last_output.expect("loop exits with last_output set on exhaustion"),
-        label,
-    )
+    let desc = format!("cargo publish for {label}");
+    let res = retry_steps_sync(
+        RetryLog::new(&desc, log),
+        PUBLISH_PROPAGATION_RETRIES,
+        None,
+        |_attempt| -> RetryStep<std::process::Output, PublishFailure> {
+            let output = match Command::new(&cmd[0]).args(&cmd[1..]).output() {
+                Ok(o) => o,
+                Err(e) => {
+                    return RetryStep::Fail(PublishFailure::Spawn(
+                        anyhow::Error::new(e)
+                            .context(format!("publish: spawn `{}`", cmd.join(" "))),
+                    ));
+                }
+            };
+            if output.status.success() {
+                return RetryStep::Done(output);
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            let propagation = is_index_propagation_failure(&stderr);
+            let transient_net = is_transient_network_failure(&stderr);
+            if !propagation && !transient_net {
+                // Neither recoverable class — surface immediately (no retry).
+                return RetryStep::Fail(PublishFailure::Exited(output));
+            }
+            // Name which recoverable class fired so the operator can tell an
+            // edge-skew retry from a network-blip retry in the run log.
+            let kind = if propagation {
+                "sparse-index propagation lag"
+            } else {
+                "transient network error"
+            };
+            RetryStep::Retry {
+                error: PublishFailure::Exited(output),
+                delay: backoff,
+                cause: kind.to_string(),
+            }
+        },
+    );
+
+    // Finalize every terminal path through `check_output` so the operator sees
+    // the same redacted error envelope as the single-attempt path: success
+    // returns `Ok`, an exited failure (fast-fail or post-exhaustion) formats to
+    // `Err`, and a spawn error bubbles its own context.
+    match res {
+        Ok(output) => log.check_output(output, label),
+        Err(PublishFailure::Exited(output)) => log.check_output(output, label),
+        Err(PublishFailure::Spawn(e)) => Err(e),
+    }
 }
 
 // ---------------------------------------------------------------------------

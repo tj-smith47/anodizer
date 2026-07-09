@@ -13,6 +13,7 @@
 use anodizer_core::PublisherOutcome;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
 use anodizer_core::run::run_capture_timeout;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::path::Path;
@@ -230,106 +231,147 @@ fn create_pr_via_gh_cli(
     // can't be blank" even though the push succeeded. These are transient and
     // resolve within a few seconds. Retry up to 3 times with short backoffs
     // before warning.
-    let mut last_stderr = String::new();
-    let mut last_status: Option<std::process::ExitStatus> = None;
-    for attempt in 1..=3 {
-        // Bounded: `gh pr create` hits the GitHub API, so a hung call must not
-        // hang the release. A deadline kill is Retriable → consumed by this
-        // loop's retry path; a spawn failure stays the hard `Failed` below.
-        let mut gh_cmd = Command::new("gh");
-        gh_cmd.current_dir(repo_path).args(&args);
-        let pr_result = run_capture_timeout(
-            &mut gh_cmd,
-            log,
-            &format!("{label}: gh pr create"),
-            GH_PR_CREATE_TIMEOUT,
-        );
-        match pr_result {
-            Ok(output) if output.status.success() => {
-                log.status(&format!("submitted {label} PR via gh CLI"));
-                return None;
-            }
-            Ok(output) => {
-                last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                last_status = Some(output.status);
-                // An open PR with identical head/base already exists.
-                if last_stderr.contains("already exists") {
-                    if update_existing_pr {
-                        // Force-push to the existing branch so the open PR
-                        // picks up the new manifest without needing a new PR.
-                        if let Err(e) = run_cmd_in_timeout(
-                            repo_path,
-                            "git",
-                            &["push", "--force-with-lease", "origin", branch_name],
-                            &format!("{label}: git push --force-with-lease (update existing PR)"),
-                            None,
-                            log,
-                            GIT_FORCE_PUSH_TIMEOUT,
-                        ) {
-                            log.warn(&format!(
-                                "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
-                            ));
-                        } else {
-                            log.status(&pr_exists_update_status_message(label, head));
+    // The shared step engine owns the attempt cap (3), the per-attempt warn,
+    // and the linear backoff sleep (`5·attempt`s); this closure only runs one
+    // `gh pr create`, classifies its outcome, and (for a transient failure)
+    // names the delay. `Retry`'s error carries the last stderr + exit status so
+    // the wrapper can render the exhaustion message once. A `gh pr create` call
+    // is bounded by `GH_PR_CREATE_TIMEOUT`, so a hung API call is a retriable
+    // deadline kill rather than an unbounded hang.
+    // Terminal failure carried out of the step engine. `Spawn` is a gh
+    // could-not-execute failure — terminal, and routed through `Fail` (not a
+    // `Failed`-valued `Done`) so the engine never announces a spawn failure as
+    // "succeeded". `Exited` carries a non-zero gh exit (or the last transient
+    // stderr on an exhausted ladder) so the wrapper renders the manual-PR
+    // exhaustion message once.
+    enum PrCreateFailure {
+        Spawn(String),
+        Exited {
+            stderr: String,
+            status: Option<std::process::ExitStatus>,
+        },
+    }
+
+    let desc = format!("gh pr create for {label}");
+    let outcome = retry_steps_sync(
+        RetryLog::new(&desc, log),
+        3,
+        None,
+        |attempt| -> RetryStep<Option<PublisherOutcome>, PrCreateFailure> {
+            let mut gh_cmd = Command::new("gh");
+            gh_cmd.current_dir(repo_path).args(&args);
+            let pr_result = run_capture_timeout(
+                &mut gh_cmd,
+                log,
+                &format!("{label}: gh pr create"),
+                GH_PR_CREATE_TIMEOUT,
+            );
+            match pr_result {
+                Ok(output) if output.status.success() => {
+                    log.status(&format!("submitted {label} PR via gh CLI"));
+                    RetryStep::Done(None)
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    // An open PR with identical head/base already exists.
+                    if stderr.contains("already exists") {
+                        if update_existing_pr {
+                            // Force-push to the existing branch so the open PR
+                            // picks up the new manifest without a new PR.
+                            if let Err(e) = run_cmd_in_timeout(
+                                repo_path,
+                                "git",
+                                &["push", "--force-with-lease", "origin", branch_name],
+                                &format!(
+                                    "{label}: git push --force-with-lease (update existing PR)"
+                                ),
+                                None,
+                                log,
+                                GIT_FORCE_PUSH_TIMEOUT,
+                            ) {
+                                log.warn(&format!(
+                                    "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
+                                ));
+                            } else {
+                                log.status(&pr_exists_update_status_message(label, head));
+                            }
+                            return RetryStep::Done(None);
                         }
-                        return None;
-                    } else {
                         log.warn(&pr_exists_skip_warn_message(label, head));
-                        return Some(PublisherOutcome::PendingValidation);
+                        return RetryStep::Done(Some(PublisherOutcome::PendingValidation));
+                    }
+                    let transient = stderr.contains("No commits between")
+                        || stderr.contains("Head sha can't be blank")
+                        || stderr.contains("Head repository can't be blank")
+                        || stderr.contains("not all refs are readable");
+                    let ctx = PrCreateFailure::Exited {
+                        stderr,
+                        status: Some(output.status),
+                    };
+                    if transient {
+                        RetryStep::Retry {
+                            error: ctx,
+                            delay: Duration::from_secs(5 * u64::from(attempt)),
+                            cause: "transient GitHub API lag".to_string(),
+                        }
+                    } else {
+                        // Non-transient exit: fast-fail to the exhaustion message
+                        // without burning further attempts.
+                        RetryStep::Fail(ctx)
                     }
                 }
-                let transient = last_stderr.contains("No commits between")
-                    || last_stderr.contains("Head sha can't be blank")
-                    || last_stderr.contains("Head repository can't be blank")
-                    || last_stderr.contains("not all refs are readable");
-                if !transient || attempt == 3 {
-                    break;
+                Err(e) => {
+                    // A deadline kill (the API call stalled) is retriable and
+                    // transient — consume it on the same ladder as a transient
+                    // "No commits between …" rather than hard-failing on a hang.
+                    if anodizer_core::retry::is_retriable(e.as_ref()) {
+                        RetryStep::Retry {
+                            error: PrCreateFailure::Exited {
+                                stderr: format!("{e:#}"),
+                                status: None,
+                            },
+                            delay: Duration::from_secs(5 * u64::from(attempt)),
+                            cause: "gh pr create timed out".to_string(),
+                        }
+                    } else {
+                        // Spawn failure (gh absent / not executable): terminal.
+                        // Routed through `Fail` so the engine does not announce
+                        // a spawn failure as a recovery; the wrapper turns it
+                        // into a `Failed` outcome so the report tells the truth
+                        // (non-required publishers won't gate the release).
+                        RetryStep::Fail(PrCreateFailure::Spawn(format!(
+                            "could not run gh to create the {label} PR: {e} -- you may need to create the PR manually"
+                        )))
+                    }
                 }
-                log.warn(&format!(
-                    "gh pr create for {label} hit transient error (attempt {attempt}/3); retrying..."
-                ));
-                anodizer_core::retry::sleep_backoff_blocking(std::time::Duration::from_secs(
-                    5 * attempt,
-                ));
             }
-            Err(e) => {
-                // A deadline kill (the API call stalled) is Retriable and
-                // transient — consume it on the same 3-try path as a transient
-                // "No commits between …", rather than hard-failing on a hang.
-                if anodizer_core::retry::is_retriable(e.as_ref()) && attempt < 3 {
-                    last_stderr = format!("{e:#}");
-                    log.warn(&format!(
-                        "gh pr create for {label} timed out (attempt {attempt}/3); retrying..."
-                    ));
-                    anodizer_core::retry::sleep_backoff_blocking(std::time::Duration::from_secs(
-                        5 * attempt,
-                    ));
-                    continue;
+        },
+    );
+    match outcome {
+        Ok(v) => v,
+        Err(PrCreateFailure::Spawn(msg)) => {
+            log.warn(&msg);
+            Some(PublisherOutcome::Failed(msg))
+        }
+        Err(PrCreateFailure::Exited {
+            stderr: last_stderr,
+            status: last_status,
+        }) => {
+            let msg = format!(
+                "gh pr create for {label} exited with {} -- you may need to create the PR manually{}",
+                last_status
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "unknown status".to_string()),
+                if last_stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", last_stderr)
                 }
-                let msg = format!(
-                    "could not run gh to create the {label} PR: {e} -- you may need to create the PR manually"
-                );
-                log.warn(&msg);
-                // Silent-fail would let dispatch record Succeeded.
-                // Return Failed so the report tells the truth;
-                // non-required publishers won't gate the release.
-                return Some(PublisherOutcome::Failed(msg));
-            }
+            );
+            log.warn(&msg);
+            Some(PublisherOutcome::Failed(msg))
         }
     }
-    let msg = format!(
-        "gh pr create for {label} exited with {} -- you may need to create the PR manually{}",
-        last_status
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "unknown status".to_string()),
-        if last_stderr.is_empty() {
-            String::new()
-        } else {
-            format!("\n{}", last_stderr)
-        }
-    );
-    log.warn(&msg);
-    Some(PublisherOutcome::Failed(msg))
 }
 
 /// Submit a pull request via the GitHub REST API (native fallback when `gh`

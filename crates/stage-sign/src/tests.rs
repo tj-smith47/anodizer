@@ -5078,9 +5078,10 @@ mod cosign_tuf_race {
 /// Unit pins for the cosign transient-retry machinery (platform-neutral —
 /// the injected sleep means no wall-clock time is served).
 mod cosign_retry_policy {
-    use crate::process::{COSIGN_TRANSIENT_RETRY, is_keyless_cosign, retry_transient};
+    use crate::process::{
+        COSIGN_TRANSIENT_RETRY, is_keyless_cosign, retry_transient, sign_retry_delay,
+    };
     use anodizer_core::log::{StageLogger, Verbosity};
-    use std::sync::Mutex;
     use std::time::Duration;
 
     fn quiet_log() -> StageLogger {
@@ -5088,46 +5089,24 @@ mod cosign_retry_policy {
     }
 
     /// The backoff schedule must outlive a multi-second TUF contention
-    /// window: every sleep sits inside its ±20% jitter envelope, and the
+    /// window: every delay sits inside its ±20% jitter envelope, and the
     /// nominal spread before the final attempt is at least 15s (the whole
-    /// point of the fix — 3 fast tries in ~2.5s lost every round).
+    /// point of the fix — 3 fast tries in ~2.5s lost every round). Asserted on
+    /// the pure schedule helper so the envelope is checked without serving the
+    /// multi-second sleeps.
     #[test]
-    fn cosign_retry_backoff_spans_the_contention_window() {
-        let log = quiet_log();
-        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
-        let attempts = std::cell::Cell::new(0u32);
-
-        let result = retry_transient(
-            &COSIGN_TRANSIENT_RETRY,
-            &log,
-            "myapp.tar.gz",
-            &|d| sleeps.lock().expect("sleep recorder").push(d),
-            &mut || {
-                attempts.set(attempts.get() + 1);
-                anyhow::bail!("creating cached local store: resource temporarily unavailable")
-            },
-        );
-
-        assert!(result.is_err(), "exhausted retries must surface the error");
-        assert_eq!(
-            attempts.get(),
-            COSIGN_TRANSIENT_RETRY.max_attempts,
-            "every attempt in the policy must be spent"
-        );
-
-        let sleeps = sleeps.into_inner().expect("sleep recorder");
-        assert_eq!(
-            sleeps.len() as u32,
-            COSIGN_TRANSIENT_RETRY.max_attempts - 1,
-            "one sleep between each pair of attempts"
-        );
+    fn cosign_retry_delay_schedule_spans_the_contention_window() {
         let mut nominal_total = Duration::ZERO;
-        for (i, actual) in sleeps.iter().enumerate() {
-            let nominal = COSIGN_TRANSIENT_RETRY.delay_for(i as u32 + 2);
+        let mut served_total = Duration::ZERO;
+        for i in 0..COSIGN_TRANSIENT_RETRY.max_attempts - 1 {
+            let next_attempt = i + 2;
+            let nominal = COSIGN_TRANSIENT_RETRY.delay_for(next_attempt);
+            let actual = sign_retry_delay(&COSIGN_TRANSIENT_RETRY, next_attempt);
             nominal_total += nominal;
+            served_total += actual;
             assert!(
-                *actual >= nominal * 4 / 5 && *actual <= nominal * 6 / 5,
-                "sleep {i} = {actual:?} outside the ±20% jitter envelope of {nominal:?}"
+                actual >= nominal * 4 / 5 && actual <= nominal * 6 / 5,
+                "delay {i} = {actual:?} outside the ±20% jitter envelope of {nominal:?}"
             );
         }
         assert!(
@@ -5135,60 +5114,69 @@ mod cosign_retry_policy {
             "nominal retry spread must be ≥15s to outlive the TUF contention \
              window; got {nominal_total:?}"
         );
-        let served: Duration = sleeps.iter().sum();
         assert!(
-            served >= Duration::from_secs(12),
+            served_total >= Duration::from_secs(12),
             "even fully jitter-shrunk (×0.8), the served spread stays \
-             multi-second; got {served:?}"
+             multi-second; got {served_total:?}"
+        );
+    }
+
+    /// Every attempt in the policy is spent before the error surfaces. A tiny
+    /// policy keeps the served backoff to a few ms while still driving the
+    /// full ladder through the shared engine.
+    #[test]
+    fn cosign_retry_exhausts_every_attempt() {
+        let log = quiet_log();
+        let policy = anodizer_core::retry::RetryPolicy {
+            max_attempts: COSIGN_TRANSIENT_RETRY.max_attempts,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(3),
+        };
+        let attempts = std::cell::Cell::new(0u32);
+        let result = retry_transient(&policy, &log, "myapp.tar.gz", &mut || {
+            attempts.set(attempts.get() + 1);
+            anyhow::bail!("creating cached local store: resource temporarily unavailable")
+        });
+        assert!(result.is_err(), "exhausted retries must surface the error");
+        assert_eq!(
+            attempts.get(),
+            COSIGN_TRANSIENT_RETRY.max_attempts,
+            "every attempt in the policy must be spent"
         );
     }
 
     /// A missing signer binary (spawn `NotFound`) cannot heal — it must
-    /// fail on the first attempt with zero sleeps, even through anyhow
-    /// context wrapping.
+    /// fail on the first attempt without retrying, even through anyhow
+    /// context wrapping. A single attempt implies zero backoff.
     #[test]
     fn missing_binary_fast_fails_without_retry() {
         let log = quiet_log();
-        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
         let attempts = std::cell::Cell::new(0u32);
 
-        let result = retry_transient(
-            &COSIGN_TRANSIENT_RETRY,
-            &log,
-            "myapp.tar.gz",
-            &|d| sleeps.lock().expect("sleep recorder").push(d),
-            &mut || {
-                attempts.set(attempts.get() + 1);
-                Err(anyhow::Error::from(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "No such file or directory",
-                ))
-                .context("sign: failed to spawn 'cosign' for myapp.tar.gz"))
-            },
-        );
+        let result = retry_transient(&COSIGN_TRANSIENT_RETRY, &log, "myapp.tar.gz", &mut || {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::Error::from(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No such file or directory",
+            ))
+            .context("sign: failed to spawn 'cosign' for myapp.tar.gz"))
+        });
 
         assert!(result.is_err());
         assert_eq!(attempts.get(), 1, "NotFound must not be retried");
-        assert!(
-            sleeps.lock().expect("sleep recorder").is_empty(),
-            "NotFound must not burn backoff budget"
-        );
     }
 
-    /// First-attempt success never sleeps.
+    /// First-attempt success returns immediately (a single attempt, no backoff).
     #[test]
     fn success_on_first_attempt_never_sleeps() {
         let log = quiet_log();
-        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
-        let result = retry_transient(
-            &COSIGN_TRANSIENT_RETRY,
-            &log,
-            "myapp.tar.gz",
-            &|d| sleeps.lock().expect("sleep recorder").push(d),
-            &mut || Ok(()),
-        );
+        let attempts = std::cell::Cell::new(0u32);
+        let result = retry_transient(&COSIGN_TRANSIENT_RETRY, &log, "myapp.tar.gz", &mut || {
+            attempts.set(attempts.get() + 1);
+            Ok(())
+        });
         assert!(result.is_ok());
-        assert!(sleeps.lock().expect("sleep recorder").is_empty());
+        assert_eq!(attempts.get(), 1);
     }
 
     /// The keyless discriminator drives the serial TUF warm-up: bare and
@@ -5218,7 +5206,8 @@ mod cosign_retry_policy {
 
     /// A deterministic signer failure (flag typo, unparseable key,
     /// identity mismatch) is identical on every re-run — it must fail on
-    /// the first attempt with zero sleeps instead of burning the ladder.
+    /// the first attempt (no retry, hence no backoff) instead of burning the
+    /// ladder.
     #[test]
     fn deterministic_failure_fast_fails_without_retry() {
         for stderr in [
@@ -5229,25 +5218,15 @@ mod cosign_retry_policy {
             "none of the expected identities matched what was in the certificate",
         ] {
             let log = quiet_log();
-            let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
             let attempts = std::cell::Cell::new(0u32);
-            let result = retry_transient(
-                &COSIGN_TRANSIENT_RETRY,
-                &log,
-                "myapp.tar.gz",
-                &|d| sleeps.lock().expect("sleep recorder").push(d),
-                &mut || {
+            let result =
+                retry_transient(&COSIGN_TRANSIENT_RETRY, &log, "myapp.tar.gz", &mut || {
                     attempts.set(attempts.get() + 1);
                     Err(anyhow::anyhow!("{stderr}")
                         .context("sign: 'cosign' failed for myapp.tar.gz"))
-                },
-            );
+                });
             assert!(result.is_err());
             assert_eq!(attempts.get(), 1, "{stderr:?} must not be retried");
-            assert!(
-                sleeps.lock().expect("sleep recorder").is_empty(),
-                "{stderr:?} must not burn backoff budget"
-            );
         }
     }
 

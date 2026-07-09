@@ -10,7 +10,9 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig};
 use anodizer_core::context::Context;
 
-use super::retry::{check_notarize_output, real_sleep, run_status_with_retry, run_with_retry};
+use super::retry::{
+    NOTARIZE_INITIAL_DELAY, check_notarize_output, run_status_with_retry, run_with_retry,
+};
 use super::secret::{matches_ids, materialize_secret, redact_args};
 
 // ---------------------------------------------------------------------------
@@ -197,12 +199,12 @@ pub(super) fn run_cross_platform(
                 redact_args(&sign_args, log).join(" ")
             ));
         } else {
-            // M6: rcodesign sign contacts Apple's RFC 3161 timestamp server
+            // rcodesign sign contacts Apple's RFC 3161 timestamp server
             // (`http://timestamp.apple.com/ts01`); transient blips there used
             // to fail the whole release. Wrap in the 3-attempt 30s
             // exponential retry.
             let label = format!("rcodesign sign for {}", artifact.name());
-            let status = run_status_with_retry(&sign_args, &label, log, &real_sleep)?;
+            let status = run_status_with_retry(&sign_args, &label, log, NOTARIZE_INITIAL_DELAY)?;
             if !status.success() {
                 bail!(
                     "notarize: rcodesign sign failed for {} (exit code: {:?})",
@@ -244,12 +246,12 @@ pub(super) fn run_cross_platform(
                     redact_args(&notarize_args, log).join(" ")
                 ));
             } else {
-                // M6: wrap in a 3-attempt 30s exponential retry so a
+                // wrap in a 3-attempt 30s exponential retry so a
                 // transient blip on the App Store Connect API does not fail
                 // the whole release (notary-submit talks directly to
                 // Apple-hosted services).
                 let label = format!("rcodesign notary-submit for {}", artifact.name());
-                let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+                let output = run_with_retry(&notarize_args, &label, log, NOTARIZE_INITIAL_DELAY)?;
                 check_notarize_output(&output, &label, log)?;
             }
         }
@@ -506,11 +508,11 @@ fn run_native_dmg(
         if dry_run {
             log.status(&format!("(dry-run) would run: {}", notarize_args.join(" ")));
         } else {
-            // M6: wrap notarytool submit in a 3-attempt 30s exponential
+            // wrap notarytool submit in a 3-attempt 30s exponential
             // retry; the call talks directly to Apple-hosted services and a
             // transient blip should not fail the whole release.
             let label = format!("xcrun notarytool submit for {}", dmg.name());
-            let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+            let output = run_with_retry(&notarize_args, &label, log, NOTARIZE_INITIAL_DELAY)?;
             check_notarize_output(&output, &label, log)?;
 
             // Staple if wait was enabled. Without `wait: true`, the
@@ -650,10 +652,10 @@ fn run_native_pkg(
         if dry_run {
             log.status(&format!("(dry-run) would run: {}", notarize_args.join(" ")));
         } else {
-            // M6: 3-attempt 30s exponential retry around the Apple-hosted
+            // 3-attempt 30s exponential retry around the Apple-hosted
             // notarytool submit call.
             let label = format!("xcrun notarytool submit for {}", pkg.name());
-            let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+            let output = run_with_retry(&notarize_args, &label, log, NOTARIZE_INITIAL_DELAY)?;
             check_notarize_output(&output, &label, log)?;
 
             // Without `wait: true`, the submit returns before Apple
@@ -824,15 +826,18 @@ mod tests {
         let work = TempDir::new().unwrap();
         let bin = tools.tool_path("rcodesign").to_string_lossy().to_string();
         let args = vec![bin, "notary-submit".to_string()];
-        // No-op sleeper so the exponential backoff doesn't stall the suite.
-        let nap = |_: std::time::Duration| {};
         // Run from `work` so the `.attempted` marker lands in a temp dir.
         // CwdGuard restores cwd on Drop (panic-safe); declared after `work` so
         // cwd is restored before the tempdir is deleted. Stays on this binary's
         // unnamed #[serial] group — its FakeToolDir siblings already mutually
         // exclude on shared process state, of which cwd is one facet.
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(work.path()).unwrap();
-        let res = run_with_retry(&args, "rcodesign notary-submit", &logger(), &nap);
+        let res = run_with_retry(
+            &args,
+            "rcodesign notary-submit",
+            &logger(),
+            std::time::Duration::ZERO,
+        );
 
         let out = res.unwrap();
         assert!(out.status.success(), "second attempt should succeed");
@@ -855,8 +860,13 @@ mod tests {
             .install();
         let bin = tools.tool_path("rcodesign").to_string_lossy().to_string();
         let args = vec![bin, "notary-submit".to_string()];
-        let nap = |_: std::time::Duration| {};
-        let out = run_with_retry(&args, "rcodesign notary-submit", &logger(), &nap).unwrap();
+        let out = run_with_retry(
+            &args,
+            "rcodesign notary-submit",
+            &logger(),
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
         assert!(!out.status.success());
         assert_eq!(
             tools.call_count("rcodesign"),

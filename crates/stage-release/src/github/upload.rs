@@ -33,7 +33,7 @@ use super::spec::{AlreadyExistsAction, classify_already_exists, upload_retry_loc
 use super::upload_outcome::{UploadAttemptOutcome, classify_upload_attempt};
 use super::{
     check_github_rate_limit_with_env, delete_release_asset_by_name, find_release_asset_probe,
-    format_retry_giving_up, format_retry_warn,
+    octocrab_retry_cause,
 };
 use crate::forge::AssetPresence;
 use crate::release_log;
@@ -218,322 +218,328 @@ pub(crate) async fn upload_release_asset(
     // 422-bail arms still fast-fail regardless of this floor.
     let max_upload_attempts = std::cmp::max(configured_attempts, MIN_UPLOAD_TRANSIENT_ATTEMPTS);
 
-    let mut last_err: Option<anyhow::Error> = None;
     // One-shot overwrite guard: once a stale PUBLISHED asset has been
     // successfully deleted and the upload *still* hits `already_exists`,
-    // give up gracefully instead of looping. This happens when GitHub's
-    // release-asset delete is eventually consistent: the delete returns Ok
-    // immediately but the subsequent upload still sees the stale asset for
-    // a short window. Rather than burn the remaining retries (and
-    // ultimately fail the whole release), accept the stale bytes and move
-    // on. PARTIAL assets are exempt from this guard — accepting one would
-    // leave a corrupt, non-downloadable asset on the release — so they
+    // accept the stale bytes instead of looping. GitHub's release-asset delete
+    // is eventually consistent: the delete returns Ok immediately but the
+    // subsequent upload can still see the stale asset for a short window.
+    // Rather than burn the remaining retries (and ultimately fail the whole
+    // release), keep the stale bytes and move on. PARTIAL assets are exempt —
+    // accepting one would leave a corrupt, non-downloadable asset — so they
     // keep delete-retrying until the attempt budget is exhausted.
-    let mut overwrite_attempted = false;
-    // What the successful exit will report to the drain; the skip arms
-    // rewrite it before breaking.
-    let mut disposition = crate::forge::UploadOutcome::Uploaded(file_name.to_string());
-    for attempt in 1..=max_upload_attempts {
-        // Honor the run's absolute retry budget: once the prior attempt's
-        // backoff has carried the clock past the deadline, stop retrying so a
-        // long transient / secondary-RL ladder can't outlive the budget the
-        // operator set via `retry.max_elapsed`. Attempt 1 always runs — there
-        // is no prior failure to bound, and `deadline` is None only when retry
-        // is fully unbounded.
-        if attempt > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-            release_log().warn(&format_retry_giving_up(
-                &format!("upload of '{file_name}'"),
-                attempt - 1,
-            ));
-            break;
-        }
-        let data = std::fs::read(path)
-            .with_context(|| format!("release: read artifact {}", path.display()))?;
-        let local_size = data.len() as u64;
+    //
+    // An `AtomicBool` (not a plain `bool`) so the per-attempt retry closure can
+    // read and set it across its `.await` points while the whole upload future
+    // stays `Send` for the spawned per-asset task (`&AtomicBool` is `Sync`; a
+    // `&Cell`/`&mut bool` held across an await would not be).
+    let overwrite_attempted = std::sync::atomic::AtomicBool::new(false);
 
-        let result = octo
-            .repos(owner, repo)
-            .releases()
-            .upload_asset(release_id, file_name, data.into())
-            .send()
-            .await;
-        let outcome = classify_upload_attempt(&result);
-        match outcome {
-            UploadAttemptOutcome::Success => {
-                last_err = None;
-                break;
-            }
-            UploadAttemptOutcome::AlreadyExists => {
-                let err = result.expect_err("AlreadyExists outcome guarantees Err variant");
-
-                // Probe the remote asset's size + state to distinguish
-                // "same bytes uploaded earlier" (idempotent no-op),
-                // "partial from an interrupted attempt" (always delete +
-                // retry), and "different bytes, user opted out of
-                // overwrites" (unrecoverable). The classifier
-                // [`classify_already_exists`] encodes the 422 decision
-                // rule.
-                let probe = find_release_asset_probe(
-                    octo,
-                    owner,
-                    repo,
-                    release_id,
-                    file_name,
-                    policy,
-                    retry_after,
-                )
-                .await
-                .with_context(|| {
-                    format!(
-                        "release: look up existing asset '{}' on release '{}'",
-                        file_name, tag
-                    )
-                })?;
-                let partial = probe.is_some_and(|p| !p.uploaded);
-
-                // Eventual-consistency tolerance for PUBLISHED assets only:
-                // if a prior iteration already deleted the stale asset and
-                // GitHub still reports `already_exists`, keep the stale
-                // bytes rather than fail the release. A reappearing
-                // PARTIAL must keep retrying instead — skipping would
-                // leave a corrupt asset behind.
-                if overwrite_attempted && !partial {
-                    release_log().warn(&format!(
-                        "skipped re-upload — existing asset '{file_name}' on release '{tag}' \
-                         reappeared after delete+retry; stale asset kept"
-                    ));
-                    disposition =
-                        crate::forge::UploadOutcome::SkippedStaleKept(file_name.to_string());
-                    last_err = None;
-                    break;
-                }
-
-                match classify_already_exists(replace_existing_artifacts, probe, local_size) {
-                    AlreadyExistsAction::SkipIdempotent => {
-                        // A prior attempt in this same release already
-                        // uploaded byte-identical content. Pure no-op,
-                        // regardless of `replace_existing_artifacts`.
-                        disposition =
-                            crate::forge::UploadOutcome::SkippedIdentical(file_name.to_string());
-                        last_err = None;
-                        break;
-                    }
-                    AlreadyExistsAction::BailReplaceForbidden => {
-                        // User explicitly set
-                        // `replace_existing_artifacts: false`
-                        // and the bytes differ: surface the
-                        // conflict rather than overwriting.
-                        // Treated as an unrecoverable error.
-                        return Err(anyhow::anyhow!(err)).with_context(|| {
-                            format!(
-                                "release: artifact '{}' already exists on release '{}' \
-                                 with different bytes and `replace_existing_artifacts: false` \
-                                 forbids overwriting (set \
-                                 `release.replace_existing_artifacts: true` \
-                                 to permit overwrites)",
-                                file_name, tag
-                            )
-                        });
-                    }
-                    AlreadyExistsAction::DeleteAndRetry => {
-                        // Fall through to the delete-retry arm below:
-                        // either a partial from an interrupted attempt
-                        // (always recoverable) or a size mismatch the
-                        // user opted into overwriting via
-                        // `replace_existing_artifacts: true`.
-                    }
-                }
-
-                // Delete the conflicting asset and retry. If the delete
-                // itself fails (perms, asset disappeared mid-flight,
-                // etc.), warn and treat the upload as skipped for a
-                // published asset (a stale asset is better than aborting
-                // the release); a partial that cannot be deleted is a
-                // hard error — it is not downloadable, so "keep it" is
-                // not an option.
-                match delete_release_asset_by_name(
-                    octo,
-                    owner,
-                    repo,
-                    release_id,
-                    file_name,
-                    policy,
-                    retry_after,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        if !partial {
-                            overwrite_attempted = true;
-                        }
-                        last_err = Some(anyhow::anyhow!(err));
-                        if attempt < max_upload_attempts {
-                            let base = std::cmp::min(
-                                initial_retry_delay * 2u32.pow(attempt - 1),
-                                max_retry_delay,
-                            );
-                            anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
-                        }
-                        continue;
-                    }
-                    Err(del_err) if partial => {
-                        return Err(del_err).with_context(|| {
-                            format!(
-                                "release: delete partial asset '{}' on release '{}' \
-                                 left by an interrupted upload",
-                                file_name, tag
-                            )
-                        });
-                    }
-                    Err(del_err) => {
-                        release_log().warn(&format!(
-                            "skipped overwrite of existing asset '{file_name}' on release '{tag}' \
-                             — size mismatch and delete failed: {del_err}; stale asset kept"
-                        ));
-                        disposition =
-                            crate::forge::UploadOutcome::SkippedStaleKept(file_name.to_string());
-                        last_err = None;
-                        break;
-                    }
-                }
-            }
-            UploadAttemptOutcome::SecondaryRateLimited => {
-                // Secondary rate-limit (403/429 with GitHub's
-                // secondary-RL body): sleep the dedicated RL
-                // delay (with ±20 % jitter) before retrying. Do
-                // NOT fall through to the primary
-                // `check_github_rate_limit` path — secondary
-                // limits are transient burst guards, not quota
-                // exhaustion.
-                let err = result.expect_err("SecondaryRateLimited outcome guarantees Err variant");
-                // Read the secondary-RL delay through the request-scoped
-                // `env_source` (not the global process env) so the
-                // `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` override is honored
-                // without a global-env race between parallel callers/tests.
-                let delay = jitter_duration(secondary_rl_delay_with_env(retry_after, env_source));
-                release_log().warn(&format!(
-                    "upload of '{file_name}' hit GitHub secondary \
-                     rate limit; sleeping {:.1}s before retry \
-                     (attempt {attempt}/{})",
-                    delay.as_secs_f64(),
-                    max_upload_attempts,
-                ));
-                if attempt < max_upload_attempts {
-                    anodizer_core::retry::sleep_backoff_async(delay).await;
-                }
-                last_err = Some(anyhow::anyhow!(err));
-                continue;
-            }
-            UploadAttemptOutcome::PrimaryRateLimited => {
-                // Primary rate-limit (403/429 without the
-                // secondary-RL body): probe `/rate_limit` and
-                // sleep until quota resets.
-                let err = result.expect_err("PrimaryRateLimited outcome guarantees Err variant");
-                release_log().status(&format!(
-                    "rate limited on upload of '{file_name}', checking rate limits..."
-                ));
-                check_github_rate_limit_with_env(&reqwest::Client::new(), token, 100, env_source)
-                    .await;
-                last_err = Some(anyhow::anyhow!(err));
-                continue;
-            }
-            UploadAttemptOutcome::NotFound => {
-                // octocrab's `upload_asset(...).send()` does a
-                // `GET /releases/{id}` (to read `upload_url`)
-                // before the POST; right after the create that
-                // read can hit a GitHub replica lagging the
-                // create, yielding a transient 404. The asset
-                // was definitively not created, so retrying is
-                // idempotent-safe. Bounded by
-                // `max_upload_attempts` (floored at
-                // MIN_UPLOAD_TRANSIENT_ATTEMPTS) so a genuinely
-                // missing release still fails once exhausted.
-                let err = result.expect_err("NotFound outcome guarantees Err variant");
-                let label = format!("upload of '{file_name}'");
-                // NotFound is by construction a 404, so the
-                // status is a literal here rather than extracted
-                // from the error as the TransientRetry arm does.
-                release_log().warn(&format_retry_warn(
-                    &label,
-                    attempt,
-                    max_upload_attempts,
-                    404,
-                ));
-                last_err = Some(anyhow::anyhow!(err));
-                if attempt < max_upload_attempts {
-                    let base =
-                        std::cmp::min(initial_retry_delay * 2u32.pow(attempt - 1), max_retry_delay);
-                    anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
-                }
-                continue;
-            }
-            UploadAttemptOutcome::TransientRetry => {
-                // Transient transport / proxy / auth-flake issues during
-                // upload. Serde / Json here means GitHub returned a
-                // non-JSON body (typically an nginx/HAProxy 502/503 HTML
-                // page) while the error-mapping expected JSON; 401 is the
-                // uploads-endpoint "Bad credentials" flake: always
-                // transient, safe to retry bounded. Route the per-attempt
-                // warn through the shared `format_retry_warn` helper so
-                // this bespoke loop cannot drift from the
-                // `retry_octocrab_call` helper's format.
-                let err = result.expect_err("TransientRetry outcome guarantees Err variant");
-                let status = match &err {
-                    octocrab::Error::GitHub { source, .. } => source.status_code.as_u16(),
-                    _ => 0,
-                };
-                let label = format!("upload of '{file_name}'");
-                release_log().warn(&format_retry_warn(
-                    &label,
-                    attempt,
-                    max_upload_attempts,
-                    status,
-                ));
-                last_err = Some(anyhow::anyhow!(err));
-                if attempt < max_upload_attempts {
-                    let base =
-                        std::cmp::min(initial_retry_delay * 2u32.pow(attempt - 1), max_retry_delay);
-                    anodizer_core::retry::sleep_backoff_async(jitter_duration(base)).await;
-                }
-                continue;
-            }
-            UploadAttemptOutcome::Fatal => {
-                // Non-retryable error: fail immediately. A 403 reaching this
-                // arm carries no rate-limit signal (the classifier routes
-                // rate-limited 403s to the RL arms), so it is an
-                // authorization denial — name the scope the token is missing.
-                let status = match &result {
-                    Err(octocrab::Error::GitHub { source, .. }) => source.status_code.as_u16(),
-                    _ => 0,
-                };
-                let err = result.expect_err("Fatal outcome guarantees Err variant");
-                return Err(anyhow::anyhow!(err)).with_context(|| {
-                    if status == 403 {
-                        format!(
-                            "release: upload artifact '{}' to release '{}' — GitHub denied the \
-                             upload (403); verify the token has contents:write on {}/{}",
-                            file_name, tag, owner, repo
-                        )
-                    } else {
-                        format!(
-                            "release: upload artifact '{}' to release '{}'",
-                            file_name, tag
-                        )
-                    }
-                });
-            }
-        }
+    // Terminal failure carried out of the step engine. `Fatal` already holds
+    // its fully-contexted error and propagates verbatim (a 422-bail, a 403
+    // denial, a failed probe/partial-delete); `Transient` is the last retriable
+    // error on an exhausted ladder and picks up the "failed after N attempts"
+    // summary at the call site.
+    enum UploadFailure {
+        Fatal(anyhow::Error),
+        Transient(anyhow::Error),
     }
-    if let Some(err) = last_err {
-        return Err(err).with_context(|| {
+
+    let desc = format!("upload of '{file_name}'");
+    let log = release_log();
+    let result = anodizer_core::retry::retry_steps_async(
+        anodizer_core::retry::RetryLog::new(&desc, &log),
+        max_upload_attempts,
+        deadline,
+        |attempt| {
+            // Re-borrow the latch as a shared `&AtomicBool` so the `async move`
+            // block below captures a `Copy` reference each attempt rather than
+            // moving the `AtomicBool` itself out of the enclosing frame.
+            let overwrite_attempted = &overwrite_attempted;
+            async move {
+                use anodizer_core::retry::RetryStep;
+                type Step = RetryStep<crate::forge::UploadOutcome, UploadFailure>;
+                use std::sync::atomic::Ordering;
+
+                // Exponential-backoff slot for this attempt (jittered, capped),
+                // shared by the transient / read-after-write-404 / delete-retry
+                // arms. Routed through `RetryPolicy::delay_for` so the exponent
+                // uses the engine's saturating math — a large operator-set
+                // `retry.attempts` cannot overflow `2^(attempt-1)` into a panic.
+                let exp_backoff = || {
+                    jitter_duration(
+                        RetryPolicy {
+                            max_attempts: max_upload_attempts,
+                            base_delay: initial_retry_delay,
+                            max_delay: max_retry_delay,
+                        }
+                        .delay_for(attempt + 1),
+                    )
+                };
+
+                let data = match std::fs::read(path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return Step::Fail(UploadFailure::Fatal(anyhow::Error::new(e).context(
+                            format!("release: read artifact {}", path.display()),
+                        )));
+                    }
+                };
+                let local_size = data.len() as u64;
+
+                let result = octo
+                    .repos(owner, repo)
+                    .releases()
+                    .upload_asset(release_id, file_name, data.into())
+                    .send()
+                    .await;
+                match classify_upload_attempt(&result) {
+                    UploadAttemptOutcome::Success => {
+                        Step::Done(crate::forge::UploadOutcome::Uploaded(file_name.to_string()))
+                    }
+                    UploadAttemptOutcome::AlreadyExists => {
+                        let err = result.expect_err("AlreadyExists outcome guarantees Err variant");
+
+                        // Probe the remote asset's size + state to distinguish
+                        // "same bytes uploaded earlier" (idempotent no-op),
+                        // "partial from an interrupted attempt" (always delete +
+                        // retry), and "different bytes, user opted out of
+                        // overwrites" (unrecoverable). [`classify_already_exists`]
+                        // encodes the 422 decision rule.
+                        let probe = match find_release_asset_probe(
+                            octo, owner, repo, release_id, file_name, policy, retry_after,
+                        )
+                        .await
+                        {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return Step::Fail(UploadFailure::Fatal(e.context(format!(
+                                    "release: look up existing asset '{}' on release '{}'",
+                                    file_name, tag
+                                ))));
+                            }
+                        };
+                        let partial = probe.is_some_and(|p| !p.uploaded);
+
+                        // Eventual-consistency tolerance for PUBLISHED assets
+                        // only: if a prior attempt already deleted the stale
+                        // asset and GitHub still reports `already_exists`, keep
+                        // the stale bytes rather than fail the release. A
+                        // reappearing PARTIAL must keep retrying — skipping
+                        // would leave a corrupt asset behind.
+                        if overwrite_attempted.load(Ordering::Relaxed) && !partial {
+                            release_log().warn(&format!(
+                                "skipped re-upload — existing asset '{file_name}' on release \
+                                 '{tag}' reappeared after delete+retry; stale asset kept"
+                            ));
+                            // DoneQuiet: the warn above is the resolution
+                            // narrative; a "succeeded after N attempt(s)" note
+                            // would contradict "stale asset kept".
+                            return Step::DoneQuiet(crate::forge::UploadOutcome::SkippedStaleKept(
+                                file_name.to_string(),
+                            ));
+                        }
+
+                        match classify_already_exists(replace_existing_artifacts, probe, local_size)
+                        {
+                            AlreadyExistsAction::SkipIdempotent => {
+                                // A prior attempt in this same release already
+                                // uploaded byte-identical content. Pure no-op,
+                                // regardless of `replace_existing_artifacts`.
+                                return Step::Done(crate::forge::UploadOutcome::SkippedIdentical(
+                                    file_name.to_string(),
+                                ));
+                            }
+                            AlreadyExistsAction::BailReplaceForbidden => {
+                                // `replace_existing_artifacts: false` and the
+                                // bytes differ: surface the conflict rather than
+                                // overwriting. Unrecoverable.
+                                return Step::Fail(UploadFailure::Fatal(
+                                    anyhow::anyhow!(err).context(format!(
+                                        "release: artifact '{}' already exists on release '{}' \
+                                         with different bytes and \
+                                         `replace_existing_artifacts: false` forbids overwriting \
+                                         (set `release.replace_existing_artifacts: true` to permit \
+                                         overwrites)",
+                                        file_name, tag
+                                    )),
+                                ));
+                            }
+                            AlreadyExistsAction::DeleteAndRetry => {
+                                // Fall through to the delete-retry below: either
+                                // a partial from an interrupted attempt (always
+                                // recoverable) or a size mismatch the user opted
+                                // into overwriting via
+                                // `replace_existing_artifacts: true`.
+                            }
+                        }
+
+                        // Delete the conflicting asset and retry. If the delete
+                        // itself fails (perms, asset disappeared mid-flight),
+                        // treat the upload as skipped for a PUBLISHED asset (a
+                        // stale asset beats aborting the release); a PARTIAL that
+                        // cannot be deleted is a hard error — it is not
+                        // downloadable, so "keep it" is not an option.
+                        match delete_release_asset_by_name(
+                            octo, owner, repo, release_id, file_name, policy, retry_after,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                if !partial {
+                                    overwrite_attempted.store(true, Ordering::Relaxed);
+                                }
+                                Step::Retry {
+                                    error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                                    delay: exp_backoff(),
+                                    cause: "asset already exists; deleted and retrying".to_string(),
+                                }
+                            }
+                            Err(del_err) if partial => Step::Fail(UploadFailure::Fatal(
+                                del_err.context(format!(
+                                    "release: delete partial asset '{}' on release '{}' left by \
+                                     an interrupted upload",
+                                    file_name, tag
+                                )),
+                            )),
+                            Err(del_err) => {
+                                release_log().warn(&format!(
+                                    "skipped overwrite of existing asset '{file_name}' on release \
+                                     '{tag}' — size mismatch and delete failed: {del_err}; stale \
+                                     asset kept"
+                                ));
+                                // DoneQuiet: the delete-failed warn is the
+                                // resolution; announcing "succeeded after N"
+                                // would contradict it.
+                                Step::DoneQuiet(crate::forge::UploadOutcome::SkippedStaleKept(
+                                    file_name.to_string(),
+                                ))
+                            }
+                        }
+                    }
+                    UploadAttemptOutcome::SecondaryRateLimited => {
+                        // Secondary rate-limit (403/429 with GitHub's
+                        // secondary-RL body): retry after the dedicated RL slot
+                        // (with ±20 % jitter), read through the request-scoped
+                        // `env_source` so the
+                        // `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` override is
+                        // honored without a global-env race between parallel
+                        // callers. NOT the primary `check_github_rate_limit`
+                        // path — secondary limits are transient burst guards,
+                        // not quota exhaustion.
+                        let err = result
+                            .expect_err("SecondaryRateLimited outcome guarantees Err variant");
+                        Step::Retry {
+                            error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                            delay: jitter_duration(secondary_rl_delay_with_env(
+                                retry_after,
+                                env_source,
+                            )),
+                            cause: "GitHub secondary rate limit".to_string(),
+                        }
+                    }
+                    UploadAttemptOutcome::PrimaryRateLimited => {
+                        // Primary rate-limit (403/429 without the secondary-RL
+                        // body): probe `/rate_limit` and wait for quota inline.
+                        // The wait happens inside the probe, so the engine sleep
+                        // is zero — just re-attempt once quota is back.
+                        let err =
+                            result.expect_err("PrimaryRateLimited outcome guarantees Err variant");
+                        release_log().status(&format!(
+                            "rate limited on upload of '{file_name}', checking rate limits..."
+                        ));
+                        check_github_rate_limit_with_env(
+                            &reqwest::Client::new(),
+                            token,
+                            100,
+                            env_source,
+                        )
+                        .await;
+                        Step::Retry {
+                            error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                            delay: std::time::Duration::ZERO,
+                            cause: "primary rate limit (waited for quota reset)".to_string(),
+                        }
+                    }
+                    UploadAttemptOutcome::NotFound => {
+                        // octocrab's `upload_asset(...).send()` does a
+                        // `GET /releases/{id}` (to read `upload_url`) before the
+                        // POST; right after the create that read can hit a GitHub
+                        // replica lagging the create, yielding a transient 404.
+                        // The asset was definitively not created, so retrying is
+                        // idempotent-safe, bounded by `max_upload_attempts` so a
+                        // genuinely missing release still fails once exhausted.
+                        let err = result.expect_err("NotFound outcome guarantees Err variant");
+                        Step::Retry {
+                            error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                            delay: exp_backoff(),
+                            // NotFound is by construction a 404.
+                            cause: octocrab_retry_cause(404),
+                        }
+                    }
+                    UploadAttemptOutcome::TransientRetry => {
+                        // Transient transport / proxy / auth-flake during upload.
+                        // Serde / Json here means GitHub returned a non-JSON body
+                        // (typically an nginx/HAProxy 502/503 HTML page) while the
+                        // error-mapping expected JSON; 401 is the uploads-endpoint
+                        // "Bad credentials" flake: always transient, safe to retry
+                        // bounded.
+                        let err =
+                            result.expect_err("TransientRetry outcome guarantees Err variant");
+                        let status = match &err {
+                            octocrab::Error::GitHub { source, .. } => source.status_code.as_u16(),
+                            _ => 0,
+                        };
+                        Step::Retry {
+                            error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                            delay: exp_backoff(),
+                            cause: octocrab_retry_cause(status),
+                        }
+                    }
+                    UploadAttemptOutcome::Fatal => {
+                        // Non-retryable error: fail immediately. A 403 reaching
+                        // this arm carries no rate-limit signal (the classifier
+                        // routes rate-limited 403s to the RL arms), so it is an
+                        // authorization denial — name the scope the token needs.
+                        let status = match &result {
+                            Err(octocrab::Error::GitHub { source, .. }) => {
+                                source.status_code.as_u16()
+                            }
+                            _ => 0,
+                        };
+                        let err = result.expect_err("Fatal outcome guarantees Err variant");
+                        Step::Fail(UploadFailure::Fatal(anyhow::anyhow!(err).context(
+                            if status == 403 {
+                                format!(
+                                    "release: upload artifact '{}' to release '{}' — GitHub denied \
+                                     the upload (403); verify the token has contents:write on {}/{}",
+                                    file_name, tag, owner, repo
+                                )
+                            } else {
+                                format!(
+                                    "release: upload artifact '{}' to release '{}'",
+                                    file_name, tag
+                                )
+                            },
+                        )))
+                    }
+                }
+            }
+        },
+    )
+    .await;
+
+    match result {
+        Ok(disposition) => Ok(disposition),
+        // `Fatal` is already fully contexted; propagate verbatim.
+        Err(UploadFailure::Fatal(err)) => Err(err),
+        // An exhausted transient ladder gets the multi-attempt summary.
+        Err(UploadFailure::Transient(err)) => Err(err).with_context(|| {
             format!(
                 "release: upload artifact '{}' to release '{}' failed after {} attempts",
                 file_name, tag, max_upload_attempts
             )
-        });
+        }),
     }
-
-    Ok(disposition)
 }
 
 #[cfg(test)]

@@ -1,34 +1,21 @@
-//! Thin wrapper around `retry_async` + `classify_octocrab_error` for the
-//! GitHub backend's octocrab call sites.
+//! Thin wrapper around the shared step-retry engine + `classify_octocrab_error`
+//! for the GitHub backend's octocrab call sites.
 //!
 //! Each retriable octocrab call (find-draft list, replace-draft delete,
 //! create-release POST, update-release PATCH, un-draft publish PATCH) shares
-//! the same boilerplate:
+//! the same boilerplate: run the call, classify the error, and either
+//! fast-fail, retry after the policy's exp-backoff, or retry after a
+//! secondary-rate-limit slot. [`retry_octocrab_call`] routes all of that
+//! through [`anodizer_core::retry::retry_steps_async`], which owns the attempt
+//! cap, the per-attempt warn, the giving-up / succeeded lines, and the
+//! wall-clock deadline check. The closure owns only classification and the
+//! per-path delay.
 //!
-//! ```text
-//! retry_async(&policy, |attempt| async move {
-//!     match <octocrab_call>.await {
-//!         Ok(v) => Ok(v),
-//!         Err(err) => {
-//!             let (wrapped, status) = classify_octocrab_error(err);
-//!             if is_retriable(&*wrapped) {
-//!                 warn!("... attempt {attempt} status={status}");
-//!                 Err(ControlFlow::Continue(...))
-//!             } else {
-//!                 Err(ControlFlow::Break(...))
-//!             }
-//!         }
-//!     }
-//! }).await
-//! ```
-//!
-//! Lifted here so the four octocrab call sites in `github::mod` (and the
-//! un-draft PATCH that already used the inline form) all share one
-//! classification + logging pathway. Drift between the loops is the failure
-//! mode we are avoiding: prior to this helper, the upload retry, the publish
-//! PATCH retry, and any new wiring each had their own copy of the same five
-//! `matches!` arms, and the upload loop drifted to use bespoke logging while
-//! the publish PATCH used `release_log().warn`.
+//! The single-asset upload loop in [`super::upload`] routes through the same
+//! engine — it carries upload-specific state (the artifact re-read, the
+//! 422-`already_exists` delete+retry dance, the one-shot overwrite guard) in
+//! its closure, but the retry lifecycle (attempts, backoff accounting, warn
+//! format, deadline) is the engine's, so the two pathways cannot drift.
 //!
 //! ## Return type
 //!
@@ -38,16 +25,6 @@
 //! code). The classification used to drive retriability stays internal to
 //! the helper; the original `octocrab::Error` is handed back unchanged on
 //! retry exhaustion or fast-fail.
-//!
-//! ## Divergence with the upload-asset loop
-//!
-//! The bespoke `upload_asset` retry loop in `upload.rs` cannot route through
-//! `retry_octocrab_call` because it carries upload-specific state (the
-//! resume-stream re-read of the artifact, the 422-`already_exists`
-//! delete+retry dance, the one-shot overwrite guard). It re-uses
-//! [`format_retry_warn`] for per-attempt logging so the warn format stays
-//! consistent across both pathways; the format is pinned by a unit test in
-//! this module.
 
 use std::future::Future;
 
@@ -55,43 +32,6 @@ use anodizer_core::retry::{RetryPolicy, is_retriable, jitter_duration};
 
 use super::secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, secondary_rl_delay};
 use crate::release_log;
-
-/// Per-attempt warning line shared by every retry-wrapped octocrab call site
-/// (the helper here AND the bespoke upload-asset loop in `upload.rs`).
-///
-/// Extracted so the two retry pathways can't drift on label format. The
-/// `format_retry_warn_shape_pins_shared_format` test below pins the exact
-/// format string both pathways emit.
-///
-/// A `status` of `0` denotes a transport-layer failure where no HTTP response
-/// was received. Rendering a bare `status=0` reads as a success code, so that
-/// case is spelled out as `transport error (no HTTP response)` instead; a real
-/// HTTP status (`>0`) is shown as `status=<code>`. Either way the line ends in
-/// `; will retry` so the operator reads it unambiguously as "this attempt
-/// failed, retrying".
-pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16) -> String {
-    let cause = if status == 0 {
-        "transport error (no HTTP response)".to_string()
-    } else {
-        format!("status={status}")
-    };
-    format!("{label} failed (attempt {attempt}/{max}, {cause}); will retry")
-}
-
-/// Closing line after a retry loop resolves to SUCCESS on attempt `attempts`
-/// (only emitted when `attempts > 1`, i.e. at least one retry was needed — a
-/// first-try success stays silent). Closes the gap where the operator saw the
-/// penultimate attempt's warning and then nothing.
-pub(crate) fn format_retry_succeeded(label: &str, attempts: u32) -> String {
-    format!("{label} succeeded after {attempts} attempt(s)")
-}
-
-/// Closing line after a retry loop EXHAUSTS every attempt and gives up,
-/// emitted before the error propagates so the operator sees a definite
-/// terminal outcome rather than silence after the last per-attempt warning.
-pub(crate) fn format_retry_giving_up(label: &str, attempts: u32) -> String {
-    format!("{label} failed after {attempts} attempt(s), giving up")
-}
 
 /// Run an octocrab call through the shared retry policy.
 ///
@@ -126,82 +66,70 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, octocrab::Error>>,
 {
-    let max = policy.max_attempts.max(1);
-    let mut attempt: u32 = 1;
-    let mut last_err: Option<octocrab::Error> = None;
-    loop {
-        // Normal exp-backoff sleep (skipped on first attempt, and skipped
-        // when the previous attempt was a secondary-RL response — in that
-        // case we already slept the secondary-RL duration below).
-        let skip_policy_sleep = last_err.as_ref().is_some_and(is_secondary_rate_limit);
-        if attempt > 1 && !skip_policy_sleep {
-            anodizer_core::retry::sleep_backoff_async(policy.delay_for(attempt)).await;
-        }
+    use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_async};
 
-        match make_call().await {
-            Ok(v) => {
-                // Close the loop: a success that needed >1 attempt gets a
-                // single confirming line so the operator who saw the prior
-                // attempts' warnings sees the resolution rather than silence.
-                // A first-try success stays silent (no retry happened).
-                if attempt > 1 {
-                    release_log().status(&format_retry_succeeded(label, attempt));
-                }
-                return Ok(v);
-            }
-            Err(err) => {
-                let secondary_rl = is_secondary_rate_limit(&err);
-                let (status, retriable) = classify_retriability(&err);
-                // A secondary rate-limit 403 is not retriable by the default
-                // classifier (which only retries 5xx/429), but it IS a
-                // transient condition that must be retried after a delay. A
-                // non-retriable error fast-fails WITHOUT a "giving up" line:
-                // that closing line marks retry EXHAUSTION, not a clean
-                // fast-fail (which surfaces its own error directly).
-                if !retriable && !secondary_rl {
-                    return Err(err);
-                }
-                release_log().warn(&format_retry_warn(label, attempt, max, status));
-                if attempt >= max {
-                    // Exhausted every retry: emit a definite terminal line
-                    // before the error propagates.
-                    release_log().warn(&format_retry_giving_up(label, attempt));
-                    return Err(err);
-                }
-                // Stop once the sleep that would precede the next attempt
-                // crosses the run's retry budget, so a long 5xx/secondary-RL
-                // ladder can't outlive the deadline set via `retry.max_elapsed`.
-                // The two paths sleep different amounts, so each projects its
-                // own delay: the exp-backoff path sleeps `delay_for(attempt+1)`
-                // at the loop top, while a secondary rate-limit sleeps a
-                // dedicated 60–600s slot here — projecting the exp-backoff delay
-                // for the latter would let a far longer RL sleep overshoot.
-                if secondary_rl {
-                    let delay = jitter_duration(secondary_rl_delay(retry_after));
-                    let overshoots = deadline.is_some_and(|d| {
-                        match std::time::Instant::now().checked_add(delay) {
-                            Some(projected) => projected > d,
-                            None => true,
+    // The step engine owns the attempt cap, the per-attempt warn, the
+    // giving-up / succeeded lines, and the wall-clock deadline check — checked
+    // against whichever delay this attempt chose, so the exp-backoff and
+    // secondary-rate-limit paths no longer each hand-roll their own overshoot
+    // math or a `skip_policy_sleep` guard to avoid double-sleeping. The closure
+    // owns only classification and the per-path delay.
+    let log = release_log();
+    retry_steps_async(
+        RetryLog::new(label, &log),
+        policy.max_attempts,
+        deadline,
+        |attempt| {
+            let fut = make_call();
+            async move {
+                match fut.await {
+                    Ok(v) => RetryStep::Done(v),
+                    Err(err) => {
+                        let secondary_rl = is_secondary_rate_limit(&err);
+                        let (status, retriable) = classify_retriability(&err);
+                        // A secondary rate-limit 403 is not retriable by the
+                        // default classifier (5xx/429 only) but IS a transient
+                        // condition to retry after a delay. Anything else
+                        // non-retriable fast-fails (no giving-up line).
+                        if !retriable && !secondary_rl {
+                            return RetryStep::Fail(err);
                         }
-                    });
-                    if overshoots {
-                        release_log().warn(&format_retry_giving_up(label, attempt));
-                        return Err(err);
+                        // The two paths sleep different amounts: a secondary
+                        // rate-limit honours the server's 60–600s Retry-After
+                        // slot, everything else uses the policy's exp-backoff.
+                        let (delay, cause) = if secondary_rl {
+                            (
+                                jitter_duration(secondary_rl_delay(retry_after)),
+                                "GitHub secondary rate limit".to_string(),
+                            )
+                        } else {
+                            (policy.delay_for(attempt + 1), octocrab_retry_cause(status))
+                        };
+                        RetryStep::Retry {
+                            error: err,
+                            delay,
+                            cause,
+                        }
                     }
-                    release_log().warn(&format!(
-                        "{label} hit GitHub secondary rate limit; \
-                         sleeping {:.1}s before retry (attempt {attempt}/{max})",
-                        delay.as_secs_f64(),
-                    ));
-                    anodizer_core::retry::sleep_backoff_async(delay).await;
-                } else if deadline.is_some_and(|d| policy.budget_exhausted(attempt + 1, d)) {
-                    release_log().warn(&format_retry_giving_up(label, attempt));
-                    return Err(err);
                 }
-                last_err = Some(err);
             }
-        }
-        attempt += 1;
+        },
+    )
+    .await
+}
+
+/// The compact cause rendered in the per-attempt retry warn for an octocrab
+/// failure.
+///
+/// A transport-layer failure carries no HTTP response (status `0`); a bare
+/// `status=0` reads as an HTTP success code, so it is spelled out as
+/// `transport error (no HTTP response)` while a real status (`>0`) shows as
+/// `status=<code>`.
+pub(crate) fn octocrab_retry_cause(status: u16) -> String {
+    if status == 0 {
+        "transport error (no HTTP response)".to_string()
+    } else {
+        format!("status={status}")
     }
 }
 
@@ -480,54 +408,20 @@ mod tests {
     }
 
     #[test]
-    fn format_retry_warn_shape_pins_shared_format() {
-        // Pin the format string used by BOTH the helper's per-attempt warn
-        // and the upload loop's per-attempt warn (mod.rs). Drift between
-        // the two formats is the failure mode the helper exists to prevent.
-        let s = format_retry_warn("delete release", 3, 10, 503);
-        assert_eq!(
-            s,
-            "delete release failed (attempt 3/10, status=503); will retry"
-        );
-    }
-
-    #[test]
-    fn format_retry_warn_status_zero_reads_as_transport_error() {
-        // A transport-layer failure (no HTTP response) carries status 0. A
-        // bare `status=0` reads as an HTTP success code; the warning must
-        // instead name the transport error explicitly and never contain a
-        // misleading `status=0`.
-        let s = format_retry_warn("create release", 1, 10, 0);
-        assert_eq!(
-            s,
-            "create release failed (attempt 1/10, transport error (no HTTP response)); will retry"
-        );
+    fn octocrab_retry_cause_status_zero_reads_as_transport_error() {
+        // The compact cause rendered in the shared per-attempt retry warn. A
+        // transport-layer failure carries no HTTP response (status 0); a bare
+        // `status=0` reads as an HTTP success code, so it must be spelled out as
+        // a transport error and never contain a misleading `status=0`. A real
+        // status renders as `status=<code>`.
+        let transport = octocrab_retry_cause(0);
+        assert_eq!(transport, "transport error (no HTTP response)");
         assert!(
-            !s.contains("status=0"),
-            "transport-error warning must not contain a misleading `status=0`: {s}"
+            !transport.contains("status=0"),
+            "transport-error cause must not contain a misleading `status=0`: {transport}"
         );
-        assert!(
-            s.contains("will retry"),
-            "per-attempt warning must read as a retry, not a terminal failure: {s}"
-        );
-    }
-
-    #[test]
-    fn format_retry_succeeded_shape() {
-        // The closing success line emitted only when >1 attempt was needed.
-        assert_eq!(
-            format_retry_succeeded("create release", 3),
-            "create release succeeded after 3 attempt(s)"
-        );
-    }
-
-    #[test]
-    fn format_retry_giving_up_shape() {
-        // The closing exhaustion line emitted before the error propagates.
-        assert_eq!(
-            format_retry_giving_up("create release", 10),
-            "create release failed after 10 attempt(s), giving up"
-        );
+        assert_eq!(octocrab_retry_cause(503), "status=503");
+        assert_eq!(octocrab_retry_cause(404), "status=404");
     }
 
     /// Drive the secondary-rate-limit backoff path end-to-end.

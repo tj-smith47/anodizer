@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 
 const NOTARIZE_RETRY_ATTEMPTS: u32 = 3;
-const NOTARIZE_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+pub(super) const NOTARIZE_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Substrings (lowercased) on stderr/stdout that signal a transient
 /// network-side failure rather than a real "this artifact is invalid"
@@ -92,72 +92,64 @@ pub(super) fn run_with_retry(
     args: &[String],
     label: &str,
     log: &anodizer_core::log::StageLogger,
-    delay_fn: &dyn Fn(std::time::Duration),
+    initial_delay: std::time::Duration,
 ) -> Result<std::process::Output> {
+    use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
     debug_assert!(!args.is_empty(), "run_with_retry: empty args");
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 0..NOTARIZE_RETRY_ATTEMPTS {
-        let try_n = attempt + 1;
-        match build_command_from_args(args).output() {
-            Ok(output) => {
-                if output.status.success() || !is_retriable_notarize_output(&output, log) {
-                    return Ok(output);
+
+    let res = retry_steps_sync(
+        RetryLog::new(label, log),
+        NOTARIZE_RETRY_ATTEMPTS,
+        None,
+        |attempt| -> RetryStep<std::process::Output, NotarizeTerminal<std::process::Output>> {
+            match build_command_from_args(args).output() {
+                Ok(output) if output.status.success() => RetryStep::Done(output),
+                Ok(output) if !is_retriable_notarize_output(&output, log) => {
+                    // Non-retriable Apple-side rejection: terminal. Routed through
+                    // `Fail` (not `Done`) so the engine never announces a rejected
+                    // artifact as "succeeded"; the Output still reaches
+                    // `check_notarize_output` for a coherent status message.
+                    RetryStep::Fail(NotarizeTerminal::Exited(output))
                 }
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                last_err = Some(anyhow::anyhow!(
-                    "notarize: {} attempt {}/{} failed transiently (exit {:?}): {}",
-                    label,
-                    try_n,
-                    NOTARIZE_RETRY_ATTEMPTS,
-                    output.status.code(),
-                    stderr.trim(),
-                ));
-                if try_n == NOTARIZE_RETRY_ATTEMPTS {
-                    // Final attempt — return the (failed) output so the
-                    // existing `check_notarize_output` reporting path
-                    // produces a coherent error message.
-                    return Ok(output);
-                }
+                Ok(output) => RetryStep::Retry {
+                    error: NotarizeTerminal::Exited(output),
+                    delay: notarize_backoff(initial_delay, attempt),
+                    cause: "transient notarization error".to_string(),
+                },
+                Err(e) => RetryStep::Retry {
+                    error: NotarizeTerminal::Spawn(
+                        anyhow::Error::new(e)
+                            .context(format!("notarize: failed to execute {label}")),
+                    ),
+                    delay: notarize_backoff(initial_delay, attempt),
+                    cause: "spawn error".to_string(),
+                },
             }
-            Err(e) => {
-                last_err = Some(anyhow::Error::new(e).context(format!(
-                    "notarize: failed to execute {} (attempt {}/{})",
-                    label, try_n, NOTARIZE_RETRY_ATTEMPTS,
-                )));
-                if try_n == NOTARIZE_RETRY_ATTEMPTS {
-                    return Err(last_err.unwrap_or_else(|| {
-                        anyhow::anyhow!(
-                            "notarize: {} failed after {} attempts",
-                            label,
-                            NOTARIZE_RETRY_ATTEMPTS
-                        )
-                    }));
-                }
-            }
-        }
-        // Exponential backoff: 30s, 60s.
-        let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
-        log.warn(&format!(
-            "{} attempt {}/{} hit a transient error; retrying in {}s",
-            label,
-            try_n,
-            NOTARIZE_RETRY_ATTEMPTS,
-            delay.as_secs(),
-        ));
-        delay_fn(delay);
+        },
+    );
+    match res {
+        // Success, or an exhausted/non-retriable exit → hand the (possibly
+        // failed) Output to the caller's reporting path; a spawn error carries
+        // no Output, so bubble it as `Err`.
+        Ok(output) | Err(NotarizeTerminal::Exited(output)) => Ok(output),
+        Err(NotarizeTerminal::Spawn(err)) => Err(err),
     }
-    Err(last_err.unwrap_or_else(|| {
-        anyhow::anyhow!(
-            "notarize: {} exhausted {} attempts without a result",
-            label,
-            NOTARIZE_RETRY_ATTEMPTS
-        )
-    }))
 }
 
-/// Default delay function for the retry helpers (real `thread::sleep`).
-pub(super) fn real_sleep(d: std::time::Duration) {
-    anodizer_core::retry::sleep_backoff_blocking(d);
+/// Terminal outcome the notarize retry engines carry out: a subprocess that ran
+/// and exited (its `Output`/`ExitStatus` handed to the caller's reporting path)
+/// vs. a spawn error that carries no result and must bubble as `Err`.
+enum NotarizeTerminal<T> {
+    Spawn(anyhow::Error),
+    Exited(T),
+}
+
+/// Exponential backoff from `initial_delay` for notarize attempt `attempt`
+/// (30s, 60s at the default 30s base). Saturating so a future widening of
+/// `NOTARIZE_RETRY_ATTEMPTS` cannot overflow the shift.
+fn notarize_backoff(initial_delay: std::time::Duration, attempt: u32) -> std::time::Duration {
+    let mult = 1u32.checked_shl(attempt - 1).unwrap_or(u32::MAX);
+    initial_delay.saturating_mul(mult)
 }
 
 /// Variant of `run_with_retry` for callers that only need the exit status
@@ -172,73 +164,53 @@ pub(super) fn run_status_with_retry(
     args: &[String],
     label: &str,
     log: &anodizer_core::log::StageLogger,
-    delay_fn: &dyn Fn(std::time::Duration),
+    initial_delay: std::time::Duration,
 ) -> Result<std::process::ExitStatus> {
+    use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
     debug_assert!(!args.is_empty(), "run_status_with_retry: empty args");
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 0..NOTARIZE_RETRY_ATTEMPTS {
-        let try_n = attempt + 1;
-        // `.output()` pipes both streams (no inherited stdio), so rcodesign's
-        // chatter never leaks to the default log; surface it only at `-v`,
-        // matching the `status` vs `verbose` register every subprocess obeys.
-        let captured = build_command_from_args(args).output().map(|out| {
-            if log.is_verbose() {
-                for line in String::from_utf8_lossy(&out.stdout).lines() {
-                    log.stream_child_stdout(line);
+
+    let res = retry_steps_sync(
+        RetryLog::new(label, log),
+        NOTARIZE_RETRY_ATTEMPTS,
+        None,
+        |attempt| -> RetryStep<std::process::ExitStatus, NotarizeTerminal<std::process::ExitStatus>> {
+            // `.output()` pipes both streams (no inherited stdio), so rcodesign's
+            // chatter never leaks to the default log; surface it only at `-v`,
+            // matching the `status` vs `verbose` register every subprocess obeys.
+            let captured = build_command_from_args(args).output().map(|out| {
+                if log.is_verbose() {
+                    for line in String::from_utf8_lossy(&out.stdout).lines() {
+                        log.stream_child_stdout(line);
+                    }
+                    for line in String::from_utf8_lossy(&out.stderr).lines() {
+                        log.stream_child_stderr(line);
+                    }
                 }
-                for line in String::from_utf8_lossy(&out.stderr).lines() {
-                    log.stream_child_stderr(line);
-                }
+                out.status
+            });
+            match captured {
+                Ok(status) if status.success() => RetryStep::Done(status),
+                Ok(status) => RetryStep::Retry {
+                    error: NotarizeTerminal::Exited(status),
+                    delay: notarize_backoff(initial_delay, attempt),
+                    cause: "non-success exit".to_string(),
+                },
+                Err(e) => RetryStep::Retry {
+                    error: NotarizeTerminal::Spawn(
+                        anyhow::Error::new(e).context(format!("notarize: failed to execute {label}")),
+                    ),
+                    delay: notarize_backoff(initial_delay, attempt),
+                    cause: "spawn error".to_string(),
+                },
             }
-            out.status
-        });
-        match captured {
-            Ok(status) if status.success() => return Ok(status),
-            Ok(status) => {
-                last_err = Some(anyhow::anyhow!(
-                    "notarize: {} attempt {}/{} exited {:?}",
-                    label,
-                    try_n,
-                    NOTARIZE_RETRY_ATTEMPTS,
-                    status.code(),
-                ));
-                if try_n == NOTARIZE_RETRY_ATTEMPTS {
-                    return Ok(status);
-                }
-            }
-            Err(e) => {
-                last_err = Some(anyhow::Error::new(e).context(format!(
-                    "notarize: failed to execute {} (attempt {}/{})",
-                    label, try_n, NOTARIZE_RETRY_ATTEMPTS,
-                )));
-                if try_n == NOTARIZE_RETRY_ATTEMPTS {
-                    return Err(last_err.unwrap_or_else(|| {
-                        anyhow::anyhow!(
-                            "notarize: {} failed after {} attempts",
-                            label,
-                            NOTARIZE_RETRY_ATTEMPTS
-                        )
-                    }));
-                }
-            }
-        }
-        let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
-        log.warn(&format!(
-            "{} attempt {}/{} failed; retrying in {}s",
-            label,
-            try_n,
-            NOTARIZE_RETRY_ATTEMPTS,
-            delay.as_secs(),
-        ));
-        delay_fn(delay);
+        },
+    );
+    match res {
+        // Success, or an exhausted non-success exit → return the last status for
+        // the caller to report; a spawn error carries no status, so bubble it.
+        Ok(status) | Err(NotarizeTerminal::Exited(status)) => Ok(status),
+        Err(NotarizeTerminal::Spawn(err)) => Err(err),
     }
-    Err(last_err.unwrap_or_else(|| {
-        anyhow::anyhow!(
-            "notarize: {} exhausted {} attempts without a result",
-            label,
-            NOTARIZE_RETRY_ATTEMPTS
-        )
-    }))
 }
 
 // ---------------------------------------------------------------------------

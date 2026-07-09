@@ -1528,9 +1528,8 @@ crates: []
             "notarize-test",
             anodizer_core::log::Verbosity::Quiet,
         );
-        let no_delay = |_d: std::time::Duration| {};
         let args = vec!["false".to_string()];
-        let result = run_with_retry(&args, "false-cmd", &log, &no_delay).unwrap();
+        let result = run_with_retry(&args, "false-cmd", &log, std::time::Duration::ZERO).unwrap();
         assert!(!result.status.success());
     }
 
@@ -1538,7 +1537,6 @@ crates: []
     #[test]
     fn test_run_status_with_retry_surfaces_child_output_only_at_verbose() {
         use crate::retry::run_status_with_retry;
-        let no_delay = |_d: std::time::Duration| {};
         let args = vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -1551,7 +1549,9 @@ crates: []
             "notarize-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        let status = run_status_with_retry(&args, "echo-cmd", &quiet_log, &no_delay).unwrap();
+        let status =
+            run_status_with_retry(&args, "echo-cmd", &quiet_log, std::time::Duration::ZERO)
+                .unwrap();
         assert!(status.success());
         assert!(
             quiet_cap
@@ -1566,7 +1566,9 @@ crates: []
             "notarize-test",
             anodizer_core::log::Verbosity::Verbose,
         );
-        let status = run_status_with_retry(&args, "echo-cmd", &verbose_log, &no_delay).unwrap();
+        let status =
+            run_status_with_retry(&args, "echo-cmd", &verbose_log, std::time::Duration::ZERO)
+                .unwrap();
         assert!(status.success());
         assert!(
             verbose_cap
