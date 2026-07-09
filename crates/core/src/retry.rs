@@ -353,6 +353,25 @@ pub fn retry_http_blocking<F, M>(
     rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
+    send: F,
+    error_msg: M,
+) -> anyhow::Result<(reqwest::StatusCode, String)>
+where
+    F: FnMut(u32) -> Result<reqwest::blocking::Response, reqwest::Error>,
+    M: Fn(reqwest::StatusCode, &str) -> String,
+{
+    retry_http_blocking_deadline(rlog, policy, None, success_class, send, error_msg)
+}
+
+/// Like [`retry_http_blocking`], but stops once the next backoff would push
+/// total wall-time past `deadline` (from [`crate::Context::retry_deadline`]), so
+/// a long upload storm exits resumable before the outer job timeout instead of
+/// running the full attempt ladder. `deadline: None` is the unbounded form.
+pub fn retry_http_blocking_deadline<F, M>(
+    rlog: RetryLog<'_>,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    success_class: SuccessClass,
     mut send: F,
     error_msg: M,
 ) -> anyhow::Result<(reqwest::StatusCode, String)>
@@ -361,7 +380,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync(rlog, policy, |attempt| {
+    retry_sync_deadline(rlog, policy, deadline, |attempt| {
         match send(attempt) {
             Ok(resp) => {
                 let status = resp.status();
@@ -428,6 +447,24 @@ pub fn retry_http_blocking_bytes<F, M>(
     rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
+    send: F,
+    error_msg: M,
+) -> anyhow::Result<(reqwest::StatusCode, Vec<u8>)>
+where
+    F: FnMut(u32) -> Result<reqwest::blocking::Response, reqwest::Error>,
+    M: Fn(reqwest::StatusCode, &str) -> String,
+{
+    retry_http_blocking_bytes_deadline(rlog, policy, None, success_class, send, error_msg)
+}
+
+/// Deadline-bounded sibling of [`retry_http_blocking_bytes`], mirroring
+/// [`retry_http_blocking_deadline`] for binary success bodies. `deadline: None`
+/// is the unbounded form.
+pub fn retry_http_blocking_bytes_deadline<F, M>(
+    rlog: RetryLog<'_>,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    success_class: SuccessClass,
     mut send: F,
     error_msg: M,
 ) -> anyhow::Result<(reqwest::StatusCode, Vec<u8>)>
@@ -436,7 +473,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync(rlog, policy, |attempt| match send(attempt) {
+    retry_sync_deadline(rlog, policy, deadline, |attempt| match send(attempt) {
         Ok(resp) => {
             let status = resp.status();
             let succeeded = match success_class {
@@ -502,6 +539,26 @@ pub async fn retry_http_async<F, Fut, M>(
     rlog: RetryLog<'_>,
     policy: &RetryPolicy,
     success_class: SuccessClass,
+    send: F,
+    error_msg: M,
+) -> anyhow::Result<reqwest::Response>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    M: Fn(reqwest::StatusCode, &str) -> String,
+{
+    retry_http_async_deadline(rlog, policy, None, success_class, send, error_msg).await
+}
+
+/// Deadline-bounded sibling of [`retry_http_async`], the async counterpart of
+/// [`retry_http_blocking_deadline`], so async upload publishers (GitLab/Gitea
+/// release-asset uploads) honor the [`crate::Context::retry_deadline`] budget.
+/// `deadline: None` is the unbounded form.
+pub async fn retry_http_async_deadline<F, Fut, M>(
+    rlog: RetryLog<'_>,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    success_class: SuccessClass,
     mut send: F,
     error_msg: M,
 ) -> anyhow::Result<reqwest::Response>
@@ -511,7 +568,7 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_async(rlog, policy, |attempt| {
+    retry_async_deadline(rlog, policy, deadline, |attempt| {
         let fut = send(attempt);
         let error_msg = &error_msg;
         async move {
@@ -1640,6 +1697,38 @@ mod tests {
         let (status, _) = result.expect("eventually succeeds");
         assert_eq!(status.as_u16(), 200);
         assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry then success");
+    }
+
+    #[test]
+    fn retry_http_blocking_deadline_past_stops_after_one_attempt() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(300),
+        };
+        let deadline = std::time::Instant::now();
+        let result = retry_http_blocking_deadline(
+            RetryLog::new("test", test_logger()),
+            &policy,
+            Some(deadline),
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("{status}: {body}"),
+        );
+        assert!(result.is_err(), "past deadline must fail on the 503");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "past deadline stops before the second attempt"
+        );
     }
 
     #[test]
