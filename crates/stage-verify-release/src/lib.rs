@@ -100,6 +100,35 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
     ]
 }
 
+/// Publishers that can DELIVER installable OS packages (`.deb`/`.rpm`/`.apk`)
+/// to users — the package registries that consume `LinuxPackage`
+/// (`artifactory`, `cloudsmith`, `gemfury`) plus the raw carriers that ship the
+/// package file itself (`github-release` assets, `blob`, `uploads`). The
+/// install-smoke axis verifies those produced artifacts are installable, so —
+/// like the asset check gating on `github-release` — it runs only when at least
+/// one is in the selected publish surface. Over-inclusion is safe (a surface
+/// that ships no package finds nothing to smoke); under-inclusion would drop
+/// coverage on a shipped package, so err toward listing a carrier.
+fn install_smoke_consumers() -> &'static [&'static str] {
+    &[
+        "github-release",
+        "blob",
+        "uploads",
+        "artifactory",
+        "cloudsmith",
+        "gemfury",
+    ]
+}
+
+/// Whether the selected publish surface delivers any installable OS package,
+/// i.e. whether the install-smoke axis has anything in scope to verify. A
+/// `--publishers npm` run ships no OS package, so smoke is out of scope there.
+fn install_smoke_in_surface(ctx: &Context) -> bool {
+    install_smoke_consumers()
+        .iter()
+        .any(|p| !ctx.publisher_deselected(p))
+}
+
 impl Stage for VerifyReleaseStage {
     fn name(&self) -> &str {
         STAGE_NAME
@@ -166,14 +195,28 @@ impl Stage for VerifyReleaseStage {
         // work dir) from a fast bind-mount path.
         let mut smoke_strategy_logged = false;
 
-        // Resolve Docker availability once (smoke-test only).
+        // The install-smoke axis verifies produced OS packages (.deb/.rpm/.apk)
+        // are installable — coverage owned by the publishers that DELIVER those
+        // packages, so it is gated on its own surface exactly like the asset
+        // check above. A `--publishers npm` run ships no OS package, so
+        // re-running the cross-arch smoke matrix there is both redundant (the
+        // OS-package publish job already ran it) and unrunnable (an arm64
+        // package cannot exec on an x86_64 runner without qemu/binfmt).
         let smoke_enabled = cfg.install_smoke.is_some();
-        let docker_ok = if smoke_enabled {
+        let smoke_in_surface = smoke_enabled && install_smoke_in_surface(ctx);
+        // Probe Docker only when smoke is actually in scope; an out-of-surface
+        // run has nothing to smoke, so the probe would be wasted work.
+        let docker_ok = if smoke_in_surface {
             smoke::docker_available()
         } else {
             false
         };
-        if smoke_enabled && !docker_ok {
+        if smoke_enabled && !smoke_in_surface {
+            log.verbose(
+                "install smoke-test out of the selected publish surface \
+                 (no OS-package publisher selected) — skipped",
+            );
+        } else if smoke_enabled && !docker_ok {
             log.status(
                 "skipped install smoke-test — Docker unavailable \
                  (asset-existence and libc-ceiling still run)",

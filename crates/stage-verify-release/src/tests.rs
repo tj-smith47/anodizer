@@ -237,6 +237,74 @@ fn all_consumers_deselected_self_skips() {
 }
 
 #[test]
+fn install_smoke_gated_to_os_package_publishers() {
+    // The smoke axis verifies OS packages (.deb/.rpm/.apk) are installable; that
+    // coverage belongs to the publishers that deliver them. npm ships no OS
+    // package, so a `--publishers npm` surface leaves smoke OUT of scope —
+    // otherwise the hosted npm job re-runs the cross-arch matrix and exec-format-
+    // errors on an arm64 package on an x86_64 runner without qemu/binfmt.
+    // Publishers that ship no `.deb`/`.rpm`/`.apk` must leave smoke OUT of scope.
+    for p in ["npm", "cargo", "winget", "homebrew"] {
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        ctx.options.publisher_allowlist = vec![p.to_string()];
+        assert!(
+            !install_smoke_in_surface(&ctx),
+            "{p} delivers no OS package; smoke must be out of scope"
+        );
+    }
+    // Every carrier of an installable OS package — the `LinuxPackage`-consuming
+    // registries (artifactory/cloudsmith/gemfury) and the raw file carriers
+    // (github-release/blob/uploads) — must keep smoke IN scope.
+    for p in [
+        "github-release",
+        "blob",
+        "uploads",
+        "artifactory",
+        "cloudsmith",
+        "gemfury",
+    ] {
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        ctx.options.publisher_allowlist = vec![p.to_string()];
+        assert!(
+            install_smoke_in_surface(&ctx),
+            "{p} delivers installable OS packages; smoke must stay in scope"
+        );
+    }
+}
+
+#[test]
+fn npm_surface_skips_smoke_without_stamping() {
+    // End-to-end: install_smoke configured and an arm64 .deb present, but the
+    // selected surface is npm-only. The stage must NOT attempt the smoke matrix
+    // (which would fail on a runner without qemu/binfmt) and, with no other
+    // check in scope, must not stamp a verdict.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        install_smoke: Some(InstallSmokeConfig::default()),
+        ..Default::default()
+    };
+    add_artifact(
+        &mut ctx,
+        ArtifactKind::LinuxPackage,
+        "myapp_arm64.deb",
+        "myapp",
+    );
+    ctx.options.publisher_allowlist = vec!["npm".to_string()];
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "npm-only surface must skip smoke instead of failing on it"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "nothing verifiable ran, so no verdict may be stamped"
+    );
+}
+
+#[test]
 fn no_published_crates_is_noop() {
     // A crate with no release block is not "published"; the gate finds
     // nothing to verify and returns Ok without touching the network.
