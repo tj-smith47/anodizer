@@ -875,37 +875,7 @@ struct DryRunSummary<'a> {
 /// configured. For Gitea, the download base is additionally derived from the
 /// API URL by stripping the `/api/v1` suffix.
 fn dry_run_download_base(ctx: &Context) -> String {
-    match ctx.token_type {
-        ScmTokenType::GitHub => ctx
-            .config
-            .github_urls
-            .as_ref()
-            .and_then(|u| u.download.clone())
-            .unwrap_or_else(|| "https://github.com".to_string()),
-        ScmTokenType::GitLab => ctx
-            .config
-            .gitlab_urls
-            .as_ref()
-            .and_then(|u| u.download.clone())
-            .unwrap_or_else(|| "https://gitlab.com".to_string()),
-        ScmTokenType::Gitea => ctx
-            .config
-            .gitea_urls
-            .as_ref()
-            .and_then(|u| u.download.clone())
-            .unwrap_or_else(|| {
-                ctx.config
-                    .gitea_urls
-                    .as_ref()
-                    .and_then(|u| u.api.as_deref())
-                    .map(|api| {
-                        api.trim_end_matches('/')
-                            .trim_end_matches("/api/v1")
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "https://gitea.com".to_string())
-            }),
-    }
+    anodizer_core::download_url::default_download_base(ctx)
 }
 
 /// Log every configured `<provider>_urls.*` value in dry-run output so the

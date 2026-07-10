@@ -85,6 +85,11 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
                      archive artifact in this target-restricted shard",
                     crate_name
                 ));
+                ctx.emission_skips.remember(
+                    crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                    &format!("{crate_name} scoop"),
+                    "no Windows archive artifact in this target-restricted shard",
+                );
                 continue;
             }
 

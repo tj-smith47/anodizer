@@ -95,6 +95,11 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
                          no Windows artifact in this target-restricted shard",
                         crate_name
                     ));
+                    ctx.emission_skips.remember(
+                        crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                        &format!("{crate_name} chocolatey"),
+                        "no Windows artifact in this target-restricted shard",
+                    );
                 }
                 Ok(out)
             })?;

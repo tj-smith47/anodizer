@@ -21,6 +21,7 @@ pub mod disk;
 pub mod dist;
 pub mod docker_build;
 pub mod docker_detect;
+pub mod download_url;
 pub mod elf;
 pub mod env;
 pub mod env_expand;

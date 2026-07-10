@@ -151,90 +151,15 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// populate_artifact_download_urls
+// download-URL derivation — shared with emission-validate via core
 // ---------------------------------------------------------------------------
 
-/// Set `metadata["url"]` on every artifact for the given crate, constructing
-/// the download URL from the SCM backend's download base, owner/repo, tag, and
-/// artifact name. This lets publishers resolve download URLs without an
-/// explicit `url_template`.
-pub(crate) fn populate_artifact_download_urls(
-    ctx: &mut Context,
-    crate_name: &str,
-    token_type: ScmTokenType,
-    download_base: &str,
-    owner: &str,
-    repo: &str,
-    tag: &str,
-) {
-    let dl_base = download_base.trim_end_matches('/');
-    let url_tag = anodizer_core::url::percent_encode_path_segment(tag);
-    let url_prefix = match token_type {
-        ScmTokenType::GitLab => {
-            if owner.is_empty() {
-                format!("{dl_base}/{repo}/-/releases/{url_tag}/downloads")
-            } else {
-                format!("{dl_base}/{owner}/{repo}/-/releases/{url_tag}/downloads")
-            }
-        }
-        ScmTokenType::GitHub | ScmTokenType::Gitea => {
-            format!("{dl_base}/{owner}/{repo}/releases/download/{url_tag}")
-        }
-    };
-    for artifact in ctx.artifacts.all_mut() {
-        if artifact.crate_name == crate_name && !artifact.name.is_empty() {
-            let encoded_name = anodizer_core::url::percent_encode_path_segment(&artifact.name);
-            artifact
-                .metadata
-                .insert("url".to_string(), format!("{url_prefix}/{encoded_name}"));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// render_repo_ref
-// ---------------------------------------------------------------------------
-
-/// Pick the `ScmRepoConfig` for the active publish target and template-render
-/// its `owner` and `name` fields.
-///
-/// Resolution order:
-/// 1. Explicit `release.provider:`.
-/// 2. Active SCM token type with provider-side fallback (the historical
-///    behaviour — preserved so existing configs don't change shape).
-///
-/// Returns `Ok(None)` when no matching block is configured.
-pub(crate) fn resolve_release_repo(
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    token_type: ScmTokenType,
-    ctx: &anodizer_core::context::Context,
-) -> Result<Option<anodizer_core::config::ScmRepoConfig>> {
-    // Explicit `release.provider:` wins over token-type inference. This
-    // is the cross-platform publishing seam: a project hosted on GitLab
-    // (so `GITLAB_TOKEN` is the active token) can declare
-    // `provider: github` to redirect publish output to GitHub.
-    use anodizer_core::config::ForceTokenKind;
-    let raw = match release_cfg.provider {
-        Some(ForceTokenKind::GitHub) => release_cfg.github.as_ref(),
-        Some(ForceTokenKind::GitLab) => release_cfg.gitlab.as_ref(),
-        Some(ForceTokenKind::Gitea) => release_cfg.gitea.as_ref(),
-        None => match token_type {
-            ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
-            ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
-            ScmTokenType::GitHub => release_cfg.github.as_ref(),
-        },
-    };
-    let Some(repo) = raw else {
-        return Ok(None);
-    };
-    let owner = ctx
-        .render_template(&repo.owner)
-        .with_context(|| format!("release: render repo.owner '{}'", repo.owner))?;
-    let name = ctx
-        .render_template(&repo.name)
-        .with_context(|| format!("release: render repo.name '{}'", repo.name))?;
-    Ok(Some(anodizer_core::config::ScmRepoConfig { owner, name }))
-}
+// Moved to `anodizer_core::download_url` so the emission-validate pass
+// (stage-publish) can seed the identical derivation before the publisher
+// renders run; re-exported here so stage-release call sites keep their paths.
+pub(crate) use anodizer_core::download_url::{
+    populate_artifact_download_urls, resolve_release_repo,
+};
 
 /// Compose the public release HTML URL for the active SCM provider.
 ///

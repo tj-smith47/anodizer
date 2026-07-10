@@ -104,6 +104,12 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                              (homebrew-eligible) archive in this target-restricted shard",
                             crate_name
                         ));
+                        ctx.emission_skips.remember(
+                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                            &format!("{crate_name} homebrew"),
+                            "no macOS/Linux (homebrew-eligible) archive in this \
+                             target-restricted shard",
+                        );
                     } else if let Some(rendered) =
                         render_homebrew_formula_for_crate(ctx, crate_name, &log)?
                     {

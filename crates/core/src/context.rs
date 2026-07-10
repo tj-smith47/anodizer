@@ -507,6 +507,15 @@ pub struct Context {
     /// the skip-memento pattern. The inner `Arc<Mutex<…>>`
     /// lets parallel stage workers contribute without extra plumbing.
     pub skip_memento: crate::pipe_skip::SkipMemento,
+    /// Per-expectation skips recorded by the emission-validate pass on a
+    /// target-restricted build (an expectation whose target subset was not
+    /// built in this run, or a cross-platform aggregate with no eligible
+    /// artifact). Kept SEPARATE from [`Self::skip_memento`] on purpose: that
+    /// memento is drained into the default-visible end-of-pipeline summary,
+    /// while these skips surface only as verbose lines plus an aggregate
+    /// count in the stage's one RESULT line — a sharded run would otherwise
+    /// print one summary line per unbuilt-target expectation.
+    pub emission_skips: crate::pipe_skip::SkipMemento,
     /// Trait-based publisher dispatch report, set by `PublishStage::run`
     /// when the per-publisher dispatcher finishes. `None` until the
     /// publish stage executes (or when publishing is skipped entirely
@@ -643,6 +652,7 @@ impl Context {
             git_info: None,
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
+            emission_skips: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
             publish_attempted: false,
             verify_release: None,

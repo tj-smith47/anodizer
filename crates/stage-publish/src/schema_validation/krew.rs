@@ -82,6 +82,11 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
                      artifact in this target-restricted shard",
                     crate_name
                 ));
+                ctx.emission_skips.remember(
+                    crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                    &format!("{crate_name} krew"),
+                    "no archive artifact in this target-restricted shard",
+                );
                 continue;
             }
 

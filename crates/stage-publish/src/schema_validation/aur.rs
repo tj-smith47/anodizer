@@ -95,6 +95,11 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                          archive for aur in this target-restricted shard",
                         crate_name
                     ));
+                    ctx.emission_skips.remember(
+                        crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                        &format!("{crate_name} aur"),
+                        "no linux archive in this target-restricted shard",
+                    );
                     return Ok(out);
                 }
 

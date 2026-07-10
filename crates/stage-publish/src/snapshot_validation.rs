@@ -30,6 +30,11 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::nix;
 
+/// Stage tag under which the emission-validate pass records per-expectation
+/// skips into [`Context::emission_skips`]. Shared with the schema validators
+/// so the aggregate RESULT line counts every skip the pass produced.
+pub(crate) const EMISSION_SKIP_STAGE: &str = "emission-validate";
+
 /// Entry point: validate every in-scope crate's emissions.
 ///
 /// Runs in every mode — snapshot, dry-run, nightly, and real releases (the
@@ -100,7 +105,36 @@ fn validate_emissions_with_resolver(
     // tag-re-derived version that would never match the `-SNAPSHOT-<sha>` asset.
     let artifact_version = ctx.version();
 
+    // Baseline for the aggregate RESULT line: only the skips THIS pass
+    // records (the memento is Context-lifetime, and the prepublish guard
+    // reuses the same validators) count toward its summary.
+    let skips_before = ctx.emission_skips.len();
+
     let crates = in_scope_crates(ctx);
+
+    // Seed the derived release download URL onto every url-less artifact
+    // BEFORE the publisher renders run. The release stage stamps
+    // `metadata["url"]` only AFTER this pass (and never in snapshot mode),
+    // yet the homebrew/cask, winget, scoop, … renders read it — without the
+    // seed, every snapshot / dry-run of a url-metadata consumer failed on a
+    // guaranteed false positive. The seed uses the SAME derivation the
+    // release stage applies (core::download_url), so this pass validates the
+    // real URL, and the release stage's authoritative post-upload populate
+    // still overwrites it.
+    for crate_cfg in &crates {
+        match anodizer_core::download_url::seed_missing_download_urls_for_crate(ctx, crate_cfg)? {
+            Some(prefix) => log.verbose(&format!(
+                "seeded derived download URLs for crate '{}' ({prefix}/<asset>)",
+                crate_cfg.name
+            )),
+            None => log.verbose(&format!(
+                "no derived download URL for crate '{}' — release absent/skipped or repo/tag \
+                 unresolvable; validators will flag any publisher that requires one",
+                crate_cfg.name
+            )),
+        }
+    }
+
     let mut validated = 0usize;
     for crate_cfg in &crates {
         let has_binstall = crate_cfg
@@ -172,7 +206,24 @@ fn validate_emissions_with_resolver(
     // the version dimension without a git fixture.
     crate::schema_validation::validate_publisher_schemas(ctx, log, resolve_tag)?;
 
-    if validated > 0 {
+    let skipped = ctx.emission_skips.len().saturating_sub(skips_before);
+    if ctx.is_target_restricted_build() && (validated > 0 || skipped > 0) {
+        // One aggregate RESULT line for a target-restricted (sharded /
+        // --single-target) run: what the built subset could satisfy was
+        // validated; expectations needing unbuilt targets were skipped
+        // (each detailed at verbose above).
+        let mut line = format!(
+            "validated emissions for {validated} crate{} against the partial target set",
+            if validated == 1 { "" } else { "s" }
+        );
+        if skipped > 0 {
+            line.push_str(&format!(
+                " (skipped {skipped} expectation{} requiring targets not built in this run)",
+                if skipped == 1 { "" } else { "s" }
+            ));
+        }
+        log.status(&line);
+    } else if validated > 0 {
         log.status(&format!(
             "validated emissions for {validated} crate{}",
             if validated == 1 { "" } else { "s" }
@@ -287,6 +338,11 @@ fn validate_binstall(
              rendering pkg_url without an asset cross-check",
             crate_cfg.name
         ));
+        ctx.emission_skips.remember(
+            EMISSION_SKIP_STAGE,
+            &format!("{} binstall", crate_cfg.name),
+            "no archives produced in this run; asset cross-check skipped",
+        );
     }
 
     // Top-level pkg_url. cargo-binstall substitutes its own `{ target }` /
@@ -377,6 +433,11 @@ fn validate_binstall(
                      not built in this run",
                     crate_cfg.name, triple
                 ));
+                ctx.emission_skips.remember(
+                    EMISSION_SKIP_STAGE,
+                    &format!("{} binstall override {}", crate_cfg.name, triple),
+                    "target not built in this run",
+                );
                 continue;
             }
             if !for_triple
@@ -453,6 +514,11 @@ fn validate_derived_asset_names(
              the derived asset-name cross-check",
             crate_cfg.name
         ));
+        ctx.emission_skips.remember(
+            EMISSION_SKIP_STAGE,
+            &format!("{} derived-names", crate_cfg.name),
+            "no archives produced in this run",
+        );
         return Ok(());
     }
     // The derivation render seeds the per-target vars; snapshot and restore
@@ -499,6 +565,16 @@ fn validate_derived_asset_names(
             .filter(|p| p.target.as_deref() == Some(triple.as_str()))
             .collect();
         if for_triple.is_empty() {
+            log.verbose(&format!(
+                "skipped derived asset-name cross-check for crate '{}' — target '{}' \
+                 not built in this run",
+                crate_cfg.name, triple
+            ));
+            ctx.emission_skips.remember(
+                EMISSION_SKIP_STAGE,
+                &format!("{} derived-names {}", crate_cfg.name, triple),
+                "target not built in this run",
+            );
             continue;
         }
         if !for_triple.iter().any(|p| p.name == asset.asset_name) {
@@ -734,6 +810,11 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
              in this run (no assets to cross-check)",
             crate_cfg.name,
         ));
+        ctx.emission_skips.remember(
+            EMISSION_SKIP_STAGE,
+            &format!("{} nix", crate_cfg.name),
+            "no archives produced in this run",
+        );
         return Ok(());
     }
 
@@ -764,6 +845,11 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
              archive in this target-restricted shard",
             crate_cfg.name,
         ));
+        ctx.emission_skips.remember(
+            EMISSION_SKIP_STAGE,
+            &format!("{} nix", crate_cfg.name),
+            "no Linux/Darwin (nix-eligible) archive in this target-restricted shard",
+        );
         return Ok(());
     }
 
@@ -2310,5 +2396,378 @@ mod tests {
         let resolver = |_: &Context, _: &CrateConfig| Some("0.5.0".to_string());
         validate_emissions_with_resolver(&mut ctx, &log(), &resolver)
             .expect("correct override must pass once the cross-check uses the snapshot version");
+    }
+
+    // -- derived download-URL seeding ------------------------------------------
+
+    /// A crate with a `release:` repo config whose `tag_template` renders.
+    fn releasable_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(anodizer_core::config::ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "octocat".to_string(),
+                    name: name.to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A darwin archive the way a DRY-RUN produces it: real name/target and a
+    /// placeholder sha256 from the checksum stage, but NO `url` (the release
+    /// stage — which stamps it — runs after emission-validate, and never in
+    /// snapshot). Regression fixture for the guaranteed dry-run false positive.
+    fn add_urlless_darwin_archive(ctx: &mut Context, crate_name: &str, name: &str) {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: format!("dist/{name}").into(),
+            name: name.to_string(),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: HashMap::from([("sha256".to_string(), "0".repeat(64))]),
+            size: None,
+        });
+    }
+
+    /// The reproduced bug: a top-level `homebrew_casks:` entry over a dry-run
+    /// (url-less) darwin archive failed emission-validate with "has no 'url'
+    /// metadata". The seeding pass must derive the release download URL from
+    /// the crate's `release:` repo + tag template so the cask render validates
+    /// the real URL — the run must pass and stamp the derived value.
+    #[test]
+    fn cask_over_urlless_dry_run_artifact_passes_via_seeded_url() {
+        for (snapshot, dry_run) in [(true, true), (false, true), (true, false)] {
+            let cfg = releasable_crate("cfgd");
+            let mut ctx = TestContextBuilder::new()
+                .snapshot(snapshot)
+                .dry_run(dry_run)
+                .crates(vec![cfg])
+                .sealed_env()
+                .build();
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            ctx.template_vars_mut().set("RawVersion", "1.0.0");
+            ctx.template_vars_mut().set("Tag", "v1.0.0");
+            ctx.template_vars_mut().set("ProjectName", "cfgd");
+            ctx.template_vars_mut().set("Name", "cfgd");
+            ctx.config.homebrew_casks = Some(vec![anodizer_core::config::HomebrewCaskConfig {
+                name: Some("cfgd".to_string()),
+                binaries: Some(vec![anodizer_core::config::HomebrewCaskBinary::Name(
+                    "cfgd".to_string(),
+                )]),
+                ..Default::default()
+            }]);
+            add_urlless_darwin_archive(&mut ctx, "cfgd", "cfgd-1.0.0-aarch64-apple-darwin.tar.gz");
+
+            validate_emissions_with_resolver(&mut ctx, &log(), &|_, _| Some("v1.0.0".to_string()))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "cask validation over a url-less artifact must pass via the seeded \
+                         derived URL (snapshot={snapshot} dry_run={dry_run}): {e:#}"
+                    )
+                });
+
+            let art = &ctx.artifacts.all()[0];
+            assert_eq!(
+                art.metadata.get("url").map(String::as_str),
+                Some(
+                    "https://github.com/octocat/cfgd/releases/download/v1.0.0/cfgd-1.0.0-aarch64-apple-darwin.tar.gz"
+                ),
+                "the seeded URL must be the exact release-stage derivation"
+            );
+        }
+    }
+
+    /// The fix must NOT exempt the validator: a config whose real release
+    /// would never stamp a URL either (no `release:` repo block, no
+    /// `url.template`) still fails loud with the actionable missing-url error.
+    #[test]
+    fn cask_without_derivable_url_still_fails_loud() {
+        let cfg = CrateConfig {
+            name: "cfgd".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = scoped_ctx(cfg);
+        ctx.config.homebrew_casks = Some(vec![anodizer_core::config::HomebrewCaskConfig {
+            name: Some("cfgd".to_string()),
+            binaries: Some(vec![anodizer_core::config::HomebrewCaskBinary::Name(
+                "cfgd".to_string(),
+            )]),
+            ..Default::default()
+        }]);
+        add_urlless_darwin_archive(&mut ctx, "cfgd", "cfgd-1.0.0-aarch64-apple-darwin.tar.gz");
+
+        let err =
+            validate_emissions_with_resolver(&mut ctx, &log(), &|_, _| Some("v1.0.0".to_string()))
+                .expect_err("an underivable URL must stay a loud failure, not a dry-run exemption");
+        assert!(
+            format!("{err:#}").contains("no 'url' metadata"),
+            "must surface the actionable missing-url remedy: {err:#}"
+        );
+    }
+
+    // -- aggregate RESULT line ------------------------------------------------
+
+    /// Snapshot of every status-level message a capture recorded.
+    fn status_messages(cap: &anodizer_core::log::LogCapture) -> Vec<String> {
+        cap.all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect()
+    }
+
+    /// A target-restricted shard's one default RESULT line must say what was
+    /// validated AND aggregate the expectations skipped for want of unbuilt
+    /// targets (per-expectation detail stays at verbose). Fixture mirrors
+    /// `target_restricted_windows_shard_aggregators_self_skip`: a windows-only
+    /// shard where nix (emission + derivation schema) and homebrew self-skip
+    /// while the correct windows binstall override validates.
+    #[test]
+    fn restricted_build_status_line_aggregates_partial_set_and_skips() {
+        use anodizer_core::partial::PartialTarget;
+        let mut cfg = nix_crate();
+        if let Some(pub_cfg) = cfg.publish.as_mut() {
+            pub_cfg.homebrew = Some(HomebrewConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("o".to_string()),
+                    name: Some("homebrew-tap".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "x86_64-pc-windows-msvc".to_string(),
+            BinstallOverride {
+                pkg_url: Some(
+                    "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.zip"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        cfg.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            overrides: Some(overrides),
+            ..Default::default()
+        });
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-pc-windows-msvc",
+            "cfgd-1.0.0-x86_64-pc-windows-msvc.zip",
+        );
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        validate_emissions(&mut ctx, &log).expect("windows shard validates its own subset");
+        let statuses = status_messages(&cap);
+        let line = statuses
+            .iter()
+            .find(|m| m.starts_with("validated emissions"))
+            .expect("a default RESULT line must be emitted");
+        assert!(
+            line.contains("for 1 crate against the partial target set"),
+            "names the partial set: {line}"
+        );
+        assert!(
+            line.contains("(skipped 3 expectations requiring targets not built in this run)"),
+            "aggregates the nix emission + nix derivation + homebrew skips: {line}"
+        );
+        // The per-expectation detail must NOT ride on status lines.
+        assert!(
+            !statuses.iter().any(|m| m.contains("skipped nix emission")),
+            "per-expectation skip detail stays at verbose: {statuses:?}"
+        );
+    }
+
+    /// FULL-build counterpart: the RESULT line keeps its original wording —
+    /// no partial-set clause, no skip aggregate.
+    #[test]
+    fn full_build_status_line_unchanged() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let mut ctx = scoped_ctx(cfg);
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+        );
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        validate_emissions(&mut ctx, &log).expect("correct emission passes on a full build");
+        let statuses = status_messages(&cap);
+        assert!(
+            statuses
+                .iter()
+                .any(|m| m == "validated emissions for 1 crate"),
+            "full-build RESULT line unchanged: {statuses:?}"
+        );
+        assert!(
+            !statuses.iter().any(|m| m.contains("partial target set")),
+            "no partial-set clause on a full build: {statuses:?}"
+        );
+    }
+
+    /// Lockstep-workspace shape (two top-level crates sharing one version):
+    /// a linux-only shard validates BOTH crates' satisfiable expectations and
+    /// aggregates the skips for the unbuilt windows override into the one
+    /// RESULT line.
+    #[test]
+    fn restricted_build_lockstep_two_crates_status_line() {
+        use anodizer_core::partial::PartialTarget;
+        let make = |name: &str| {
+            let mut overrides = BTreeMap::new();
+            overrides.insert(
+                "x86_64-unknown-linux-gnu".to_string(),
+                BinstallOverride {
+                    pkg_url: Some(format!(
+                        "https://github.com/o/{name}/releases/download/v{{{{ .Version }}}}/{name}-{{{{ .Version }}}}-{{ target }}.tar.gz"
+                    )),
+                    ..Default::default()
+                },
+            );
+            // A windows override whose target this linux shard does not build
+            // — must be SKIPPED (counted), never a failure.
+            overrides.insert(
+                "x86_64-pc-windows-msvc".to_string(),
+                BinstallOverride {
+                    pkg_url: Some(format!(
+                        "https://github.com/o/{name}/releases/download/v{{{{ .Version }}}}/{name}-{{{{ .Version }}}}-{{ target }}.zip"
+                    )),
+                    ..Default::default()
+                },
+            );
+            CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                // Both triples are CONFIGURED; the shard builds only linux, so
+                // the windows override is "configured but unbuilt" (skip), not
+                // "never built" (error).
+                builds: Some(vec![BuildConfig {
+                    binary: Some(name.to_string()),
+                    targets: Some(vec![
+                        "x86_64-unknown-linux-gnu".to_string(),
+                        "x86_64-pc-windows-msvc".to_string(),
+                    ]),
+                    ..Default::default()
+                }]),
+                binstall: Some(BinstallConfig {
+                    enabled: Some(true),
+                    overrides: Some(overrides),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        };
+        let (a, b) = (make("alpha"), make("beta"));
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![a, b])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        for name in ["alpha", "beta"] {
+            add_archive(
+                &mut ctx,
+                name,
+                "x86_64-unknown-linux-gnu",
+                &format!("{name}-1.0.0-x86_64-unknown-linux-gnu.tar.gz"),
+            );
+        }
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        validate_emissions(&mut ctx, &log)
+            .expect("linux shard validates both crates' linux overrides");
+        let statuses = status_messages(&cap);
+        let line = statuses
+            .iter()
+            .find(|m| m.starts_with("validated emissions"))
+            .expect("RESULT line present");
+        assert!(
+            line.contains("for 2 crates against the partial target set"),
+            "both lockstep crates counted: {line}"
+        );
+        assert!(
+            line.contains("(skipped 2 expectations requiring targets not built in this run)"),
+            "one unbuilt windows override per crate: {line}"
+        );
+    }
+
+    /// Per-crate workspace mode: a workspace-declared crate is validated on a
+    /// shard exactly like a top-level one — the universe walk feeds the same
+    /// RESULT-line accounting, and a genuinely missing SAME-target asset (the
+    /// bug class the old wholesale skip masked) still FAILS.
+    #[test]
+    fn restricted_build_per_crate_workspace_same_target_gap_fails() {
+        use anodizer_core::config::WorkspaceConfig;
+        use anodizer_core::partial::PartialTarget;
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            BinstallOverride {
+                pkg_url: Some(
+                    "https://github.com/o/wsc/releases/download/v{{ .Version }}/wsc-{{ .Version }}-linux-WRONG.tar.gz"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        let ws_crate = CrateConfig {
+            name: "wsc".to_string(),
+            path: "crates/wsc".to_string(),
+            tag_template: "wsc-v{{ .Version }}".to_string(),
+            binstall: Some(BinstallConfig {
+                enabled: Some(true),
+                overrides: Some(overrides),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "wsc-v1.0.0");
+        add_archive(
+            &mut ctx,
+            "wsc",
+            "x86_64-unknown-linux-gnu",
+            "wsc-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+        );
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
+        let err = validate_emissions(&mut ctx, &log()).expect_err(
+            "a same-target 404 in a workspace crate must FAIL on its own shard, not be skipped",
+        );
+        assert!(format!("{err}").contains("404"), "{err}");
     }
 }
