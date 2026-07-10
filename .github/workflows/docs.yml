@@ -1,19 +1,10 @@
 name: Deploy Docs
 
+# The site deploys ONLY off a successful Release that actually cut a version
+# (the `gate` job checks the cut) — never straight off master, so the docs
+# always describe the latest released version, not unreleased master state.
+# Use workflow_dispatch for an out-of-band deploy.
 on:
-  push:
-    branches: [master]
-    paths:
-      - "docs/site/**"
-      - "crates/xtask/**"
-      - "crates/cli/src/lib.rs"
-      # config is a directory of per-section modules, not a single file; the
-      # generated config reference derives from all of them.
-      - "crates/core/src/config/**"
-  # Release-driven redeploy: fires on every completion of the Release
-  # workflow, but the `gate` job below proceeds ONLY when that run actually
-  # cut + published a version (see its rationale). A bump=none Release run
-  # succeeds without publishing, and must not trigger a no-op docs deploy.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
@@ -52,8 +43,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Docs-source pushes and manual dispatches always deploy — they are
-          # direct edits to the published site, not release-gated.
+          # Manual dispatches always deploy — an operator asking for an
+          # out-of-band deploy is its own authorization.
           if [ "${{ github.event_name }}" != "workflow_run" ]; then
             echo "should_deploy=true" >> "$GITHUB_OUTPUT"
             echo "event=${{ github.event_name }} -> deploy"
