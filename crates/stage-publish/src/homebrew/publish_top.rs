@@ -711,8 +711,10 @@ pub fn publish_top_level_homebrew_casks(
             },
             &format!("Update {} cask to {}", cask_name, version),
             &format!(
-                "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-                cask_name, version
+                "## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
+                cask_name,
+                version,
+                crate::util::SUBMITTED_BY_FOOTER
             ),
             "homebrew_casks",
             log,

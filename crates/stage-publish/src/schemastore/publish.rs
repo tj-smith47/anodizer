@@ -999,7 +999,8 @@ fn schemastore_pr_body(applied: &[SchemaPlan]) -> String {
             p.url
         ));
     }
-    body.push_str("\nAutomatically submitted by anodizer.");
+    body.push('\n');
+    body.push_str(crate::util::SUBMITTED_BY_FOOTER);
     body
 }
 

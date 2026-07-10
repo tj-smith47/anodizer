@@ -675,16 +675,22 @@ fn submit_homebrew_pr(
                 formula_name, cask_name, version
             ),
             format!(
-                "## Formula\n- **Name**: {}\n- **Version**: {}\n\n## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-                formula_name, version, cask_name, version
+                "## Formula\n- **Name**: {}\n- **Version**: {}\n\n## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
+                formula_name,
+                version,
+                cask_name,
+                version,
+                crate::util::SUBMITTED_BY_FOOTER
             ),
         )
     } else {
         (
             format!("Update {} formula to {}", formula_name, version),
             format!(
-                "## Formula\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-                formula_name, version
+                "## Formula\n- **Name**: {}\n- **Version**: {}\n\n{}",
+                formula_name,
+                version,
+                crate::util::SUBMITTED_BY_FOOTER
             ),
         )
     };

@@ -1159,8 +1159,10 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         },
         &format!("Update {} manifest to {}", manifest_name, version),
         &format!(
-            "## Manifest\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-            manifest_name, version
+            "## Manifest\n- **Name**: {}\n- **Version**: {}\n\n{}",
+            manifest_name,
+            version,
+            crate::util::SUBMITTED_BY_FOOTER
         ),
         "scoop",
         log,

@@ -243,8 +243,10 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         },
         &format!("Update {} cask to {}", cask_result.cask_name, version),
         &format!(
-            "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-            cask_result.cask_name, version
+            "## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
+            cask_result.cask_name,
+            version,
+            crate::util::SUBMITTED_BY_FOOTER
         ),
         "homebrew cask",
         log,

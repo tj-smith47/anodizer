@@ -1056,8 +1056,10 @@ fn finalize_publish(
         },
         &format!("Update {} to {}", name, version),
         &format!(
-            "## Package\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-            name, version
+            "## Package\n- **Name**: {}\n- **Version**: {}\n\n{}",
+            name,
+            version,
+            crate::util::SUBMITTED_BY_FOOTER
         ),
         "nix",
         log,

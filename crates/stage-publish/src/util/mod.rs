@@ -9,6 +9,8 @@
 //! - [`commit`] — `CommitOptions` + `commit_and_push_with_opts`.
 //! - [`branch`] — branch resolution + GitHub default-branch lookup.
 //! - [`pr`] — PR submission flows (gh CLI + REST API).
+//! - [`attribution`] — published-content attribution strings (PR footers,
+//!   generated-file headers).
 //! - [`artifacts`] — OS/arch inference + `OsArtifact` + filtering helpers.
 //! - [`template`] — `render_url_template` and `render_or_warn`.
 //! - [`parallelism`] — shared `ROLLBACK_PARALLELISM` cap for publishers
@@ -18,6 +20,7 @@
 //! paths re-exported below.
 
 mod artifacts;
+mod attribution;
 mod branch;
 mod clone;
 mod cmd;
@@ -37,6 +40,7 @@ mod tests;
 // External re-export: every caller in this crate that previously wrote
 // `crate::util::matches_id_filter` continues to work.
 pub(crate) use anodizer_core::artifact::matches_id_filter;
+pub(crate) use attribution::{GENERATED_FILE_HEADER, SUBMITTED_BY_FOOTER};
 
 // Public surface preserved for external callers. Items with no current
 // out-of-`util/` caller are intentionally NOT re-exported here — they
