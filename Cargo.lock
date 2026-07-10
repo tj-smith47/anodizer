@@ -481,6 +481,9 @@ version = "0.15.5"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "chrono",
+ "fs4",
+ "serde_json",
  "serde_yaml_ng",
  "serial_test",
  "tempfile",

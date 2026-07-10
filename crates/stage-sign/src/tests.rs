@@ -4910,6 +4910,41 @@ mod cosign_tuf_race {
             .build()
     }
 
+    /// A stub cosign that logs start/end wall-clock nanos per invocation to
+    /// `$STUB_STATE/events`, sleeping 150ms in between so overlap is
+    /// observable.
+    fn write_events_stub(dir: &Path) -> std::path::PathBuf {
+        write_script(
+            dir,
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"start $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
+                "sleep 0.15\n",
+                "echo \"end $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        )
+    }
+
+    /// Parse the events log the stub above writes into (starts, ends).
+    fn read_events(state: &Path) -> (Vec<u128>, Vec<u128>) {
+        let events = std::fs::read_to_string(state.join("events")).expect("events log");
+        let mut starts: Vec<u128> = Vec::new();
+        let mut ends: Vec<u128> = Vec::new();
+        for line in events.lines() {
+            let (kind, ts) = line.split_once(' ').expect("event shape");
+            let ts: u128 = ts.trim().parse().expect("timestamp");
+            match kind {
+                "start" => starts.push(ts),
+                "end" => ends.push(ts),
+                other => panic!("unexpected event kind {other}"),
+            }
+        }
+        (starts, ends)
+    }
+
     /// The production failure, reduced: a stub cosign whose cache-init is an
     /// atomic one-shot (`mkdir` = the flock), held open for 500ms. Any
     /// instance that starts before the warm marker exists and doesn't own the
@@ -4961,44 +4996,246 @@ mod cosign_tuf_race {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        let stub = write_script(
-            tmp.path(),
-            "cosign",
-            concat!(
-                "#!/bin/sh\n",
-                "echo \"start $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
-                "sleep 0.15\n",
-                "echo \"end $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
-                "printf sig > \"$3\"\n",
-                "exit 0\n",
-            ),
-        );
+        let stub = write_events_stub(tmp.path());
 
         let mut ctx = build_ctx(&stub, &state);
         add_archives(&mut ctx, tmp.path(), 6);
         SignStage.run(&mut ctx).expect("all stub signs succeed");
 
-        let events = std::fs::read_to_string(state.join("events")).expect("events log");
-        let mut starts: Vec<u128> = Vec::new();
-        let mut ends: Vec<u128> = Vec::new();
-        for line in events.lines() {
-            let (kind, ts) = line.split_once(' ').expect("event shape");
-            let ts: u128 = ts.trim().parse().expect("timestamp");
-            match kind {
-                "start" => starts.push(ts),
-                "end" => ends.push(ts),
-                other => panic!("unexpected event kind {other}"),
-            }
-        }
-        assert_eq!(starts.len(), 6, "one start per artifact: {events}");
-        assert_eq!(ends.len(), 6, "one end per artifact: {events}");
+        let (starts, ends) = read_events(&state);
+        assert_eq!(starts.len(), 6, "one start per artifact");
+        assert_eq!(ends.len(), 6, "one end per artifact");
         let first_end = *ends.iter().min().expect("at least one end");
         let early = starts.iter().filter(|s| **s < first_end).count();
         assert_eq!(
             early, 1,
             "exactly one cosign invocation may start before the first one \
              completes (the TUF warm-up must run alone); got {early} early \
-             starts:\n{events}"
+             starts"
+        );
+    }
+
+    /// Populate `cache` as a warm sigstore TUF store: trusted root, one
+    /// fetched target, and a timestamp expiring `expires_offset_hours` from
+    /// now (negative = already expired).
+    fn populate_tuf_cache(cache: &Path, expires_offset_hours: i64) {
+        std::fs::create_dir_all(cache.join("targets")).unwrap();
+        std::fs::write(cache.join("root.json"), "{}").unwrap();
+        std::fs::write(cache.join("targets").join("rekor.pub"), "key").unwrap();
+        let expires =
+            (chrono::Utc::now() + chrono::Duration::hours(expires_offset_hours)).to_rfc3339();
+        std::fs::write(
+            cache.join("timestamp.json"),
+            format!(r#"{{"signed":{{"expires":"{expires}"}}}}"#),
+        )
+        .unwrap();
+    }
+
+    /// A pre-populated TUF cache (root.json + a fetched target + unexpired
+    /// timestamp under `TUF_ROOT`) makes cosign's init a no-op, so the
+    /// serialized warm-up must be skipped: with parallelism 4 and a 150ms
+    /// stub, several invocations start before the first one ends.
+    #[test]
+    fn warm_tuf_cache_skips_serialized_warm_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let cache = tmp.path().join("tuf-root");
+        populate_tuf_cache(&cache, 1);
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        let (starts, ends) = read_events(&state);
+        let first_end = *ends.iter().min().expect("at least one end");
+        let early = starts.iter().filter(|s| **s < first_end).count();
+        assert!(
+            early > 1,
+            "a warm TUF cache must fan out immediately (no solo first sign); \
+             got {early} start(s) before the first completion"
+        );
+    }
+
+    /// A cold cache under `TUF_ROOT` keeps the serialized warm-up AND takes
+    /// the host-level advisory lock: the sentinel appears inside the cache
+    /// dir and exactly one invocation runs alone.
+    #[test]
+    fn cold_tuf_cache_serializes_and_creates_host_lock_sentinel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let cache = tmp.path().join("tuf-root");
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "cold init must create the advisory-lock sentinel in the cache dir"
+        );
+        let (starts, ends) = read_events(&state);
+        let first_end = *ends.iter().min().expect("at least one end");
+        let early = starts.iter().filter(|s| **s < first_end).count();
+        assert_eq!(
+            early, 1,
+            "cold cache must keep the serialized warm-up; got {early} early starts"
+        );
+    }
+
+    /// The warm probe must consult the env the cosign CHILD sees: a
+    /// `TUF_ROOT` in the sign config's `env:` entries shadows the process
+    /// env. Here the process env points at a cold dir while the config env
+    /// points at a warm cache — the stage must fan out immediately.
+    #[test]
+    fn config_env_tuf_root_shadows_process_env_for_warm_probe() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let warm = tmp.path().join("warm-root");
+        populate_tuf_cache(&warm, 1);
+        let cold = tmp.path().join("cold-root");
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .env
+            .as_mut()
+            .unwrap()
+            .push(format!("TUF_ROOT={}", warm.display()));
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(signs)
+            .env("TUF_ROOT", cold.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        let (starts, ends) = read_events(&state);
+        let first_end = *ends.iter().min().expect("at least one end");
+        let early = starts.iter().filter(|s| **s < first_end).count();
+        assert!(
+            early > 1,
+            "config-env TUF_ROOT points at a warm cache, so the child sees a \
+             warm store and the stage must fan out; got {early} early start(s)"
+        );
+        assert!(
+            !cold.join(".anodizer-tuf-init.lock").exists(),
+            "the lock must scope to the cache the child will use, not the \
+             process-env dir"
+        );
+    }
+
+    /// An otherwise-populated cache whose `timestamp.json` has expired makes
+    /// cosign refresh through the same locked store as a cold init, so the
+    /// warm probe must classify it COLD and keep the serialized warm-up.
+    #[test]
+    fn expired_tuf_timestamp_keeps_serialized_warm_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let cache = tmp.path().join("tuf-root");
+        populate_tuf_cache(&cache, -1);
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        let (starts, ends) = read_events(&state);
+        let first_end = *ends.iter().min().expect("at least one end");
+        let early = starts.iter().filter(|s| **s < first_end).count();
+        assert_eq!(
+            early, 1,
+            "expired timestamp must be treated as cold (serialized warm-up); \
+             got {early} early starts"
+        );
+    }
+
+    /// The warm probe must run AFTER the host lock is granted: while a
+    /// neighbor holds the init lock (mid-initialization), the stage must
+    /// wait it out rather than trusting an unlocked warm reading. The
+    /// holder releases after 400ms; every cosign start must land after that
+    /// release.
+    #[test]
+    fn warm_probe_waits_for_host_init_lock() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let cache = tmp.path().join("tuf-root");
+        populate_tuf_cache(&cache, 1);
+
+        // Acquire before the stage runs so there is no startup race; flock
+        // excludes across separate descriptors even within one process.
+        let lock = crate::tuf_cache::TufInitLock::acquire(&cache).expect("holder acquire");
+        let released_at = Arc::new(AtomicU64::new(0));
+        let released = Arc::clone(&released_at);
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            // Stamp BEFORE dropping: the recorded instant lower-bounds the
+            // actual release, so the assertion can only under-approximate.
+            released.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64,
+                Ordering::SeqCst,
+            );
+            drop(lock);
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 4);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+        holder.join().expect("holder thread");
+
+        let (starts, _) = read_events(&state);
+        let release_ns = released_at.load(Ordering::SeqCst) as u128;
+        assert!(release_ns > 0, "holder must have recorded its release");
+        let earliest = *starts.iter().min().expect("at least one start");
+        assert!(
+            earliest >= release_ns,
+            "no cosign may start while another holder owns the TUF init lock \
+             (earliest start {earliest} < release {release_ns})"
         );
     }
 

@@ -16,6 +16,13 @@ readme = "README.md"
 [dependencies]
 anodizer-core.workspace = true
 anyhow.workspace = true
+# TUF timestamp freshness probe: parse `timestamp.json`'s `signed.expires`
+# (RFC 3339) so an expired cache warms up serially instead of fanning out.
+chrono.workspace = true
+serde_json.workspace = true
+# Advisory file lock (flock / LockFileEx) guarding cosign's first-run TUF
+# trust-root init against a second anodizer process on the same host.
+fs4.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]

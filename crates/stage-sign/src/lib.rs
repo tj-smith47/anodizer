@@ -11,6 +11,7 @@ mod expected;
 mod helpers;
 mod keyload;
 mod process;
+mod tuf_cache;
 mod verify;
 
 pub use expected::expected_signature_assets;
