@@ -1378,6 +1378,8 @@ mod publish_stage_tests {
     // green (a hold can still be approved) while the evidence snapshot and
     // the outcome both carry the unresolved hold instead of a silent
     // "uploaded".
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn review_hold_is_recorded_on_evidence_not_reported_as_uploaded() {
@@ -1455,6 +1457,8 @@ mod publish_stage_tests {
     // not a manual-review hold — it must keep the non-fatal pending-warn
     // treatment WITHOUT stamping held_for_review (no review queue exists for
     // the operator to visit).
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn previous_upload_conflict_is_not_stamped_as_review_hold() {
