@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-07-10
+
+### Bug Fixes
+
+* 373b8af9f5c2 chocolatey nuspec drops the unsupported license element (CHCU0002) ([@tj-smith47](https://github.com/tj-smith47))
+* 7400c1241b67 scoop manifests default into bucket/ (root manifests are invisible to scoop) ([@tj-smith47](https://github.com/tj-smith47))
+* 3a576f321ade scope preflight state-probes to selected publishers ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.16.0] - 2026-07-10
 
 ### Features
@@ -609,7 +617,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/tj-smith47/anodizer/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...v0.16.0
 [0.15.5]: https://github.com/tj-smith47/anodizer/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/tj-smith47/anodizer/compare/v0.15.3...v0.15.4
