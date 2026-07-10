@@ -474,10 +474,8 @@ fn resolve_repository_host(
         ("github", r)
     } else if let Some(r) = release.gitlab.as_ref() {
         ("gitlab", r)
-    } else if let Some(r) = release.gitea.as_ref() {
-        ("gitea", r)
     } else {
-        return None;
+        ("gitea", release.gitea.as_ref()?)
     };
     if repo.owner.is_empty() || repo.name.is_empty() {
         return None;

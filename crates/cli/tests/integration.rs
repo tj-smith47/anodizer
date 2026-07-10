@@ -565,7 +565,7 @@ fn test_man_renders_roff() {
     assert!(
         stdout.starts_with(".ie ") || stdout.contains(".TH anodizer"),
         "man output should be roff (start with .ie or contain .TH anodizer), got first 200 bytes: {}",
-        &stdout.chars().take(200).collect::<String>()
+        stdout.chars().take(200).collect::<String>()
     );
     assert!(
         stdout.contains("anodizer"),

@@ -198,7 +198,7 @@ pub(super) fn preprocess_go_blocks(template: &str) -> String {
             if let Some(cap) = GO_WITH_RE.captures(remaining) {
                 let full = &cap[0];
                 let field = cap[2].to_string();
-                result.push_str(&tera_block(&cap[1], &format!("if {}", &field), &cap[3]));
+                result.push_str(&tera_block(&cap[1], &format!("if {field}"), &cap[3]));
                 block_stack.push(("with", Some(field)));
                 pos += full.len();
                 continue;

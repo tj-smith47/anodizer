@@ -1812,7 +1812,8 @@ pub(crate) fn check_publish_set_completeness(
 /// upgrades cargo to a different major.minor, that test fails and the
 /// maintainer must re-verify the substrings against the new cargo output
 /// before updating the pinned version. The strings were last verified
-/// against **cargo 1.96.x** (rustc 1.96.0, 2026-05-25).
+/// against **cargo 1.97.x** (verified in rust-lang/cargo branch
+/// rust-1.97.0: resolver/errors.rs and core/registry.rs, 2026-07-10).
 fn is_index_propagation_failure(stderr: &str) -> bool {
     stderr.contains("no matching package")
         || stderr.contains("failed to select a version")
@@ -5036,14 +5037,14 @@ mod tests {
     /// fixture that triggers each error substring and confirm the wording
     /// matches before bumping `VERIFIED_CARGO_MINOR` below.
     ///
-    /// The substrings were last verified against cargo 1.96.x (rustc 1.96.0,
-    /// released 2026-05-25). Bump `VERIFIED_CARGO_MINOR` only after
+    /// The substrings were last verified against cargo 1.97.x (rust-lang/cargo
+    /// branch rust-1.97.0 source, 2026-07-10). Bump `VERIFIED_CARGO_MINOR` only after
     /// manually confirming all three substrings still appear verbatim in
     /// the new cargo's publish output.
     #[test]
     fn cargo_version_matches_pinned_discriminator_strings() {
         // Last-verified cargo minor. Update together with re-verification.
-        const VERIFIED_CARGO_MINOR: u64 = 96;
+        const VERIFIED_CARGO_MINOR: u64 = 97;
 
         // Resolve cargo via the `CARGO` env var — the absolute path cargo
         // exports when it spawns the test binary — not PATH: a peer `#[serial]`

@@ -125,7 +125,7 @@ fn build_oauth1_header(
 
     let base_string = format!(
         "{}&{}&{}",
-        &method,
+        method,
         percent_encode(url),
         percent_encode(&param_string)
     );

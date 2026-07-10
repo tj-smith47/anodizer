@@ -142,17 +142,33 @@ mod tests {
 
     #[test]
     fn run_ticker_ticks_until_sender_drops() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        let mut ticks = 0u32;
+        let ticks = Arc::new(AtomicU32::new(0));
+        // Drop the sender only after two ticks have provably fired — a fixed
+        // wall-clock window is not assertable on a loaded CI runner, where
+        // recv_timeout can oversleep past the whole window. The generous
+        // deadline bails the loop so a broken ticker fails the assertion
+        // instead of hanging the test.
+        let observed = Arc::clone(&ticks);
         let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(120));
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while observed.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             drop(stop_tx);
         });
-        run_ticker(&stop_rx, Duration::from_millis(30), || ticks += 1);
+        let counter = Arc::clone(&ticks);
+        run_ticker(&stop_rx, Duration::from_millis(10), || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
         handle.join().expect("dropper thread");
+        let ticks = ticks.load(Ordering::SeqCst);
         assert!(
             ticks >= 2,
-            "a ~120ms window at a 30ms cadence must tick repeatedly; got {ticks}"
+            "the ticker must keep ticking until the sender drops; got {ticks}"
         );
     }
 

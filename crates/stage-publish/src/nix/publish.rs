@@ -509,10 +509,8 @@ fn release_repo_coords(
         (gh, "https://github.com")
     } else if let Some(gl) = release.gitlab.as_ref() {
         (gl, "https://gitlab.com")
-    } else if let Some(gt) = release.gitea.as_ref() {
-        (gt, "https://gitea.com")
     } else {
-        return None;
+        (release.gitea.as_ref()?, "https://gitea.com")
     };
     let owner = ctx.render_template(&repo_cfg.owner).ok()?;
     let repo = ctx.render_template(&repo_cfg.name).ok()?;
