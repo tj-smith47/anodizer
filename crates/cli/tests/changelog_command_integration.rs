@@ -1627,6 +1627,7 @@ fn github_native_release_notes_previews_from_local_git() {
         .arg("changelog")
         .args(["-q", "--format", "release-notes"])
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN");
     let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

@@ -5933,6 +5933,7 @@ crates:
         .env("ANODIZE_TEST_HARNESS", "1")
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -6004,6 +6005,7 @@ crates:
         .env("ANODIZE_TEST_HARNESS", "1")
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -6052,6 +6054,7 @@ crates:
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .current_dir(tmp.path())
         .output()
         .unwrap();

@@ -285,6 +285,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
@@ -402,6 +403,7 @@ fn publish_only_does_not_overwrite_preserved_config_yaml() {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
@@ -558,6 +560,7 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
@@ -570,7 +573,7 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "none of the env var(s) [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN] is set and non-empty"
+            "none of the env var(s) [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN] is set and non-empty"
         ),
         "env preflight must name every missing token env var; got:\n{stderr}"
     );
@@ -613,6 +616,7 @@ fn publish_only_no_preflight_suppresses_credential_check() {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
@@ -1115,6 +1119,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()

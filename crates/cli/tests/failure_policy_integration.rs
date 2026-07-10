@@ -86,6 +86,7 @@ fn run_failing_release(repo: &Path, extra_env: &[(&str, &str)]) -> std::process:
     .env("ANODIZE_TEST_HARNESS", "1")
     .env_remove("CARGO_REGISTRY_TOKEN")
     .env_remove("GITHUB_TOKEN")
+    .env_remove("GH_TOKEN")
     .env_remove("ANODIZER_GITHUB_TOKEN")
     .current_dir(repo);
     for (key, value) in extra_env {
@@ -379,6 +380,7 @@ crates:
         .env("ANODIZE_TEST_HARNESS", "1")
         .env_remove("CARGO_REGISTRY_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()

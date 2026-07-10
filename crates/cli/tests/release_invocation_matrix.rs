@@ -125,6 +125,7 @@ fn run_anodizer(tmp: &Path, args: &[&str]) -> std::process::Output {
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .output()
         .expect("invoke anodizer")

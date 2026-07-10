@@ -16,6 +16,7 @@ fn run_anodizer(dir: &Path, args: &[&str]) -> std::process::Output {
         .args(args)
         .current_dir(dir)
         .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .output()
         .expect("invoke anodizer")
