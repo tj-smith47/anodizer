@@ -246,12 +246,26 @@ mod tests {
         a
     }
 
+    /// Portable no-op sign command: `true` on Unix, `cmd /c exit 0` on
+    /// Windows (which has no `true` binary).
+    pub(super) fn noop_cmd() -> (Option<String>, Option<Vec<String>>) {
+        if cfg!(windows) {
+            (
+                Some("cmd".to_string()),
+                Some(vec!["/c".to_string(), "exit".to_string(), "0".to_string()]),
+            )
+        } else {
+            (Some("true".to_string()), Some(vec![]))
+        }
+    }
+
     fn checksum_sign(artifacts: &str) -> SignConfig {
+        let (cmd, args) = noop_cmd();
         SignConfig {
             id: Some("default".to_string()),
             artifacts: Some(artifacts.to_string()),
-            cmd: Some("true".to_string()),
-            args: Some(vec![]),
+            cmd,
+            args,
             ..Default::default()
         }
     }
@@ -523,11 +537,12 @@ mod subject_provenance_tests {
     }
 
     fn archive_sign() -> SignConfig {
+        let (cmd, args) = super::tests::noop_cmd();
         SignConfig {
             id: Some("default".to_string()),
             artifacts: Some("archive".to_string()),
-            cmd: Some("true".to_string()),
-            args: Some(vec![]),
+            cmd,
+            args,
             ..Default::default()
         }
     }
