@@ -20,8 +20,9 @@ pub mod worktree;
 mod tests;
 
 pub use commits::{
-    Commit, CommitWithFiles, CommitterIdentity, RELEASE_COMMIT_PREFIX, SHORT_COMMIT_LEN,
-    add_path_in, branches_containing_sha_in, commit_in, commit_subject_in, commits_between_in,
+    CHANGELOG_PROVENANCE_PREFIX, Commit, CommitWithFiles, CommitterIdentity, RELEASE_COMMIT_PREFIX,
+    SHORT_COMMIT_LEN, add_path_in, branches_containing_sha_in, changelog_regenerated_marker,
+    changelog_regenerated_recorded_in, commit_in, commit_subject_in, commits_between_in,
     commits_with_subjects_in, count_commits_since_last_tag_in, get_all_commits, get_all_commits_in,
     get_all_commits_paths, get_all_commits_paths_in, get_all_commits_paths_with_files_in,
     get_commit_messages_between, get_commit_messages_between_in, get_commit_messages_between_path,

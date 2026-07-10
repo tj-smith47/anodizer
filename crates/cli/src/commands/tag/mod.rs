@@ -956,6 +956,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         // dry-run-preview / real-write-and-stage split. The previous tag bounds
         // the rendered commit range (`old_tag_str` is empty on a first tag).
         let ws_root = Path::new(&workspace_root);
+        let mut cl_markers: Vec<String> = Vec::new();
         let cl_changed = if changelog_enabled {
             let from_tag = (!old_tag_str.is_empty()).then(|| old_tag_str.to_string());
             let targets = crate_name
@@ -980,7 +981,28 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 &loaded_config,
                 routing.root_crates,
             );
-            render_and_stage_changelogs(ws_root, &targets, &routing, opts.dry_run, &log)?
+            let changed =
+                render_and_stage_changelogs(ws_root, &targets, &routing, opts.dry_run, &log)?;
+            // Provenance markers for the bump commit body, derived from the
+            // paths actually written: a crate earns a marker only when its
+            // OWN crate-root CHANGELOG.md was regenerated, so the publish
+            // guard never forgives drift in a file the tool did not touch.
+            let marker_crates: Vec<(String, PathBuf, String)> = targets
+                .iter()
+                .map(|t| {
+                    (
+                        t.crate_name.clone(),
+                        t.crate_dir.clone(),
+                        t.to_version.clone(),
+                    )
+                })
+                .collect();
+            cl_markers = crate::commands::changelog_sync::changelog_provenance_markers(
+                ws_root,
+                &marker_crates,
+                &changed,
+            );
+            changed
         } else {
             Vec::new()
         };
@@ -1026,9 +1048,12 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             git::stage_and_commit_in(
                 &workspace_root_path,
                 &files_to_stage,
-                &git::release_bump_subject(
-                    &format!("{} → {}", path, new_version),
-                    skip_ci_suffix(cfg.skip_ci_on_bump),
+                &crate::commands::changelog_sync::commit_message_with_markers(
+                    git::release_bump_subject(
+                        &format!("{} → {}", path, new_version),
+                        skip_ci_suffix(cfg.skip_ci_on_bump),
+                    ),
+                    &cl_markers,
                 ),
             )?;
         }
@@ -1341,20 +1366,47 @@ fn apply_workspace_bump(
         false,
         log,
     )?);
-    for f in cl_changed {
-        if !staged_rel.contains(&f) {
-            staged_rel.push(f);
+    for f in &cl_changed {
+        if !staged_rel.contains(f) {
+            staged_rel.push(f.clone());
         }
     }
 
     let staged_refs: Vec<&str> = staged_rel.iter().map(|s| s.as_str()).collect();
 
+    // Provenance markers derived from the actually-written paths across ALL
+    // members (not just the per-crate targets): a root-only aggregate config
+    // regenerates no member's own CHANGELOG.md and mints no marker, while a
+    // member whose directory is the workspace root owns the root file and
+    // does.
+    let marker_crates: Vec<(String, PathBuf, String)> = ws
+        .members
+        .iter()
+        .map(|m| {
+            (
+                m.name.clone(),
+                m.manifest_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| workspace_root.to_path_buf()),
+                new_version.to_string(),
+            )
+        })
+        .collect();
+    let cl_markers = crate::commands::changelog_sync::changelog_provenance_markers(
+        workspace_root,
+        &marker_crates,
+        &cl_changed,
+    );
     git::stage_and_commit_in(
         workspace_root,
         &staged_refs,
-        &git::release_bump_subject(
-            &format!("workspace → {}", new_version),
-            skip_ci_suffix(skip_ci_on_bump),
+        &crate::commands::changelog_sync::commit_message_with_markers(
+            git::release_bump_subject(
+                &format!("workspace → {}", new_version),
+                skip_ci_suffix(skip_ci_on_bump),
+            ),
+            &cl_markers,
         ),
     )?;
 
@@ -2139,6 +2191,19 @@ fn run_per_crate_tag(
     } else {
         Vec::new()
     };
+    // The real packaged crates behind the targets, captured BEFORE the flat-
+    // aggregate collapse below replaces them with one synthetic project-label
+    // target — provenance markers must name publishable crates only.
+    let marker_crates: Vec<(String, PathBuf, String)> = changelog_targets
+        .iter()
+        .map(|t| {
+            (
+                t.crate_name.clone(),
+                t.crate_dir.clone(),
+                t.to_version.clone(),
+            )
+        })
+        .collect();
     // Per-crate(multi-track) targets already carry distinct correct tags, so a
     // single routed call covers both destinations (no aggregate split needed).
     let cl_config = changelog_config_for(anodizer_config);
@@ -2287,9 +2352,9 @@ fn run_per_crate_tag(
         // (repo-relative) paths into the same bump commit.
         let cl_changed =
             render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, false, log)?;
-        for f in cl_changed {
-            if !files_to_stage.contains(&f) {
-                files_to_stage.push(f);
+        for f in &cl_changed {
+            if !files_to_stage.contains(f) {
+                files_to_stage.push(f.clone());
             }
         }
 
@@ -2316,10 +2381,23 @@ fn run_per_crate_tag(
         } else {
             version_arrows.join(", ")
         };
+        // Markers derived from the actually-written paths per REAL crate: a
+        // crate earns one only when its own crate-root CHANGELOG.md was
+        // regenerated, so a shared-root-only write never vouches for member
+        // files the tool did not touch, and one crate's regeneration never
+        // vouches for a same-numbered version of a sibling.
+        let cl_markers = crate::commands::changelog_sync::changelog_provenance_markers(
+            &cwd,
+            &marker_crates,
+            &cl_changed,
+        );
         git::stage_and_commit_in(
             &workspace_root,
             &staged_refs,
-            &git::release_bump_subject(&bump_summary, skip_ci_suffix(cfg.skip_ci_on_bump)),
+            &crate::commands::changelog_sync::commit_message_with_markers(
+                git::release_bump_subject(&bump_summary, skip_ci_suffix(cfg.skip_ci_on_bump)),
+                &cl_markers,
+            ),
         )?;
 
         // Pre hooks run once per unique tag, after the bump commit and before

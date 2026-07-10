@@ -185,6 +185,49 @@ pub(crate) fn render_and_stage_changelogs(
     Ok(written)
 }
 
+/// Changelog-provenance marker lines for a version-bump commit body: one
+/// `changelog regenerated for <crate>@<version>` line per packaged crate whose
+/// OWN crate-root `CHANGELOG.md` is among the `written` repo-relative paths
+/// returned by [`render_and_stage_changelogs`].
+///
+/// Deriving from the actually-written paths (never from "the changelog ran")
+/// is what keeps the marker honest: a root-only aggregate config writes the
+/// workspace-root `CHANGELOG.md` and no member files, so no member earns a
+/// marker — unless a crate's directory IS the workspace root, in which case
+/// the root file is that crate's own changelog and its marker is warranted.
+///
+/// `crates` is the set of REAL packaged crates as `(name, crate_dir, version)`
+/// — synthetic aggregate targets (whose `crate_name` is a project label, not a
+/// publishable crate) must not be passed in.
+pub(crate) fn changelog_provenance_markers(
+    workspace_root: &Path,
+    crates: &[(String, PathBuf, String)],
+    written: &[String],
+) -> Vec<String> {
+    let mut markers: Vec<String> = Vec::new();
+    for (name, dir, version) in crates {
+        let rel = rel_display(workspace_root, &dir.join("CHANGELOG.md"));
+        if written.iter().any(|w| w == &rel) {
+            let marker = anodizer_core::git::changelog_regenerated_marker(name, version);
+            if !markers.contains(&marker) {
+                markers.push(marker);
+            }
+        }
+    }
+    markers
+}
+
+/// Append changelog-provenance marker lines to a version-bump commit message.
+/// With no markers the message is returned unchanged, byte-identical to the
+/// pre-provenance form.
+pub(crate) fn commit_message_with_markers(message: String, markers: &[String]) -> String {
+    if markers.is_empty() {
+        message
+    } else {
+        format!("{message}\n\n{}", markers.join("\n"))
+    }
+}
+
 /// Write (or, under `dry_run`, preview) one rendered changelog update and fold
 /// its repo-relative path into `written` (deduplicated).
 fn persist_update(
@@ -546,5 +589,112 @@ mod tests {
             full_tag: "core-v0.2.0".to_string(),
         };
         assert_eq!(t.full_tag, "core-v0.2.0");
+    }
+
+    #[test]
+    fn provenance_markers_only_for_crates_whose_own_changelog_was_written() {
+        let ws = Path::new("/ws");
+        let crates = vec![
+            (
+                "core".to_string(),
+                PathBuf::from("/ws/crates/core"),
+                "0.2.0".to_string(),
+            ),
+            (
+                "cli".to_string(),
+                PathBuf::from("/ws/crates/cli"),
+                "0.3.0".to_string(),
+            ),
+        ];
+        // Only core's own file was written (plus the shared root, which is not
+        // any crate's changelog here).
+        let written = vec![
+            "crates/core/CHANGELOG.md".to_string(),
+            "CHANGELOG.md".to_string(),
+        ];
+        assert_eq!(
+            changelog_provenance_markers(ws, &crates, &written),
+            vec!["changelog regenerated for core@0.2.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn provenance_markers_root_only_aggregate_mints_none() {
+        let ws = Path::new("/ws");
+        let crates = vec![
+            (
+                "core".to_string(),
+                PathBuf::from("/ws/crates/core"),
+                "1.0.0".to_string(),
+            ),
+            (
+                "cli".to_string(),
+                PathBuf::from("/ws/crates/cli"),
+                "1.0.0".to_string(),
+            ),
+        ];
+        // Root-only config: the tool wrote the workspace-root aggregate and no
+        // member's own file — no member earns forgiveness.
+        let written = vec!["CHANGELOG.md".to_string()];
+        assert!(changelog_provenance_markers(ws, &crates, &written).is_empty());
+    }
+
+    #[test]
+    fn provenance_markers_crate_at_workspace_root_owns_the_root_file() {
+        let ws = Path::new("/ws");
+        let crates = vec![(
+            "solo".to_string(),
+            PathBuf::from("/ws"),
+            "1.2.3".to_string(),
+        )];
+        let written = vec!["CHANGELOG.md".to_string()];
+        assert_eq!(
+            changelog_provenance_markers(ws, &crates, &written),
+            vec!["changelog regenerated for solo@1.2.3".to_string()]
+        );
+    }
+
+    #[test]
+    fn provenance_markers_deduplicate() {
+        let ws = Path::new("/ws");
+        let crates = vec![
+            (
+                "core".to_string(),
+                PathBuf::from("/ws/crates/core"),
+                "0.2.0".to_string(),
+            ),
+            (
+                "core".to_string(),
+                PathBuf::from("/ws/crates/core"),
+                "0.2.0".to_string(),
+            ),
+        ];
+        let written = vec!["crates/core/CHANGELOG.md".to_string()];
+        assert_eq!(changelog_provenance_markers(ws, &crates, &written).len(), 1);
+    }
+
+    #[test]
+    fn commit_message_with_markers_without_markers_is_unchanged() {
+        assert_eq!(
+            commit_message_with_markers("chore(release): bump crates/x → 1.0.0".to_string(), &[]),
+            "chore(release): bump crates/x → 1.0.0"
+        );
+    }
+
+    #[test]
+    fn commit_message_with_markers_appends_body_lines() {
+        let msg = commit_message_with_markers(
+            "chore(release): bump core→0.2.0, cli→0.3.0".to_string(),
+            &[
+                anodizer_core::git::changelog_regenerated_marker("core", "0.2.0"),
+                anodizer_core::git::changelog_regenerated_marker("cli", "0.3.0"),
+            ],
+        );
+        assert_eq!(
+            msg,
+            "chore(release): bump core→0.2.0, cli→0.3.0\n\n\
+             changelog regenerated for core@0.2.0\n\
+             changelog regenerated for cli@0.3.0"
+        );
     }
 }

@@ -189,7 +189,8 @@ pub(crate) fn with_published_crate_scope<T>(
 /// Hint forms:
 /// - HTTPS (homebrew / scoop / nix): pass `Some("HOMEBREW_TAP_TOKEN")` so
 ///   the hint reads `check $HOMEBREW_TAP_TOKEN is set in this shell or the
-///   configured ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN fallback` (the
+///   configured ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN
+///   fallback` (the
 ///   fallback ladder is interpolated from
 ///   [`anodizer_core::git::github_token_env_hint`], never hand-spelled).
 /// - SSH (AUR): pass `None` and the hint points at the `publish.aur.private_key`
@@ -535,7 +536,7 @@ mod tests {
         // The fallback ladder names EVERY var the resolution chain reads,
         // in precedence order (rendered from GITHUB_TOKEN_ENV_LADDER).
         assert!(
-            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN"),
+            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN"),
             "{msg}"
         );
         assert!(msg.contains("manual cleanup"), "{msg}");

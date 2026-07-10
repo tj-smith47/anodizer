@@ -817,6 +817,25 @@ changelog:
         !cl.contains("groundwork before the release"),
         "section must exclude pre-v0.1.0 history (from_tag resolved wrong): {cl}"
     );
+
+    // The crate lives at the workspace root, so the regenerated root
+    // CHANGELOG.md is its OWN crate-root file — the bump commit must carry
+    // the crate-scoped provenance marker even when the tag is later minted
+    // outside `anodizer tag` (manual-tag workflow).
+    let msg = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["log", "-1", "--pretty=%B"]);
+            cmd
+        },
+        "git",
+    );
+    let msg = String::from_utf8_lossy(&msg.stdout);
+    assert!(
+        msg.contains("changelog regenerated for demo@0.1.1"),
+        "bump commit must record the changelog provenance marker: {msg}"
+    );
 }
 
 /// The new default: `bump --commit` WITHOUT `--changelog` writes no CHANGELOG.md

@@ -292,7 +292,101 @@ fn classify_html(body: &str) -> PageVerdict {
     // diagnostic detail rather than guessing. The poller will keep
     // sampling; if the page eventually adds an Approved callout, the
     // next round catches it.
-    PageVerdict::Pending("status callout not yet present on page".to_string())
+    PageVerdict::Pending(NO_CALLOUT_DETAIL.to_string())
+}
+
+/// Detail string of [`classify_html`]'s catch-all arm — a 200 page carrying
+/// none of the verified moderation/approval callouts. Named so the burn
+/// probe can tell "definite pending/approved evidence" apart from "page
+/// resolved but says nothing recognizable" without re-parsing the body.
+const NO_CALLOUT_DETAIL: &str = "status callout not yet present on page";
+
+/// One-shot burn-detection probe: is `package@version` already known to the
+/// Chocolatey community gallery in a state that blocks re-submitting the same
+/// version?
+///
+/// Chocolatey's flat OData API (`/api/v2/Packages`) surfaces only APPROVED
+/// versions — a submission sitting in the human-moderation queue is invisible
+/// there yet still blocks a re-push of the same version. The HTML version
+/// page is the one public signal that covers both states, so this probe
+/// scrapes it, reusing the classifier the post-publish moderation poller
+/// pins against live pages.
+///
+/// The probe refuses only on POSITIVE evidence:
+///
+/// - `Ok(Some(detail))` — the page carries a verified approved / in-moderation
+///   callout; the version is consumed and a same-version re-cut cannot land
+///   cleanly.
+/// - `Ok(None)` — the version was never submitted: the gallery returns 404,
+///   OR redirects away from the requested version page (redirects are NOT
+///   followed — a 3xx means the exact `/<id>/<version>` page does not exist),
+///   OR returns a 200 with no recognizable callout (uncertainty warns and
+///   clears rather than blocking a legitimate recovery on scraper drift).
+/// - `Err` — the gallery could not be consulted (transport failure, 5xx
+///   after the shallow retry ladder). Callers taking destructive decisions
+///   choose their own fail-open/fail-closed stance on this.
+///
+/// `page_base_url` is normally `https://community.chocolatey.org` — exposed
+/// so tests can point at a local responder.
+pub fn version_blocked_on_gallery(
+    page_base_url: &str,
+    package: &str,
+    version: &str,
+    log: &StageLogger,
+) -> anyhow::Result<Option<String>> {
+    use anodizer_core::http::blocking_client_no_redirect;
+    use anodizer_core::retry::{SuccessClass, http_status};
+    let url = format!(
+        "{}/packages/{}/{}",
+        page_base_url.trim_end_matches('/'),
+        package,
+        version
+    );
+    let client = blocking_client_no_redirect(REQUEST_TIMEOUT)?;
+    let label = format!("chocolatey burn probe for '{package}-{version}'");
+    // AllowRedirects + the non-following client hands 3xx to the match below
+    // instead of retrying it as a failure status.
+    let result = super::burn_probe_get(
+        &label,
+        &client,
+        &url,
+        |req| req,
+        SuccessClass::AllowRedirects,
+        |status, _| format!("community gallery returned {status} for {url}"),
+        log,
+    );
+    match result {
+        Ok((status, _)) if status.is_redirection() => {
+            log.verbose(&format!(
+                "gallery redirected away from {url} ({status}) — the version page does \
+                 not exist"
+            ));
+            Ok(None)
+        }
+        Ok((_status, body)) => match classify_html(&body) {
+            PageVerdict::Approved(d) => Ok(Some(format!("approved on the gallery ({d})"))),
+            PageVerdict::Pending(d) if d == NO_CALLOUT_DETAIL => {
+                log.warn(&format!(
+                    "the gallery page for '{package}-{version}' resolved but carries no \
+                     recognizable moderation callout ({url}); treating it as NOT blocking — \
+                     verify manually before re-submitting the same version"
+                ));
+                Ok(None)
+            }
+            PageVerdict::Pending(d) => Ok(Some(format!("submitted, currently: {d}"))),
+            // classify_html never returns the transport-layer variants (it
+            // only sees response bodies); mirror the uncertain-200 stance
+            // rather than panicking a destructive-decision path.
+            PageVerdict::NotFound | PageVerdict::NetworkError(_) => {
+                log.warn(&format!(
+                    "unexpected classifier verdict for {url}; treating it as NOT blocking"
+                ));
+                Ok(None)
+            }
+        },
+        Err(e) if http_status(&e) == 404 => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

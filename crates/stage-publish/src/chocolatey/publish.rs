@@ -165,10 +165,7 @@ pub fn publish_to_chocolatey(
         return Ok(false);
     }
 
-    let source = choco_cfg
-        .source_repo
-        .as_deref()
-        .unwrap_or("https://push.chocolatey.org/");
+    let source = super::push_source(choco_cfg);
 
     // Idempotency with drift detection: Chocolatey package versions are
     // immutable once submitted, so re-pushing returns 403. A

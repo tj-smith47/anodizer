@@ -376,44 +376,72 @@ pub fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
     }
 }
 
-/// Whether anodizer's changelog stage (re)generates on-disk `CHANGELOG.md`
-/// files under this run's config — the condition under which a crate-root
-/// `CHANGELOG.md` difference against an already-published version is
-/// anodizer's own re-cut artifact rather than operator-authored drift (see
+/// Whether the version-bump commit that LAST touched this crate's own
+/// `CHANGELOG.md` records that anodizer itself regenerated it for
+/// `crate_name` at `version` — the provenance under which a crate-root
+/// `CHANGELOG.md` difference against an already-published version is the
+/// tool's own re-cut artifact rather than operator-authored drift (see
 /// [`crates_equal_modulo_vcs`]).
 ///
-/// Mirrors the gates `ChangelogStage::run` applies before writing files (a
-/// deliberate pairing — keep the two in sync when the stage grows a new
-/// gate):
-/// - a `changelog:` block must be configured,
-/// - the stage must not be `--skip`ped,
-/// - snapshot mode skips the stage unless `changelog.snapshot: true`,
-/// - `use: github-native` delegates the release body to GitHub's API and
-///   writes no on-disk changelog files,
-/// - a truthy `changelog.skip` template turns the stage off. An unrenderable
-///   template also counts as inactive: the guard then stays byte-strict on
-///   CHANGELOG.md (fail closed) instead of forgiving drift it cannot prove
-///   the tool produced.
-fn changelog_stage_regenerates_files(ctx: &Context) -> bool {
-    let Some(cfg) = ctx.config.changelog.as_ref() else {
-        return false;
-    };
-    if ctx.should_skip("changelog") {
-        return false;
-    }
-    if ctx.is_snapshot() && !cfg.resolved_snapshot() {
-        return false;
-    }
-    if cfg.resolved_use_source() == "github-native" {
-        return false;
-    }
-    if let Some(d) = cfg.skip.as_ref() {
-        match d.try_evaluates_to_true(|s| ctx.render_template(s)) {
-            Ok(false) => {}
-            Ok(true) | Err(_) => return false,
+/// The marker is written by the `tag` / `bump --commit` `--changelog` refresh
+/// into the bump commit body (see
+/// [`anodizer_core::git::changelog_regenerated_marker`]), so it travels with
+/// the repository to any later publish run — including a `--publish-only`
+/// re-cut whose own invocation skips the changelog stage. Keying on the
+/// FILE's provenance (who last wrote it, for which version) rather than this
+/// run's changelog stage config closes both failure modes of the config
+/// proxy: a `--skip=changelog` / `use: github-native` publish run no longer
+/// dead-ends on the tool's own regeneration, and an active changelog stage
+/// no longer forgives drift the tool never produced. Anchoring on the file's
+/// LAST toucher (not any marker in history) means an operator hand-edit
+/// committed after the regeneration withdraws the forgiveness.
+///
+/// `changelog_rel_path` is the crate's own `CHANGELOG.md`, repo-relative.
+/// A git failure counts as "no provenance" (fail closed: the guard stays
+/// byte-strict on `CHANGELOG.md` when it cannot prove the tool wrote it) and
+/// is warned at default visibility, since it changes the guard's stance — a
+/// shallow clone that cannot see the bump commit hard-fails on drift the tool
+/// authored.
+fn changelog_provenance_recorded(
+    ctx: &Context,
+    crate_name: &str,
+    version: &str,
+    changelog_rel_path: &str,
+    log: &StageLogger,
+) -> bool {
+    let repo = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    match anodizer_core::git::changelog_regenerated_recorded_in(
+        &repo,
+        crate_name,
+        version,
+        changelog_rel_path,
+    ) {
+        Ok(recorded) => recorded,
+        Err(e) => {
+            log.warn(&format!(
+                "could not consult git history for the changelog provenance marker of \
+                 '{crate_name}-{version}' ({e:#}); treating CHANGELOG.md as byte-strict — \
+                 a CHANGELOG.md difference against the published version will hard-fail"
+            ));
+            false
         }
     }
-    true
+}
+
+/// Repo-relative path of a crate's own `CHANGELOG.md`, derived from its
+/// configured `path` (`"."`/empty = the repo root). `/`-separated, matching
+/// how git and the bump commit's write set address the file.
+fn crate_changelog_rel_path(crate_path: &str) -> String {
+    let dir = crate_path.trim_end_matches('/');
+    if dir.is_empty() || dir == "." {
+        "CHANGELOG.md".to_string()
+    } else {
+        format!("{dir}/CHANGELOG.md")
+    }
 }
 
 /// Local `.crate` package produced by [`local_crate_cksum`]: the sha256 the
@@ -593,8 +621,9 @@ enum RecutNormalization {
     /// Crate-root `.cargo_vcs_info.json`, compared modulo its `git.sha1`
     /// field (the release commit stamp of a same-source re-cut).
     VcsCommitStamp,
-    /// Crate-root `CHANGELOG.md`, forgiven because the changelog stage is
-    /// active for this run and regenerates the file on every re-cut.
+    /// Crate-root `CHANGELOG.md`, forgiven because the bump commit that last
+    /// touched it carries anodizer's regeneration provenance marker for this
+    /// crate@version.
     ChangelogRegenerated,
     /// Crate-root `Cargo.lock` on a crate with no binary targets: cargo
     /// ignores a dependency's packaged lockfile for library consumers, so
@@ -607,7 +636,7 @@ impl RecutNormalization {
     fn describe(self) -> &'static str {
         match self {
             Self::VcsCommitStamp => ".cargo_vcs_info.json (commit stamp)",
-            Self::ChangelogRegenerated => "CHANGELOG.md (regenerated by the changelog stage)",
+            Self::ChangelogRegenerated => "CHANGELOG.md (bump-commit regeneration provenance)",
             Self::LockfileLibOnly => "Cargo.lock (lib-only crate)",
         }
     }
@@ -764,10 +793,12 @@ fn packaged_crate_has_bin_targets(
 ///
 /// - `.cargo_vcs_info.json` — compared modulo its `git.sha1` field (a
 ///   legitimate per-commit delta — see [`local_crate_cksum`]).
-/// - `CHANGELOG.md` — forgiven ONLY when `changelog_stage_active` is true:
-///   anodizer's changelog stage regenerates the file on every re-cut, so
-///   the drift is the tool's own artifact. With no changelog stage in play
-///   the drift is operator-authored and stays a hard divergence.
+/// - `CHANGELOG.md` — forgiven ONLY when `changelog_regenerated` is true
+///   (the bump-commit history carries a provenance marker proving anodizer
+///   regenerated the file for this crate@version — see
+///   [`changelog_provenance_recorded`]), so the drift is the tool's own
+///   artifact. Without that provenance the drift is operator-authored (or
+///   belongs to a different version) and stays a hard divergence.
 /// - `Cargo.lock` — forgiven ONLY for lib-only crates (no binary or
 ///   example targets; see [`packaged_crate_has_bin_targets`]): cargo
 ///   ignores a dependency's packaged lockfile for library consumers, but
@@ -782,7 +813,7 @@ fn packaged_crate_has_bin_targets(
 fn crates_equal_modulo_vcs(
     local_crate: &[u8],
     published_crate: &[u8],
-    changelog_stage_active: bool,
+    changelog_regenerated: bool,
 ) -> Result<CrateContentMatch> {
     let local_entries = read_crate_entries(local_crate)
         .context("publish: unpack local .crate for content comparison")?;
@@ -823,13 +854,18 @@ fn crates_equal_modulo_vcs(
                 _ => differs.push(path_str),
             }
         } else if is_crate_root_entry(path, "CHANGELOG.md") {
-            if changelog_stage_active {
+            if changelog_regenerated {
                 normalized.push(RecutNormalization::ChangelogRegenerated);
             } else {
                 differs.push(format!(
-                    "{path_str} (not treated as a release-process artifact: no changelog \
-                     stage is configured/enabled for this run, so anodizer did not \
-                     regenerate this file and the drift is real)"
+                    "{path_str} (not treated as a release-process artifact: the last commit \
+                     touching this crate's CHANGELOG.md carries no `changelog regenerated for \
+                     <crate>@<version>` provenance marker, so there is no proof anodizer \
+                     regenerated this file and the drift is treated as real. If anodizer DID \
+                     regenerate it, re-cut the version via `anodizer tag --changelog` so the \
+                     bump commit records the marker; if the bump commit exists but is outside \
+                     a shallow clone's history, use a full-depth checkout — actions/checkout \
+                     `fetch-depth: 0`)"
                 ));
             }
         } else if is_crate_root_entry(path, "Cargo.lock") {
@@ -883,8 +919,9 @@ enum CargoSkipDecision {
 ///    The equivalence set is built in (never user-configurable) and covers,
 ///    at the crate-root position only:
 ///    - `.cargo_vcs_info.json` modulo `git.sha1` (always);
-///    - `CHANGELOG.md` (only when `changelog_stage_active` — anodizer's own
-///      changelog stage regenerates it between re-cuts);
+///    - `CHANGELOG.md` (only when `changelog_regenerated` — a bump-commit
+///      provenance marker proves anodizer regenerated it for this
+///      crate@version; see [`changelog_provenance_recorded`]);
 ///    - `Cargo.lock` (only for lib-only crates — binary crates expose the
 ///      packaged lockfile to consumers via `cargo install --locked`).
 ///
@@ -917,7 +954,7 @@ fn decide_already_published(
     index_cksum: &str,
     crate_cfg: &CrateConfig,
     cargo_cfg: Option<&CargoPublishConfig>,
-    changelog_stage_active: bool,
+    changelog_regenerated: bool,
     local_crate_check: impl Fn(
         &str,
         &CrateConfig,
@@ -992,7 +1029,7 @@ fn decide_already_published(
         );
     }
 
-    match crates_equal_modulo_vcs(&local.bytes, &published_bytes, changelog_stage_active)? {
+    match crates_equal_modulo_vcs(&local.bytes, &published_bytes, changelog_regenerated)? {
         CrateContentMatch::Equivalent { normalized } => {
             // `normalized` is non-empty whenever this arm is reached from the
             // real pipeline (byte-identical archives take the fast path), but
@@ -2456,12 +2493,6 @@ fn publish_to_cargo_with_guard(
     // pattern used by artifactory/cloudsmith.
     let retry_policy = ctx.retry_policy();
 
-    // Resolved once for the whole publish set: whether this run's config has
-    // the changelog stage regenerating on-disk CHANGELOG.md files, which is
-    // what lets the already-published guard treat crate-root CHANGELOG.md
-    // drift on a re-cut as anodizer's own artifact instead of a poison.
-    let changelog_stage_active = changelog_stage_regenerates_files(ctx);
-
     // Hard backstop, BEFORE the first irreversible `cargo publish`: refuse to
     // start when any crate in the publish set has a workspace-internal
     // (non-dev) dependency that is neither in the set nor already on
@@ -2589,7 +2620,13 @@ fn publish_to_cargo_with_guard(
                         &index_cksum,
                         crate_cfg,
                         cargo_cfg,
-                        changelog_stage_active,
+                        changelog_provenance_recorded(
+                            ctx,
+                            name,
+                            &crate_version,
+                            &crate_changelog_rel_path(&crate_cfg.path),
+                            log,
+                        ),
                         &local_cksum_check,
                         |n, v| fetch_published(n, v, &retry_policy, log),
                         log,
@@ -4239,13 +4276,96 @@ mod tests {
     const BIN_MANIFEST: &[u8] = b"[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[[bin]]\nname = \"c\"\npath = \"src/main.rs\"\n";
 
     #[test]
-    fn decide_already_published_recut_changelog_and_lockfile_skips_with_changelog_stage() {
+    fn changelog_provenance_recorded_matches_marker_and_fails_closed() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(args)
+                        .current_dir(tmp.path())
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(tmp.path().join("CHANGELOG.md"), "notes").unwrap();
+        run(&["add", "."]);
+        let msg = format!(
+            "chore(release): bump workspace → 1.0.0\n\n{}",
+            anodizer_core::git::changelog_regenerated_marker("c", "1.0.0")
+        );
+        run(&["commit", "-m", &msg]);
+
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let ctx = TestContextBuilder::new()
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let rel = crate_changelog_rel_path(".");
+        assert!(changelog_provenance_recorded(
+            &ctx, "c", "1.0.0", &rel, &log
+        ));
+        assert!(!changelog_provenance_recorded(
+            &ctx, "c", "1.0.1", &rel, &log
+        ));
+        // The marker binds to its crate — a sibling at the same version has
+        // no provenance of its own.
+        assert!(!changelog_provenance_recorded(
+            &ctx, "other", "1.0.0", &rel, &log
+        ));
+
+        // A later hand-edit makes an unmarked commit the file's last toucher —
+        // provenance is withdrawn, the guard reverts to byte-strict.
+        std::fs::write(tmp.path().join("CHANGELOG.md"), "notes\nedited").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "docs: tweak changelog"]);
+        assert!(!changelog_provenance_recorded(
+            &ctx, "c", "1.0.0", &rel, &log
+        ));
+
+        // A non-repo project root cannot prove provenance — fail closed.
+        let bare = tempfile::tempdir().unwrap();
+        let ctx = TestContextBuilder::new()
+            .project_root(bare.path().to_path_buf())
+            .build();
+        assert!(!changelog_provenance_recorded(
+            &ctx, "c", "1.0.0", &rel, &log
+        ));
+    }
+
+    #[test]
+    fn crate_changelog_rel_path_handles_root_and_nested_crates() {
+        assert_eq!(crate_changelog_rel_path("."), "CHANGELOG.md");
+        assert_eq!(crate_changelog_rel_path(""), "CHANGELOG.md");
+        assert_eq!(crate_changelog_rel_path("./"), "CHANGELOG.md");
+        assert_eq!(
+            crate_changelog_rel_path("crates/core"),
+            "crates/core/CHANGELOG.md"
+        );
+        assert_eq!(
+            crate_changelog_rel_path("crates/core/"),
+            "crates/core/CHANGELOG.md"
+        );
+    }
+
+    #[test]
+    fn decide_already_published_recut_changelog_and_lockfile_skips_with_provenance() {
         // The exact cfgd-crd@0.5.0 scenario: a re-cut of a partially-published
         // workspace release where the published crate and the local re-cut
         // differ in exactly two crate-root files — CHANGELOG.md (regenerated
-        // by anodizer's changelog stage between re-cuts) and Cargo.lock (the
-        // workspace lockfile moved via an unrelated dependency bump) — on a
-        // lib-only crate. Sources identical ⇒ safe idempotent Skip.
+        // by anodizer, proven by the bump-commit provenance marker) and
+        // Cargo.lock (the workspace lockfile moved via an unrelated dependency
+        // bump) — on a lib-only crate. Sources identical ⇒ safe idempotent
+        // Skip.
         let local_bytes = make_crate_tarball(&[
             ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
             ("c-1.0.0/src/lib.rs", b"fn a() {}"),
@@ -4300,10 +4420,13 @@ mod tests {
     }
 
     #[test]
-    fn decide_already_published_changelog_drift_without_changelog_stage_hard_fails() {
-        // Same CHANGELOG.md delta, but no changelog stage configured for the
-        // run: anodizer did not regenerate the file, so the drift is real and
-        // the guard must hard-fail, naming the file AND the why.
+    fn decide_already_published_changelog_drift_without_provenance_hard_fails() {
+        // Same CHANGELOG.md delta, but no bump commit records a
+        // changelog-provenance marker for this crate@version: there is no
+        // proof anodizer regenerated the file, so the drift is real and the
+        // guard must hard-fail, naming the file AND the why. This is also
+        // what closes the old any-drift-forgiven hole — an active changelog
+        // stage in the current run proves nothing about who wrote the file.
         let local_bytes = make_crate_tarball(&[
             ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
             (
@@ -4348,15 +4471,21 @@ mod tests {
             fetch,
             &log,
         )
-        .expect_err("CHANGELOG.md drift with no changelog stage ⇒ hard fail");
+        .expect_err("CHANGELOG.md drift with no provenance marker ⇒ hard fail");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("c-1.0.0/CHANGELOG.md"),
             "must name the file: {msg}"
         );
         assert!(
-            msg.contains("no changelog stage is configured/enabled for this run"),
+            msg.contains("carries no `changelog regenerated for <crate>@<version>`"),
             "must say why the file was not treated as equivalent: {msg}"
+        );
+        // The remedies must be actionable: re-cut with provenance, or unshallow
+        // the checkout so an existing bump commit becomes visible.
+        assert!(
+            msg.contains("anodizer tag --changelog") && msg.contains("fetch-depth: 0"),
+            "must name both remedies: {msg}"
         );
     }
 

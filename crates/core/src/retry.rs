@@ -142,6 +142,23 @@ impl RetryPolicy {
         max_delay: Duration::from_secs(1),
     };
 
+    /// Shallow policy for burn-detection guard probes (published-state
+    /// registry lookups made before a destructive rollback): 3 attempts, 1s
+    /// base, 30s cap.
+    ///
+    /// A guard consults one registry endpoint per crate/package, and a
+    /// multi-crate workspace probes many of them in one pass, so the
+    /// production write-ladder (up to ~25 minutes of backoff per operation)
+    /// would let a registry outage stall the guard for hours before it can
+    /// classify the outcome. A shallow, capped ladder keeps the whole probe
+    /// pass bounded while still absorbing a transient blip; the guard's own
+    /// fail-closed / fail-open classification handles genuine outages.
+    pub const GUARD_PROBE: RetryPolicy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(30),
+    };
+
     pub fn delay_for(&self, next_attempt: u32) -> Duration {
         // `next_attempt` is the attempt we're about to run (≥2). The wait
         // before attempt 2 uses base_delay; before attempt 3 uses base_delay*2;
@@ -1343,6 +1360,28 @@ mod tests {
         assert!(
             total_sleep < Duration::from_secs(1),
             "preflight backoff sleeps must stay sub-second, got {total_sleep:?}"
+        );
+    }
+
+    /// Locks the shallow shape of the burn-detection guard probe policy so a
+    /// future edit cannot silently re-point the published-state guards at the
+    /// production write-ladder, which would let a registry outage stall a
+    /// multi-crate probe pass for hours before it can fail closed.
+    #[test]
+    fn guard_probe_policy_is_shallow_and_capped() {
+        let p = RetryPolicy::GUARD_PROBE;
+        assert_eq!(p.max_attempts, 3);
+        assert_eq!(p.base_delay, Duration::from_secs(1));
+        assert_eq!(p.max_delay, Duration::from_secs(30));
+        // Every individual sleep must respect the 30s cap, and the whole
+        // ladder must stay bounded (worst case: 1s + 2s of backoff).
+        for n in 2..=p.max_attempts {
+            assert!(p.delay_for(n) <= Duration::from_secs(30));
+        }
+        let total_sleep: Duration = (2..=p.max_attempts).map(|n| p.delay_for(n)).sum();
+        assert!(
+            total_sleep <= Duration::from_secs(3),
+            "guard probe backoff must stay in seconds, got {total_sleep:?}"
         );
     }
 

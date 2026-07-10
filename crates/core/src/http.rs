@@ -24,6 +24,20 @@ pub fn blocking_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
         .context("build blocking HTTP client")
 }
 
+/// [`blocking_client`] with redirect-following disabled: a 3xx response is
+/// returned to the caller instead of being chased. For probes whose verdict
+/// depends on whether a SPECIFIC URL resolves (e.g. a registry version page),
+/// silently following a redirect to a different page would misattribute the
+/// destination's body to the requested resource.
+pub fn blocking_client_no_redirect(timeout: Duration) -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("build blocking HTTP client (no redirects)")
+}
+
 /// Async equivalent of `blocking_client`.
 pub fn async_client(timeout: Duration) -> Result<reqwest::Client> {
     reqwest::Client::builder()

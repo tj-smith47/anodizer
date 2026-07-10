@@ -228,6 +228,19 @@ fn commit_plan(
     // so it can't drift from `tag`/`changelog`. The routing gate
     // (`root_enabled && !per_crate`) still applies: per-crate files keep their
     // per-crate sections.
+    // The real packaged crates behind the targets, captured BEFORE the flat-
+    // aggregate collapse below replaces them with one synthetic project-label
+    // target — provenance markers must name publishable crates only.
+    let marker_crates: Vec<(String, PathBuf, String)> = changelog_targets
+        .iter()
+        .map(|t| {
+            (
+                t.crate_name.clone(),
+                t.crate_dir.clone(),
+                t.to_version.clone(),
+            )
+        })
+        .collect();
     if changelog_enabled
         && changelog_targets.len() > 1
         && routing.root_enabled
@@ -276,12 +289,22 @@ fn commit_plan(
         false,
         log,
     )?;
-    for rel in changelog_paths {
-        let path = workspace_root.join(&rel);
+    for rel in &changelog_paths {
+        let path = workspace_root.join(rel);
         if !staged.contains(&path) {
             staged.push(path);
         }
     }
+
+    // Provenance markers ride in the bump commit even when the tag is later
+    // minted outside `anodizer tag` (a manual-tag workflow): the publish
+    // guard's forgiveness keys on the bump commit that last touched each
+    // crate's CHANGELOG.md, regardless of which command created the tag.
+    let cl_markers = crate::commands::changelog_sync::changelog_provenance_markers(
+        workspace_root,
+        &marker_crates,
+        &changelog_paths,
+    );
 
     // Cargo.lock update if present.
     let lockfile = workspace_root.join("Cargo.lock");
@@ -294,10 +317,14 @@ fn commit_plan(
         anodizer_core::git::add_path_in(workspace_root, rel)?;
     }
 
-    let message = opts
-        .commit_message
-        .clone()
-        .unwrap_or_else(|| default_commit_message(rows));
+    // Markers append to a user-supplied `--message` too: provenance must
+    // survive a custom subject or the guard loses the regeneration proof.
+    let message = crate::commands::changelog_sync::commit_message_with_markers(
+        opts.commit_message
+            .clone()
+            .unwrap_or_else(|| default_commit_message(rows)),
+        &cl_markers,
+    );
 
     anodizer_core::git::commit_in(workspace_root, &message, opts.sign)?;
     log.verbose(&format!("created commit \"{}\"", message));

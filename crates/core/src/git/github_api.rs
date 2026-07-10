@@ -159,15 +159,18 @@ pub fn commit_author_login_with_binary(
 
 /// The ordered env-var ladder consulted (after any explicit CLI/context
 /// value) when resolving a GitHub token: `ANODIZER_GITHUB_TOKEN` is preferred,
-/// then `GITHUB_TOKEN`. This is the single source of truth for the ladder —
+/// then `GITHUB_TOKEN`, then `GH_TOKEN` (the `gh` CLI's conventional var, so
+/// runners configured only for `gh` still authenticate). This is the single
+/// source of truth for the ladder —
 /// [`resolve_github_token_with_env`] (the only real reader) consumes it, and
 /// the config-aware preflight builds its `EnvAnyOf` lists from it so the
 /// validated set cannot drift from the set the resolver actually reads.
-pub const GITHUB_TOKEN_ENV_LADDER: &[&str] = &["ANODIZER_GITHUB_TOKEN", "GITHUB_TOKEN"];
+pub const GITHUB_TOKEN_ENV_LADDER: &[&str] = &["ANODIZER_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
 
 /// The env-var fragment of a "no GitHub token" remediation hint, rendered
 /// from [`GITHUB_TOKEN_ENV_LADDER`] in actual resolution-precedence order:
-/// `ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN`. Error messages interpolate this
+/// `ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN`. Error messages
+/// interpolate this
 /// (or [`github_token_hint`]) instead of restating the vars, so a
 /// hand-spelled hint can never list the ladder in the wrong order or go
 /// stale when a var is added or renamed.
@@ -176,7 +179,8 @@ pub fn github_token_env_hint() -> String {
 }
 
 /// Full remediation hint for surfaces that also accept a `--token` flag:
-/// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN, or pass --token`, rendered
+/// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, or pass
+/// --token`, rendered
 /// from [`GITHUB_TOKEN_ENV_LADDER`].
 pub fn github_token_hint() -> String {
     format!("set {}, or pass --token", github_token_env_hint())
@@ -184,7 +188,8 @@ pub fn github_token_hint() -> String {
 
 /// Resolve the GitHub token for API calls through the codebase-standard
 /// chain: explicit value (CLI flag / context option) → the
-/// [`GITHUB_TOKEN_ENV_LADDER`] (`ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`).
+/// [`GITHUB_TOKEN_ENV_LADDER`] (`ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN` →
+/// `GH_TOKEN`).
 /// Empty strings count as absent at every link — GitHub Actions materializes
 /// missing secrets as `""`, which must not short-circuit the fallback to the
 /// next link.

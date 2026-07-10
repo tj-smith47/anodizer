@@ -834,7 +834,7 @@ mod publisher_tests {
             "{msg}"
         );
         assert!(
-            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN"),
+            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN"),
             "{msg}"
         );
         assert!(msg.contains("manual cleanup required"), "{msg}");

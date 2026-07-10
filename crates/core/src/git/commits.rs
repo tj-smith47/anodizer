@@ -24,6 +24,78 @@ pub fn release_bump_subject(summary: &str, suffix: &str) -> String {
     format!("{}{summary}{suffix}", release_bump_subject_prefix())
 }
 
+/// Prefix of the changelog-provenance marker lines the `tag` and
+/// `bump --commit` commands record in the version-bump commit body when their
+/// `--changelog` refresh regenerates on-disk `CHANGELOG.md` files.
+///
+/// The publish stage's already-published content guard matches these markers
+/// (via [`changelog_regenerated_recorded_in`]) to decide whether a crate-root
+/// `CHANGELOG.md` difference against an already-published version is the
+/// tool's own re-cut artifact (forgivable) or operator-authored drift (a hard
+/// divergence). Writer and matcher compose from this one constant so a
+/// reworded marker can never silently break the guard.
+pub const CHANGELOG_PROVENANCE_PREFIX: &str = "changelog regenerated for ";
+
+/// Marker line recording that the tool regenerated the changelog file owned
+/// by `crate_name` at `version`: `changelog regenerated for <crate>@<version>`.
+/// Always crate-scoped, so one crate's regeneration can never vouch for a
+/// same-numbered version of a different crate, and a root-only aggregate that
+/// touched no packaged crate's own `CHANGELOG.md` mints no marker at all.
+pub fn changelog_regenerated_marker(crate_name: &str, version: &str) -> String {
+    format!("{CHANGELOG_PROVENANCE_PREFIX}{crate_name}@{version}")
+}
+
+/// Whether the LAST commit that touched `changelog_rel_path` (repo-relative,
+/// `/`-separated) in `workspace_root` records that the tool regenerated the
+/// changelog for `crate_name` at `version`.
+///
+/// Anchoring on the file's last toucher — not any marker anywhere in history —
+/// scopes the provenance to the file's CURRENT content: an operator hand-edit
+/// committed after the tool's regeneration makes the operator's commit the
+/// last toucher, whose message carries no marker, so the guard reverts to
+/// byte-strict instead of forgiving drift the tool did not author.
+///
+/// The marker match is an exact trimmed-line comparison, ruling out substring
+/// false positives (a `0.12.0` marker never matches a `0.12.01` probe).
+/// Returns `Ok(false)` when the file has never been committed or the last
+/// toucher carries no matching marker; `Err` only when git itself fails
+/// (callers making forgiveness decisions treat that as "no provenance").
+pub fn changelog_regenerated_recorded_in(
+    workspace_root: &Path,
+    crate_name: &str,
+    version: &str,
+    changelog_rel_path: &str,
+) -> Result<bool> {
+    let marker = changelog_regenerated_marker(crate_name, version);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "-1",
+            "--pretty=format:%B",
+            "--",
+            changelog_rel_path,
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .output()
+        .context("failed to invoke git log for the changelog provenance marker")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // A repo with no commits yet trivially records no marker.
+        if stderr.contains("does not have any commits yet") {
+            return Ok(false);
+        }
+        let raw = format!("git log failed: {}", stderr.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    Ok(body.lines().map(str::trim).any(|line| line == marker))
+}
+
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
@@ -1238,6 +1310,101 @@ mod tests {
             run(&["add", "."]);
             run(&["commit", "-m", &format!("commit-{i}: {f}")]);
         }
+    }
+
+    #[test]
+    fn changelog_provenance_marker_binds_to_its_crate_and_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        std::fs::write(tmp.path().join("CHANGELOG.md"), "notes").unwrap();
+        let msg = format!(
+            "{}\n\n{}",
+            release_bump_subject("core→0.12.0", ""),
+            changelog_regenerated_marker("core", "0.12.0")
+        );
+        stage_and_commit_in(tmp.path(), &["CHANGELOG.md"], &msg).unwrap();
+        let probe = |name: &str, ver: &str| {
+            changelog_regenerated_recorded_in(tmp.path(), name, ver, "CHANGELOG.md").unwrap()
+        };
+        assert!(probe("core", "0.12.0"));
+        // A sibling crate at the same version has no provenance of its own.
+        assert!(!probe("cli", "0.12.0"));
+        // A different version must not be vouched for, including the
+        // substring-adjacent form (0.12.0 vs 0.12.01).
+        assert!(!probe("core", "0.12.1"));
+        assert!(!probe("core", "0.12.01"));
+    }
+
+    #[test]
+    fn changelog_provenance_scopes_to_the_probed_changelog_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        std::fs::create_dir_all(tmp.path().join("crates/core")).unwrap();
+        std::fs::write(tmp.path().join("crates/core/CHANGELOG.md"), "notes").unwrap();
+        let msg = format!(
+            "{}\n\n{}",
+            release_bump_subject("core→0.2.0", ""),
+            changelog_regenerated_marker("core", "0.2.0")
+        );
+        stage_and_commit_in(tmp.path(), &["crates/core/CHANGELOG.md"], &msg).unwrap();
+        assert!(
+            changelog_regenerated_recorded_in(
+                tmp.path(),
+                "core",
+                "0.2.0",
+                "crates/core/CHANGELOG.md"
+            )
+            .unwrap()
+        );
+        // The marker vouches only for the file the bump commit touched — a
+        // never-committed root CHANGELOG.md has no provenance.
+        assert!(
+            !changelog_regenerated_recorded_in(tmp.path(), "core", "0.2.0", "CHANGELOG.md")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn changelog_provenance_superseded_by_a_later_hand_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        std::fs::write(tmp.path().join("CHANGELOG.md"), "notes").unwrap();
+        let msg = format!(
+            "{}\n\n{}",
+            release_bump_subject("core→0.2.0", ""),
+            changelog_regenerated_marker("core", "0.2.0")
+        );
+        stage_and_commit_in(tmp.path(), &["CHANGELOG.md"], &msg).unwrap();
+        assert!(
+            changelog_regenerated_recorded_in(tmp.path(), "core", "0.2.0", "CHANGELOG.md").unwrap()
+        );
+
+        // A later commit touching an UNRELATED file keeps the provenance: the
+        // marker commit is still the changelog's last toucher.
+        std::fs::write(tmp.path().join("other.txt"), "x").unwrap();
+        stage_and_commit_in(tmp.path(), &["other.txt"], "chore: unrelated").unwrap();
+        assert!(
+            changelog_regenerated_recorded_in(tmp.path(), "core", "0.2.0", "CHANGELOG.md").unwrap()
+        );
+
+        // A later hand-edit to the changelog makes the operator's commit the
+        // last toucher — no marker there, so the provenance no longer holds.
+        std::fs::write(tmp.path().join("CHANGELOG.md"), "notes\nedited").unwrap();
+        stage_and_commit_in(tmp.path(), &["CHANGELOG.md"], "docs: tweak changelog").unwrap();
+        assert!(
+            !changelog_regenerated_recorded_in(tmp.path(), "core", "0.2.0", "CHANGELOG.md")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn changelog_provenance_absent_when_no_marker_committed() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        assert!(
+            !changelog_regenerated_recorded_in(tmp.path(), "core", "0.2.0", "CHANGELOG.md")
+                .unwrap()
+        );
     }
 
     #[test]

@@ -248,7 +248,7 @@ fn query_winget_pr(
         "repo:microsoft/winget-pkgs is:pr is:open {} {} in:title",
         package, version
     );
-    let encoded = percent_encode(&query);
+    let encoded = anodizer_core::url::percent_encode_unreserved(&query);
     // The [`PreflightChecker`] trait carries no env plumbing, so the base
     // resolves against the process env directly — the same source every
     // production caller of this override reads. Tests inject a responder
@@ -342,27 +342,6 @@ fn query_winget_pr_at(
         Some(u) => Ok(WingetPrLookup::Found(u)),
         None => Ok(WingetPrLookup::ItemWithoutUrl),
     }
-}
-
-/// Minimal percent-encoder for GitHub search query strings.
-///
-/// Encodes space as `+` and leaves alphanumerics, `-`, `.`, `_`, `~`, `/`,
-/// `:` unencoded (safe in query-string values for this use case).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 16);
-    for ch in s.chars() {
-        match ch {
-            ' ' => out.push('+'),
-            c if c.is_ascii_alphanumeric() || "-._~/:".contains(c) => out.push(c),
-            c => {
-                for byte in c.to_string().as_bytes() {
-                    out.push('%');
-                    out.push_str(&format!("{:02X}", byte));
-                }
-            }
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1770,33 +1749,20 @@ mod tests {
         );
     }
 
-    // ---- percent_encode (GitHub search query encoder) -------------------
+    // ---- GitHub search query encoding ------------------------------------
 
     #[test]
-    fn percent_encode_space_becomes_plus() {
-        // Spaces in the search query must become `+`, and the query operators
-        // anodizer emits (`repo:`, `is:pr`, `in:title`) must round-trip
-        // unescaped so the GitHub search syntax survives the encode.
+    fn winget_search_query_encoding_round_trips_operators() {
+        // The core encoder percent-escapes spaces and the `:`/`/` in search
+        // operators — forms GitHub's search API decodes back to the intended
+        // query — while package identifiers and versions (dots, dashes)
+        // survive verbatim.
         assert_eq!(
-            percent_encode("repo:microsoft/winget-pkgs is:pr in:title"),
-            "repo:microsoft/winget-pkgs+is:pr+in:title"
+            anodizer_core::url::percent_encode_unreserved(
+                "repo:microsoft/winget-pkgs is:pr is:open Acme.Tool 1.2.3 in:title"
+            ),
+            "repo%3Amicrosoft%2Fwinget-pkgs%20is%3Apr%20is%3Aopen%20Acme.Tool%201.2.3%20in%3Atitle"
         );
-    }
-
-    #[test]
-    fn percent_encode_passes_through_unreserved() {
-        // Alphanumerics plus the explicit safe set `-._~/:` must NOT be
-        // escaped — escaping them would corrupt package identifiers and the
-        // search operators.
-        let safe = "Abc123-._~/:";
-        assert_eq!(percent_encode(safe), safe);
-    }
-
-    #[test]
-    fn percent_encode_escapes_reserved_and_unicode_bytes() {
-        // A reserved ASCII char (`#`) and a multi-byte UTF-8 char (`é`,
-        // 0xC3 0xA9) must each percent-escape every byte as uppercase hex.
-        assert_eq!(percent_encode("a#é"), "a%23%C3%A9");
     }
 
     // ---- Chocolatey checker fixtures (PackageStatus / IsApproved) -------

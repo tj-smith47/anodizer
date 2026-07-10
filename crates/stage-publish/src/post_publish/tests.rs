@@ -229,8 +229,12 @@ fn winget_poller_resolves_merged_pr() {
 
     let status = super::winget::poll(
         &api_base,
-        "TJSmith.Anodizer",
-        "0.2.0",
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "TJSmith.Anodizer".to_string(),
+            version: "0.2.0".to_string(),
+            search_in_title: true,
+        },
         None,
         tight_poll_cfg(),
         &quiet_log(),
@@ -266,8 +270,12 @@ fn winget_poller_rejects_validation_error() {
 
     let status = super::winget::poll(
         &api_base,
-        "TJSmith.Anodizer",
-        "0.2.0",
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "TJSmith.Anodizer".to_string(),
+            version: "0.2.0".to_string(),
+            search_in_title: true,
+        },
         None,
         tight_poll_cfg(),
         &quiet_log(),
@@ -299,7 +307,18 @@ fn winget_poller_times_out_when_pr_never_found() {
         interval: HumanDuration(Duration::from_millis(5)),
         timeout: HumanDuration(Duration::from_millis(30)),
     };
-    let status = super::winget::poll(&api_base, "X.Y", "1.0.0", None, cfg, &quiet_log());
+    let status = super::winget::poll(
+        &api_base,
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "X.Y".to_string(),
+            version: "1.0.0".to_string(),
+            search_in_title: true,
+        },
+        None,
+        cfg,
+        &quiet_log(),
+    );
     match status {
         PostPublishStatus::Timeout { last_state, .. } => {
             assert!(
@@ -338,8 +357,12 @@ fn winget_poller_found_then_search_empty_returns_error() {
 
     let status = super::winget::poll(
         &api_base,
-        "TJSmith.Anodizer",
-        "0.3.0",
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "TJSmith.Anodizer".to_string(),
+            version: "0.3.0".to_string(),
+            search_in_title: true,
+        },
         None,
         tight_poll_cfg(),
         &quiet_log(),
@@ -378,8 +401,12 @@ fn winget_poller_closed_unmerged_returns_rejected() {
 
     let status = super::winget::poll(
         &api_base,
-        "TJSmith.Anodizer",
-        "0.3.0",
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "TJSmith.Anodizer".to_string(),
+            version: "0.3.0".to_string(),
+            search_in_title: true,
+        },
         None,
         tight_poll_cfg(),
         &quiet_log(),
@@ -495,5 +522,365 @@ fn resolve_poll_config_returns_none_when_unset() {
     assert!(
         cfg.is_none(),
         "unset block should default to disabled (no polling)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Burn-detection probes (published-state guard evidence)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chocolatey_burn_probe_pending_moderation_blocks() {
+    let pending_html = r#"<html><body>
+        <div class="callout callout-danger">
+          <div class="callout-header">IMPORTANT</div>
+          <p>This version is in <a href="/moderation">moderation</a> and has not yet been approved.</p>
+        </div>
+    </body></html>"#;
+    let body = http_response("HTTP/1.1 200 OK", pending_html);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked =
+        super::chocolatey::version_blocked_on_gallery(&base, "anodizer", "0.2.0", &quiet_log())
+            .expect("probe must succeed against a resolvable page");
+    let detail = blocked.expect("a pending-moderation version must block");
+    assert!(detail.contains("moderation"), "got: {detail}");
+}
+
+#[test]
+fn chocolatey_burn_probe_approved_version_blocks() {
+    let approved_html = r#"<html><body>
+        <div class="callout callout-success">
+          <div class="callout-header">Package Approved</div>
+        </div>
+    </body></html>"#;
+    let body = http_response("HTTP/1.1 200 OK", approved_html);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked =
+        super::chocolatey::version_blocked_on_gallery(&base, "git", "2.50.1", &quiet_log())
+            .expect("probe must succeed");
+    let detail = blocked.expect("an approved version must block");
+    assert!(detail.contains("approved"), "got: {detail}");
+}
+
+#[test]
+fn chocolatey_burn_probe_absent_version_is_clear() {
+    let body = http_response("HTTP/1.1 404 Not Found", "not here");
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked =
+        super::chocolatey::version_blocked_on_gallery(&base, "anodizer", "9.9.9", &quiet_log())
+            .expect("404 is a definitive answer, not an error");
+    assert!(blocked.is_none(), "a never-submitted version must be clear");
+}
+
+#[test]
+fn chocolatey_burn_probe_unreachable_gallery_is_an_error() {
+    // Bind-then-drop yields a port with nothing listening: connection
+    // refused, which the retry classifier fast-fails.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let base = format!("http://{}", addr);
+    let err = super::chocolatey::version_blocked_on_gallery(&base, "x", "1.0.0", &quiet_log())
+        .expect_err("an unreachable gallery is indeterminate, never a clear/blocked verdict");
+    let msg = format!("{err:#}");
+    assert!(!msg.is_empty());
+}
+
+#[test]
+fn winget_burn_probe_open_pr_blocks() {
+    let search_json = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 12345,
+            "state": "open",
+            "html_url": "https://github.com/microsoft/winget-pkgs/pull/12345",
+            "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/12345", "merged_at": null}
+        }]
+    }"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.2.3",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    let detail = blocked.expect("an open manifest PR must block");
+    assert!(detail.contains("open manifest PR"), "got: {detail}");
+    assert!(detail.contains("pull/12345"), "got: {detail}");
+}
+
+#[test]
+fn winget_burn_probe_merged_pr_blocks() {
+    let search_json = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 777,
+            "state": "closed",
+            "html_url": "https://github.com/microsoft/winget-pkgs/pull/777",
+            "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/777", "merged_at": "2026-07-01T00:00:00Z"}
+        }]
+    }"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.2.3",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    let detail = blocked.expect("a merged manifest PR must block");
+    assert!(detail.contains("merged"), "got: {detail}");
+}
+
+#[test]
+fn winget_burn_probe_closed_unmerged_pr_is_clear() {
+    let search_json = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 778,
+            "state": "closed",
+            "html_url": "https://github.com/microsoft/winget-pkgs/pull/778",
+            "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/778", "merged_at": null}
+        }]
+    }"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.2.3",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    assert!(
+        blocked.is_none(),
+        "a rejected (closed-unmerged) PR released the version"
+    );
+}
+
+#[test]
+fn winget_burn_probe_no_match_is_clear() {
+    let search_json = r#"{"total_count": 0, "items": []}"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "9.9.9",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    assert!(blocked.is_none(), "no PR at all must be clear");
+}
+
+#[test]
+fn winget_burn_probe_unreachable_api_is_an_error() {
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let base = format!("http://{}", addr);
+    super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.0.0",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect_err("an unreachable search API is indeterminate, never a clear/blocked verdict");
+}
+
+#[test]
+fn chocolatey_burn_probe_redirect_away_is_clear() {
+    // The gallery redirecting away from the requested /<id>/<version> page
+    // means that exact version page does not exist — clear, not blocked.
+    let body = "HTTP/1.1 302 Found\r\nLocation: /packages/anodizer\r\nContent-Length: 0\r\n\r\n";
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![body]);
+    let base = format!("http://{}", addr);
+
+    let blocked =
+        super::chocolatey::version_blocked_on_gallery(&base, "anodizer", "9.9.9", &quiet_log())
+            .expect("a redirect is a definitive answer, not an error");
+    assert!(
+        blocked.is_none(),
+        "a redirect away from the version page must be clear"
+    );
+}
+
+#[test]
+fn chocolatey_burn_probe_unrecognized_200_is_clear() {
+    // A 200 page with no verified moderation/approval callout is NOT
+    // positive evidence — the guard's contract is refuse only on proof.
+    let html = "<html><body><p>nothing recognizable here</p></body></html>";
+    let body = http_response("HTTP/1.1 200 OK", html);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked =
+        super::chocolatey::version_blocked_on_gallery(&base, "anodizer", "1.2.3", &quiet_log())
+            .expect("an uncertain 200 must not be an error");
+    assert!(
+        blocked.is_none(),
+        "a page with no recognizable callout must warn and clear, not block"
+    );
+}
+
+#[test]
+fn winget_burn_probe_open_pr_behind_closed_one_blocks() {
+    // Relevance-ordered search can rank a closed-unmerged PR first; the
+    // probe must classify every returned item.
+    let search_json = r#"{
+        "total_count": 2,
+        "items": [
+            {
+                "number": 1,
+                "title": "New version: Acme.Tool version 1.2.3",
+                "state": "closed",
+                "html_url": "https://github.com/microsoft/winget-pkgs/pull/1",
+                "pull_request": {"merged_at": null}
+            },
+            {
+                "number": 2,
+                "title": "New version: Acme.Tool version 1.2.3",
+                "state": "open",
+                "html_url": "https://github.com/microsoft/winget-pkgs/pull/2",
+                "pull_request": {"merged_at": null}
+            }
+        ]
+    }"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.2.3",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    let detail = blocked.expect("the open PR ranked second must still block");
+    assert!(detail.contains("pull/2"), "got: {detail}");
+}
+
+#[test]
+fn winget_burn_probe_merged_removal_pr_is_clear() {
+    let search_json = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 3,
+            "title": "Remove Acme.Tool 1.2.3",
+            "state": "closed",
+            "html_url": "https://github.com/microsoft/winget-pkgs/pull/3",
+            "pull_request": {"merged_at": "2026-07-01T00:00:00Z"}
+        }]
+    }"#;
+    let body = http_response("HTTP/1.1 200 OK", search_json);
+    let leaked: &'static str = Box::leak(body.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![leaked]);
+    let base = format!("http://{}", addr);
+
+    let blocked = super::winget::version_pr_blocking(
+        &base,
+        "microsoft/winget-pkgs",
+        "Acme.Tool",
+        "1.2.3",
+        true,
+        None,
+        &quiet_log(),
+    )
+    .expect("probe must succeed");
+    assert!(
+        blocked.is_none(),
+        "a merged removal PR freed the version slot"
+    );
+}
+
+#[test]
+fn winget_poller_locates_manifest_pr_past_removal_item() {
+    // Relevance-ordered search ranks a removal PR first; the poller must
+    // skip it and track the actual manifest PR.
+    let search_body = r#"{"total_count":2,"items":[
+        {"number":10,"title":"Remove Acme.Tool 1.2.3","pull_request":{"url":"http://127.0.0.1:1/repos/x/y/pulls/10"}},
+        {"number":11,"title":"New version: Acme.Tool version 1.2.3","pull_request":{"url":"__PR_URL__"}}
+    ]}"#;
+    let pr_body = r#"{"state":"closed","merged":true,"labels":[]}"#;
+
+    let (pr_addr, pr_calls) = spawn_oneshot_http_responder(vec![Box::leak(
+        http_response("HTTP/1.1 200 OK", pr_body).into_boxed_str(),
+    )]);
+    let pr_url = format!("http://{}/repos/microsoft/winget-pkgs/pulls/11", pr_addr);
+    let search_body = search_body.replace("__PR_URL__", &pr_url);
+    let leaked_search: &'static str =
+        Box::leak(http_response("HTTP/1.1 200 OK", &search_body).into_boxed_str());
+    let (search_addr, _) = spawn_oneshot_http_responder(vec![leaked_search]);
+    let api_base = format!("http://{}", search_addr);
+
+    let status = super::winget::poll(
+        &api_base,
+        &super::winget::PollTarget {
+            upstream_slug: "microsoft/winget-pkgs".to_string(),
+            package_identifier: "Acme.Tool".to_string(),
+            version: "1.2.3".to_string(),
+            search_in_title: true,
+        },
+        None,
+        tight_poll_cfg(),
+        &quiet_log(),
+    );
+    match status {
+        PostPublishStatus::Approved { detail } => {
+            assert!(detail.contains("merged"), "got: {detail}");
+        }
+        other => panic!("expected Approved via the manifest PR, got {other:?}"),
+    }
+    assert_eq!(
+        pr_calls.load(Ordering::SeqCst),
+        1,
+        "the poller must fetch the manifest PR, not the removal PR"
     );
 }

@@ -72,6 +72,25 @@ fn show_head(dir: &Path, rel: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Full message of the commit at HEAD (the version-bump commit right after a
+/// `tag` run) — where changelog-provenance markers land.
+fn head_commit_message(dir: &Path) -> String {
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["log", "-1", "--pretty=%B"]);
+            cmd
+        },
+        "git",
+    );
+    assert!(
+        out.status.success(),
+        "git log -1 failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 // ---------------------------------------------------------------------------
 // Mode 1: single-crate (--crate + version_sync)
 // ---------------------------------------------------------------------------
@@ -139,6 +158,13 @@ crates:
     assert!(
         head.contains("## [0.2.0]"),
         "expected the section committed: {head}"
+    );
+    // The root aggregate is not app's own crate-root CHANGELOG.md, so the
+    // bump commit must not vouch for a file inside app's package.
+    let msg = head_commit_message(root);
+    assert!(
+        !msg.contains("changelog regenerated"),
+        "root-only aggregate must mint no provenance marker: {msg}"
     );
 }
 
@@ -425,6 +451,15 @@ version = "0.1.0"
             "member {name}: expected the section committed: {head}"
         );
     }
+    // Each member whose own CHANGELOG.md was regenerated gets a crate-scoped
+    // provenance marker in the bump commit — exactly those, nothing shared.
+    let msg = head_commit_message(root);
+    for name in ["a", "b"] {
+        assert!(
+            msg.contains(&format!("changelog regenerated for {name}@0.2.0")),
+            "member {name}: expected its provenance marker: {msg}"
+        );
+    }
 }
 
 /// Lockstep `--changelog --dry-run` writes no CHANGELOG.md but still exits 0.
@@ -551,6 +586,17 @@ crates:
     assert!(
         show_head(root, "crates/core/CHANGELOG.md").contains("## [0.2.0]"),
         "core: expected the section committed"
+    );
+    // Only the bumped crate whose own file was regenerated earns a marker;
+    // the untouched sibling must not be vouched for.
+    let msg = head_commit_message(root);
+    assert!(
+        msg.contains("changelog regenerated for core@0.2.0"),
+        "core: expected its provenance marker: {msg}"
+    );
+    assert!(
+        !msg.contains("changelog regenerated for cli@"),
+        "cli was not regenerated — no marker for it: {msg}"
     );
 }
 
@@ -1136,6 +1182,13 @@ fn lockstep_root_aggregate_spans_all_members() {
         !root.join("crates/a/CHANGELOG.md").exists()
             && !root.join("crates/b/CHANGELOG.md").exists(),
         "root-only destination must not write per-crate files"
+    );
+    // The workspace-root aggregate is not any member's own crate-root
+    // CHANGELOG.md, so the bump commit vouches for no crate.
+    let msg = head_commit_message(root);
+    assert!(
+        !msg.contains("changelog regenerated"),
+        "root-only aggregate must mint no provenance marker: {msg}"
     );
 }
 

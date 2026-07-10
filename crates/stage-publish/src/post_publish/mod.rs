@@ -45,6 +45,37 @@ mod tests;
 
 pub use status::{PostPublishResult, PostPublishStatus};
 
+/// Wall-clock ceiling for a single burn-detection probe: the published-state
+/// guard probing many packages before a destructive rollback must stay
+/// bounded, so the retry ladder is cut short once this budget is spent.
+const BURN_PROBE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// One deadline-bounded GET on the shallow guard-probe retry ladder, shared
+/// by the burn-detection probes so each keeps only its URL construction and
+/// response classification. `decorate` adds per-registry request headers
+/// (auth, API version); `success_class` decides whether a 3xx is a
+/// resolvable answer handed to the classifier or a non-success status.
+fn burn_probe_get(
+    label: &str,
+    client: &reqwest::blocking::Client,
+    url: &str,
+    decorate: impl Fn(reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder,
+    success_class: anodizer_core::retry::SuccessClass,
+    error_msg: impl Fn(reqwest::StatusCode, &str) -> String,
+    log: &StageLogger,
+) -> anyhow::Result<(reqwest::StatusCode, String)> {
+    use anodizer_core::retry::{RetryLog, RetryPolicy, retry_http_blocking_deadline};
+    let deadline = std::time::Instant::now() + BURN_PROBE_DEADLINE;
+    retry_http_blocking_deadline(
+        RetryLog::new(label, log),
+        &RetryPolicy::GUARD_PROBE,
+        Some(deadline),
+        success_class,
+        |_| decorate(client.get(url)).send(),
+        error_msg,
+    )
+}
+
 /// Resolve effective polling config: merge the per-publisher block with
 /// the `--no-post-publish-poll` global override.
 ///
@@ -76,6 +107,13 @@ pub enum PollJob {
         package_identifier: String,
         version: String,
         api_base_url: String,
+        /// `<owner>/<repo>` the manifest PR targets — the same upstream the
+        /// publisher submitted to.
+        upstream_slug: String,
+        /// Whether the PR search may keep GitHub's `in:title` qualifier
+        /// (false when a custom `commit_msg_template` makes the title
+        /// unpredictable).
+        search_in_title: bool,
         token: Option<String>,
         cfg: PostPublishPollConfig,
     },
@@ -117,12 +155,18 @@ impl PollJob {
                 package_identifier,
                 version,
                 api_base_url,
+                upstream_slug,
+                search_in_title,
                 token,
                 cfg,
             } => winget::poll(
                 &api_base_url,
-                &package_identifier,
-                &version,
+                &winget::PollTarget {
+                    upstream_slug,
+                    package_identifier,
+                    version,
+                    search_in_title,
+                },
                 token.as_deref(),
                 cfg,
                 log,

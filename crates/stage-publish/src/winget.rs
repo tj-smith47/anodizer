@@ -32,6 +32,43 @@ static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
 // PackageIdentifier validation
 // ---------------------------------------------------------------------------
 
+/// Resolve the `winget-pkgs` package identifier for a crate's
+/// `publish.winget` block without a template context: the configured
+/// `package_identifier`, falling back to the publisher's own auto-derivation
+/// (`<publisher>.<name>` with spaces stripped, publisher defaulting to the
+/// repository owner). Returns `None` when any contributing value is a
+/// template expression or is missing — outside a release run there is
+/// nothing to render with, and failure-recovery tooling probing the
+/// community repository must skip rather than guess.
+///
+/// Public for the same reason as [`crate::cargo::targets_crates_io`]: `tag
+/// rollback`'s published-state guard must name the same package the
+/// publisher would submit.
+pub fn static_package_identifier(
+    crate_name: &str,
+    cfg: &anodizer_core::config::WingetConfig,
+) -> Option<String> {
+    if let Some(id) = cfg.package_identifier.as_deref() {
+        return (!id.contains("{{")).then(|| id.to_string());
+    }
+    let name = cfg.name.as_deref().unwrap_or(crate_name);
+    let publisher = match cfg.publisher.as_deref() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => crate::util::resolve_repo_owner_name(cfg.repository.as_ref())?.0,
+    };
+    if name.contains("{{") || publisher.contains("{{") {
+        return None;
+    }
+    Some(auto_package_identifier(&publisher, name))
+}
+
+/// Derive the automatic WinGet PackageIdentifier from a publisher display
+/// name and a package name: `<publisher-without-spaces>.<name>` — the single
+/// definition of the auto-id rule.
+pub(crate) fn auto_package_identifier(publisher: &str, name: &str) -> String {
+    format!("{}.{}", publisher.replace(' ', ""), name)
+}
+
 /// Validate a WinGet PackageIdentifier against the required pattern.
 ///
 /// The identifier must have 2-8 dot-separated segments, each segment 1-32
@@ -1447,7 +1484,7 @@ fn resolve_winget_identity(
     let publisher_name =
         resolve_winget_publisher_name(winget_cfg, &repo_owner, crate_name, log)?.to_string();
 
-    let auto_pkg_id = format!("{}.{}", publisher_name.replace(' ', ""), name);
+    let auto_pkg_id = auto_package_identifier(&publisher_name, &name);
     let package_id = winget_cfg
         .package_identifier
         .as_deref()
@@ -1794,7 +1831,13 @@ fn decode_winget_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<Win
 /// mirrors the dispatch logic in `publish_to_winget`: prefer
 /// `repository.pull_request.base` when set, else fall back to the
 /// canonical `microsoft/winget-pkgs`.
-fn resolve_winget_upstream(winget_cfg: &anodizer_core::config::WingetConfig) -> (String, String) {
+///
+/// Public for the same reason as [`static_package_identifier`]: `tag
+/// rollback`'s published-state guard must search the same upstream the
+/// publisher would submit to.
+pub fn resolve_winget_upstream(
+    winget_cfg: &anodizer_core::config::WingetConfig,
+) -> (String, String) {
     if let Some(base) = winget_cfg
         .repository
         .as_ref()
@@ -1851,7 +1894,7 @@ fn collect_winget_target(
         _ => fork_owner.clone(),
     };
 
-    let auto_pkg_id = format!("{}.{}", publisher_name.replace(' ', ""), name_rendered);
+    let auto_pkg_id = auto_package_identifier(&publisher_name, &name_rendered);
     let package_id = cfg
         .package_identifier
         .as_deref()
@@ -4515,52 +4558,17 @@ license-file = "LICENSE.txt"
         use std::collections::HashMap;
         use std::path::Path;
         use std::process::Command;
-        use std::sync::OnceLock;
 
         fn quiet() -> StageLogger {
             StageLogger::new("publish", Verbosity::Quiet)
         }
 
-        /// Give the test process a git identity + non-interactive credential
-        /// behaviour so the publish path's `git commit` works on a bare CI
-        /// runner. One-shot per process.
-        fn ensure_git_identity() {
-            static INIT: OnceLock<()> = OnceLock::new();
-            INIT.get_or_init(|| {
-                // SAFETY: runs once per process under OnceLock; constants only.
-                unsafe {
-                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                }
-            });
-        }
-
         fn git_ok(dir: &Path, args: &[&str]) {
-            let out = anodizer_core::test_helpers::output_with_spawn_retry(
-                || {
-                    let mut cmd = Command::new("git");
-                    cmd.args(args).current_dir(dir);
-                    cmd
-                },
-                "git",
-            );
-            assert!(out.status.success(), "git {args:?} failed");
+            anodizer_core::test_helpers::git_test_ok(dir, args)
         }
 
         fn git_stdout(dir: &Path, args: &[&str]) -> String {
-            let out = anodizer_core::test_helpers::output_with_spawn_retry(
-                || {
-                    let mut cmd = Command::new("git");
-                    cmd.args(args).current_dir(dir);
-                    cmd
-                },
-                "git",
-            );
-            assert!(out.status.success(), "git {args:?} failed: {out:?}");
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+            anodizer_core::test_helpers::git_test_stdout(dir, args)
         }
 
         /// Build a bare "winget-pkgs fork" repo with one commit on `main`
@@ -4569,7 +4577,6 @@ license-file = "LICENSE.txt"
         /// clones this, writes the 3-file manifest set, commits a versioned
         /// branch, and pushes it back here.
         fn init_bare_fork() -> (String, tempfile::TempDir) {
-            ensure_git_identity();
             let bare = tempfile::tempdir().expect("bare tempdir");
             let seed = tempfile::tempdir().expect("seed tempdir");
             git_ok(bare.path(), &["init", "--bare", "-b", "main"]);

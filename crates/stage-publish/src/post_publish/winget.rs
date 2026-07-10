@@ -1,11 +1,14 @@
 //! Post-publish poller for WinGet PRs.
 //!
-//! Strategy: locate the open PR in `microsoft/winget-pkgs` whose title
-//! contains `<PackageIdentifier> <Version>` (anodizer's PR title format
-//! is `"New version: <PackageIdentifier> version <Version>"`, which the
-//! GitHub `in:title` operator matches on word independence). Then poll
-//! `GET /repos/microsoft/winget-pkgs/pulls/<number>` until the PR
-//! reaches a terminal state.
+//! Strategy: locate the open PR in the upstream repository the publisher
+//! submitted to (`microsoft/winget-pkgs` unless overridden via
+//! `repository.pull_request.base`) whose title contains
+//! `<PackageIdentifier> <Version>` (anodizer's PR title format is
+//! `"New version: <PackageIdentifier> version <Version>"`, which the
+//! GitHub `in:title` operator matches on word independence; a custom
+//! `commit_msg_template` widens the search to title+body). Then poll
+//! `GET /repos/<upstream>/pulls/<number>` until the PR reaches a
+//! terminal state.
 //!
 //! Label vocabulary verified live against `microsoft/winget-pkgs`
 //! (2026-05-13, page 1+2 of `GET /repos/.../labels?per_page=100`):
@@ -58,7 +61,21 @@ enum PrVerdict {
     NetworkError(String),
 }
 
-/// Poll the winget-pkgs PR for terminal state.
+/// Coordinates of the manifest PR to track: the upstream `<owner>/<repo>`
+/// the publisher submitted against (normally `microsoft/winget-pkgs`,
+/// configurable via `repository.pull_request.base`), the package identifier
+/// and version, and whether the PR search may keep GitHub's `in:title`
+/// qualifier (only for the default PR-title format — a custom
+/// `commit_msg_template` makes the title unpredictable, so the search widens
+/// to title+body).
+pub struct PollTarget {
+    pub upstream_slug: String,
+    pub package_identifier: String,
+    pub version: String,
+    pub search_in_title: bool,
+}
+
+/// Poll the upstream winget repository's manifest PR for terminal state.
 ///
 /// `api_base_url` is normally `https://api.github.com` — exposed so
 /// tests can point at a local TCP listener.
@@ -66,12 +83,17 @@ enum PrVerdict {
 // dead code once the loop's first iteration overwrites it.
 pub fn poll(
     api_base_url: &str,
-    package_identifier: &str,
-    version: &str,
+    target: &PollTarget,
     token: Option<&str>,
     cfg: PostPublishPollConfig,
     log: &StageLogger,
 ) -> PostPublishStatus {
+    let PollTarget {
+        upstream_slug,
+        package_identifier,
+        version,
+        search_in_title,
+    } = target;
     let interval = cfg.interval.duration();
     let total_budget = cfg.timeout.duration();
     let started = Instant::now();
@@ -96,7 +118,14 @@ pub fn poll(
         // where we lost track of the PR) falls back to the search.
         let verdict = match pr_url.as_deref() {
             Some(url) => check_pr_at(url, token),
-            None => match locate_pr(api_base_url, package_identifier, version, token) {
+            None => match locate_pr(
+                api_base_url,
+                upstream_slug,
+                package_identifier,
+                version,
+                *search_in_title,
+                token,
+            ) {
                 Some(url) => {
                     pr_url = Some(url.clone());
                     check_pr_at(&url, token)
@@ -190,20 +219,19 @@ pub fn poll(
 /// can hit the PR endpoint directly on subsequent iterations.
 fn locate_pr(
     api_base_url: &str,
+    upstream_slug: &str,
     package_identifier: &str,
     version: &str,
+    search_in_title: bool,
     token: Option<&str>,
 ) -> Option<String> {
     // is:pr (state-agnostic, since a freshly-merged PR is closed but
     // still our PR) — preflight uses `is:open` because it's a pre-check;
     // post-publish needs the closed-too view to detect merge / rejection.
-    let query = format!(
-        "repo:microsoft/winget-pkgs is:pr {} {} in:title",
-        package_identifier, version
-    );
-    let encoded = percent_encode(&query);
+    let query = burn_search_query(upstream_slug, package_identifier, version, search_in_title);
+    let encoded = anodizer_core::url::percent_encode_unreserved(&query);
     let url = format!(
-        "{}/search/issues?q={}&per_page=1",
+        "{}/search/issues?q={}&per_page=10",
         api_base_url.trim_end_matches('/'),
         encoded
     );
@@ -216,16 +244,23 @@ fn locate_pr(
         Ok(v) => v,
         Err(_) => return None,
     };
-    let total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0);
-    if total == 0 {
+    select_pr_api_url(&v, api_base_url, upstream_slug)
+}
+
+/// Pick the manifest PR to poll out of a relevance-ordered search response —
+/// no IO. Removal-titled items are skipped (a "Remove <id> <version>" PR is
+/// not the submission being tracked); the first remaining item wins. The
+/// search-issues response gives us `pull_request.url` (the API URL) —
+/// preferred over `html_url` since the poll loop hits the API on it
+/// directly; falls back to constructing the API URL from `number`.
+fn select_pr_api_url(v: &Value, api_base_url: &str, upstream_slug: &str) -> Option<String> {
+    if v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0) == 0 {
         return None;
     }
     let items = v.get("items")?.as_array()?;
-    let first = items.first()?;
-    // The search-issues response gives us `pull_request.url` (the API
-    // URL) — preferred over `html_url` since we're about to hit the API
-    // on it directly. Fall back to constructing the API URL from
-    // `number` if needed.
+    let first = items
+        .iter()
+        .find(|item| !is_removal_title(item.get("title").and_then(|t| t.as_str()).unwrap_or("")))?;
     if let Some(pr_url) = first
         .get("pull_request")
         .and_then(|pr| pr.get("url"))
@@ -235,10 +270,20 @@ fn locate_pr(
     }
     let number = first.get("number").and_then(|n| n.as_u64())?;
     Some(format!(
-        "{}/repos/microsoft/winget-pkgs/pulls/{}",
+        "{}/repos/{}/pulls/{}",
         api_base_url.trim_end_matches('/'),
+        upstream_slug,
         number
     ))
+}
+
+/// Whether a PR title marks a version REMOVAL ("Remove <id> <version>",
+/// case-insensitive) rather than an add/update submission.
+fn is_removal_title(title: &str) -> bool {
+    title
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("remove")
 }
 
 fn check_pr_at(pr_api_url: &str, token: Option<&str>) -> PrVerdict {
@@ -349,6 +394,132 @@ fn is_rejection_label(label: &str) -> bool {
         || (label.starts_with("Manifest-") && label.ends_with("-Error"))
 }
 
+/// Build the burn probe's GitHub search query. `search_in_title` keeps the
+/// precise `in:title` qualifier for the default PR-title template ("New
+/// version: <id> version <version>" always carries both tokens); a custom
+/// `commit_msg_template` can produce any title, so the qualifier is dropped
+/// and the id+version tokens match title OR body instead.
+fn burn_search_query(
+    upstream_slug: &str,
+    package_identifier: &str,
+    version: &str,
+    search_in_title: bool,
+) -> String {
+    let title_qualifier = if search_in_title { " in:title" } else { "" };
+    format!("repo:{upstream_slug} is:pr {package_identifier} {version}{title_qualifier}")
+}
+
+/// One-shot burn-detection probe: does the upstream winget repository
+/// (`upstream_slug`, normally `microsoft/winget-pkgs`) carry a manifest PR
+/// for `package_identifier version` that blocks re-submitting the same
+/// version?
+///
+/// The winget one-way door has two blocking states: a MERGED manifest PR
+/// (the version is permanently in the community repository) and an OPEN one
+/// (a duplicate submission for the same version is rejected while it sits in
+/// the queue). A PR that was closed WITHOUT merging released the version —
+/// that state does not block. Search results are relevance-ordered, so ALL
+/// returned items are classified — a closed-unmerged PR ranking first must
+/// not mask an open or merged one further down.
+///
+/// - `Ok(Some(detail))` — an open or merged PR exists; the version is
+///   consumed (or reserved) and a same-version re-cut cannot land cleanly.
+/// - `Ok(None)` — no PR matches, or every match was closed unmerged or a
+///   removal PR.
+/// - `Err` — the GitHub search API could not be consulted (transport
+///   failure, rate limiting, 5xx after the shallow retry ladder). Callers
+///   taking destructive decisions choose their own fail-open/fail-closed
+///   stance on this.
+///
+/// `api_base_url` is normally `https://api.github.com` — exposed so tests
+/// can point at a local responder.
+pub fn version_pr_blocking(
+    api_base_url: &str,
+    upstream_slug: &str,
+    package_identifier: &str,
+    version: &str,
+    search_in_title: bool,
+    token: Option<&str>,
+    log: &StageLogger,
+) -> anyhow::Result<Option<String>> {
+    use anodizer_core::retry::SuccessClass;
+    let query = burn_search_query(upstream_slug, package_identifier, version, search_in_title);
+    let url = format!(
+        "{}/search/issues?q={}&per_page=10",
+        api_base_url.trim_end_matches('/'),
+        anodizer_core::url::percent_encode_unreserved(&query)
+    );
+    let client = blocking_client(REQUEST_TIMEOUT)?;
+    let label = format!("winget burn probe for '{package_identifier} {version}'");
+    let (_status, body) = super::burn_probe_get(
+        &label,
+        &client,
+        &url,
+        |req| {
+            let mut req = req
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28");
+            if let Some(tok) = token
+                && !tok.is_empty()
+            {
+                req = req.header("Authorization", format!("Bearer {}", tok));
+            }
+            req
+        },
+        SuccessClass::Strict,
+        |status, body| format!("GitHub PR search returned {status}: {body}"),
+        log,
+    )?;
+    let v: Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("malformed GitHub search response: {e}"))?;
+    Ok(classify_search_for_burn(&v))
+}
+
+/// Pure classifier for the burn probe's search response — no IO. `Some` when
+/// ANY matching PR is open or merged (blocks the version), `None` when
+/// nothing matches or every match was closed unmerged.
+///
+/// Heuristic bounds: a merged PR whose title starts with a removal marker
+/// ("Remove …") FREED the version rather than consuming it, so such items
+/// are skipped. For the rest, the query already scopes id+version (via
+/// `in:title` on the default template, or title+body otherwise) — the item's
+/// own title is not re-verified, so an unrelated PR that merely mentions the
+/// pair can over-block; `--force` remains the operator escape and
+/// over-blocking never destroys published state.
+fn classify_search_for_burn(v: &Value) -> Option<String> {
+    if v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0) == 0 {
+        return None;
+    }
+    let items = v.get("items")?.as_array()?;
+    for item in items {
+        if is_removal_title(item.get("title").and_then(|t| t.as_str()).unwrap_or("")) {
+            continue;
+        }
+        let state = item.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        let merged = item
+            .get("pull_request")
+            .and_then(|pr| pr.get("merged_at"))
+            .is_some_and(|m| !m.is_null());
+        let locus = item
+            .get("html_url")
+            .and_then(|u| u.as_str())
+            .map(|u| format!(" ({u})"))
+            .unwrap_or_default();
+        if merged {
+            return Some(format!("manifest PR already merged{locus}"));
+        }
+        if state == "open" {
+            return Some(format!(
+                "an open manifest PR is pending — a duplicate submission for the same \
+                 version is rejected while it sits in the queue{locus}"
+            ));
+        }
+    }
+    // Every match was closed without merging (or a removal): the version was
+    // never accepted — or was explicitly freed — so it is free to re-submit.
+    None
+}
+
 fn http_get_json(url: &str, token: Option<&str>) -> Result<String, String> {
     let client = blocking_client(REQUEST_TIMEOUT).map_err(|e| e.to_string())?;
     let mut req = client
@@ -367,26 +538,6 @@ fn http_get_json(url: &str, token: Option<&str>) -> Result<String, String> {
         return Err(format!("HTTP {}: {}", status, body));
     }
     Ok(body)
-}
-
-/// Minimal percent-encoder mirroring the preflight implementation. Kept
-/// local rather than re-exported from `preflight` so the post-publish
-/// module stays independently testable.
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 16);
-    for ch in s.chars() {
-        match ch {
-            ' ' => out.push('+'),
-            c if c.is_ascii_alphanumeric() || "-._~/:".contains(c) => out.push(c),
-            c => {
-                for byte in c.to_string().as_bytes() {
-                    out.push('%');
-                    out.push_str(&format!("{:02X}", byte));
-                }
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -564,12 +715,164 @@ mod tests {
     }
 
     #[test]
-    fn percent_encoder_matches_preflight() {
-        // Matches the encoder in `preflight.rs::percent_encode`. Pin it
-        // here so a future divergence is caught at the test boundary.
+    fn search_query_encoding_preserves_ids_and_operators() {
+        // The core encoder keeps dots (package identifiers, versions)
+        // verbatim and encodes spaces/`:`/`/` as `%XX` — all forms GitHub's
+        // search API decodes back to the intended query string.
         assert_eq!(
-            percent_encode("repo:microsoft/winget-pkgs is:pr TJSmith.Anodizer 0.2.0 in:title"),
-            "repo:microsoft/winget-pkgs+is:pr+TJSmith.Anodizer+0.2.0+in:title"
+            anodizer_core::url::percent_encode_unreserved(
+                "repo:microsoft/winget-pkgs is:pr TJSmith.Anodizer 0.2.0 in:title"
+            ),
+            "repo%3Amicrosoft%2Fwinget-pkgs%20is%3Apr%20TJSmith.Anodizer%200.2.0%20in%3Atitle"
         );
+    }
+
+    #[test]
+    fn burn_search_query_keeps_in_title_for_default_template() {
+        assert_eq!(
+            burn_search_query("microsoft/winget-pkgs", "Acme.Tool", "1.2.3", true),
+            "repo:microsoft/winget-pkgs is:pr Acme.Tool 1.2.3 in:title"
+        );
+    }
+
+    #[test]
+    fn burn_search_query_drops_in_title_for_custom_template() {
+        // A custom commit_msg_template can produce any PR title, so the
+        // query must match title OR body.
+        assert_eq!(
+            burn_search_query("acme/winget-fork", "Acme.Tool", "1.2.3", false),
+            "repo:acme/winget-fork is:pr Acme.Tool 1.2.3"
+        );
+    }
+
+    #[test]
+    fn burn_classifier_finds_blocking_pr_behind_irrelevant_first_item() {
+        // Relevance-ordered search can rank a closed-unmerged PR first; the
+        // open PR further down must still block.
+        let v = json!({
+            "total_count": 2,
+            "items": [
+                {
+                    "title": "New version: Acme.Tool version 1.2.3",
+                    "state": "closed",
+                    "html_url": "https://github.com/microsoft/winget-pkgs/pull/1",
+                    "pull_request": {"merged_at": null}
+                },
+                {
+                    "title": "New version: Acme.Tool version 1.2.3",
+                    "state": "open",
+                    "html_url": "https://github.com/microsoft/winget-pkgs/pull/2",
+                    "pull_request": {"merged_at": null}
+                }
+            ]
+        });
+        let detail = classify_search_for_burn(&v)
+            .expect("the open PR ranked second must still block the version");
+        assert!(detail.contains("pull/2"), "got: {detail}");
+    }
+
+    #[test]
+    fn burn_classifier_skips_merged_removal_pr() {
+        // A merged "Remove <id> <version>" PR FREED the slot — it must not
+        // count as a burn.
+        let v = json!({
+            "total_count": 1,
+            "items": [{
+                "title": "Remove Acme.Tool 1.2.3",
+                "state": "closed",
+                "html_url": "https://github.com/microsoft/winget-pkgs/pull/3",
+                "pull_request": {"merged_at": "2026-07-01T00:00:00Z"}
+            }]
+        });
+        assert!(
+            classify_search_for_burn(&v).is_none(),
+            "a merged removal PR means the version slot is free"
+        );
+    }
+
+    #[test]
+    fn burn_classifier_removal_pr_does_not_mask_later_merged_manifest() {
+        let v = json!({
+            "total_count": 2,
+            "items": [
+                {
+                    "title": "Remove Acme.Tool 1.2.3",
+                    "state": "closed",
+                    "html_url": "https://github.com/microsoft/winget-pkgs/pull/3",
+                    "pull_request": {"merged_at": "2026-06-01T00:00:00Z"}
+                },
+                {
+                    "title": "New version: Acme.Tool version 1.2.3",
+                    "state": "closed",
+                    "html_url": "https://github.com/microsoft/winget-pkgs/pull/4",
+                    "pull_request": {"merged_at": "2026-07-01T00:00:00Z"}
+                }
+            ]
+        });
+        let detail = classify_search_for_burn(&v)
+            .expect("a merged manifest PR after a removal still burns the version");
+        assert!(detail.contains("pull/4"), "got: {detail}");
+    }
+
+    #[test]
+    fn select_pr_skips_removal_item_and_picks_manifest_pr() {
+        let v = json!({
+            "total_count": 2,
+            "items": [
+                {
+                    "number": 10,
+                    "title": "Remove Acme.Tool 1.2.3",
+                    "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/10"}
+                },
+                {
+                    "number": 11,
+                    "title": "New version: Acme.Tool version 1.2.3",
+                    "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/11"}
+                }
+            ]
+        });
+        assert_eq!(
+            select_pr_api_url(&v, "https://api.github.com", "microsoft/winget-pkgs").as_deref(),
+            Some("https://api.github.com/repos/microsoft/winget-pkgs/pulls/11"),
+            "a removal PR ranked first must not be the polled PR"
+        );
+    }
+
+    #[test]
+    fn select_pr_fallback_url_embeds_configured_upstream() {
+        // No pull_request.url in the item: the fallback API URL must target
+        // the configured upstream, not a hardcoded slug.
+        let v = json!({
+            "total_count": 1,
+            "items": [{
+                "number": 42,
+                "title": "New version: Acme.Tool version 1.2.3"
+            }]
+        });
+        assert_eq!(
+            select_pr_api_url(&v, "https://api.example", "acme/winget-fork").as_deref(),
+            Some("https://api.example/repos/acme/winget-fork/pulls/42")
+        );
+    }
+
+    #[test]
+    fn select_pr_all_removal_items_yields_none() {
+        let v = json!({
+            "total_count": 1,
+            "items": [{
+                "number": 10,
+                "title": "remove Acme.Tool 1.2.3",
+                "pull_request": {"url": "https://api.github.com/repos/microsoft/winget-pkgs/pulls/10"}
+            }]
+        });
+        assert!(select_pr_api_url(&v, "https://api.github.com", "microsoft/winget-pkgs").is_none());
+    }
+
+    #[test]
+    fn removal_title_detection_is_case_insensitive_and_trimmed() {
+        assert!(is_removal_title("Remove Acme.Tool 1.2.3"));
+        assert!(is_removal_title("  REMOVE: Acme.Tool version 1.2.3"));
+        assert!(!is_removal_title("New version: Acme.Tool version 1.2.3"));
+        assert!(!is_removal_title("Update Acme.Tool to 1.2.3"));
     }
 }

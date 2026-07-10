@@ -343,21 +343,52 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
                  certain nothing irreversible shipped."
             ),
         };
-        let retry_policy = repo_config.retry.unwrap_or_default().to_policy();
+        // Guard probes get their own shallow retry ladder (GUARD_PROBE:
+        // 3 attempts, 30s cap) instead of the run's configured publish
+        // ladder: a multi-crate workspace probes many registry endpoints in
+        // one pass, and a registry outage must fail the guard closed in
+        // seconds-to-minutes, not burn a full ~25-minute backoff budget per
+        // crate first.
+        let probe_policy = anodizer_core::retry::RetryPolicy::GUARD_PROBE;
         let index_probe = |name: &str, version: &str| {
             anodizer_stage_publish::cargo::published_on_crates_io(
                 name,
                 version,
-                &retry_policy,
+                &probe_policy,
                 &log,
             )
+        };
+        let winget_token = winget_probe_token(&anodizer_core::ProcessEnvSource);
+        let choco_probe = |package: &str, version: &str| {
+            anodizer_stage_publish::post_publish::chocolatey::version_blocked_on_gallery(
+                "https://community.chocolatey.org",
+                package,
+                version,
+                &log,
+            )
+        };
+        let winget_probe = |spec: &WingetProbeSpec| {
+            anodizer_stage_publish::post_publish::winget::version_pr_blocking(
+                "https://api.github.com",
+                &spec.upstream,
+                &spec.package_id,
+                &spec.version,
+                spec.search_in_title,
+                winget_token.as_deref(),
+                &log,
+            )
+        };
+        let probes = BurnProbes {
+            crates_io: &index_probe,
+            chocolatey: &choco_probe,
+            winget: &winget_probe,
         };
         let unsummarized = check_not_irreversibly_published(
             &cwd,
             gh_binary,
             &deletable,
             &repo_config,
-            &index_probe,
+            &probes,
             &log,
         )?;
         deletable
@@ -704,6 +735,236 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
     }
 }
 
+/// Registry probes the published-state guard consults, injected as seams so
+/// tests can script registry state without a network (same convention as
+/// `gh_binary`).
+///
+/// Production wiring:
+/// - `crates_io` — [`anodizer_stage_publish::cargo::published_on_crates_io`]:
+///   `(crate, version) -> published?`. Fail-CLOSED evidence: an `Err` refuses
+///   rollback.
+/// - `chocolatey` —
+///   [`anodizer_stage_publish::post_publish::chocolatey::version_blocked_on_gallery`]:
+///   `(package id, version) -> Some(blocking state)`. Advisory: an `Err`
+///   warns and proceeds (fail open).
+/// - `winget` —
+///   [`anodizer_stage_publish::post_publish::winget::version_pr_blocking`]:
+///   `WingetProbeSpec -> Some(blocking state)`. Advisory, fail open like
+///   `chocolatey`.
+struct BurnProbes<'a> {
+    crates_io: &'a (dyn Fn(&str, &str) -> Result<bool> + Sync),
+    chocolatey: &'a (dyn Fn(&str, &str) -> Result<Option<String>> + Sync),
+    winget: &'a (dyn Fn(&WingetProbeSpec) -> Result<Option<String>> + Sync),
+}
+
+/// Coordinates of one winget burn probe, resolved from the crate's
+/// `publish.winget` block the same way the publisher resolves its submission
+/// target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WingetProbeSpec {
+    /// `<owner>/<repo>` the manifest PR targets
+    /// ([`anodizer_stage_publish::winget::resolve_winget_upstream`]).
+    upstream: String,
+    package_id: String,
+    version: String,
+    /// Whether the search may keep GitHub's `in:title` qualifier: true only
+    /// for the default PR-title format — a custom `commit_msg_template`
+    /// makes the title unpredictable, so the search widens to title+body.
+    search_in_title: bool,
+}
+
+/// Ambient GitHub token for the winget burn probe, read through the injected
+/// env source. The probe is a read-only public search that works
+/// anonymously; the token only buys a higher rate limit.
+fn winget_probe_token<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> Option<String> {
+    anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key))
+}
+
+/// Concurrency bound for registry burn probes: a large workspace must not
+/// open dozens of simultaneous connections against an already-struggling
+/// registry.
+const MAX_PROBE_WORKERS: usize = 8;
+
+/// One pending moderated-registry probe, collected up front so the network
+/// round-trips can run on the shared bounded pool.
+enum ModeratedProbe {
+    Chocolatey {
+        tag: String,
+        id: String,
+        version: String,
+    },
+    Winget {
+        tag: String,
+        spec: WingetProbeSpec,
+    },
+}
+
+/// Refuse rollback when any tag's configured chocolatey / winget package is
+/// already visible on those registries at the tag's version. Both are true
+/// one-way doors (a moderation queue submission or a merged manifest PR
+/// blocks re-submitting the same version), and a burn landed by another
+/// runner leaves no local summary and no GitHub release — this probe is the
+/// only evidence path that can see it.
+///
+/// Probes run ONLY for crates whose config carries the respective publisher
+/// block, and only when the package id is resolvable without a template
+/// context (a templated override warns and is skipped). A chocolatey block
+/// whose `source_repo` targets a non-community feed is skipped too — private
+/// feeds have no community moderation queue, so the gallery page carries no
+/// signal for them. The winget probe searches the same upstream repository
+/// the publisher would submit to. Unlike the crates.io
+/// index probe, an unreachable registry here WARNS AND PROCEEDS (fail open):
+/// these endpoints are a moderation-queue HTML page and the rate-limited
+/// GitHub search API — flaky enough that failing closed would dead-end
+/// legitimate recoveries on transient noise, and both registries' burn is
+/// additionally covered by run-summary evidence when the publish ran on this
+/// runner. Positive evidence still refuses outright, exactly like a
+/// crates.io hit.
+fn check_not_burned_on_moderated_registries(
+    tags: &[String],
+    config: &anodizer_core::config::Config,
+    probes: &BurnProbes<'_>,
+    log: &StageLogger,
+) -> Result<()> {
+    // Pass 1 — resolve every deduplicated probe up front so the network
+    // round-trips can run concurrently on the shared bounded pool.
+    let mut pending: Vec<ModeratedProbe> = Vec::new();
+    let mut probed: std::collections::HashSet<(&'static str, String, String)> =
+        std::collections::HashSet::new();
+    for tag in tags {
+        for (c, version) in crates_versioned_by_tag(config, tag) {
+            if let Some(choco_cfg) = c.publish.as_ref().and_then(|p| p.chocolatey.as_ref()) {
+                if !anodizer_stage_publish::chocolatey::targets_community_gallery(choco_cfg) {
+                    // Only the community gallery has a moderation queue whose
+                    // pending submissions consume a version; a private feed's
+                    // state says nothing about the community page.
+                    log.verbose(&format!(
+                        "skipped the chocolatey gallery burn probe for crate '{}' — its \
+                         push target '{}' is not the community gallery",
+                        c.name,
+                        anodizer_stage_publish::chocolatey::push_source(choco_cfg)
+                    ));
+                } else {
+                    match anodizer_stage_publish::chocolatey::static_package_id(&c.name, choco_cfg)
+                    {
+                        Some(id) => {
+                            if probed.insert(("chocolatey", id.clone(), version.clone())) {
+                                pending.push(ModeratedProbe::Chocolatey {
+                                    tag: tag.clone(),
+                                    id,
+                                    version: version.clone(),
+                                });
+                            }
+                        }
+                        None => log.warn(&format!(
+                            "cannot resolve the chocolatey package id for crate '{}' without a \
+                             release template context; skipping its gallery burn probe \
+                             (advisory evidence only)",
+                            c.name
+                        )),
+                    }
+                }
+            }
+            if let Some(winget_cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) {
+                match anodizer_stage_publish::winget::static_package_identifier(&c.name, winget_cfg)
+                {
+                    Some(id) => {
+                        let (owner, repo) =
+                            anodizer_stage_publish::winget::resolve_winget_upstream(winget_cfg);
+                        let upstream = format!("{owner}/{repo}");
+                        if probed.insert(("winget", format!("{upstream}#{id}"), version.clone())) {
+                            pending.push(ModeratedProbe::Winget {
+                                tag: tag.clone(),
+                                spec: WingetProbeSpec {
+                                    upstream,
+                                    package_id: id,
+                                    version: version.clone(),
+                                    search_in_title: winget_cfg.commit_msg_template.is_none(),
+                                },
+                            });
+                        }
+                    }
+                    None => log.warn(&format!(
+                        "cannot resolve the winget package identifier for crate '{}' \
+                         without a release template context; skipping its manifest-PR burn \
+                         probe (advisory evidence only)",
+                        c.name
+                    )),
+                }
+            }
+        }
+    }
+    // Pass 2 — probe the registries concurrently. A worker panic surfaces as
+    // an attributed error; per-probe failures stay wrapped so one flaky
+    // endpoint cannot abort its siblings.
+    let results = anodizer_core::parallel::run_parallel_chunks(
+        &pending,
+        MAX_PROBE_WORKERS,
+        "moderated-registry burn probe",
+        log,
+        |probe| {
+            Ok(match probe {
+                ModeratedProbe::Chocolatey { id, version, .. } => (probes.chocolatey)(id, version),
+                ModeratedProbe::Winget { spec, .. } => (probes.winget)(spec),
+            })
+        },
+    )?;
+    // Pass 3 — classify in the deterministic pass-1 order.
+    let mut burned: Vec<String> = Vec::new();
+    for (probe, result) in pending.iter().zip(results) {
+        match probe {
+            ModeratedProbe::Chocolatey { tag, id, version } => match result {
+                Ok(Some(state)) => burned.push(format!(
+                    "  {tag}: chocolatey package '{id}@{version}' — {state}"
+                )),
+                Ok(None) => log.status(&format!(
+                    "chocolatey has never seen '{id}@{version}' — {tag} \
+                     carries no chocolatey one-way door"
+                )),
+                Err(e) => log.warn(&format!(
+                    "could not consult the chocolatey gallery for \
+                     '{id}@{version}' ({e:#}); proceeding — this probe is \
+                     advisory evidence, and run summaries / crates.io / \
+                     GitHub releases still guard the rollback"
+                )),
+            },
+            ModeratedProbe::Winget { tag, spec } => match result {
+                Ok(Some(state)) => burned.push(format!(
+                    "  {tag}: winget package '{}' at {} — {state}",
+                    spec.package_id, spec.version
+                )),
+                Ok(None) => log.status(&format!(
+                    "{} carries no blocking manifest PR for '{} {}' — {tag} \
+                     carries no winget one-way door",
+                    spec.upstream, spec.package_id, spec.version
+                )),
+                Err(e) => log.warn(&format!(
+                    "could not search {} for '{} {}' ({e:#}); proceeding — this \
+                     probe is advisory evidence, and run summaries / crates.io / \
+                     GitHub releases still guard the rollback",
+                    spec.upstream, spec.package_id, spec.version
+                )),
+            },
+        }
+    }
+    if !burned.is_empty() {
+        return Err(RollbackRefusal {
+            reason: format!(
+                "these version(s) are already consumed at a moderated one-way-door registry \
+                 (submitted by a prior attempt, whatever this run's summaries say):\n{}\n\
+                 Those registries never accept the same version twice — a pending \
+                 submission blocks a re-push just like an accepted one — so deleting the \
+                 tag(s) cannot lead to a clean same-version re-cut — tags kept to protect \
+                 the published state.",
+                burned.join("\n")
+            ),
+            next_step: refusal_next_step(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Refuse rollback when the version is already burned at a one-way-door
 /// (Submitter group) publisher, by evidence strength:
 ///
@@ -732,9 +993,14 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 /// tap/bucket/index commits) permits rollback because their state can
 /// be deleted and the same version re-cut.
 ///
-/// `index_probe` is `(crate_name, version) -> published?` — production
-/// wires [`anodizer_stage_publish::cargo::published_on_crates_io`];
-/// tests inject stubs (same seam convention as `gh_binary`).
+/// Alongside layer 2, the configured moderated registries (chocolatey,
+/// winget) are probed as advisory evidence via
+/// [`check_not_burned_on_moderated_registries`]: positive evidence refuses
+/// like a crates.io hit, but an unreachable registry warns and proceeds.
+///
+/// `probes` carries the injected registry probes ([`BurnProbes`]) —
+/// production wires the stage-publish probe functions; tests inject stubs
+/// (same seam convention as `gh_binary`).
 ///
 /// On success returns the subset of `tags` that had NO matching run summary
 /// (the "unattributed" tags). The caller uses that to decide release cleanup:
@@ -745,7 +1011,7 @@ fn check_not_irreversibly_published(
     gh_binary: &std::path::Path,
     tags: &[String],
     repo_config: &anodizer_core::config::Config,
-    index_probe: &dyn Fn(&str, &str) -> Result<bool>,
+    probes: &BurnProbes<'_>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     let summaries = collect_run_summaries(&resolve_dist_dir(cwd, repo_config), log);
@@ -798,7 +1064,8 @@ fn check_not_irreversibly_published(
         }
         .into());
     }
-    check_not_burned_on_crates_io(tags, &unsummarized, repo_config, index_probe, log)?;
+    check_not_burned_on_crates_io(tags, &unsummarized, repo_config, probes.crates_io, log)?;
+    check_not_burned_on_moderated_registries(tags, repo_config, probes, log)?;
     if unsummarized.is_empty() {
         return Ok(unsummarized);
     }
@@ -855,14 +1122,39 @@ fn crates_io_versions_for_tag(
     config: &anodizer_core::config::Config,
     tag: &str,
 ) -> TagCrateMapping {
-    let stripped = match config.monorepo_tag_prefix() {
-        Some(prefix) => git::strip_monorepo_prefix(tag, prefix),
-        None => tag,
-    };
     let mut mapping = TagCrateMapping {
         probes: Vec::new(),
         matched_non_crates_io: 0,
     };
+    for (c, version) in crates_versioned_by_tag(config, tag) {
+        match c.publish.as_ref().and_then(|p| p.cargo.as_ref()) {
+            Some(cargo_cfg)
+                if anodizer_stage_publish::cargo::targets_crates_io(Some(cargo_cfg)) =>
+            {
+                mapping.probes.push((c.name.clone(), version));
+            }
+            _ => mapping.matched_non_crates_io += 1,
+        }
+    }
+    mapping
+}
+
+/// Resolve which crates a tag versions, per the repo config's crate tag
+/// families: every crate whose tag family prefix (from its `tag_template`,
+/// monorepo prefix stripped) matches the tag, paired with the semver the tag
+/// stamps on it. Shared by every registry-specific burn probe so the tag →
+/// crate judgment exists exactly once. Works across all three layouts:
+/// single-crate and lockstep tags (`v0.5.0`) match every crate sharing the
+/// bare family; per-crate tags (`crd-v0.5.0`) match their own crate only.
+fn crates_versioned_by_tag<'c>(
+    config: &'c anodizer_core::config::Config,
+    tag: &str,
+) -> Vec<(&'c anodizer_core::config::CrateConfig, String)> {
+    let stripped = match config.monorepo_tag_prefix() {
+        Some(prefix) => git::strip_monorepo_prefix(tag, prefix),
+        None => tag,
+    };
+    let mut out = Vec::new();
     for c in config.crate_universe() {
         let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
         let Some(version) = stripped.strip_prefix(&prefix) else {
@@ -871,16 +1163,9 @@ fn crates_io_versions_for_tag(
         if git::parse_semver(version).is_err() {
             continue;
         }
-        match c.publish.as_ref().and_then(|p| p.cargo.as_ref()) {
-            Some(cargo_cfg)
-                if anodizer_stage_publish::cargo::targets_crates_io(Some(cargo_cfg)) =>
-            {
-                mapping.probes.push((c.name.clone(), version.to_string()));
-            }
-            _ => mapping.matched_non_crates_io += 1,
-        }
+        out.push((c, version.to_string()));
     }
-    mapping
+    out
 }
 
 /// Layer 2 of [`check_not_irreversibly_published`]: refuse rollback when
@@ -907,7 +1192,7 @@ fn check_not_burned_on_crates_io(
     tags: &[String],
     unsummarized: &[String],
     config: &anodizer_core::config::Config,
-    index_probe: &dyn Fn(&str, &str) -> Result<bool>,
+    index_probe: &(dyn Fn(&str, &str) -> Result<bool> + Sync),
     log: &StageLogger,
 ) -> Result<()> {
     let config_targets_crates_io = config.crate_universe().iter().any(|c| {
@@ -927,6 +1212,9 @@ fn check_not_burned_on_crates_io(
     let mut indeterminate: Vec<String> = Vec::new();
     let mut unmapped: Vec<String> = Vec::new();
     let mut probed: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    // Pass 1 — resolve every tag's deduplicated `(tag, crate, version)`
+    // probe set up front so the network round-trips can run concurrently.
+    let mut pending: Vec<(String, String, String)> = Vec::new();
     for tag in tags {
         let mapping = crates_io_versions_for_tag(config, tag);
         if mapping.probes.is_empty() {
@@ -944,19 +1232,36 @@ fn check_not_burned_on_crates_io(
             if !probed.insert((name.clone(), version.clone())) {
                 continue;
             }
-            match index_probe(&name, &version) {
-                Ok(true) => {
-                    if unsummarized.contains(tag) && !squat_suspect_crates.contains(&name) {
-                        squat_suspect_crates.push(name.clone());
-                    }
-                    burned.push(format!("  {tag}: {name}@{version}"));
+            pending.push((tag.clone(), name, version));
+        }
+    }
+    // Pass 2 — probe the index concurrently: a 20-crate lockstep workspace
+    // must not serialize 20 network ladders during a registry outage. Each
+    // probe's own Result is wrapped so a failed probe (fail-closed evidence,
+    // classified below) doesn't abort its in-flight siblings; a worker panic
+    // surfaces as an attributed error.
+    let results = anodizer_core::parallel::run_parallel_chunks(
+        &pending,
+        MAX_PROBE_WORKERS,
+        "crates.io burn probe",
+        log,
+        |(_, name, version)| Ok(index_probe(name, version)),
+    )?;
+    // Pass 3 — classify in the deterministic pass-1 order, so the operator
+    // output is stable regardless of probe completion order.
+    for ((tag, name, version), result) in pending.iter().zip(results) {
+        match result {
+            Ok(true) => {
+                if unsummarized.contains(tag) && !squat_suspect_crates.contains(name) {
+                    squat_suspect_crates.push(name.clone());
                 }
-                Ok(false) => log.status(&format!(
-                    "'{name}@{version}' is not on the crates.io index — {tag} carries no \
-                     cargo one-way door"
-                )),
-                Err(e) => indeterminate.push(format!("  {tag}: {name}@{version} ({e:#})")),
+                burned.push(format!("  {tag}: {name}@{version}"));
             }
+            Ok(false) => log.status(&format!(
+                "'{name}@{version}' is not on the crates.io index — {tag} carries no \
+                 cargo one-way door"
+            )),
+            Err(e) => indeterminate.push(format!("  {tag}: {name}@{version} ({e:#})")),
         }
     }
     if !burned.is_empty() {
@@ -1809,6 +2114,30 @@ mod tests {
         panic!("crates.io index probe must not be consulted on this path")
     }
 
+    /// Moderated-registry probe stub reporting "never submitted", so tests
+    /// targeting the crates.io layer (or the summary/release layers)
+    /// exercise their subject in isolation.
+    fn moderated_probe_clear(_: &str, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Winget sibling of [`moderated_probe_clear`].
+    fn winget_probe_clear(_: &WingetProbeSpec) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Wrap a crates.io index probe into the full [`BurnProbes`] seam with
+    /// clear moderated-registry probes.
+    fn probes_with_crates_io(
+        index: &(dyn Fn(&str, &str) -> Result<bool> + Sync),
+    ) -> BurnProbes<'_> {
+        BurnProbes {
+            crates_io: index,
+            chocolatey: &moderated_probe_clear,
+            winget: &winget_probe_clear,
+        }
+    }
+
     /// Config with no crates.io-targeting crate: layer 2 has nothing to
     /// probe, so layer-1/3 tests exercise their subject in isolation.
     /// Named (rather than inlining `Config::default()` at call sites) so
@@ -2256,7 +2585,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect_err("irreversible publish in the summary must block rollback");
@@ -2316,7 +2645,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect("reversible-only summary must permit rollback without probing GitHub");
@@ -2358,7 +2687,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect_err("legacy summary with a landed Submitter must block");
@@ -2392,7 +2721,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect_err("unsummarized tag must fall back to the release probe");
@@ -2426,7 +2755,7 @@ mod tests {
             &gh,
             &["mycrate-v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect_err("per-crate summary must be found and must block");
@@ -2450,7 +2779,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &no_cargo_config(),
-            &probe_untouched,
+            &probes_with_crates_io(&probe_untouched),
             &quiet_log(),
         )
         .expect("malformed summary + 404 probe must permit rollback");
@@ -2561,7 +2890,7 @@ mod tests {
             &gh,
             &["crd-v0.5.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect_err("a version live on the crates.io index must refuse rollback");
@@ -2612,7 +2941,7 @@ mod tests {
             &gh,
             &["v0.1.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect_err("index-live version must refuse rollback");
@@ -2663,7 +2992,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect("clean summary + version absent from the index must permit rollback");
@@ -2699,7 +3028,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect_err("an unreachable index must fail closed");
@@ -2734,7 +3063,7 @@ mod tests {
             &gh,
             &["v1.0.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect_err("an unmappable tag must fail closed");
@@ -2781,7 +3110,7 @@ mod tests {
             &gh,
             &["corp-v1.0.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect("a mapped crate outside crates.io carries no cargo one-way door");
@@ -2800,9 +3129,9 @@ mod tests {
             tag_prefix: Some("sub/".to_string()),
             ..Default::default()
         });
-        let calls = std::cell::Cell::new(0usize);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
         let probe = |name: &str, version: &str| -> Result<bool> {
-            calls.set(calls.get() + 1);
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert_eq!((name, version), ("mycrate", "1.0.0"));
             Ok(false)
         };
@@ -2812,15 +3141,375 @@ mod tests {
             &gh,
             &["v1.0.0".to_string(), "sub/v1.0.0".to_string()],
             &config,
-            &probe,
+            &probes_with_crates_io(&probe),
             &quiet_log(),
         )
         .expect("version absent from the index must permit rollback");
         assert_eq!(
-            calls.get(),
+            calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "the duplicate crate@version pair must be probed exactly once"
         );
+    }
+
+    #[test]
+    fn crates_io_probes_run_concurrently() {
+        // Two crates share the bare `v...` family (lockstep): both probes
+        // rendezvous on a barrier, which only resolves when they execute on
+        // different workers at the same time — a serialized probe loop would
+        // deadlock here (and trip the barrier's wait), never pass.
+        let config = config_with_cargo_crates(&[("a", "v{{ Version }}"), ("b", "v{{ Version }}")]);
+        let barrier = std::sync::Barrier::new(2);
+        let probe = |_: &str, _: &str| -> Result<bool> {
+            barrier.wait();
+            Ok(false)
+        };
+        check_not_burned_on_crates_io(&["v1.0.0".to_string()], &[], &config, &probe, &quiet_log())
+            .expect("absent versions must permit rollback");
+    }
+
+    /// Moderated-registry probe stub that must never be consulted — for
+    /// fixtures with no chocolatey/winget publisher configured.
+    fn moderated_probe_untouched(_: &str, _: &str) -> Result<Option<String>> {
+        panic!("moderated-registry probe must not be consulted on this path")
+    }
+
+    /// Winget sibling of [`moderated_probe_untouched`].
+    fn winget_probe_untouched(_: &WingetProbeSpec) -> Result<Option<String>> {
+        panic!("winget probe must not be consulted on this path")
+    }
+
+    fn config_with_choco_crate(choco_name: Option<&str>) -> anodizer_core::config::Config {
+        let mut config = anodizer_core::config::Config::default();
+        config.crates = vec![anodizer_core::config::CrateConfig {
+            name: "mytool".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            publish: Some(anodizer_core::config::PublishConfig {
+                chocolatey: Some(anodizer_core::config::ChocolateyConfig {
+                    name: choco_name.map(str::to_string),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        config
+    }
+
+    fn config_with_winget_crate(package_identifier: &str) -> anodizer_core::config::Config {
+        let mut config = anodizer_core::config::Config::default();
+        config.crates = vec![anodizer_core::config::CrateConfig {
+            name: "mytool".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            publish: Some(anodizer_core::config::PublishConfig {
+                winget: Some(anodizer_core::config::WingetConfig {
+                    package_identifier: Some(package_identifier.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        config
+    }
+
+    #[test]
+    fn moderated_registries_choco_pending_submission_refuses() {
+        let config = config_with_choco_crate(None);
+        let choco = |id: &str, version: &str| -> Result<Option<String>> {
+            assert_eq!((id, version), ("mytool", "1.0.0"));
+            Ok(Some(
+                "submitted, currently: awaiting moderation".to_string(),
+            ))
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &choco,
+            winget: &winget_probe_untouched,
+        };
+        let err = check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect_err("a pending chocolatey submission consumes the version");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("chocolatey package 'mytool@1.0.0'"),
+            "must name the burned package: {msg}"
+        );
+        assert!(msg.contains("awaiting moderation"), "got: {msg}");
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "a moderated-registry burn must be a typed refusal"
+        );
+    }
+
+    #[test]
+    fn moderated_registries_choco_name_override_is_probed() {
+        let config = config_with_choco_crate(Some("renamed-pkg"));
+        let choco = |id: &str, _: &str| -> Result<Option<String>> {
+            assert_eq!(id, "renamed-pkg");
+            Ok(None)
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &choco,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("a never-submitted version must permit rollback");
+    }
+
+    #[test]
+    fn moderated_registries_winget_open_pr_refuses() {
+        let config = config_with_winget_crate("Acme.MyTool");
+        let winget = |spec: &WingetProbeSpec| -> Result<Option<String>> {
+            assert_eq!(
+                spec,
+                &WingetProbeSpec {
+                    upstream: "microsoft/winget-pkgs".to_string(),
+                    package_id: "Acme.MyTool".to_string(),
+                    version: "2.0.0".to_string(),
+                    search_in_title: true,
+                }
+            );
+            Ok(Some("an open manifest PR is pending".to_string()))
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget,
+        };
+        let err = check_not_burned_on_moderated_registries(
+            &["v2.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect_err("an open winget manifest PR consumes the version");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("winget package 'Acme.MyTool' at 2.0.0"),
+            "must name the burned package: {msg}"
+        );
+        assert!(msg.contains("open manifest PR"), "got: {msg}");
+        assert!(err.downcast_ref::<RollbackRefusal>().is_some());
+    }
+
+    #[test]
+    fn moderated_registries_probe_error_fails_open() {
+        // Unlike the crates.io index probe (fail closed), the moderated
+        // registries are advisory evidence: a probe failure warns and
+        // proceeds so rate-limited/flaky endpoints cannot dead-end recovery.
+        let config = config_with_choco_crate(None);
+        let failing = |_: &str, _: &str| -> Result<Option<String>> {
+            anyhow::bail!("connection reset by peer")
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &failing,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("an unreachable moderated registry must warn and proceed");
+    }
+
+    #[test]
+    fn moderated_registries_skipped_when_publisher_not_configured() {
+        // Cargo-only config: neither moderated-registry probe may run.
+        let config = config_with_cargo_crates(&[("mycrate", "v{{ Version }}")]);
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("no moderated publisher configured — nothing to probe");
+    }
+
+    #[test]
+    fn moderated_registries_templated_package_id_skips_probe() {
+        // A template override cannot be resolved without a release context;
+        // the probe must skip (warn) rather than probe a guessed id.
+        let config = config_with_choco_crate(Some("{{ .ProjectName }}"));
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("an unresolvable package id skips the advisory probe");
+    }
+
+    #[test]
+    fn moderated_registries_non_community_choco_feed_skips_probe() {
+        // Only the community gallery has a moderation queue; a private feed
+        // target must not be probed against community.chocolatey.org.
+        let mut config = config_with_choco_crate(None);
+        config.crates[0]
+            .publish
+            .as_mut()
+            .unwrap()
+            .chocolatey
+            .as_mut()
+            .unwrap()
+            .source_repo = Some("https://nuget.internal.example/v2/".to_string());
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("a non-community feed has no moderation queue — nothing to probe");
+    }
+
+    #[test]
+    fn moderated_registries_community_choco_feed_spelled_explicitly_is_probed() {
+        // An explicit source_repo equal to the community push endpoint
+        // (trailing-slash / case variance included) must still probe.
+        let mut config = config_with_choco_crate(None);
+        config.crates[0]
+            .publish
+            .as_mut()
+            .unwrap()
+            .chocolatey
+            .as_mut()
+            .unwrap()
+            .source_repo = Some("HTTPS://PUSH.CHOCOLATEY.ORG".to_string());
+        let choco = |id: &str, version: &str| -> Result<Option<String>> {
+            assert_eq!((id, version), ("mytool", "1.0.0"));
+            Ok(None)
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &choco,
+            winget: &winget_probe_untouched,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v1.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("the community feed spelled explicitly must still be probed");
+    }
+
+    #[test]
+    fn moderated_registries_winget_probe_uses_configured_upstream() {
+        // The probe must search the same upstream the publisher would
+        // submit to (repository.pull_request.base), not a hardcoded
+        // microsoft/winget-pkgs.
+        let mut config = config_with_winget_crate("Acme.MyTool");
+        config.crates[0]
+            .publish
+            .as_mut()
+            .unwrap()
+            .winget
+            .as_mut()
+            .unwrap()
+            .repository = Some(anodizer_core::config::RepositoryConfig {
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                base: Some(anodizer_core::config::PullRequestBaseConfig {
+                    owner: Some("acme".to_string()),
+                    name: Some("winget-fork".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let winget = |spec: &WingetProbeSpec| -> Result<Option<String>> {
+            assert_eq!(spec.upstream, "acme/winget-fork");
+            Ok(None)
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v2.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("clear upstream must permit rollback");
+    }
+
+    #[test]
+    fn moderated_registries_custom_commit_template_widens_winget_search() {
+        // A custom commit_msg_template makes the PR title unpredictable, so
+        // the probe must drop the in:title qualifier.
+        let mut config = config_with_winget_crate("Acme.MyTool");
+        config.crates[0]
+            .publish
+            .as_mut()
+            .unwrap()
+            .winget
+            .as_mut()
+            .unwrap()
+            .commit_msg_template = Some("chore: bump {{ .Version }}".to_string());
+        let winget = |spec: &WingetProbeSpec| -> Result<Option<String>> {
+            assert!(
+                !spec.search_in_title,
+                "a custom PR-title template must widen the search to title+body"
+            );
+            Ok(None)
+        };
+        let probes = BurnProbes {
+            crates_io: &probe_untouched,
+            chocolatey: &moderated_probe_untouched,
+            winget: &winget,
+        };
+        check_not_burned_on_moderated_registries(
+            &["v2.0.0".to_string()],
+            &config,
+            &probes,
+            &quiet_log(),
+        )
+        .expect("clear search must permit rollback");
+    }
+
+    #[test]
+    fn winget_probe_token_prefers_github_token_via_env_seam() {
+        let env = anodizer_core::MapEnvSource::new()
+            .with("GITHUB_TOKEN", "gh-primary")
+            .with("GH_TOKEN", "gh-fallback");
+        assert_eq!(winget_probe_token(&env).as_deref(), Some("gh-primary"));
+        let fallback_only = anodizer_core::MapEnvSource::new().with("GH_TOKEN", "gh-fallback");
+        assert_eq!(
+            winget_probe_token(&fallback_only).as_deref(),
+            Some("gh-fallback")
+        );
+        let empty = anodizer_core::MapEnvSource::new();
+        assert_eq!(winget_probe_token(&empty), None);
     }
 
     #[test]

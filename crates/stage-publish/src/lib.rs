@@ -484,6 +484,18 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
             cfg,
             poll_cfg,
         } = cand;
+        // Moderation polling scrapes the community gallery's version page —
+        // a private/self-hosted feed has no moderation queue and no such
+        // page, so a non-community push target is never polled.
+        if !chocolatey::targets_community_gallery(&cfg) {
+            log.status(&format!(
+                "skipped chocolatey moderation polling for '{}' — its push target '{}' is \
+                 not the community gallery (moderation applies to the community gallery only)",
+                cfg.name.as_deref().unwrap_or(&crate_name),
+                chocolatey::push_source(&cfg)
+            ));
+            continue;
+        }
         let pkg_name = cfg.name.unwrap_or(crate_name);
         match poll_cfg {
             None => skipped.push(("chocolatey", pkg_name, version.clone())),
@@ -518,7 +530,7 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
             if publisher.is_empty() {
                 name.to_string()
             } else {
-                format!("{}.{}", publisher, name)
+                winget::auto_package_identifier(publisher, name)
             }
         });
         match poll_cfg {
@@ -550,10 +562,17 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
                     explicit.as_deref(),
                     &|key| ctx.env_var(key),
                 );
+                // Poll the same upstream the publisher submitted its PR to,
+                // and drop the in:title precision when a custom template
+                // makes the PR title unpredictable — mirroring the burn
+                // probe so poll and publish can never disagree.
+                let (upstream_owner, upstream_repo) = winget::resolve_winget_upstream(&cfg);
                 jobs.push(post_publish::PollJob::Winget {
                     package_identifier: pkg_id,
                     version: version.clone(),
                     api_base_url: "https://api.github.com".to_string(),
+                    upstream_slug: format!("{upstream_owner}/{upstream_repo}"),
+                    search_in_title: cfg.commit_msg_template.is_none(),
                     token,
                     cfg: poll_cfg,
                 });
@@ -2263,6 +2282,67 @@ mod tests {
         assert!(
             !results.iter().any(|r| r["publisher"] == "chocolatey"),
             "chocolatey is excluded by the allowlist and must never be polled (got {results:?})"
+        );
+    }
+
+    /// A chocolatey block pushing to a non-community feed must never be
+    /// polled: moderation polling scrapes the community gallery's version
+    /// page, which carries no signal for a private feed. The observable seam
+    /// is the same network-free one the allowlist test uses: with
+    /// `skip_post_publish_poll: true` an eligible publisher records a
+    /// `NotPolled` row, so the absence of a chocolatey row proves the gate
+    /// fired before the poller path.
+    #[test]
+    fn non_community_choco_feed_is_not_polled() {
+        use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    name: Some("mylib-choco".to_string()),
+                    source_repo: Some("https://nuget.internal.example/v2/".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                skip_post_publish_poll: true,
+                ..Default::default()
+            },
+        );
+
+        let (log, cap) = StageLogger::with_capture("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        assert!(
+            ctx.stage_outputs.post_publish_results.is_empty(),
+            "a non-community feed must not enter the poller path at all (got {:?})",
+            ctx.stage_outputs.post_publish_results
+        );
+        let notes: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            notes.iter().any(|m| m.contains("not the community gallery")
+                && m.contains("mylib-choco")
+                && m.contains("nuget.internal.example")),
+            "the skip must be summarized at default visibility: {notes:?}"
         );
     }
 
