@@ -52,8 +52,8 @@ homebrew_casks:
 
 | Channel | Status | Verify |
 |---|---|---|
-| **GitHub Releases** | ✅ Verified | [anodizer v0.16.0](https://github.com/tj-smith47/anodizer/releases/tag/v0.16.0) · [cfgd v0.5.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.5.0) |
-| **crates.io** | ✅ Verified | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) |
+| **GitHub Releases** | ✅ Verified | [anodizer v0.16.0](https://github.com/tj-smith47/anodizer/releases/tag/v0.16.0) · [cfgd v0.5.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.5.0) · [brontes v0.2.1](https://github.com/tj-smith47/brontes/releases/tag/v0.2.1) |
+| **crates.io** | ✅ Verified | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) · [crates.io/crates/brontes](https://crates.io/crates/brontes) (single-crate, library-only publish) |
 | **npm** | ✅ Verified | [npmjs.com/package/anodizer](https://www.npmjs.com/package/anodizer) — the live metapackage (`npm install anodizer`) declares all 8 per-platform binary packages as `optionalDependencies` (`@tj-smith47/anodizer-{darwin,linux,win32}-*`, each published with provenance). See [`npms:` docs](../../../docs/publish/npm/) |
 | **Snap Store** | ✅ Verified | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) · [snapcraft.io/cfgd](https://snapcraft.io/cfgd) |
 | **Chocolatey** | ✅ Verified | [community.chocolatey.org/packages/cfgd](https://community.chocolatey.org/packages/cfgd) |

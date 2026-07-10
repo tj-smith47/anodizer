@@ -8,7 +8,7 @@ template = "section.html"
 # Rust-specific extras
 
 These features exist because Rust's toolchain and packaging conventions
-differ from Go's. They are dogfooded by anodizer and cfgd themselves.
+differ from Go's. They are dogfooded by anodizer, cfgd, and brontes themselves.
 
 ## Live configuration
 
@@ -63,10 +63,10 @@ workspaces:
 
 | Feature | Status | Notes |
 |---|---|---|
-| `crates.io publish` | ✅ Verified | Dependency-aware ordering. [anodizer on crates.io](https://crates.io/crates/anodizer) · [cfgd on crates.io](https://crates.io/crates/cfgd). cfgd publishes 4 crates in dependency order on every release |
+| `crates.io publish` | ✅ Verified | Dependency-aware ordering. [anodizer on crates.io](https://crates.io/crates/anodizer) · [cfgd on crates.io](https://crates.io/crates/cfgd) · [brontes on crates.io](https://crates.io/crates/brontes). cfgd publishes 4 crates in dependency order on every release; brontes covers the single-crate (non-workspace) path |
 | `binstall metadata` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`binstall.enabled: true` — `pkg-url` + per-target `overrides` auto-derived from `archive.name_template`, no hand-written URL) |
 | `cargo_workspace` detection | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (4 `workspaces:` entries) |
-| `version_sync` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_sync.enabled: true` + `mode: cargo` per crate) |
+| `version_sync` | ✅ Verified | Both modes live. `mode: cargo`: [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (per crate). `mode: tag` (single-crate, tag-derived version written into `Cargo.toml` in the bump commit the tag points at): [brontes `.anodizer.yaml`](https://github.com/tj-smith47/brontes/blob/master/.anodizer.yaml) — the [v0.2.1 tag](https://github.com/tj-smith47/brontes/releases/tag/v0.2.1) points at the auto-authored `chore(release): bump . → 0.2.1` commit |
 | `tag_pre_hooks` | ✅ Verified | [`crates/core/src/config/tag.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/tag.rs) (`tag_pre_hooks` field) |
 | `tag_post_hooks` | ✅ Verified | [`crates/core/src/config/tag.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/tag.rs) (`tag_post_hooks` field) |
 | `ANODIZER_SPLIT_TARGET` | ✅ Verified | [`crates/core/src/partial.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/partial.rs) (`ANODIZER_OS` / `ANODIZER_ARCH` env vars; accepts `GGOOS`/`GGOARCH` aliases) |
