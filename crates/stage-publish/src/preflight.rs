@@ -583,6 +583,16 @@ fn run_preflight_inner(
     let crates = ctx.config.crate_universe();
     let selected = &ctx.options.selected_crates;
 
+    // A publisher deselected by `--skip` / `--publishers` will not run this
+    // invocation, so its one-way-door state is irrelevant — probing it gates
+    // the release on an upstream transition the run never makes. The canonical
+    // case: the GH-hosted `publish-npm` job runs `--publish-only --publishers
+    // npm`, and the winget PR that the SAME release's `Publish Release` job
+    // opened minutes earlier is still pending; without this guard the npm job
+    // blocks on `winget (pr-pending)` — a door it does not touch. Mirrors the
+    // identical `publisher_deselected` filter the rollback-scope gate applies.
+    let probe = |name: &str| !ctx.publisher_deselected(name);
+
     for krate in &crates {
         if !selected.is_empty() && !selected.contains(&krate.name) {
             continue;
@@ -593,7 +603,7 @@ fn run_preflight_inner(
         };
 
         // ---- cargo -------------------------------------------------------
-        if publish.cargo.is_some() {
+        if publish.cargo.is_some() && probe("cargo") {
             log.verbose(&format!("checking cargo for '{}@{}'", krate.name, version));
             let checker = factory.cargo(policy);
             let state = checker.check(&krate.name, &version, log);
@@ -606,7 +616,9 @@ fn run_preflight_inner(
         }
 
         // ---- chocolatey --------------------------------------------------
-        if let Some(ref choco_cfg) = publish.chocolatey {
+        if let Some(ref choco_cfg) = publish.chocolatey
+            && probe("chocolatey")
+        {
             let source = choco_cfg
                 .source_repo
                 .as_deref()
@@ -628,7 +640,9 @@ fn run_preflight_inner(
         }
 
         // ---- winget ------------------------------------------------------
-        if let Some(ref winget_cfg) = publish.winget {
+        if let Some(ref winget_cfg) = publish.winget
+            && probe("winget")
+        {
             let pkg_id = winget_cfg
                 .package_identifier
                 .as_deref()
@@ -648,7 +662,9 @@ fn run_preflight_inner(
         }
 
         // ---- aur ---------------------------------------------------------
-        if let Some(ref aur_cfg) = publish.aur {
+        if let Some(ref aur_cfg) = publish.aur
+            && probe("aur")
+        {
             let pkg_name = aur_cfg
                 .name
                 .as_deref()
@@ -2013,6 +2029,77 @@ mod tests {
         // Unknown only blocks in strict.
         assert_eq!(report.blockers(false).len(), 2);
         assert_eq!(report.blockers(true).len(), 3);
+    }
+
+    #[test]
+    fn deselected_publisher_contributes_no_state_probe_entry() {
+        use anodizer_core::config::{
+            AurConfig, CargoPublishConfig, ChocolateyConfig, Config, CrateConfig, PublishConfig,
+            WingetConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        // All four publishers configured, but the invocation is scoped to
+        // `--publishers cargo` (the shape the GH-hosted `publish-npm` job uses,
+        // minus npm). The winget PR that the earlier `Publish Release` job left
+        // pending must NOT be probed — a door this run does not touch. Only the
+        // allowlisted publisher yields a state-probe entry.
+        let publish = PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            chocolatey: Some(ChocolateyConfig::default()),
+            winget: Some(WingetConfig::default()),
+            aur: Some(AurConfig::default()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(publish),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "mytool".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.options.publisher_allowlist = vec!["cargo".to_string()];
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+
+        // winget/choco/aur states are deliberately PRPending/InModeration —
+        // if the guard regressed they would surface as blockers.
+        let factory = CannedFactory {
+            cargo_state: PublisherState::Clean,
+            choco_state: PublisherState::InModeration {
+                reason: "package in moderation queue".into(),
+            },
+            winget_state: PublisherState::PRPending(
+                "https://github.com/microsoft/winget-pkgs/pull/1".into(),
+            ),
+            aur_state: PublisherState::Unknown {
+                reason: "AUR is informational".into(),
+            },
+        };
+
+        let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
+
+        let order: Vec<&str> = report
+            .entries
+            .iter()
+            .map(|e| e.publisher.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["cargo"],
+            "only the allowlisted publisher may be probed; deselected doors must not gate the run"
+        );
+        assert!(
+            report.blockers(false).is_empty(),
+            "no deselected publisher may contribute a blocker: {:?}",
+            report.blockers(false)
+        );
     }
 
     // ---- rollback-scope + Publisher::preflight() extension ----
