@@ -2491,48 +2491,15 @@ mod tests {
         use serial_test::serial;
         use std::path::Path;
         use std::process::Command;
-        use std::sync::OnceLock;
 
         const SAMPLE_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
         fn git_ok(dir: &Path, args: &[&str]) {
-            let out = anodizer_core::test_helpers::output_with_spawn_retry(
-                || {
-                    let mut cmd = Command::new("git");
-                    cmd.args(args).current_dir(dir);
-                    cmd
-                },
-                "git",
-            );
-            assert!(out.status.success(), "git {args:?} failed");
+            anodizer_core::test_helpers::git_test_ok(dir, args)
         }
 
         fn git_stdout(dir: &Path, args: &[&str]) -> String {
-            let out = anodizer_core::test_helpers::output_with_spawn_retry(
-                || {
-                    let mut cmd = Command::new("git");
-                    cmd.args(args).current_dir(dir);
-                    cmd
-                },
-                "git",
-            );
-            assert!(out.status.success(), "git {args:?} failed");
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
-
-        fn ensure_git_identity() {
-            static INIT: OnceLock<()> = OnceLock::new();
-            INIT.get_or_init(|| {
-                // SAFETY: runs exactly once per process, guarded by OnceLock;
-                // values are constants, not user input.
-                unsafe {
-                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                    std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                }
-            });
+            anodizer_core::test_helpers::git_test_stdout(dir, args)
         }
 
         /// Bare overlay repo seeded with one commit on `branch`, usable as a
@@ -2540,7 +2507,6 @@ mod tests {
         /// derivation + flake, commits, and pushes back — the bare repo is the
         /// assertion surface (inspect the landed `default.nix` / `flake.nix`).
         fn make_bare_repo(branch: &str) -> (String, tempfile::TempDir) {
-            ensure_git_identity();
             let bare = tempfile::tempdir().expect("bare tempdir");
             let seed = tempfile::tempdir().expect("seed tempdir");
             git_ok(bare.path(), &["init", "--bare", "-b", branch]);
@@ -2880,12 +2846,11 @@ mod tests {
                 !default_path.success(),
                 "derivation must live at the configured path, not the default"
             );
-            // The configured commit_author must win over the ambient
-            // GIT_AUTHOR_NAME/EMAIL that ensure_git_identity() exports into the
-            // process env — proving the identity is applied via the
-            // GIT_AUTHOR_* child env (which overrides inherited env + repo
-            // config), not via `-c user.name=` (which git's precedence defeats
-            // whenever an ambient GIT_AUTHOR_NAME is present).
+            // The configured commit_author must drive the landed author —
+            // proving the identity is applied via the GIT_AUTHOR_* child env
+            // (which overrides inherited env + repo config), not via
+            // `-c user.name=` (which git's precedence defeats whenever an
+            // ambient GIT_AUTHOR_NAME is present).
             let author = git_stdout(bare_path, &["log", "-1", "--pretty=%an", "main"]);
             assert_eq!(author, "Nix Bot", "configured commit author must drive %an");
             let author_email = git_stdout(bare_path, &["log", "-1", "--pretty=%ae", "main"]);

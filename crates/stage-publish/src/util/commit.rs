@@ -21,7 +21,7 @@ const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 /// only pulls a single shallow ref, so a shorter remote-metadata bound suffices;
 /// its failure is already ignored (the branch may simply not exist remotely), so
 /// a deadline kill degrades to the same "no remote branch" path.
-const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Outcome of a `commit_and_push_with_opts` call.
 ///

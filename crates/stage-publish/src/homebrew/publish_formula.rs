@@ -1047,7 +1047,6 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::OnceLock;
 
     #[test]
     fn commit_outcome_is_pushed() {
@@ -1076,48 +1075,12 @@ mod tests {
         (tools, guard)
     }
 
-    /// Give the test process a git identity + non-interactive credential
-    /// behavior so the clone/commit/push helpers work on bare CI runners
-    /// with no global ~/.gitconfig. One-shot via `OnceLock` to avoid the
-    /// parallel-test `set_var` race. Mirrors `util/pr.rs::ensure_git_identity`.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: runs exactly once per process, guarded by OnceLock;
-            // values are constants, not user input.
-            unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            }
-        });
-    }
-
     fn git_ok(dir: &Path, args: &[&str]) {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
+        anodizer_core::test_helpers::git_test_ok(dir, args)
     }
 
     fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        anodizer_core::test_helpers::git_test_stdout(dir, args)
     }
 
     /// Build a bare tap repo seeded with one commit on `branch`. Returns the
@@ -1128,7 +1091,6 @@ mod tests {
     /// the assertion surface: we inspect its landed `.rb` content + the
     /// commit subject after the publish.
     fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
 
@@ -1957,7 +1919,6 @@ mod tests {
     /// the error (the tap was never touched), not silently report success.
     #[test]
     fn publish_to_homebrew_clone_failure_errors() {
-        ensure_git_identity();
         let bogus = tempfile::tempdir().expect("bogus dir");
         let bogus_url = bogus.path().to_string_lossy().into_owned();
         let hb = hb_cfg_local(&bogus_url, "main");

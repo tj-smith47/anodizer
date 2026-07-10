@@ -223,40 +223,10 @@ mod tests {
     use anodizer_core::log::{StageLogger, Verbosity};
     use serial_test::serial;
     use std::process::Command;
-    use std::sync::OnceLock;
-
-    /// Ensure the test process has a git identity that `git revert` /
-    /// `git commit` can use. Cargo CI runners (Linux + macOS + Windows)
-    /// do not ship a global ~/.gitconfig, so without this the helper's
-    /// internal `git revert` (which spawns its own `Command::new("git")`
-    /// inheriting our env) fails with "Author identity unknown". We can't
-    /// pass `.env()` to that internal spawn from the test, but env vars
-    /// set on the parent process propagate. Set them once per test
-    /// process via `OnceLock` to avoid the parallel-test race that
-    /// repeated `set_var` calls would otherwise introduce.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: env mutation runs once per process, guarded by
-            // OnceLock; no other test thread observes a half-applied
-            // identity. The values are constants, not user input.
-            unsafe {
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-            }
-        });
-    }
 
     /// Build a bare remote + a working clone with one commit on `master`.
     /// Returns `(bare_remote_url, _tmp_holder_for_lifetime)`.
     fn init_bare_remote_with_one_commit() -> (String, tempfile::TempDir, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let work = tempfile::tempdir().expect("work tempdir");
 
@@ -281,40 +251,14 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "commit.gpgsign", "false"],
         ] {
-            assert!(
-                anodizer_core::test_helpers::output_with_spawn_retry(
-                    || {
-                        let mut cmd = Command::new("git");
-                        cmd.args(&args).current_dir(work.path());
-                        cmd
-                    },
-                    "git",
-                )
-                .status
-                .success(),
-                "git {:?} failed",
-                args
-            );
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
         std::fs::write(work.path().join("README"), "hello\n").unwrap();
         for args in [
             vec!["add", "README"],
             vec!["commit", "-m", "initial commit"],
         ] {
-            assert!(
-                anodizer_core::test_helpers::output_with_spawn_retry(
-                    || {
-                        let mut cmd = Command::new("git");
-                        cmd.args(&args).current_dir(work.path());
-                        cmd
-                    },
-                    "git",
-                )
-                .status
-                .success(),
-                "git {:?} failed",
-                args
-            );
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
         // `git remote add origin <path>` takes a filesystem path argument
         // which OsStr-based Command::arg handles directly; keep it out of
@@ -433,10 +377,9 @@ mod tests {
             Self::Set { key, prev }
         }
 
-        /// Removes `key` from the process env for the guard's lifetime, even
-        /// if a sibling test's `ensure_git_identity()` `OnceLock` already set
-        /// it process-wide — that ambient identity is exactly what would
-        /// otherwise mask the "no ambient identity" bug this proves fixed.
+        /// Removes `key` from the process env for the guard's lifetime, so
+        /// no ambient identity can mask the "no ambient identity" bug this
+        /// proves fixed.
         fn remove(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: serialized via `#[serial(git_env)]`; restored on drop.
@@ -469,11 +412,10 @@ mod tests {
     /// with "Author identity unknown" because `revert_head_in` set no
     /// identity on the child. It now applies the same resolved identity the
     /// forward publish commit uses. This test does NOT use
-    /// `init_bare_remote_with_one_commit()` / `ensure_git_identity()` — that
-    /// helper's `OnceLock` sets `GIT_AUTHOR_*` process-wide for the rest of
-    /// the test binary's lifetime, which would mask exactly the bug under
-    /// test here (an ambient identity leaking in from a sibling test would
-    /// make this pass even without the fix).
+    /// `init_bare_remote_with_one_commit()` — its fixture commits would
+    /// otherwise be indistinguishable from the identity resolution under
+    /// test; the guards below strip every ambient `GIT_*` identity source
+    /// so only `revert_head_in`'s own resolution can supply one.
     #[test]
     #[serial(git_env)]
     fn revert_head_in_succeeds_with_no_ambient_identity() {
@@ -489,8 +431,7 @@ mod tests {
         // fabricate a phantom `M README`. With one config in effect throughout
         // (autocrlf off), the checkout stays LF, the tree is clean, and the
         // revert proceeds. This also strips ambient GIT_AUTHOR_*/GIT_COMMITTER_*
-        // (even if a sibling test's `ensure_git_identity()` set them
-        // process-wide) and points global/system config at nothing so no host
+        // and points global/system config at nothing so no host
         // ~/.gitconfig / /etc/gitconfig identity can leak in and mask the bug.
         let _author_name = EnvGuard::remove("GIT_AUTHOR_NAME");
         let _author_email = EnvGuard::remove("GIT_AUTHOR_EMAIL");

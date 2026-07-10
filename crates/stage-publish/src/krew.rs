@@ -2403,56 +2403,13 @@ mod tests {
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder,
     };
+    use anodizer_core::test_helpers::{git_test_ok as git_ok, git_test_stdout as git_stdout};
     use serial_test::serial;
     use std::collections::HashMap;
-    use std::path::Path;
     use std::process::Command;
-    use std::sync::OnceLock;
 
     fn quiet() -> StageLogger {
         StageLogger::new("publish", Verbosity::Quiet)
-    }
-
-    /// Give the test process a git identity + non-interactive credential
-    /// behaviour so the publish path's `git commit` / cross-repo
-    /// `git fetch` work on a bare CI runner. One-shot per process.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: runs once per process under OnceLock; constants only.
-            unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            }
-        });
-    }
-
-    fn git_ok(dir: &Path, args: &[&str]) {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
-    }
-
-    fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// Build a bare "krew-index fork" repo with one commit on `main`, the
@@ -2461,7 +2418,6 @@ mod tests {
     /// this, writes `plugins/<name>.yaml`, commits a versioned branch, and
     /// pushes it back here.
     fn init_bare_fork() -> (String, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
         git_ok(bare.path(), &["init", "--bare", "-b", "main"]);

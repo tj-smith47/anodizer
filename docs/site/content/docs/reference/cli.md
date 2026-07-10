@@ -39,7 +39,7 @@ Run the full release pipeline
 | `--clean` | — | — | Remove dist directory before starting |
 | `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
-| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |
 | `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous safety backstop, not the primary bound; per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
@@ -293,7 +293,7 @@ Resume a release after a transient failure or after `--prepare`/`--split`
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
-| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |
 
 
 ### `anodizer publish`
@@ -304,7 +304,7 @@ Run only the publish stages (release, blob, publish) from a completed dist/
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
-| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--merge` | — | — | Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`. |
 | `--allow-rerun` | — | — | Force re-publish even when a prior report.json exists. WARNING: PR-based publishers will open duplicate pull requests. |
@@ -345,7 +345,7 @@ Run only the announce stage from a completed dist/
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--dist` | — | — | Custom dist directory (overrides config) |
-| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |
 | `--skip` | — | — | Skip stages (comma-separated) |
 | `--merge` | — | — | Merge artifact lists from `release --split` workers (dist/<subdir>/context.json) before announcing. Mirrors `goreleaser announce --merge`. |
 

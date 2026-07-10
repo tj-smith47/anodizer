@@ -2806,58 +2806,19 @@ crates:
     // -----------------------------------------------------------------------
 
     #[cfg(unix)]
-    fn ensure_git_identity() {
-        use std::sync::OnceLock;
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: runs once per process under OnceLock; constant values.
-            unsafe {
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
-            }
-        });
-    }
-
-    #[cfg(unix)]
     fn git_ok(dir: &std::path::Path, args: &[&str]) {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = std::process::Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
+        anodizer_core::test_helpers::git_test_ok(dir, args)
     }
 
     #[cfg(unix)]
     fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = std::process::Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        anodizer_core::test_helpers::git_test_stdout(dir, args)
     }
 
     /// A bare AUR repo seeded with one commit on `master`. Returns a usable
     /// local clone URL plus the holder tempdir.
     #[cfg(unix)]
     fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
         git_ok(bare.path(), &["init", "--bare", "-b", "master"]);
@@ -3008,7 +2969,6 @@ crates:
     #[cfg(unix)]
     #[test]
     fn publish_to_aur_source_clone_failure_errors() {
-        ensure_git_identity();
         let bogus = tempfile::tempdir().expect("bogus dir");
         let bogus_url = bogus.path().to_string_lossy().into_owned();
         let mut ctx = live_source_ctx(&bogus_url, |_| {});

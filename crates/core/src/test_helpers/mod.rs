@@ -812,6 +812,58 @@ pub fn output_with_spawn_retry(
     unreachable!("loop returns on the final attempt")
 }
 
+/// Run `git <args>` in `dir` with a fixed per-invocation test identity and
+/// interactive credential prompts disabled, returning the raw
+/// [`std::process::Output`].
+///
+/// The identity is supplied as `-c user.name=` / `-c user.email=` config args
+/// (plus `commit.gpgsign=false`) on this one invocation and
+/// `GIT_TERMINAL_PROMPT=0` as child-only env — never via process-global
+/// `std::env::set_var`, which would race any parallel test that guards the
+/// same `GIT_*` variables. Later `-c` args win, so callers can still override
+/// per call.
+pub fn git_test_output(dir: &Path, args: &[&str]) -> std::process::Output {
+    output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args([
+                "-c",
+                "user.name=Anodize Test",
+                "-c",
+                "user.email=test@anodize.local",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0");
+            cmd
+        },
+        "git",
+    )
+}
+
+/// [`git_test_output`] variant that asserts the command succeeded.
+pub fn git_test_ok(dir: &Path, args: &[&str]) {
+    let out = git_test_output(dir, args);
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// [`git_test_output`] variant that asserts success and returns trimmed stdout.
+pub fn git_test_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = git_test_output(dir, args);
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------

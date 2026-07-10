@@ -839,7 +839,6 @@ mod tests {
     use serial_test::serial;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::OnceLock;
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("pr-test", Verbosity::Quiet)
@@ -1367,51 +1366,12 @@ mod tests {
     // helper in `util/git_revert.rs`.
     // =================================================================
 
-    /// Give the test process a git identity so the helper's `git commit`
-    /// works on bare CI runners (no global ~/.gitconfig). Set once per
-    /// process via `OnceLock` to avoid the parallel-test `set_var` race.
-    /// Mirrors `util/git_revert.rs::ensure_git_identity`.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: runs exactly once per process, guarded by OnceLock;
-            // values are constants, not user input.
-            unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                // Fail the cross-repo fork-sync `git fetch <https-upstream>`
-                // immediately instead of blocking on an interactive
-                // credential prompt — these tests never reach a real host.
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            }
-        });
-    }
-
     fn git_ok(dir: &Path, args: &[&str]) {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
+        anodizer_core::test_helpers::git_test_ok(dir, args)
     }
 
     fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = Command::new("git");
-                cmd.args(args).current_dir(dir);
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        anodizer_core::test_helpers::git_test_stdout(dir, args)
     }
 
     /// Configure a working dir as a usable git repo (identity +
@@ -1433,7 +1393,6 @@ mod tests {
     /// working clone already wired to push to it. Returns
     /// `(origin_path_string, _bare_holder, work_holder)`.
     fn init_origin_with_work() -> (String, tempfile::TempDir, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let work = tempfile::tempdir().expect("work tempdir");
 
@@ -1469,7 +1428,6 @@ mod tests {
     /// (work is cloned from upstream) which keeps the rebase conflict-free.
     /// Returns `(upstream_path, work_holder, _upstream_holder)`.
     fn init_upstream_ahead_with_clone() -> (String, tempfile::TempDir, tempfile::TempDir) {
-        ensure_git_identity();
         let upstream = tempfile::tempdir().expect("upstream tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
         let work = tempfile::tempdir().expect("work tempdir");

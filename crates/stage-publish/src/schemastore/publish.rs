@@ -753,11 +753,18 @@ fn sync_to_upstream(repo_path: &std::path::Path, log: &StageLogger) -> anyhow::R
         &["remote", "add", "upstream", &upstream_url],
         "schemastore: git remote add upstream",
     );
-    crate::util::run_cmd_in(
+    // A network fetch of the (hardcoded, public) upstream: bound it with the
+    // shared fetch deadline and non-interactive prompt handling so a wedged
+    // remote or an unexpected credential prompt fails instead of hanging the
+    // release.
+    crate::util::run_cmd_in_timeout(
         repo_path,
         "git",
         &["fetch", "--depth=1", "upstream", UPSTREAM_DEFAULT_BRANCH],
         "schemastore: git fetch upstream",
+        None,
+        log,
+        crate::util::GIT_FETCH_TIMEOUT,
     )?;
     // Hard-reset onto the freshly fetched upstream tip. A reset (not rebase) is
     // correct here because no local commits exist yet — the working tree is a
@@ -1790,11 +1797,10 @@ mod tests {
     // pattern mirrors `util/pr.rs`: a `file://`-equivalent local git repo
     // reached through `repository.git.url`, a failing `gh`/network surface
     // forced by a non-resolvable upstream, and `StageLogger::with_capture`
-    // for status-line assertions. Git identity is set once per process via
-    // `OnceLock` (constants), so no test here needs serialization.
+    // for status-line assertions. Fixture git commits carry a
+    // per-invocation identity (`git_test_ok`), so no test here needs
+    // serialization.
     // ===================================================================
-
-    use std::sync::OnceLock;
 
     /// Quiet logger paired with an in-memory capture so the helper's status
     /// lines can be asserted without a Context.
@@ -1804,25 +1810,6 @@ mod tests {
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("schemastore", anodizer_core::log::Verbosity::Quiet)
-    }
-
-    /// Give the process a git identity + disable interactive credential
-    /// prompts so the hardcoded `https://github.com/SchemaStore/...`
-    /// fetch in `sync_to_upstream` fails fast instead of hanging. Set once
-    /// per process. Mirrors `util/pr.rs::ensure_git_identity`.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // SAFETY: runs exactly once per process under OnceLock; values
-            // are constants, not user input.
-            unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            }
-        });
     }
 
     // --- read_local_vendor_schema --------------------------------------
@@ -2071,7 +2058,6 @@ mod tests {
         // best-effort), then `git fetch --depth=1 upstream master` fails
         // because the cwd is not a repository — purely local, no network —
         // and the `?` surfaces it so `run_real` aborts before splicing.
-        ensure_git_identity();
         let not_a_repo = tempfile::tempdir().expect("scratch dir");
 
         let err = sync_to_upstream(not_a_repo.path(), &quiet_log())
@@ -2162,7 +2148,6 @@ mod tests {
         // live upstream sync / any splice / push / PR. This proves the clone
         // seam's error gates the rest of the flow without depending on the
         // (reachable, public) SchemaStore upstream or a push to a fixture.
-        ensure_git_identity();
         let bogus = tempfile::tempdir().expect("scratch");
         let bogus_url = bogus
             .path()

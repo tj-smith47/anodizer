@@ -446,7 +446,6 @@ mod tests {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::TestContextBuilder;
     use std::process::Command;
-    use std::sync::OnceLock;
 
     #[test]
     fn ssh_key_command_escapes_single_quotes_in_key_path() {
@@ -477,31 +476,9 @@ mod tests {
         );
     }
 
-    /// Ensure the test process has a git identity. Subprocess `git`
-    /// invocations inside the clone helpers inherit env from the test
-    /// process; without this they bail with "Author identity unknown".
-    /// One-shot via `OnceLock` to avoid the parallel-test set_var race.
-    fn ensure_git_identity() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        // SAFETY: env mutation runs exactly once per process, guarded by
-        // OnceLock; no other test thread observes a half-applied identity.
-        // The values are constants, idempotently set and never removed.
-        INIT.get_or_init(|| unsafe {
-            // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-            // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-            // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-            // env-ok: idempotent OnceLock set of constant git identity, never mutated after
-            std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-        });
-    }
-
     /// Build a bare remote with one commit on `master`. Returns the
     /// filesystem path to the bare repo (suitable as a `git clone` URL).
     fn make_bare_remote() -> (String, tempfile::TempDir, tempfile::TempDir) {
-        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare");
         let work = tempfile::tempdir().expect("work");
 
@@ -525,33 +502,11 @@ mod tests {
             vec!["config", "user.name", "T"],
             vec!["config", "commit.gpgsign", "false"],
         ] {
-            assert!(
-                anodizer_core::test_helpers::output_with_spawn_retry(
-                    || {
-                        let mut cmd = Command::new("git");
-                        cmd.args(&args).current_dir(work.path());
-                        cmd
-                    },
-                    "git",
-                )
-                .status
-                .success()
-            );
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
         std::fs::write(work.path().join("README"), "hi\n").unwrap();
         for args in [vec!["add", "README"], vec!["commit", "-m", "initial"]] {
-            assert!(
-                anodizer_core::test_helpers::output_with_spawn_retry(
-                    || {
-                        let mut cmd = Command::new("git");
-                        cmd.args(&args).current_dir(work.path());
-                        cmd
-                    },
-                    "git",
-                )
-                .status
-                .success()
-            );
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
         assert!(
             anodizer_core::test_helpers::output_with_spawn_retry(
