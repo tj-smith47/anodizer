@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-10
+
+### Features
+
+* dd75f87b05e7 classify deterministic failures with a machine-readable exit contract ([@tj-smith47](https://github.com/tj-smith47))
+* 934cd7f64880 liveness heartbeat during slow subprocess waits ([@tj-smith47](https://github.com/tj-smith47))
+* ea0cdaef2174 gate one-way-door publishers on burn probes and changelog provenance ([@tj-smith47](https://github.com/tj-smith47))
+* 16b341e40f6b link anodizer in submission footers and generated-file headers ([@tj-smith47](https://github.com/tj-smith47))
+* 380c392d8066 verify landed release assets and harden the tagless build path ([@tj-smith47](https://github.com/tj-smith47))
+* c59a4b26df1e account run-wide retry backoff and surface it in the summary ([@tj-smith47](https://github.com/tj-smith47))
+* f7279ea0fe38 add RetryStep step-retry engine with unified log lifecycle ([@tj-smith47](https://github.com/tj-smith47))
+* 48e34f50791e add deadline-aware HTTP retry wrappers ([@tj-smith47](https://github.com/tj-smith47))
+* f17957d2cd56 attribute retry backoff per publisher/stage in the summary ([@tj-smith47](https://github.com/tj-smith47))
+* 333b361f22bc bound publisher retry ladders by the run's retry budget ([@tj-smith47](https://github.com/tj-smith47))
+* e13ef744a394 resolve a raisable default retry budget and add an async deadline ([@tj-smith47](https://github.com/tj-smith47))
+* 8ee354f2fb5e host-level TUF warm-up lock and warm-cache fast path ([@tj-smith47](https://github.com/tj-smith47))
+* 79c859dadc5a surface Snap Store review holds and verify store landing ([@tj-smith47](https://github.com/tj-smith47))
+* b292588a2a0d wire the liveness heartbeat into slow stage waits ([@tj-smith47](https://github.com/tj-smith47))
+* daf93cbb6e42 emission-validate accountability on shards and dry-run URL derivation ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 77f4885d8f96 re-verify cargo publish discriminators on 1.97 and deflake the ticker test ([@tj-smith47](https://github.com/tj-smith47))
+* c04a6eaa151c force 0755 on binaries staged into the dockers_v2 build context ([@tj-smith47](https://github.com/tj-smith47))
+* 3e99866f4ee7 accept crates.io policy-denial 403s as proof of token validity ([@tj-smith47](https://github.com/tj-smith47))
+* 2c48944c6857 harden tagging, rollback, retry visibility, and failure-path reporting ([@tj-smith47](https://github.com/tj-smith47))
+* 96e42bde6d5b make bare `tag` fully local in every config mode ([@tj-smith47](https://github.com/tj-smith47))
+* d1a235ad9bd8 attribute release cleanup on rollback and keep API tagging local when not pushing ([@tj-smith47](https://github.com/tj-smith47))
+* f38944515e47 gate snapcraft review-hold stub tests to unix ([@tj-smith47](https://github.com/tj-smith47))
+* ded0164d4a08 distinguish indeterminate landing probes and refuse identity-widening keyless verify ([@tj-smith47](https://github.com/tj-smith47))
+* 402a9ea7d663 route all six retry forks through the shared step engine ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.15.5] - 2026-07-07
 
 ### Bug Fixes
@@ -576,7 +609,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...v0.16.0
 [0.15.5]: https://github.com/tj-smith47/anodizer/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/tj-smith47/anodizer/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/tj-smith47/anodizer/compare/v0.15.1...v0.15.3
