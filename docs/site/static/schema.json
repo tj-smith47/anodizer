@@ -3786,7 +3786,7 @@
           ]
         },
         "license": {
-          "description": "SPDX license expression (e.g. \"MIT\", \"Apache-2.0\", \"MIT OR Apache-2.0\"). Emitted as the modern `<license type=\"expression\">` element, which accepts compound expressions losslessly.",
+          "description": "SPDX license expression (e.g. \"MIT\", \"Apache-2.0\", \"MIT OR Apache-2.0\"). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (it warns CHCU0002: \"use <licenseUrl> instead\") — it gates the `<licenseUrl>` derivation: a single identifier derives a LICENSE blob URL; a compound expression has no single canonical file, so set `license_url` explicitly.",
           "default": null,
           "type": [
             "string",
@@ -3794,7 +3794,7 @@
           ]
         },
         "license_url": {
-          "description": "Optional explicit `<licenseUrl>`. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation.",
+          "description": "Optional explicit `<licenseUrl>` — Chocolatey's only supported license metadata. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known or `license` is a compound SPDX expression, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation.",
           "default": null,
           "type": [
             "string",
@@ -12964,7 +12964,7 @@
           ]
         },
         "directory": {
-          "description": "Subdirectory in the bucket repo for manifest placement.",
+          "description": "Subdirectory in the bucket repo for manifest placement. Defaults to `bucket` — scoop resolves manifests only from `bucket/` when that directory exists (root otherwise), so `bucket/` is correct for both layouts. Set to `\"\"` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory.",
           "default": null,
           "type": [
             "string",

@@ -14,7 +14,6 @@ fn default_nuspec_params<'a>() -> NuspecParams<'a> {
         name: "mytool",
         version: "1.0.0",
         description: "A tool",
-        license: "MIT",
         license_url: None,
         authors: "Author",
         project_url: "https://example.com",
@@ -111,19 +110,39 @@ fn test_generate_nuspec_xml_escaping_title_and_tags() {
     assert!(nuspec.contains("<tags>c++ &amp; c#</tags>"));
 }
 
-/// A single-SPDX license with no explicit `license_url` emits the modern
-/// `<license type="expression">` element and NO synthesized `licenseUrl`
-/// (the opensource.org URL is never fabricated — it 404s for compound SPDX).
+/// Chocolatey CLI does not support the NuGet `<license>` element at all —
+/// its `LicenseMetadataRule` flags ANY `<license>` metadata as CHCU0002
+/// ("<license> elements are not supported in Chocolatey CLI, use
+/// <licenseUrl> instead"), so the generated nuspec must never carry one.
 #[test]
-fn test_generate_nuspec_emits_license_expression_no_synthesized_url() {
+fn test_generate_nuspec_never_emits_license_element_chcu0002() {
     let nuspec = generate_nuspec(&NuspecParams {
         name: "tool",
         version: "2.0.0",
-        license: "Apache-2.0",
+        license_url: Some("https://github.com/org/tool/blob/v2.0.0/LICENSE"),
         ..default_nuspec_params()
     })
     .unwrap();
-    assert!(nuspec.contains("<license type=\"expression\">Apache-2.0</license>"));
+    assert!(
+        !nuspec.contains("<license "),
+        "nuspec must never emit a <license> element (choco CHCU0002); got: {nuspec}"
+    );
+    assert!(
+        nuspec.contains("<licenseUrl>https://github.com/org/tool/blob/v2.0.0/LICENSE</licenseUrl>")
+    );
+}
+
+/// No `license_url` → no license metadata at all: no synthesized
+/// `opensource.org` URL (it 404s for compound SPDX) and no NuGet `<license>`
+/// element (unsupported by Chocolatey CLI — CHCU0002).
+#[test]
+fn test_generate_nuspec_no_license_url_emits_no_license_metadata() {
+    let nuspec = generate_nuspec(&NuspecParams {
+        name: "tool",
+        version: "2.0.0",
+        ..default_nuspec_params()
+    })
+    .unwrap();
     assert!(
         !nuspec.contains("opensource.org"),
         "must never synthesize an opensource.org licenseUrl"
@@ -132,32 +151,19 @@ fn test_generate_nuspec_emits_license_expression_no_synthesized_url() {
         !nuspec.contains("<licenseUrl>"),
         "no licenseUrl when none is derivable; got: {nuspec}"
     );
-}
-
-/// The canonical Rust dual license is a compound SPDX expression — it must
-/// land verbatim in `<license type="expression">` (the legacy licenseUrl
-/// synthesis 404'd on exactly this value).
-#[test]
-fn test_generate_nuspec_compound_spdx_expression() {
-    let nuspec = generate_nuspec(&NuspecParams {
-        name: "tool",
-        version: "2.0.0",
-        license: "MIT OR Apache-2.0",
-        ..default_nuspec_params()
-    })
-    .unwrap();
-    assert!(nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"));
-    assert!(!nuspec.contains("opensource.org"));
+    assert!(
+        !nuspec.contains("<license "),
+        "no <license> element either (choco CHCU0002); got: {nuspec}"
+    );
 }
 
 /// An explicit `license_url` (e.g. a GitHub LICENSE blob URL) is emitted as
-/// `<licenseUrl>` alongside the SPDX `<license type="expression">`.
+/// `<licenseUrl>` — Chocolatey's only supported license metadata.
 #[test]
-fn test_generate_nuspec_real_license_url_alongside_expression() {
+fn test_generate_nuspec_real_license_url_emitted() {
     let nuspec = generate_nuspec(&NuspecParams {
         name: "tool",
         version: "2.0.0",
-        license: "MIT",
         license_url: Some("https://github.com/org/tool/blob/v2.0.0/LICENSE"),
         ..default_nuspec_params()
     })
@@ -165,7 +171,6 @@ fn test_generate_nuspec_real_license_url_alongside_expression() {
     assert!(
         nuspec.contains("<licenseUrl>https://github.com/org/tool/blob/v2.0.0/LICENSE</licenseUrl>")
     );
-    assert!(nuspec.contains("<license type=\"expression\">MIT</license>"));
     assert!(!nuspec.contains("opensource.org"));
 }
 
@@ -591,7 +596,6 @@ fn test_generate_nuspec_all_optional_fields() {
         name: "my-tool",
         version: "2.5.0",
         description: "A tool with all fields",
-        license: "MIT",
         license_url: Some("https://example.com/license"),
         authors: "Jane Doe",
         project_url: "https://example.com/my-tool",
@@ -1155,9 +1159,9 @@ fn parse_xml_element_trims_whitespace() {
 
 /// Building a chocolatey nuspec with neither `publish.chocolatey.license`
 /// nor top-level `metadata.license` must bail with an actionable error: the
-/// nuspec needs an SPDX expression for its `<license type="expression">`
-/// element, which Chocolatey gallery moderators expect. The bail message must
-/// name the publisher, the field, and the offending crate.
+/// SPDX expression drives the `<licenseUrl>` derivation (Chocolatey's only
+/// supported license metadata), which gallery moderators expect. The bail
+/// message must name the publisher, the field, and the offending crate.
 #[test]
 fn chocolatey_license_empty_metadata_bails_with_actionable_error() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};

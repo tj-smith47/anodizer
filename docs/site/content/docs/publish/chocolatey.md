@@ -83,7 +83,7 @@ crates:
         description: "A CLI tool"           # optional (template)
         summary: "A CLI tool"               # optional (template)
         license: MIT                        # optional; SPDX expression (MIT OR Apache-2.0)
-        license_url: ""                     # optional; defaults to derived GitHub LICENSE blob URL
+        license_url: ""                     # optional; <licenseUrl> (choco's only license metadata); defaults to derived GitHub LICENSE blob URL
         require_license_acceptance: false   # optional
         project_url: ""                     # optional; defaults to GitHub repo URL
         project_source_url: ""             # optional; defaults to GitHub repo URL
@@ -145,8 +145,8 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `icon_url` | string | none | URL to the package icon image |
 | `copyright` | string | none | Copyright notice (supports templates) |
 | `description` | string | Cargo `[package].description` | Package description (supports templates). Derived from `Cargo.toml`; falls back to crate name. |
-| `license` | string | Cargo `[package].license` | SPDX license expression (e.g. `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`), emitted as the modern `<license type="expression">` element. Derived from `Cargo.toml`; required by Chocolatey, so set this if the crate has none. |
-| `license_url` | string | derived | Explicit `<licenseUrl>`. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository`; with no repository, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and is rejected at moderation. |
+| `license` | string | Cargo `[package].license` | SPDX license expression (e.g. `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (CHCU0002: "use `<licenseUrl>` instead") — it gates the `<licenseUrl>` derivation. Derived from `Cargo.toml`; required, so set this if the crate has none. |
+| `license_url` | string | derived | Explicit `<licenseUrl>` — Chocolatey's only supported license metadata. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` for a single-identifier `license`; with no repository or a compound SPDX expression, no `<licenseUrl>` is emitted (set this explicitly then). anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and is rejected at moderation. |
 | `require_license_acceptance` | bool | `false` | Require users to accept the license before install |
 | `project_source_url` | string | repo URL | Source code repository URL; defaults to the derived `repository` URL |
 | `docs_url` | string | none | Documentation URL |

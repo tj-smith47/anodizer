@@ -1262,7 +1262,7 @@ Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `depends` | list of string | — | Application dependencies (other Scoop packages). |
 | `description` | string | — | Short description of the package (shown in `scoop info`). |
-| `directory` | string | — | Subdirectory in the bucket repo for manifest placement. |
+| `directory` | string | — | Subdirectory in the bucket repo for manifest placement. Defaults to `bucket` — scoop resolves manifests only from `bucket/` when that directory exists (root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub-derived URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`. |
@@ -1295,8 +1295,8 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `icon_url` | string | — | URL to the package icon image shown in the Chocolatey gallery. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. |
-| `license` | string | — | SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0"). Emitted as the modern `<license type="expression">` element, which accepts compound expressions losslessly. |
-| `license_url` | string | — | Optional explicit `<licenseUrl>`. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation. |
+| `license` | string | — | SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0"). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (it warns CHCU0002: "use <licenseUrl> instead") — it gates the `<licenseUrl>` derivation: a single identifier derives a LICENSE blob URL; a compound expression has no single canonical file, so set `license_url` explicitly. |
+| `license_url` | string | — | Optional explicit `<licenseUrl>` — Chocolatey's only supported license metadata. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known or `license` is a compound SPDX expression, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation. |
 | `name` | string | — | Override the package name (default: crate name). |
 | `owners` | string | — | Package owners (Chocolatey gallery user). |
 | `package_source_url` | string | — | URL shown as the package source in the Chocolatey gallery. |

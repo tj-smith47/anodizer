@@ -41,12 +41,17 @@ pub struct ChocolateyConfig {
     /// Package description (supports markdown).
     pub description: Option<String>,
     /// SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0").
-    /// Emitted as the modern `<license type="expression">` element, which
-    /// accepts compound expressions losslessly.
+    /// Not emitted as a nuspec element — Chocolatey CLI does not support the
+    /// NuGet `<license>` element (it warns CHCU0002: "use <licenseUrl>
+    /// instead") — it gates the `<licenseUrl>` derivation: a single
+    /// identifier derives a LICENSE blob URL; a compound expression has no
+    /// single canonical file, so set `license_url` explicitly.
     pub license: Option<String>,
-    /// Optional explicit `<licenseUrl>`. When unset, anodizer derives a real
-    /// GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd /
-    /// gh ship); when no repository is known, no `<licenseUrl>` is emitted.
+    /// Optional explicit `<licenseUrl>` — Chocolatey's only supported license
+    /// metadata. When unset, anodizer derives a real GitHub
+    /// `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd /
+    /// gh ship); when no repository is known or `license` is a compound SPDX
+    /// expression, no `<licenseUrl>` is emitted.
     /// anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL —
     /// it 404s for compound SPDX and gets the package rejected at moderation.
     pub license_url: Option<String>,

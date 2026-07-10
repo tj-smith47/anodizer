@@ -22,11 +22,16 @@ use super::package::{
 /// fallback-applied) so the orchestrator stays linear.
 struct ChocoMetadata {
     description: String,
+    /// Resolved SPDX expression. Not emitted as a nuspec element — Chocolatey
+    /// CLI flags any NuGet `<license>` element as CHCU0002 ("use <licenseUrl>
+    /// instead") — it gates the `<licenseUrl>` derivation (single identifier
+    /// → derivable LICENSE blob; compound → no single canonical file).
     license: String,
-    /// Resolved `<licenseUrl>`: the explicit `license_url:` config when set,
-    /// else a derived GitHub `…/blob/<ref>/LICENSE` URL when the release repo
-    /// is known, else `None` (no `<licenseUrl>` is emitted — never a
-    /// synthesized 404ing `opensource.org` URL).
+    /// Resolved `<licenseUrl>` — Chocolatey's only supported license
+    /// metadata: the explicit `license_url:` config when set, else a derived
+    /// GitHub `…/blob/<ref>/LICENSE` URL when the release repo is known,
+    /// else `None` (no `<licenseUrl>` is emitted — never a synthesized
+    /// 404ing `opensource.org` URL).
     license_url: Option<String>,
     authors: String,
     project_url: String,
@@ -366,9 +371,10 @@ fn resolve_metadata(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "chocolatey: license is required but not configured for crate '{}'. \
-                 The nuspec needs an SPDX expression for its \
-                 <license type=\"expression\"> element, which Chocolatey gallery \
-                 moderators expect. Set `publish.chocolatey.license` (SPDX \
+                 The SPDX expression drives the <licenseUrl> derivation \
+                 (Chocolatey CLI does not support the NuGet <license> element \
+                 — CHCU0002), and Chocolatey gallery moderators expect license \
+                 metadata. Set `publish.chocolatey.license` (SPDX \
                  identifier, e.g. \"MIT\" or \"MIT OR Apache-2.0\") or top-level \
                  `metadata.license`.",
                 crate_name,
@@ -417,18 +423,19 @@ fn resolve_metadata(
         None => repo_url.as_ref().map(|u| format!("{u}/issues")),
     };
 
-    // <licenseUrl>: explicit config wins; else derive a real GitHub LICENSE
-    // blob URL (`{repo}/blob/{ref}/LICENSE`) at the release tag — what every
-    // real exemplar (ripgrep/fd/gh) ships. NEVER synthesize an
-    // opensource.org URL: it 404s for compound SPDX and gets the package
+    // <licenseUrl> — Chocolatey's ONLY license metadata channel (its
+    // LicenseMetadataRule warns CHCU0002 on any NuGet <license> element, so
+    // no SPDX-expression element is ever emitted): explicit config wins;
+    // else derive a real GitHub LICENSE blob URL
+    // (`{repo}/blob/{ref}/LICENSE`) at the release tag — what every real
+    // exemplar (ripgrep/fd/gh) ships. NEVER synthesize an opensource.org
+    // URL: it 404s for compound SPDX and gets the package
     // moderation-rejected. None when the repo is unknown → no <licenseUrl>.
     //
     // A compound SPDX expression (`MIT OR Apache-2.0`) has no single canonical
     // license file, so a derived `…/blob/<ref>/LICENSE` URL would both
     // misrepresent the dual license AND 404 in a dual-licensed repo that ships
-    // `LICENSE-MIT` + `LICENSE-APACHE` rather than a bare `LICENSE`. The modern
-    // `<license type="expression">` element already carries the full expression
-    // losslessly, so the legacy `<licenseUrl>` is omitted in that case. An
+    // `LICENSE-MIT` + `LICENSE-APACHE` rather than a bare `LICENSE`. An
     // explicit `license_url` still wins.
     let license_url = match choco_cfg.license_url.as_deref() {
         Some(raw) => Some(render_cfg("chocolatey.license_url", raw)?),
@@ -451,7 +458,7 @@ fn resolve_metadata(
         .iter()
         .map(|t| render_cfg("chocolatey.tags", t))
         .collect::<Result<Vec<String>>>()?;
-    Ok(ChocoMetadata {
+    let meta = ChocoMetadata {
         description,
         license,
         license_url,
@@ -461,7 +468,22 @@ fn resolve_metadata(
         tags,
         project_source_url,
         bug_tracker_url,
-    })
+    };
+    if meta.license_url.is_none() {
+        let reason = if anodizer_core::license::parse_spdx_expression(&meta.license).is_single() {
+            "the release repository is unknown, so no LICENSE blob URL is derivable"
+        } else {
+            "a compound SPDX expression has no single canonical LICENSE file to derive"
+        };
+        log.warn(&format!(
+            "chocolatey: no <licenseUrl> will be emitted for '{}' — {} and Chocolatey CLI \
+             does not support the NuGet <license> element (CHCU0002), so the package ships \
+             without license metadata ('{}'). Set `publish.chocolatey.license_url` to a real \
+             license URL to include one.",
+            crate_name, reason, meta.license,
+        ));
+    }
+    Ok(meta)
 }
 
 /// Derives the GitHub `…/blob/<ref>/LICENSE` URL for the release, pinning the
@@ -823,7 +845,6 @@ fn build_nuspec(
         name: text.name.as_deref().unwrap_or(crate_name),
         version,
         description: &metadata.description,
-        license: &metadata.license,
         license_url: metadata.license_url.as_deref(),
         authors: &metadata.authors,
         project_url: &metadata.project_url,
@@ -1783,8 +1804,9 @@ mod tests {
         };
         let meta =
             resolve_metadata(&ctx, &cfg, "mytool", "o", "r", &ctx.logger("publish")).unwrap();
-        // A compound SPDX expression has no single LICENSE file → no <licenseUrl>;
-        // the `<license type="expression">` element carries it losslessly.
+        // A compound SPDX expression has no single LICENSE file → no
+        // <licenseUrl>, and Chocolatey supports no other license metadata
+        // (the NuGet <license> element is CHCU0002-flagged).
         assert_eq!(meta.license_url, None);
     }
 
@@ -1914,7 +1936,7 @@ mod tests {
         let metadata = ChocoMetadata {
             description: "d".to_string(),
             license: "MIT".to_string(),
-            license_url: None,
+            license_url: Some("https://example.com/license".to_string()),
             authors: "Alice".to_string(),
             project_url: "https://example.com".to_string(),
             icon_url: String::new(),
@@ -1951,7 +1973,6 @@ mod tests {
             name: pkg_name,
             version,
             description: "d",
-            license: "MIT",
             license_url: None,
             authors: "a",
             project_url: "https://example.com",

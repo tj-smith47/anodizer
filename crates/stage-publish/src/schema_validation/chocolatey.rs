@@ -710,11 +710,11 @@ mod tests {
         }
     }
 
-    /// (a) Single-crate mode, derived defaults: the SPDX expression lands in
-    /// `<license type="expression">`, `<licenseUrl>` is the derived GitHub
-    /// LICENSE blob URL pinned at the tag, `<projectSourceUrl>` is the repo
-    /// URL, `<bugTrackerUrl>` is `{repo}/issues` — and NO opensource.org URL
-    /// is ever synthesized.
+    /// (a) Single-crate mode, derived defaults: `<licenseUrl>` is the
+    /// derived GitHub LICENSE blob URL pinned at the tag (Chocolatey's only
+    /// supported license metadata — no `<license>` element, CHCU0002),
+    /// `<projectSourceUrl>` is the repo URL, `<bugTrackerUrl>` is
+    /// `{repo}/issues` — and NO opensource.org URL is ever synthesized.
     #[test]
     fn single_crate_derives_license_expr_and_repo_urls() {
         let cfg = derive_defaults_choco_cfg("widget");
@@ -744,8 +744,8 @@ mod tests {
             "must never synthesize an opensource.org licenseUrl: {nuspec}"
         );
         assert!(
-            nuspec.contains("<license type=\"expression\">MIT</license>"),
-            "SPDX license must land as a license expression: {nuspec}"
+            !nuspec.contains("<license "),
+            "no <license> element — Chocolatey CLI flags it as CHCU0002: {nuspec}"
         );
         assert!(
             nuspec.contains(
@@ -857,11 +857,12 @@ mod tests {
         );
     }
 
-    /// An internal feed (no `repository` configured) derives NO repo URLs and
-    /// NO licenseUrl — the SPDX `<license type="expression">` still ships, but
-    /// no fabricated URL does. Confirms the derivation is skipped, not 404'd.
+    /// An internal feed (no `repository` configured) derives NO repo URLs
+    /// and NO licenseUrl — and no fabricated URL nor a `<license>` element
+    /// (unsupported by Chocolatey CLI — CHCU0002) ships in their place.
+    /// Confirms the derivation is skipped, not 404'd.
     #[test]
-    fn no_repo_omits_derived_urls_keeps_license_expression() {
+    fn no_repo_omits_derived_urls_and_license_metadata() {
         let cfg = ChocolateyConfig {
             name: Some("widget".to_string()),
             authors: Some("Acme".to_string()),
@@ -877,7 +878,10 @@ mod tests {
         let nuspec = render_nuspec_for_crate(&ctx, "widget", &ctx.logger("publish"))
             .expect("render ok")
             .expect("not skipped");
-        assert!(nuspec.contains("<license type=\"expression\">MIT</license>"));
+        assert!(
+            !nuspec.contains("<license "),
+            "no <license> element — Chocolatey CLI flags it as CHCU0002: {nuspec}"
+        );
         assert!(
             !nuspec.contains("<licenseUrl>"),
             "no licenseUrl without a repo: {nuspec}"
@@ -891,14 +895,15 @@ mod tests {
         assert!(!nuspec.contains("opensource.org"));
     }
 
-    /// Compound SPDX expression WITH a repo present: the rendered nuspec must
-    /// carry the full expression in `<license type="expression">` and must NOT
-    /// emit a `<licenseUrl>` element. The repo is set so a single-identifier
+    /// Compound SPDX expression WITH a repo present: the rendered nuspec
+    /// must NOT emit a `<licenseUrl>` (no single canonical LICENSE file to
+    /// derive) and must NOT emit a `<license>` element either (unsupported
+    /// by Chocolatey CLI — CHCU0002). The repo is set so a single-identifier
     /// license WOULD derive a `<licenseUrl>` — proving the suppression is
     /// driven by the compound expression, not by an absent repo. Locks the
     /// emitted manifest XML, not just the intermediate struct.
     #[test]
-    fn compound_spdx_rendered_nuspec_has_expression_and_no_license_url() {
+    fn compound_spdx_rendered_nuspec_has_no_license_metadata() {
         let cfg = ChocolateyConfig {
             name: Some("widget".to_string()),
             repository: Some(RepositoryConfig {
@@ -920,8 +925,8 @@ mod tests {
             .expect("render ok")
             .expect("not skipped");
         assert!(
-            nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"),
-            "compound SPDX must land as a license expression: {nuspec}"
+            !nuspec.contains("<license "),
+            "no <license> element — Chocolatey CLI flags it as CHCU0002: {nuspec}"
         );
         assert!(
             !nuspec.contains("<licenseUrl>"),

@@ -12,9 +12,34 @@ cold without re-investigating.
 
 ## Open
 
-_(None.)_
+_(empty)_
 
 ## Resolved (2026-07-10)
+
+- [x] **scoop publisher writes the manifest to the bucket repo ROOT, which scoop ignores
+  when a `bucket/` dir exists — the published scoop channel is dead for consumers —
+  RESOLVED 2026-07-10 (commit 3b3762c0).**
+  Evidence (real winserver VM, 2026-07-10, cfgd-acceptance run `20260710T172345Z`):
+  `tj-smith47/scoop-bucket` contains `bucket/` (only `.gitkeep`) plus `cfgd.json` /
+  `anodizer.json` at the repo root; after `scoop bucket add tj-smith47
+  https://github.com/tj-smith47/scoop-bucket`, `scoop install cfgd` fails
+  `Couldn't find manifest for 'cfgd'` — scoop's `Find-BucketDirectory` searches ONLY
+  `<repo>/bucket` when that dir exists, falling back to the root only when it doesn't.
+  **Fix:** `ScoopConfig.directory` now defaults to `bucket` (scoop's modern
+  convention) instead of the repo root; an explicit empty string `""` is the
+  root escape hatch; a stale root manifest is migrated into `bucket/` on the
+  next publish. Tests assert the manifest lands at `main:bucket/widget.json`.
+- [x] **chocolatey nuspec emits a `<license>` element choco CLI doesn't support →
+  CHCU0002 warning on every install — RESOLVED 2026-07-10.** Evidence (winserver,
+  2026-07-10): `choco install cfgd --version 0.5.0 -y` succeeds but ends with
+  `Warnings: - cfgd - Issues found with nuspec elements / CHCU0002: <license>
+  elements are not supported in Chocolatey CLI, use <licenseUrl> instead.`
+  **Fix:** the nuspec renderer no longer emits any `<license>` element; it emits
+  only `<licenseUrl>` (chocolatey's NuGet dialect), derived from a single-SPDX
+  license expression, and warns honestly when none is derivable
+  (`parse_spdx_expression(&meta.license).is_single()` is false). Regression test
+  `test_generate_nuspec_never_emits_license_element_chcu0002` pins that no
+  `<license` substring survives in the rendered nuspec.
 
 - [x] **snapcraft publish logs a store review rejection as a Warning and the stage stays
   green — publisher failure is invisible to CI — RESOLVED 2026-07-10.** Evidence: cfgd v0.5.0 run 28853272910
