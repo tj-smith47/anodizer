@@ -6,7 +6,22 @@
 //! `--rollback-only --from-run` to surface per-target channel-management
 //! pointers. Byte-shape changes here are breaking for replay consumers.
 
+use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
+
+/// The crate's primary binary name — the first build's `binary`, falling back
+/// to the crate name (BuildConfig's documented fallback). This is the last
+/// resort of the snap-name resolution chain (`snapcrafts[].name` → project
+/// name → primary binary), mirroring `generate_snap_yaml`, which names the
+/// shipped snap after the first staged binary when nothing else is set.
+pub(crate) fn crate_primary_binary(krate: &CrateConfig) -> String {
+    krate
+        .builds
+        .as_ref()
+        .and_then(|b| b.first())
+        .and_then(|b| b.binary.clone())
+        .unwrap_or_else(|| krate.name.clone())
+}
 
 /// Serialized shape of a recorded snapcraft publish. One entry per
 /// `(crate, snapcraft config)` tuple whose `publish: true` opt-in
@@ -63,7 +78,17 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
             if !proceed {
                 continue;
             }
-            let package_name = snap_cfg.name.clone().unwrap_or_else(|| krate.name.clone());
+            // Same fallback order as the upload path's `resolve_snap_name`
+            // and the built snap.yaml (config name → project name → primary
+            // binary) so the recorded package_name always matches the snap
+            // actually uploaded.
+            let package_name = snap_cfg.name.clone().unwrap_or_else(|| {
+                if ctx.config.project_name.is_empty() {
+                    crate_primary_binary(krate)
+                } else {
+                    ctx.config.project_name.clone()
+                }
+            });
             // `channel_templates` is a Vec rendered
             // through the template engine. Capture the first non-empty
             // rendering — operators reading the warn line only need one
@@ -79,6 +104,11 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
                 package_name,
                 channel,
                 revision: None,
+                // Empty when the Version template var is unpopulated (e.g. a
+                // bare test context) — an empty string is not a probeable
+                // version, so record the honest absence instead.
+                version: Some(ctx.version()).filter(|v| !v.is_empty()),
+                held_for_review: false,
             });
         }
     }
@@ -126,12 +156,14 @@ mod tests {
                 package_name: "demo".into(),
                 channel: Some("stable".into()),
                 revision: None,
+                ..Default::default()
             },
             SnapcraftTarget {
                 crate_name: "widget".into(),
                 package_name: "widget-snap".into(),
                 channel: None,
                 revision: None,
+                ..Default::default()
             },
         ];
         let extra = anodizer_core::PublishEvidenceExtra::Snapcraft(
@@ -156,6 +188,7 @@ mod tests {
                     package_name: "demo".into(),
                     channel: Some("stable".into()),
                     revision: None,
+                    ..Default::default()
                 }],
             },
         );
@@ -187,14 +220,41 @@ mod tests {
     }
 
     #[test]
-    fn snapcraft_collect_targets_defaults_to_crate_name() {
+    fn snapcraft_collect_targets_default_name_mirrors_resolve_snap_name() {
+        // Same fallback order as the upload path's `resolve_snap_name`:
+        // project name when set, crate name otherwise — so the recorded
+        // package_name always names the snap actually uploaded.
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, None)])
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let targets = collect_snapcraft_targets(&ctx);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].package_name, "test-project");
+        assert_eq!(targets[0].channel, None);
+        assert_eq!(targets[0].version.as_deref(), Some("1.0.0"));
+
         let ctx = TestContextBuilder::new()
+            .project_name("")
             .crates(vec![snap_crate("demo", None, None)])
             .build();
         let targets = collect_snapcraft_targets(&ctx);
-        assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].package_name, "demo");
-        assert_eq!(targets[0].channel, None);
+
+        // With a build declaring an explicit binary name, the last-resort
+        // fallback is that binary — the name generate_snap_yaml stamps into
+        // the shipped snap — not the crate name.
+        let mut krate = snap_crate("demo-cli", None, None);
+        krate.builds = Some(vec![anodizer_core::config::BuildConfig {
+            binary: Some("demo".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = TestContextBuilder::new()
+            .project_name("")
+            .crates(vec![krate])
+            .build();
+        let targets = collect_snapcraft_targets(&ctx);
+        assert_eq!(targets[0].package_name, "demo");
     }
 
     #[test]

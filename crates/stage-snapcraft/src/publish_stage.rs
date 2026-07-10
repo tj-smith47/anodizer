@@ -7,7 +7,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync_deadline};
+use anodizer_core::retry::{RetryLog, is_retriable, retry_sync_deadline};
 use anodizer_core::run::run_capture_timeout;
 use anodizer_core::stage::Stage;
 use anodizer_core::{
@@ -107,11 +107,6 @@ impl Stage for SnapcraftPublishStage {
         }
 
         let selected = ctx.options.selected_crates.clone();
-        let dry_run = ctx.options.dry_run;
-        // Wrap snapcraft upload in retry.
-        // commit eb944f9 (`isRetriableSnapPush`): 5xx Store responses
-        // (500/502/503/504) are transient, every other failure is fatal.
-        let retry_policy = ctx.retry_policy();
 
         // Collect crates that have snapcraft config with publish: true
         let crates: Vec<CrateConfig> = ctx
@@ -159,20 +154,20 @@ impl Stage for SnapcraftPublishStage {
         // `PublishEvidence::extra.snapcraft_targets` on success so
         // `--rollback-only --from-run` consumers can decode the recorded
         // shape.
-        let targets = collect_snapcraft_targets(ctx);
+        let mut targets = collect_snapcraft_targets(ctx);
 
         let SnapUploadOutcome {
             attempted,
             skipped_already_published,
+            held_for_review,
             result: exec_result,
         } = run_uploads(
             ctx,
             &crates,
             &snap_artifacts,
             &skip_decisions,
-            &retry_policy,
-            dry_run,
             &log,
+            &mut targets,
         );
 
         if !attempted {
@@ -206,6 +201,19 @@ impl Stage for SnapcraftPublishStage {
         let evidence = matches!(outcome, PublisherOutcome::Succeeded)
             .then(|| build_snapcraft_evidence(&targets));
         record_snapcraft_result(ctx, evidence, outcome);
+        // End-of-stage accountability for review holds: a per-upload warn can
+        // scroll away inside a long publish log, and the store's eventual
+        // decline arrives only by email — so the unresolved state gets one
+        // unmissable rollup line too. verify-release additionally probes the
+        // store's channel map and fails the gate while the version is absent.
+        if !held_for_review.is_empty() {
+            log.warn(&format!(
+                "{} snap upload(s) HELD for Snap Store manual review — store release NOT \
+                 verified: {}",
+                held_for_review.len(),
+                held_for_review.join(", ")
+            ));
+        }
         // Per-target upload errors are reported via PublisherResult; they
         // must NOT bail the pipeline because announce-gating and the
         // Submitter gate downstream depend on this stage returning Ok(()).
@@ -346,12 +354,18 @@ fn run_uploads(
     crates: &[CrateConfig],
     snap_artifacts: &[Artifact],
     skip_decisions: &[bool],
-    retry_policy: &RetryPolicy,
-    dry_run: bool,
     log: &StageLogger,
+    targets: &mut [SnapcraftTarget],
 ) -> SnapUploadOutcome {
+    let dry_run = ctx.options.dry_run;
+    // Wrap snapcraft upload in retry.
+    // commit eb944f9 (`isRetriableSnapPush`): 5xx Store responses
+    // (500/502/503/504) are transient, every other failure is fatal.
+    let retry_policy = ctx.retry_policy();
+    let retry_policy = &retry_policy;
     let mut attempted_upload = false;
     let mut skipped_already_published = 0usize;
+    let mut held_for_review: Vec<String> = Vec::new();
     let version = ctx.version();
     let project_name = ctx.config.project_name.clone();
     // IIFE captures `attempted_upload` by mutable reference so the
@@ -448,7 +462,11 @@ fn run_uploads(
                     // revision. Skip the upload when a revision for this
                     // version already exists. `None` (probe couldn't run) and
                     // `Some(false)` (no such revision) both proceed to upload.
-                    let snap_name = resolve_snap_name(snap_cfg, &project_name, &krate.name);
+                    let snap_name = resolve_snap_name(
+                        snap_cfg,
+                        &project_name,
+                        &crate::targets::crate_primary_binary(krate),
+                    );
                     if let Some(true) = snap_revision_already_published(&snap_name, &version, log) {
                         log.status(&format!(
                             "skipped snapcraft '{}' {} — revision already published in the Snap Store",
@@ -459,6 +477,11 @@ fn run_uploads(
                     }
 
                     attempted_upload = true;
+                    // Set from inside the retry closure when the store answers
+                    // with a manual-review hold (Cell because the closure is
+                    // re-entered per attempt while the outer scope still reads
+                    // the flag afterwards).
+                    let review_hold = std::cell::Cell::new(false);
                     // A snapcraft push is idempotent for retry purposes: the
                     // revision-already-published probe above skips a re-run, so
                     // re-issuing the upload after a transient 5xx/network blip
@@ -514,7 +537,16 @@ fn run_uploads(
 
                             // Review-pending responses from the Snap Store should be
                             // warnings, not fatal errors — the snap was uploaded
-                            // successfully but needs human review.
+                            // successfully but needs human review. Only the two
+                            // genuine review markers flip the hold flag;
+                            // "Waiting for previous upload" is a transient
+                            // store-processing conflict with no review queued,
+                            // so stamping it as HELD would send the operator to
+                            // an empty dashboard review queue (the landing
+                            // check still reports it honestly if the version
+                            // never goes live).
+                            const REVIEW_HOLD_STRINGS: &[&str] =
+                                &["A human will soon review your snap", "(NEEDS REVIEW)"];
                             const REVIEW_PENDING_STRINGS: &[&str] = &[
                                 "Waiting for previous upload",
                                 "A human will soon review your snap",
@@ -536,6 +568,9 @@ fn run_uploads(
                                     "snap upload pending review — {}",
                                     combined.trim()
                                 ));
+                                if REVIEW_HOLD_STRINGS.iter().any(|s| combined.contains(s)) {
+                                    review_hold.set(true);
+                                }
                                 return Ok(());
                             }
 
@@ -552,7 +587,29 @@ fn run_uploads(
                             }
                         },
                     )?;
-                    log.status(&format!("uploaded snap {} {}", snap_name, version));
+                    if review_hold.get() {
+                        // A held upload is NOT a delivered release: the store
+                        // accepted the binary but ships nothing until a human
+                        // approves it, and a rejection arrives only by email.
+                        // Say so at default visibility instead of the
+                        // "uploaded" wording, and record the hold on the
+                        // evidence snapshot so verify-release and
+                        // `--rollback-only --from-run` see the open state.
+                        log.warn(&format!(
+                            "snap {snap_name} {version} HELD for Snap Store manual review — \
+                             not live in any channel until review approves \
+                             (https://dashboard.snapcraft.io/snaps/{snap_name}/)"
+                        ));
+                        held_for_review.push(format!("{snap_name} {version}"));
+                        for t in targets
+                            .iter_mut()
+                            .filter(|t| t.crate_name == krate.name && t.package_name == snap_name)
+                        {
+                            t.held_for_review = true;
+                        }
+                    } else {
+                        log.status(&format!("uploaded snap {} {}", snap_name, version));
+                    }
                 }
             }
         }
@@ -562,6 +619,7 @@ fn run_uploads(
     SnapUploadOutcome {
         attempted: attempted_upload,
         skipped_already_published,
+        held_for_review,
         result,
     }
 }
@@ -572,6 +630,9 @@ fn run_uploads(
 struct SnapUploadOutcome {
     attempted: bool,
     skipped_already_published: usize,
+    /// `"<snap> <version>"` per upload the store answered with a
+    /// manual-review hold — accepted but not live until a human approves.
+    held_for_review: Vec<String>,
     result: Result<()>,
 }
 
@@ -709,12 +770,14 @@ mod publish_stage_tests {
                 package_name: "demo-snap".into(),
                 channel: Some("stable".into()),
                 revision: None,
+                ..Default::default()
             },
             SnapcraftTarget {
                 crate_name: "widget".into(),
                 package_name: "widget".into(),
                 channel: None,
                 revision: None,
+                ..Default::default()
             },
         ];
         let evidence = build_snapcraft_evidence(&targets);
@@ -1038,6 +1101,7 @@ mod publish_stage_tests {
             package_name: "demo".into(),
             channel: Some("stable".into()),
             revision: None,
+            ..Default::default()
         }]);
         record_snapcraft_result(
             &mut ctx,
@@ -1299,21 +1363,163 @@ mod publish_stage_tests {
         let log = ctx.logger("snapcraft-publish");
         let crates = vec![krate];
         let skip_decisions = vec![false];
-        let retry_policy = ctx.retry_policy();
-        let outcome = run_uploads(
-            &ctx,
-            &crates,
-            &[],
-            &skip_decisions,
-            &retry_policy,
-            false,
-            &log,
-        );
+        let mut targets = Vec::new();
+        let outcome = run_uploads(&ctx, &crates, &[], &skip_decisions, &log, &mut targets);
         assert!(!outcome.attempted, "publish:false → no attempted upload");
         assert_eq!(
             outcome.skipped_already_published, 0,
             "no snaps → nothing skipped"
         );
         assert!(outcome.result.is_ok(), "no work done → Ok(())");
+    }
+
+    // Drives the real upload path against a stubbed `snapcraft` whose upload
+    // answers with the store's manual-review-hold wording: the run must stay
+    // green (a hold can still be approved) while the evidence snapshot and
+    // the outcome both carry the unresolved hold instead of a silent
+    // "uploaded".
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn review_hold_is_recorded_on_evidence_not_reported_as_uploaded() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 echo \"A human will soon review your snap: (NEEDS REVIEW) confinement 'classic' not allowed\"\n\
+                 exit 2\nfi\nexit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("a review hold is non-fatal — the stage must return Ok");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert_eq!(snap.outcome, PublisherOutcome::Succeeded);
+        let targets = match &snap.evidence.as_ref().expect("evidence").extra {
+            anodizer_core::PublishEvidenceExtra::Snapcraft(e) => &e.snapcraft_targets,
+            other => panic!("wrong extra variant: {other:?}"),
+        };
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].package_name, "demo");
+        assert_eq!(targets[0].version.as_deref(), Some("1.0.0"));
+        assert!(
+            targets[0].held_for_review,
+            "the review hold must be stamped on the evidence snapshot"
+        );
+    }
+
+    // "Waiting for previous upload" is a transient store-processing conflict,
+    // not a manual-review hold — it must keep the non-fatal pending-warn
+    // treatment WITHOUT stamping held_for_review (no review queue exists for
+    // the operator to visit).
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn previous_upload_conflict_is_not_stamped_as_review_hold() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 echo \"Waiting for previous upload to complete\"\n\
+                 exit 2\nfi\nexit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("a pending-upload conflict is non-fatal");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        let targets = match &snap.evidence.as_ref().expect("evidence").extra {
+            anodizer_core::PublishEvidenceExtra::Snapcraft(e) => &e.snapcraft_targets,
+            other => panic!("wrong extra variant: {other:?}"),
+        };
+        assert!(
+            !targets[0].held_for_review,
+            "a processing conflict is not a review hold"
+        );
     }
 }

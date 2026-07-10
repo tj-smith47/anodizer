@@ -58,10 +58,13 @@ pub struct VerifyReleaseConfig {
     pub assert_assets: bool,
     /// Assert that every publisher that succeeded this run actually LANDED:
     /// each published crate version is visible on the crates.io sparse index,
-    /// each npm package version is visible on its registry, and each uploaded
-    /// blob object exists in its bucket. Default `true` (no extra config: the
-    /// run's own publish report already carries every coordinate the probes
-    /// need). Publishers that did not run — or did not succeed — are skipped.
+    /// each npm package version is visible on its registry, each uploaded
+    /// blob object exists in its bucket, and each uploaded snap is live in
+    /// the Snap Store's channel map (catching a manual-review hold that
+    /// parked the revision outside every channel). Default `true` (no extra
+    /// config: the run's own publish report already carries every coordinate
+    /// the probes need). Publishers that did not run — or did not succeed —
+    /// are skipped.
     pub assert_landing: bool,
     /// Per-package install smoke-test images. When `None`, smoke-testing is
     /// off. When present, each package type that produced an artifact is

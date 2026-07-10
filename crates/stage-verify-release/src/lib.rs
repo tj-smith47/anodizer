@@ -19,9 +19,11 @@
 //!   gate with the exact missing names.
 //! - **publisher landing checks** — every publisher that succeeded this run
 //!   actually landed: published crate versions are visible on the crates.io
-//!   sparse index, npm package versions answer a registry GET, and uploaded
-//!   blob objects answer a `HEAD` through the upload's own store backend
-//!   ([`landing`]).
+//!   sparse index, npm package versions answer a registry GET, uploaded
+//!   blob objects answer a `HEAD` through the upload's own store backend,
+//!   and uploaded snaps are live in the Snap Store's public channel map —
+//!   which also catches a manual-review hold that parked the revision
+//!   outside every channel ([`landing`]).
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
 //!   notice when Docker is unavailable.
@@ -47,6 +49,7 @@ mod asset_check;
 mod landing;
 mod libc_check;
 mod smoke;
+mod snap_store;
 
 pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
 pub use landing::LandingProbes;
@@ -88,7 +91,13 @@ const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 /// so a `--publishers npm` run still verifies the npm landing while skipping
 /// the GitHub asset check.
 pub fn verify_release_consumers() -> &'static [&'static str] {
-    &["github-release", "cargo", "npm", "blob"]
+    &[
+        "github-release",
+        "cargo",
+        "npm",
+        "blob",
+        "snapcraft-publish",
+    ]
 }
 
 impl Stage for VerifyReleaseStage {
@@ -203,10 +212,14 @@ impl Stage for VerifyReleaseStage {
             let blob_probe = |t: &anodizer_core::publish_evidence::BlobTargetSnapshot| {
                 anodizer_stage_blob::blob_object_exists(ctx, t)
             };
+            let snap_probe = |snap: &str, version: &str, channel: Option<&str>| {
+                snap_store::snap_version_in_channel_map(snap, version, channel, &policy, &log)
+            };
             let probes = LandingProbes {
                 cargo_index: &cargo_probe,
                 npm_registry: &npm_probe,
                 blob_head: &blob_probe,
+                snap_channel_map: &snap_probe,
             };
             landing_probed = landing::run_landing_checks(ctx, &log, &probes, &mut issues);
         }

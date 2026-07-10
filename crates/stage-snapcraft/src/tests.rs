@@ -805,6 +805,9 @@ fn test_snapcraft_command_no_destructive_mode() {
 }
 
 #[test]
+// Resolves the REAL snapcraft binary through PATH, so it must serialize with
+// every test that shims PATH via FakeToolDir::activate (same serial key).
+#[serial_test::serial(path_env)]
 fn snap_is_byte_reproducible_across_time() {
     use std::process::Command;
     // `snapcraft pack <prime_dir>` packs a pre-assembled prime directory via

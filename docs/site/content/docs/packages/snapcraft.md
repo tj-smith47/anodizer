@@ -147,6 +147,24 @@ Target triple components are mapped to Snapcraft architecture names:
 
 Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodizer. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
 
+### Manual-review holds
+
+The Snap Store can answer an upload with a **manual-review hold** (e.g. a
+`classic` confinement request pending approval): the binary is accepted but
+ships to **no channel** until a human reviews it, and a decline arrives only
+by email. anodizer treats the hold as non-fatal (review can still approve),
+but never as delivered:
+
+```
+Warning: snap myapp 1.0.0 HELD for Snap Store manual review — not live in any channel until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
+Warning: 1 snap upload(s) HELD for Snap Store manual review — store release NOT verified: myapp 1.0.0
+```
+
+The hold is also recorded in the run's publish evidence, and the
+[verify-release gate](@/docs/advanced/verify-release.md) probes the store's
+public channel map — a held (or otherwise absent) version fails the gate with
+the dashboard URL, so the unresolved state cannot ride a green pipeline.
+
 ## Full example
 
 ```yaml

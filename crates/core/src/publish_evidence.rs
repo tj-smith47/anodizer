@@ -295,6 +295,17 @@ pub struct SnapcraftTargetSnapshot {
     pub channel: Option<String>,
     #[serde(default)]
     pub revision: Option<String>,
+    /// The version this run uploaded, so post-publish verification can probe
+    /// the store's channel map for it.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The Snap Store answered the upload with a manual-review hold: the
+    /// binary was accepted but is NOT live in any channel until a human
+    /// approves it. Recorded so the verify-release landing check and
+    /// `--rollback-only --from-run` consumers see the unresolved state
+    /// instead of a silent "uploaded".
+    #[serde(default)]
+    pub held_for_review: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

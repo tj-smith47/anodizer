@@ -23,7 +23,7 @@ Four independently-toggleable checks:
 | Check | What it catches | Needs |
 |---|---|---|
 | **asset existence + content** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), an uploaded asset whose **size or sha256 digest** doesn't match the local bytes (truncated/corrupted uploads, stale assets from a prior re-cut), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
-| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a blob object absent from its bucket | network |
+| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a blob object absent from its bucket, a snap held for manual store review and live in no channel | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -152,6 +152,7 @@ so no extra config is needed:
 | `cargo` | crates.io **sparse index** lookup for every published `crate@version` (custom `registry:`/`index:` targets are skipped — the crates.io index says nothing about them) |
 | `npm` | registry metadata `GET <registry>/<pkg>/<version>` for every published package |
 | `blob` | `HEAD` on every uploaded object, through the **same store backend and ambient credentials** the upload used — works for private buckets with no public URL |
+| `snapcraft` | anonymous `GET api.snapcraft.io/v2/snaps/info/<snap>` for every uploaded snap — the version must be **live in the store's channel map** (in the released channel when one was set). This catches the Snap Store's silent failure mode: a manual-review hold accepts the upload but ships nothing until a human approves, and a decline arrives only by email |
 
 One result line per publisher:
 
@@ -159,6 +160,7 @@ One result line per publisher:
 [verify-release] cargo: anodizer-core@0.15.4 visible on crates.io index
 [verify-release] npm: myapp@0.15.4 visible on registry.npmjs.org
 [verify-release] blob: 22/22 uploaded object(s) present in bucket
+[verify-release] snapcraft: myapp 1.0.0 live in the Snap Store channel map
 ```
 
 A publisher that was skipped, deselected, or failed is not probed — it landed
@@ -169,6 +171,7 @@ landing is a finding.
 ```
 - cargo: myapp@1.0.0 reported published but is not visible on the crates.io index
 - blob: s3://my-bucket/v1.0.0/myapp.tar.gz reported uploaded but is missing from the bucket
+- snapcraft: myapp 1.0.0 was HELD for Snap Store manual review and is not live in the store — consumers get nothing until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
 ```
 
 ## (c) install smoke-test

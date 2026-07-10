@@ -12,10 +12,36 @@ cold without re-investigating.
 
 ## Open
 
-_(None. The 2026-07-07/08 release-machinery audit's fix-now items are all fixed, and the D1–D9
-wave-1 items from `.claude/audits/2026-07-07-design-pitches.md` — which all collapsed to single
-defensible answers under review — are implemented, reviewed, and committed 2026-07-08. Remaining
-D3/D8/U1/D7 work is planned follow-on feature work, not a bug backlog.)_
+_(None.)_
+
+## Resolved (2026-07-10)
+
+- [x] **snapcraft publish logs a store review rejection as a Warning and the stage stays
+  green — publisher failure is invisible to CI — RESOLVED 2026-07-10.** Evidence: cfgd v0.5.0 run 28853272910
+  "Publish cfgd" job — `snapcraft upload` returned `(NEEDS REVIEW) confinement 'classic'
+  not allowed` for both arches; `stage-snapcraft` emitted `Warning: snap upload pending
+  review — …` and reported `uploaded snap cfgd 0.5.0`, job green. The store's human queue
+  later declined the revisions; the only failure signal was the publisher's rejection
+  email, and the release-audit session missed the dead channel entirely (store stuck at
+  0.3.5). "Pending review" is legitimately non-fatal (manual review can APPROVE), but the
+  outcome must not be silent: at minimum surface a distinct end-of-run summary line /
+  non-green annotation ("N uploads held for store review — result NOT verified"), ideally
+  a post-release verify hook that polls the store channel-map for the expected version
+  (the check is one anonymous GET to api.snapcraft.io/v2/snaps/info/<name>). Classifier
+  context: `publish_stage.rs` treats 5xx as transient, all else fatal — review-hold is a
+  third state that currently rides the success path in `command.rs`.
+  **Fix:** (1) the review-pending upload path now reports `snap <name> <version>
+  HELD for Snap Store manual review — not live in any channel until review
+  approves` per upload plus an end-of-stage rollup (`N snap upload(s) HELD … store
+  release NOT verified`), never the false `uploaded snap …` line; (2) the hold is
+  recorded on `SnapcraftTargetSnapshot` (`held_for_review`, plus the new `version`
+  field) in the publish evidence; (3) verify-release gained a snapcraft landing
+  check (`stage-verify-release/src/snap_store.rs`) probing the store's public
+  channel map (`GET api.snapcraft.io/v2/snaps/info/<name>`, verified live against
+  cfgd: 0.3.5 in all channels, 0.5.0 absent — exactly the dead channel the
+  evidence cites) — a held or otherwise absent version fails the gate with the
+  dashboard URL. Also fixed en route: `collect_snapcraft_targets` package-name
+  fallback drifted from `resolve_snap_name` (crate name vs project name).
 
 ## Resolved (2026-07-08 release-machinery audit session)
 

@@ -32,8 +32,13 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::publish_evidence::{
     BlobTargetSnapshot, CargoYankTargetSnapshot, NpmTargetSnapshot, PublishEvidenceExtra,
+    SnapcraftTargetSnapshot,
 };
 use anodizer_core::publish_report::{PublisherOutcome, PublisherResult};
+
+/// `(snap, version, channel)` probe signature for the Snap Store channel-map
+/// check (see [`LandingProbes::snap_channel_map`]).
+pub type SnapChannelMapProbe<'a> = dyn Fn(&str, &str, Option<&str>) -> anyhow::Result<bool> + 'a;
 
 /// The landing probes, injected so tests can drive the orchestration without
 /// a network.
@@ -49,6 +54,11 @@ pub struct LandingProbes<'a> {
     /// Blob target → whether the object exists in its bucket. `Err` = the
     /// store could not be built or the HEAD failed indeterminately.
     pub blob_head: &'a dyn Fn(&BlobTargetSnapshot) -> anyhow::Result<bool>,
+    /// `(snap, version, channel)` → whether the version is live in the Snap
+    /// Store's channel map (in the given channel, or any channel when
+    /// `None`). `Ok(false)` covers snap-unknown and version-absent alike;
+    /// `Err` = the store could not be consulted.
+    pub snap_channel_map: &'a SnapChannelMapProbe<'a>,
 }
 
 /// Run every applicable landing check against the run's publish report.
@@ -69,7 +79,7 @@ pub(crate) fn run_landing_checks(
     let mut probed_publishers = 0usize;
     for result in &report.results {
         if !matches!(result.outcome, PublisherOutcome::Succeeded) {
-            if matches!(result.name.as_str(), "cargo" | "npm" | "blob") {
+            if matches!(result.name.as_str(), "cargo" | "npm" | "blob" | "snapcraft") {
                 log.verbose(&format!(
                     "skipped {} landing check — publisher did not succeed this run ({:?})",
                     result.name, result.outcome
@@ -81,6 +91,7 @@ pub(crate) fn run_landing_checks(
             "cargo" => check_cargo_landing(result, log, probes, issues),
             "npm" => check_npm_landing(result, log, probes, issues),
             "blob" => check_blob_landing(result, log, probes, issues),
+            "snapcraft" => check_snapcraft_landing(result, log, probes, issues),
             _ => false,
         };
         if probed {
@@ -259,6 +270,83 @@ fn check_blob_landing(
     true
 }
 
+/// Decode the snapcraft publisher's recorded upload targets.
+fn snapcraft_targets(result: &PublisherResult) -> &[SnapcraftTargetSnapshot] {
+    match result.evidence.as_ref().map(|e| &e.extra) {
+        Some(PublishEvidenceExtra::Snapcraft(extra)) => &extra.snapcraft_targets,
+        _ => &[],
+    }
+}
+
+/// Probe the Snap Store channel map for every snap the snapcraft publisher
+/// recorded. Returns whether at least one target was probed.
+///
+/// A `snapcraft upload` OK proves acceptance, not delivery: a manual-review
+/// hold parks the revision outside every channel until a human approves it,
+/// and a decline arrives only by email — so an absent version is reported as
+/// an issue either way, with the hold context in the wording when the run
+/// recorded one. A held snap that review has since approved probes visible
+/// and passes cleanly.
+fn check_snapcraft_landing(
+    result: &PublisherResult,
+    log: &StageLogger,
+    probes: &LandingProbes<'_>,
+    issues: &mut Vec<String>,
+) -> bool {
+    let targets = snapcraft_targets(result);
+    if targets.is_empty() {
+        log.verbose("snapcraft succeeded but recorded no uploaded snaps — nothing to probe");
+        return false;
+    }
+    let mut visible: Vec<String> = Vec::new();
+    let mut probed = 0usize;
+    for t in targets {
+        // Pre-`version` snapshots (older runs replayed via --from-run) carry
+        // no version to look for — nothing honest to probe.
+        let Some(version) = t.version.as_deref() else {
+            log.verbose(&format!(
+                "skipped store probe for snap '{}' — no version recorded in the run snapshot",
+                t.package_name
+            ));
+            continue;
+        };
+        probed += 1;
+        let coords = format!("{} {version}", t.package_name);
+        match (probes.snap_channel_map)(&t.package_name, version, t.channel.as_deref()) {
+            Ok(true) => visible.push(coords),
+            Ok(false) if t.held_for_review => issues.push(format!(
+                "snapcraft: {coords} was HELD for Snap Store manual review and is not live in \
+                 the store — consumers get nothing until review approves \
+                 (https://dashboard.snapcraft.io/snaps/{}/)",
+                t.package_name
+            )),
+            Ok(false) => issues.push(format!(
+                "snapcraft: {coords} reported uploaded but is not in the store's channel map{}",
+                t.channel
+                    .as_deref()
+                    .map(|c| format!(" for channel '{c}'"))
+                    .unwrap_or_default()
+            )),
+            Err(e) => issues.push(format!(
+                "snapcraft: could not probe the Snap Store for {coords}: {e:#}"
+            )),
+        }
+    }
+    if probed > 0 && visible.len() == probed {
+        if probed == 1 {
+            log.status(&format!(
+                "snapcraft: {} live in the Snap Store channel map",
+                visible[0]
+            ));
+        } else {
+            log.status(&format!(
+                "snapcraft: {probed}/{probed} uploaded snap(s) live in the Snap Store channel map"
+            ));
+        }
+    }
+    probed > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +429,7 @@ mod tests {
             cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
             npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
+            snap_channel_map: &|s, v, _| panic!("snap probe must not fire for {s} {v}"),
         }
     }
 
@@ -621,6 +710,161 @@ mod tests {
                 .any(|i| i.contains("s3://bkt/v1/app.sig") && i.contains("could not verify")),
             "{issues:?}"
         );
+    }
+
+    fn snapcraft_extra(targets: &[(&str, &str, Option<&str>, bool)]) -> PublishEvidenceExtra {
+        PublishEvidenceExtra::Snapcraft(anodizer_core::publish_evidence::SnapcraftExtra {
+            snapcraft_targets: targets
+                .iter()
+                .map(|(name, version, channel, held)| SnapcraftTargetSnapshot {
+                    crate_name: name.to_string(),
+                    package_name: name.to_string(),
+                    channel: channel.map(|c| c.to_string()),
+                    revision: None,
+                    version: Some(version.to_string()),
+                    held_for_review: *held,
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn snapcraft_visible_version_passes_with_recorded_coordinates() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.2.3", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let seen = Cell::new(false);
+        let snap = |name: &str, version: &str, channel: Option<&str>| {
+            assert_eq!(name, "demo");
+            assert_eq!(version, "1.2.3");
+            assert_eq!(channel, Some("stable"));
+            seen.set(true);
+            Ok(true)
+        };
+        let probes = LandingProbes {
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(probed, 1);
+        assert!(seen.get(), "probe must receive the recorded coordinates");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn snapcraft_held_and_absent_version_reports_the_review_hold() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.2.3", Some("stable"), true)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let snap = |_: &str, _: &str, _: Option<&str>| Ok(false);
+        let probes = LandingProbes {
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("demo 1.2.3")
+                && issues[0].contains("HELD for Snap Store manual review")
+                && issues[0].contains("dashboard.snapcraft.io/snaps/demo/"),
+            "a held-and-absent snap must name the review hold: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn snapcraft_absent_version_without_hold_reads_as_not_in_channel_map() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "2.0.0", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let snap = |_: &str, _: &str, _: Option<&str>| Ok(false);
+        let probes = LandingProbes {
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("not in the store's channel map for channel 'stable'")
+                && !issues[0].contains("HELD"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn snapcraft_probe_error_is_an_issue_not_a_silent_pass() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.0.0", None, false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let snap = |_: &str, _: &str, _: Option<&str>| anyhow::bail!("store unreachable");
+        let probes = LandingProbes {
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("could not probe") && issues[0].contains("store unreachable"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn snapcraft_versionless_snapshot_is_skipped_not_probed() {
+        // A pre-`version` snapshot replayed via --from-run has nothing honest
+        // to probe — the panicking probe proves it is never consulted.
+        let extra =
+            PublishEvidenceExtra::Snapcraft(anodizer_core::publish_evidence::SnapcraftExtra {
+                snapcraft_targets: vec![SnapcraftTargetSnapshot {
+                    crate_name: "demo".to_string(),
+                    package_name: "demo".to_string(),
+                    channel: Some("stable".to_string()),
+                    revision: None,
+                    version: None,
+                    held_for_review: false,
+                }],
+            });
+        let report = PublishReport {
+            results: vec![result_with("snapcraft", PublisherOutcome::Succeeded, extra)],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0, "no version recorded => nothing probed");
+        assert!(issues.is_empty());
     }
 
     #[test]
