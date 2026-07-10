@@ -525,7 +525,11 @@ pub struct ScoopConfig {
     pub commit_author: Option<CommitAuthorConfig>,
     /// Override the manifest name (default: crate name).
     pub name: Option<String>,
-    /// Subdirectory in the bucket repo for manifest placement.
+    /// Subdirectory in the bucket repo for manifest placement. Defaults to
+    /// `bucket` — scoop resolves manifests only from `bucket/` when that
+    /// directory exists (root otherwise), so `bucket/` is correct for both
+    /// layouts. Set to `""` to target the repo root. A stale same-named
+    /// root-level manifest is removed when publishing into a subdirectory.
     pub directory: Option<String>,
     /// Short description of the package (shown in `scoop info`).
     pub description: Option<String>,

@@ -1078,14 +1078,20 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         log,
     )?;
 
-    // Place manifest in optional subdirectory.
-    let manifest_dir = if let Some(dir) = scoop_cfg.directory.as_deref() {
+    // Place the manifest in the configured subdirectory, defaulting to
+    // `bucket/`: scoop's `Find-BucketDirectory` resolves manifests ONLY from
+    // `<repo>/bucket` when that directory exists, falling back to the repo
+    // root when it doesn't — so `bucket/` works for both layouts, while a
+    // root-level manifest is invisible the moment the repo carries a
+    // `bucket/` dir. An explicit empty `directory: ""` targets the root.
+    let dir = scoop_cfg.directory.as_deref().unwrap_or("bucket");
+    let manifest_dir = if dir.is_empty() {
+        repo_path.to_path_buf()
+    } else {
         let d = repo_path.join(dir);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("scoop: create directory {}", d.display()))?;
         d
-    } else {
-        repo_path.to_path_buf()
     };
 
     let manifest_path = manifest_dir.join(format!("{}.json", manifest_name));
@@ -1093,6 +1099,23 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         .with_context(|| format!("scoop: write manifest {}", manifest_path.display()))?;
 
     log.status(&format!("wrote Scoop manifest {}", manifest_path.display()));
+
+    // A same-named manifest previously published at the repo ROOT is dead
+    // weight once the subdirectory exists (scoop no longer resolves it) and
+    // would contradict the copy just written — migrate it out in the same
+    // commit.
+    let stale_root_manifest = (manifest_dir != repo_path)
+        .then(|| repo_path.join(format!("{}.json", manifest_name)))
+        .filter(|p| p.is_file());
+    if let Some(stale) = &stale_root_manifest {
+        std::fs::remove_file(stale)
+            .with_context(|| format!("scoop: remove stale root manifest {}", stale.display()))?;
+        log.status(&format!(
+            "removed stale root-level Scoop manifest {} (superseded by {})",
+            stale.display(),
+            manifest_path.display()
+        ));
+    }
 
     let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
     let commit_msg = crate::homebrew::render_commit_msg(
@@ -1109,12 +1132,17 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ctx.render_is_strict(),
     )?;
 
-    let manifest_lossy = manifest_path.to_string_lossy();
+    let mut commit_files: Vec<String> = vec![manifest_path.to_string_lossy().into_owned()];
+    if let Some(stale) = &stale_root_manifest {
+        // `git add` on a deleted tracked path stages the removal.
+        commit_files.push(stale.to_string_lossy().into_owned());
+    }
+    let commit_file_refs: Vec<&str> = commit_files.iter().map(String::as_str).collect();
     let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref(), log)?;
     let branch = util::resolve_branch(ctx, scoop_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,
-        &[&manifest_lossy],
+        &commit_file_refs,
         &commit_msg,
         branch.as_deref(),
         "scoop",
@@ -4059,6 +4087,12 @@ mod publish_flow_tests {
         /// Build a bare bucket repo with one commit on `main` (the branch the
         /// publish path's clone defaults to). Returns `(url, holder)`.
         fn init_bare_bucket() -> (String, tempfile::TempDir) {
+            init_bare_bucket_with_files(&[])
+        }
+
+        /// [`init_bare_bucket`] variant seeding extra `(path, contents)` files
+        /// into the initial commit (e.g. a pre-existing root-level manifest).
+        fn init_bare_bucket_with_files(files: &[(&str, &str)]) -> (String, tempfile::TempDir) {
             let bare = tempfile::tempdir().expect("bare tempdir");
             let seed = tempfile::tempdir().expect("seed tempdir");
             git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
@@ -4067,7 +4101,14 @@ mod publish_flow_tests {
             git_ok(seed.path(), &["config", "user.name", "Test"]);
             git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
             std::fs::write(seed.path().join("README"), "bucket\n").unwrap();
-            git_ok(seed.path(), &["add", "README"]);
+            for (path, contents) in files {
+                let p = seed.path().join(path);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(&p, contents).unwrap();
+            }
+            git_ok(seed.path(), &["add", "-A"]);
             git_ok(seed.path(), &["commit", "-m", "seed"]);
             assert!(
                 anodizer_core::test_helpers::output_with_spawn_retry(
@@ -4161,8 +4202,9 @@ mod publish_flow_tests {
             let pushed = publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
             assert!(pushed, "a fresh manifest push must report pushed=true");
 
-            // The manifest landed on main with the real sha256.
-            let manifest_in_repo = git_stdout(bare.path(), &["show", "main:widget.json"]);
+            // The manifest landed on main under the default `bucket/`
+            // subdirectory with the real sha256.
+            let manifest_in_repo = git_stdout(bare.path(), &["show", "main:bucket/widget.json"]);
             let json: serde_json::Value =
                 serde_json::from_str(&manifest_in_repo).expect("pushed manifest is JSON");
             assert_eq!(json["architecture"]["64bit"]["hash"], sha);
@@ -4176,7 +4218,136 @@ mod publish_flow_tests {
             drop(bare);
         }
 
-        /// `directory:` places the manifest under a subdirectory of the
+        /// With no `directory:` configured the manifest defaults into
+        /// `bucket/` — scoop's `Find-BucketDirectory` resolves manifests ONLY
+        /// from `bucket/` when that directory exists and from the repo root
+        /// otherwise, so `bucket/` is correct for both layouts. A root-level
+        /// manifest in a repo that also carries `bucket/` is invisible to
+        /// scoop (`Couldn't find manifest`).
+        #[test]
+        #[serial(path_env)]
+        fn publish_to_scoop_defaults_manifest_into_bucket_subdir() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &"a".repeat(64),
+            );
+
+            publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
+            let tree = git_stdout(bare.path(), &["ls-tree", "-r", "--name-only", "main"]);
+            assert!(
+                tree.lines().any(|l| l == "bucket/widget.json"),
+                "manifest must default into bucket/; tree:\n{tree}"
+            );
+            assert!(
+                !tree.lines().any(|l| l == "widget.json"),
+                "no root-level manifest may ship alongside bucket/; tree:\n{tree}"
+            );
+        }
+
+        /// A manifest previously published at the repo ROOT is dead weight
+        /// once `bucket/` exists (scoop no longer resolves it) and contradicts
+        /// the `bucket/` copy — publishing migrates it out in the same commit.
+        #[test]
+        #[serial(path_env)]
+        fn publish_to_scoop_migrates_stale_root_manifest_into_bucket() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) =
+                init_bare_bucket_with_files(&[("widget.json", "{\"version\":\"0.9.0\"}\n")]);
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &"b".repeat(64),
+            );
+
+            let pushed = publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
+            assert!(pushed, "migration + new manifest must push");
+            let tree = git_stdout(bare.path(), &["ls-tree", "-r", "--name-only", "main"]);
+            assert!(
+                tree.lines().any(|l| l == "bucket/widget.json"),
+                "manifest must land in bucket/; tree:\n{tree}"
+            );
+            assert!(
+                !tree.lines().any(|l| l == "widget.json"),
+                "stale root manifest must be removed in the same commit; tree:\n{tree}"
+            );
+            let json: serde_json::Value = serde_json::from_str(&git_stdout(
+                bare.path(),
+                &["show", "main:bucket/widget.json"],
+            ))
+            .expect("bucket manifest is JSON");
+            assert_eq!(json["version"], "1.0.0");
+        }
+
+        /// An explicit empty `directory: ""` is the escape hatch targeting
+        /// the repo root (the pre-`bucket/`-default layout).
+        #[test]
+        #[serial(path_env)]
+        fn publish_to_scoop_empty_directory_targets_repo_root() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+                s.directory = Some(String::new());
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &"c".repeat(64),
+            );
+
+            publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
+            let tree = git_stdout(bare.path(), &["ls-tree", "-r", "--name-only", "main"]);
+            assert!(
+                tree.lines().any(|l| l == "widget.json"),
+                "empty directory must target the repo root; tree:\n{tree}"
+            );
+        }
+
+        /// `directory:` places the manifest under a custom subdirectory of the
         /// bucket; the pushed file lands at `<dir>/<name>.json`.
         #[test]
         #[serial(path_env)]
@@ -4193,7 +4364,7 @@ mod publish_flow_tests {
             let mut c = scoop_crate_for_bucket("widget", &bucket_url);
             enable_self_pr(&mut c);
             if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
-                s.directory = Some("bucket".to_string());
+                s.directory = Some("manifests".to_string());
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
             inject_api_base(&mut ctx, &addr);
@@ -4209,7 +4380,7 @@ mod publish_flow_tests {
             publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
             let tree = git_stdout(bare.path(), &["ls-tree", "-r", "--name-only", "main"]);
             assert!(
-                tree.lines().any(|l| l == "bucket/widget.json"),
+                tree.lines().any(|l| l == "manifests/widget.json"),
                 "manifest must land under the configured subdirectory; tree:\n{tree}"
             );
         }

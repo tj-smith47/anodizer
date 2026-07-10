@@ -53,6 +53,7 @@ crates:
 | `repository.owner` | string | — | GitHub owner of the bucket repo |
 | `repository.name` | string | — | Bucket repository name |
 | `description` | string | Cargo `[package].description` | Manifest description. Derived from `Cargo.toml`; set to override. |
+| `directory` | string | `bucket` | Subdirectory in the bucket repo for manifest placement. Scoop resolves manifests only from `bucket/` when that directory exists (repo root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
 | `checkver` | string | `github` | Version-detection strategy emitted into the manifest. Defaults to `github` (derived from the GitHub repo); override with a homepage regex (e.g. `v([\d.]+)`) when GitHub release detection is not appropriate. |
 
@@ -70,6 +71,7 @@ crates:
           branch: ""                # default: repo default branch
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
+        directory: bucket                # optional; default "bucket" ("" targets the repo root)
         checkver: github                 # optional; "github" (default) or a homepage regex
         skip_upload: false          # true | false | "auto" (skip prereleases)
 ```
