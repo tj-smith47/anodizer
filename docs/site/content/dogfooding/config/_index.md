@@ -80,7 +80,7 @@ partial:
 | `build.hooks.pre` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.before`) |
 | `build.hooks.post` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.after`) |
 | `snapshot.name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`snapshot.version_template`) |
-| `--auto-snapshot` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/v0.12.3/.github/workflows/ci.yml) (snapshot build on every master push) |
+| `--auto-snapshot` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/v0.16.0/.github/workflows/ci.yml) (snapshot build on every master push) |
 | `nightly.*` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`nightly: {name_template: "cfgd-nightly", tag_name: nightly}`) + [cfgd `nightly.yml`](https://github.com/tj-smith47/cfgd/blob/v0.4.0/.github/workflows/nightly.yml) (fired by `cron: '0 4 * * *'`) |
 | `metadata.homepage` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.homepage: https://github.com/tj-smith47/cfgd`) |
 | `metadata.license` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.license: MIT`) |
@@ -88,6 +88,7 @@ partial:
 | `metadata.maintainers` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.maintainers`) |
 | `metadata.mod_timestamp` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`metadata.mod_timestamp: "{{ CommitTimestamp }}"`; applied as mtime of `dist/metadata.json` and `dist/artifacts.json`) |
 | `report_sizes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`report_sizes: true`; prints per-artifact and total sizes in the release summary) |
+| `retry` (`attempts` / `delay` / `max_delay` / `max_elapsed`) | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retry.max_elapsed: 15m` — run-wide wall-clock retry budget bounding every publisher's ladder). See [`crates/core/src/config/retry.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/retry.rs) |
 
 ## Templates
 
@@ -126,6 +127,7 @@ config is rendered.
 | Key | Status | Notes |
 |---|---|---|
 | `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error` runs a `cmd` per failed publisher before rollback; failure context arrives as `ANODIZER_PUBLISHER`/`ANODIZER_ERROR`/`ANODIZER_VERSION`/`ANODIZER_TAG`/`ANODIZER_GROUP`/`ANODIZER_REQUIRED`/`ANODIZER_ROLLED_BACK` env vars on the hook process — read these instead of interpolating untrusted error text into the shell string — with matching template vars for trusted values). Workspace-wide; per-crate entries append before defaults. Awaits a real failure to prove live |
+| `publish.on_rollback` | ✅ Verified (tests) | [`crates/core/src/config/publishers/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/publishers/mod.rs) (`on_rollback:` hook list) + [`crates/stage-publish/src/failure_hooks.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/failure_hooks.rs) — runs a `cmd` per publisher whose landed publish was rolled back (independent of `on_error`), with the rollback trigger reason exposed to the hook env. Neither dogfood config wires it yet |
 | `defaults.publish.cargo.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` under `defaults.publish.cargo` — crates.io publishes are permanent; retain even if a downstream publisher rolls back) |
 | `schemastore.retain_on_rollback` / `mcp.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` on the top-level `schemastore` and `mcp` keys — external catalogs; retain even if downstream publishers roll back) |
 
@@ -142,7 +144,7 @@ config is rendered.
 | `git.ignore_tag_prefixes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`ignore_tag_prefixes: ["draft-"]`) |
 | `git.prerelease_suffix` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) + [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`prerelease_suffix: "-"` — strips trailing pre-release suffixes from version strings) |
 | `git.ignore_tags` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) + [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`ignore_tags: ["nightly"]` — excludes transient tags from version resolution) |
-| `version_files` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_files: [docs/installation.md, chart/cfgd/Chart.yaml]`; version string rewritten in-place at tag time). Wired in config; awaits next cfgd release for live proof |
+| `version_files` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_files: [docs/installation.md, docs/bootstrap.md, docs/skill.md]`); [cfgd v0.5.0 `docs/installation.md`](https://github.com/tj-smith47/cfgd/blob/v0.5.0/docs/installation.md) carries the tag-time-rewritten `0.5.0` download URLs, committed atomically with the version bump |
 
 ## Defaults
 
@@ -275,7 +277,7 @@ config is rendered.
 | `publish.cargo.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` in defaults.publish.cargo) |
 | `publish.aur.git_url` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`ssh://aur@aur.archlinux.org/anodizer-bin.git`) |
 | `publish.aur.name/description/license/depends` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) |
-| `publish.aur.private_key` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/v0.12.3/.github/workflows/release.yml) (`AUR_SSH_KEY` secret) |
+| `publish.aur.private_key` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/v0.16.0/.github/workflows/release.yml) (`AUR_SSH_KEY` secret) |
 | `publish.nix.repository` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`tj-smith47/nix-pkgs`) |
 | `publish.nix.formatter` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`formatter: alejandra`) |
 | `publish.nix.extra_install/post_install` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (installs man page; echoes setup hint) |
@@ -332,8 +334,8 @@ config is rendered.
 | `verify_release.assert_assets` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assert_assets: true` — every produced artifact must appear as an uploaded release asset) |
 | `verify_release.install_smoke` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `<bin> --version`). Auto-detects the Docker topology (bind-mount, or `docker cp` under a separate-filesystem dind). Also configured in [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) |
 | `verify_release.glibc_ceiling` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`glibc_ceiling: "2.36"` — fails if any `.deb` requires glibc > 2.36) |
-| `attestations.enabled` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`); the [v0.12.3 release](https://github.com/tj-smith47/anodizer/releases/tag/v0.12.3) ships the produced [`attestation-subjects.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/attestation-subjects.json) asset |
-| `attestations.mode` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mode: subjects` — writes `dist/attestation-subjects.json`; anodizer-action feeds it to `actions/attest-build-provenance`). Live: the 19 KB [`attestation-subjects.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/attestation-subjects.json) attached to v0.12.3 |
+| `attestations.enabled` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`); the [v0.16.0 release](https://github.com/tj-smith47/anodizer/releases/tag/v0.16.0) ships the produced [`attestation-subjects.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/attestation-subjects.json) asset |
+| `attestations.mode` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mode: subjects` — writes `dist/attestation-subjects.json`; anodizer-action feeds it to `actions/attest-build-provenance`). Live: the 19 KB [`attestation-subjects.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/attestation-subjects.json) attached to v0.16.0 |
 | `attestations.artifacts` | 🤝 Help wanted | Not configured — defaults to all artifact kinds when `mode: subjects` |
 | `milestones[].repo` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`tj-smith47/anodizer`) |
 | `milestones[].close` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`close: false` — wired but disabled; no milestones configured) |
@@ -369,14 +371,18 @@ config is rendered.
 | `announce.discourse` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: false`) |
 | `announce.opencollective` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: false`) |
 
-## Platform-specific (disabled)
+## Platform-specific installers (now live)
+
+These blocks were originally `skip: true`; every one except notarization has
+since been enabled and ships live release assets (see [What anodizer
+builds](../build/) for the per-format asset links).
 
 | Key | Status | Notes |
 |---|---|---|
-| `flatpaks[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no Flatpak runtime configured; `app_id: io.github.tj_smith47.Anodizer`, runtime: `org.freedesktop.Platform/24.08`) |
-| `app_bundles[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no macOS app bundle signing identity) |
-| `dmgs[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — needs app_bundle first) |
-| `pkgs[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no macOS PKG signing identity) |
-| `msis[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no WiX source `.wxs`) |
-| `nsis[].skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no NSIS script) |
-| `notarize.skip` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`skip: true` — no Apple Developer credentials) |
+| `flatpaks[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`app_id: io.github.tj_smith47.Anodizer`, runtime `org.freedesktop.Platform/24.08`, host-surface `finish_args`); live [`anodizer_0.16.0_linux_amd64.flatpak`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/anodizer_0.16.0_linux_amd64.flatpak) |
+| `app_bundles[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (unsigned `.app` assembly, shipped inside the live `.dmg`) |
+| `dmgs[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); live [`anodizer_amd64.dmg`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/anodizer_amd64.dmg) |
+| `pkgs[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); live [`anodizer_amd64.pkg`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/anodizer_amd64.pkg) |
+| `msis[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); live [`anodizer_amd64.msi`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/anodizer_amd64.msi) |
+| `nsis[]` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); live [`anodizer_x64-setup.exe`](https://github.com/tj-smith47/anodizer/releases/download/v0.16.0/anodizer_x64-setup.exe) |
+| `notarize` | 🤝 Help wanted | Implemented (rcodesign, cross-platform) but not configured — signing + notarization need an Apple Developer Program membership we don't have. Bundles ship unsigned |

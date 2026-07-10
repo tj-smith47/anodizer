@@ -52,7 +52,7 @@ homebrew_casks:
 
 | Channel | Status | Verify |
 |---|---|---|
-| **GitHub Releases** | ✅ Verified | [anodizer v0.12.3](https://github.com/tj-smith47/anodizer/releases/tag/v0.12.3) · [cfgd v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0) |
+| **GitHub Releases** | ✅ Verified | [anodizer v0.16.0](https://github.com/tj-smith47/anodizer/releases/tag/v0.16.0) · [cfgd v0.5.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.5.0) |
 | **crates.io** | ✅ Verified | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) |
 | **npm** | ✅ Verified | [npmjs.com/package/anodizer](https://www.npmjs.com/package/anodizer) — the live metapackage (`npm install anodizer`) declares all 8 per-platform binary packages as `optionalDependencies` (`@tj-smith47/anodizer-{darwin,linux,win32}-*`, each published with provenance). See [`npms:` docs](../../../docs/publish/npm/) |
 | **Snap Store** | ✅ Verified | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) · [snapcraft.io/cfgd](https://snapcraft.io/cfgd) |
@@ -61,7 +61,7 @@ homebrew_casks:
 | **GHCR container images** | ✅ Verified | [github.com/tj-smith47/cfgd/pkgs](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) (`cfgd`, `cfgd-operator`, `cfgd-csi`) |
 | **Nix flake** | ✅ Verified | [tj-smith47/nix-pkgs](https://github.com/tj-smith47/nix-pkgs) |
 | **Scoop bucket** | ✅ Verified | [`anodizer.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/anodizer.json), [`cfgd.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/cfgd.json) |
-| **Homebrew cask** | ✅ Verified | [`tj-smith47/homebrew-tap` Casks/anodizer.rb](https://github.com/tj-smith47/homebrew-tap/blob/master/Casks/anodizer.rb) (`cask "anodizer"` at `version "0.12.3"`) — the `homebrew_casks:` block writes the cask on every release (GR v2.16 supported path for plain CLI binaries). See [`homebrew_casks:` docs](../../../docs/publish/homebrew-casks/) and [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/). |
+| **Homebrew cask** | ✅ Verified | [`tj-smith47/homebrew-tap` Casks/anodizer.rb](https://github.com/tj-smith47/homebrew-tap/blob/master/Casks/anodizer.rb) (`cask "anodizer"`, version tracks the latest release) — the `homebrew_casks:` block writes the cask on every release (GR v2.16 supported path for plain CLI binaries). See [`homebrew_casks:` docs](../../../docs/publish/homebrew-casks/) and [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/). |
 | **Krew** | 🤝 Help wanted | PR flow runs in CI; cfgd plugin not yet merged into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index/tree/master/plugins) |
-| **AUR** | ✅ Verified | [aur.archlinux.org/packages/anodizer-bin](https://aur.archlinux.org/packages/anodizer-bin) (live at `anodizer-bin 0.12.3-1`; via AUR RPC `v5/info`). anodizer ships `anodizer-bin` via the `aur` (binary) publisher; cfgd ships `cfgd` via the `aur_source` (build-from-source) publisher. See [`aur:` docs](../../../docs/publish/aur/). |
+| **AUR** | ✅ Verified | [aur.archlinux.org/packages/anodizer-bin](https://aur.archlinux.org/packages/anodizer-bin) (version tracks the latest release; via AUR RPC `v5/info`). anodizer ships `anodizer-bin` via the `aur` (binary) publisher; cfgd ships `cfgd` via the `aur_source` (build-from-source) publisher. See [`aur:` docs](../../../docs/publish/aur/). |
 | **Flathub** | 🤝 Help wanted | Needs flatpak runtime + flathub config |
