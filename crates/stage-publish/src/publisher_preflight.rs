@@ -62,7 +62,11 @@ pub(crate) enum TokenAuth {
 /// accepted by the registry.
 ///
 /// * 2xx ⇒ [`TokenAuth::Valid`]
-/// * 401 / 403 ⇒ [`TokenAuth::Invalid`]
+/// * 401 / 403 whose body matches an `authenticated_denials` marker ⇒
+///   [`TokenAuth::Valid`] — the registry authenticated the credential and
+///   then refused the *endpoint* for policy reasons (cookie-only route,
+///   endpoint-scope mismatch), which still proves the token is real
+/// * any other 401 / 403 ⇒ [`TokenAuth::Invalid`]
 /// * anything else (transport error, 5xx, unexpected status) ⇒
 ///   [`TokenAuth::Indeterminate`]
 ///
@@ -70,12 +74,20 @@ pub(crate) enum TokenAuth {
 /// `Bearer <token>` for npm, the raw token for crates.io) so the probe stays
 /// agnostic to each registry's auth scheme. `url` is passed in full so a unit
 /// test can point the probe at a local responder without a network round-trip.
+///
+/// `authenticated_denials` exists because some registries authenticate the
+/// token BEFORE applying endpoint policy and say so in the error body:
+/// crates.io's auth pipeline resolves the token first and only then rejects a
+/// cookie-only or out-of-scope route with a distinct message, while an unknown
+/// token gets `authentication failed`. Callers with no such registry semantics
+/// pass `&[]` and keep the plain 401/403 ⇒ Invalid contract.
 pub(crate) fn probe_token_auth(
     url: &str,
     authorization: &str,
     label: &str,
     policy: &RetryPolicy,
     log: &anodizer_core::log::StageLogger,
+    authenticated_denials: &[&str],
 ) -> TokenAuth {
     let client = match blocking_client(PROBE_TIMEOUT) {
         Ok(c) => c,
@@ -98,7 +110,17 @@ pub(crate) fn probe_token_auth(
     match result {
         Ok(_) => TokenAuth::Valid,
         Err(err) => match http_status(&err) {
-            401 | 403 => TokenAuth::Invalid,
+            401 | 403 => {
+                // Alternate format renders the WHOLE context chain — the
+                // "{status}: {body}" message sits below the retry wrapper's
+                // outer context, so plain Display would never see the body.
+                let body = format!("{err:#}");
+                if authenticated_denials.iter().any(|m| body.contains(m)) {
+                    TokenAuth::Valid
+                } else {
+                    TokenAuth::Invalid
+                }
+            }
             0 => TokenAuth::Indeterminate(format!("network failure: {err}")),
             other => TokenAuth::Indeterminate(format!("unexpected HTTP {other}")),
         },
@@ -637,7 +659,8 @@ mod tests {
                 "Bearer t",
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
+                &[],
             ),
             TokenAuth::Valid
         ));
@@ -655,7 +678,8 @@ mod tests {
                 "Bearer bad",
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
+                &[],
             ),
             TokenAuth::Invalid
         ));
@@ -673,7 +697,54 @@ mod tests {
                 "raw-token",
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
+                &[],
+            ),
+            TokenAuth::Invalid
+        ));
+    }
+
+    #[test]
+    fn token_auth_valid_on_403_matching_authenticated_denial() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http(
+                "403 Forbidden",
+                r#"{"errors":[{"detail":"this action can only be performed on the crates.io website"}]}"#,
+            )
+            .into_boxed_str(),
+        )]);
+        let url = format!("http://{addr}/me");
+        assert!(matches!(
+            probe_token_auth(
+                &url,
+                "raw-token",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger(),
+                &["this action can only be performed on the crates.io website"],
+            ),
+            TokenAuth::Valid
+        ));
+    }
+
+    #[test]
+    fn token_auth_invalid_on_403_when_body_matches_no_denial_marker() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http(
+                "403 Forbidden",
+                r#"{"errors":[{"detail":"authentication failed"}]}"#,
+            )
+            .into_boxed_str(),
+        )]);
+        let url = format!("http://{addr}/me");
+        assert!(matches!(
+            probe_token_auth(
+                &url,
+                "raw-token",
+                "test",
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger(),
+                &["this action can only be performed on the crates.io website"],
             ),
             TokenAuth::Invalid
         ));
@@ -692,7 +763,8 @@ mod tests {
                 "Bearer t",
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
+                &[],
             ),
             TokenAuth::Indeterminate(_)
         ));
@@ -740,7 +812,7 @@ mod tests {
                 Some("tok"),
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Pass
         ));
@@ -764,7 +836,7 @@ mod tests {
                 &fast_retry(),
                 false,
                 &env,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Pass
         ));
@@ -809,7 +881,7 @@ mod tests {
                 None,
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -849,7 +921,7 @@ mod tests {
                 Some("tok"),
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Blocker(_)
         ));
@@ -903,7 +975,7 @@ mod tests {
                 Some("tok"),
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -923,7 +995,7 @@ mod tests {
                 Some("tok"),
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -966,7 +1038,7 @@ mod tests {
                 Some("tok"),
                 &fast_retry(),
                 false,
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -986,7 +1058,7 @@ mod tests {
                 &ProbeAuth::Token("t".into()),
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::Reachable
         ));
@@ -1010,7 +1082,7 @@ mod tests {
                 },
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::AuthRejected
         ));
@@ -1031,7 +1103,7 @@ mod tests {
                 &ProbeAuth::None,
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::NotFound
         ));
@@ -1052,7 +1124,7 @@ mod tests {
                 &ProbeAuth::None,
                 "test",
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::Unreachable(_)
         ));
@@ -1098,7 +1170,7 @@ mod tests {
                 FailSeverity::Warning,
                 false,
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -1206,7 +1278,7 @@ mod tests {
                 FailSeverity::Warning,
                 true,
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
         ));
@@ -1230,7 +1302,7 @@ mod tests {
                 FailSeverity::Warning,
                 false,
                 &fast_retry(),
-                anodizer_core::test_helpers::test_logger()
+                anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Pass
         ));

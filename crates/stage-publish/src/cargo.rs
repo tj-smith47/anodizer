@@ -179,6 +179,25 @@ pub(crate) fn sparse_index_url(crate_name: &str) -> String {
     format!("https://index.crates.io/{}", sparse_index_path(crate_name))
 }
 
+/// 403 bodies from crates.io that mean the token AUTHENTICATED but the
+/// endpoint refused it for policy reasons — the auth pipeline resolves the
+/// token before the `allow_token` / endpoint-scope checks, so these messages
+/// are only reachable with a real, unexpired token. `/api/v1/me` became
+/// cookie-only (first message); endpoint-scoped tokens hit the second. An
+/// invalid token instead gets `authentication failed`, which stays a Blocker.
+///
+/// Accepting scope denials means a token scoped too narrowly to publish (or
+/// scoped to a subset of workspace crates) passes this probe and fails at
+/// `cargo publish` — the publish API rejects before anything lands, so the
+/// failure is orderly, but per-crate-scoped tokens in a multi-crate workspace
+/// can still land a subset before hitting an out-of-scope crate. That
+/// trade-off is inherent to supporting least-privilege scoped tokens: the
+/// probe cannot enumerate a token's scopes from any token-accessible endpoint.
+const CRATES_IO_AUTHENTICATED_DENIALS: &[&str] = &[
+    "this action can only be performed on the crates.io website",
+    "this token does not have the required permissions to perform this action",
+];
+
 /// The crates.io web-API base for the token-validity probe (`/api/v1/me`).
 ///
 /// Mirrors the sparse-index base override in [`published_on_crates_io`]:
@@ -3053,6 +3072,14 @@ impl anodizer_core::Publisher for CargoPublisher {
         // already caught by the state-query checker + `cargo publish
         // --dry-run`. `requirements()` gates token PRESENCE; this proves the
         // present token is accepted before the irreversible first publish.
+        //
+        // crates.io resolves the Authorization token BEFORE applying endpoint
+        // policy, so `/api/v1/me` still authenticates a token it then refuses
+        // to serve: an unknown/expired token gets `authentication failed`,
+        // while a real token on this now cookie-only route (or one restricted
+        // by endpoint scopes) gets a distinct policy-denial body. Those
+        // denials therefore PROVE validity and must not block the release as a Blocker —
+        // least-privilege scoped tokens are the recommended shape for CI.
         // Only probe crates.io when an ACTIVE cargo publisher targets the
         // default registry. An entry with `registry:`/`index:` set publishes
         // to a private registry whose credential is `CARGO_REGISTRIES_<NAME>_TOKEN`,
@@ -3094,6 +3121,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 "preflight: crates.io token",
                 &policy,
                 &ctx.logger("preflight"),
+                CRATES_IO_AUTHENTICATED_DENIALS,
             ) {
                 crate::publisher_preflight::TokenAuth::Valid => anodizer_core::PreflightCheck::Pass,
                 crate::publisher_preflight::TokenAuth::Invalid => {
@@ -3275,6 +3303,70 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    #[test]
+    fn cargo_preflight_accepts_cookie_only_and_scope_denials_from_crates_io() {
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+        use anodizer_core::test_helpers::env::{EnvGuard, env_mutex};
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+        // crates.io authenticates the token before endpoint policy, so a 403
+        // whose body is the cookie-only or endpoint-scope denial proves the
+        // token is real and MUST NOT block the release as a Blocker. `authentication
+        // failed` (unknown/expired token) stays a Blocker.
+        let bodies: &[(&str, bool)] = &[
+            (
+                r#"{"errors":[{"detail":"this action can only be performed on the crates.io website"}]}"#,
+                true,
+            ),
+            (
+                r#"{"errors":[{"detail":"this token does not have the required permissions to perform this action"}]}"#,
+                true,
+            ),
+            (r#"{"errors":[{"detail":"authentication failed"}]}"#, false),
+        ];
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _harness = EnvGuard::set("ANODIZE_TEST_HARNESS", "1");
+        for (body, expect_pass) in bodies {
+            let resp: &'static str = Box::leak(
+                format!(
+                    "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .into_boxed_str(),
+            );
+            let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+            let _base = EnvGuard::set(
+                "ANODIZER_TEST_CRATES_IO_API_BASE",
+                &format!("http://{addr}"),
+            );
+            let ctx = TestContextBuilder::new()
+                .project_name("mytool")
+                .crates(vec![CrateConfig {
+                    name: "mytool".to_string(),
+                    publish: Some(PublishConfig {
+                        cargo: Some(CargoPublishConfig::default()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }])
+                .env("CARGO_REGISTRY_TOKEN", "cio-test-token")
+                .build();
+            let check = CargoPublisher::new().preflight(&ctx).expect("preflight ok");
+            if *expect_pass {
+                assert!(
+                    matches!(check, PreflightCheck::Pass),
+                    "body {body}: {check:?}"
+                );
+            } else {
+                assert!(
+                    matches!(&check, PreflightCheck::Blocker(m) if m.contains("token invalid")),
+                    "body {body}: {check:?}"
+                );
+            }
+        }
     }
 
     #[test]

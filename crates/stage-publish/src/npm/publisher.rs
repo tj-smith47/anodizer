@@ -389,6 +389,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                     "preflight: npm whoami",
                     &policy,
                     &ctx.logger("preflight"),
+                    &[],
                 ) {
                     TokenAuth::Valid => PreflightCheck::Pass,
                     TokenAuth::Invalid => {
