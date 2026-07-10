@@ -168,7 +168,7 @@ as live release assets (amd64 + arm64).
 | `docker_digest.name_template` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`docker_digest.name_template: "cfgd_{{ .Tag }}.digest"`) |
 | `dockers_v2[].use: buildx` | ✅ Verified | [`crates/stage-docker/src/detect.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-docker/src/detect.rs) (buildx is the default backend) |
 | `dockers_v2[].use: podman` / `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Linux-only backend selectors. No live release exercises the non-buildx path |
-| `docker_hub.description` | 🤝 Help wanted | We use ghcr; needs a Docker Hub-anchored release |
+| `docker_hub.description` | ✅ Verified | Live at [hub.docker.com/r/tsmthtj/anodizer](https://hub.docker.com/r/tsmthtj/anodizer) — the `dockerhub:` publisher syncs `description` + `full_description` (from `README.md`) each release; at v0.15.5 ([run 28882554907](https://github.com/tj-smith47/anodizer/actions/runs/28882554907)) it read the remote repo and logged `skipped dockerhub PATCH … description / full_description match remote` (summary: `dockerhub … succeeded`) |
 
 ## Signing
 
