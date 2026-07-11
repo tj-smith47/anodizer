@@ -1030,6 +1030,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
                 github: Some(GitHubConfig {
                     owner: "tj-smith47".to_string(),
                     name: "anodizer".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

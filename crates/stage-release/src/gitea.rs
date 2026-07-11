@@ -2319,6 +2319,7 @@ mod tests {
             gitea: Some(ScmRepoConfig {
                 owner: "o".to_string(),
                 name: "r".to_string(),
+                token: None,
             }),
             mode: Some("replace".to_string()),
             ..Default::default()

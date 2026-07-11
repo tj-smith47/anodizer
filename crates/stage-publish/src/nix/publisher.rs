@@ -62,10 +62,23 @@ fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
             continue;
         };
         if let Some((owner, name)) = crate::util::resolve_repo_owner_name(nc.repository.as_ref()) {
+            // Mirror the publish path's branch resolution (including the
+            // versioned PR-branch default) so the recorded rollback branch
+            // matches the branch actually pushed.
+            let pkg_raw = nc.name.as_deref().unwrap_or(&c.name);
+            let pkg_name = ctx
+                .render_template(pkg_raw)
+                .unwrap_or_else(|_| pkg_raw.to_string());
+            let version = crate::util::crate_scoped_version(ctx, c);
             out.push(NixTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch(ctx, nc.repository.as_ref()),
+                branch: crate::util::resolve_branch_or_versioned(
+                    ctx,
+                    nc.repository.as_ref(),
+                    &pkg_name,
+                    &version,
+                ),
                 token_env_var: Some("NIX_PKGS_TOKEN".to_string()),
             });
         }

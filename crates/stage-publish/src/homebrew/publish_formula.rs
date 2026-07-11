@@ -1007,7 +1007,12 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     let cask = maybe_write_cask_into_tap(ctx, &hb_cfg_owned, crate_name, tap.repo_path, log)?;
 
-    let branch = crate::util::resolve_branch(ctx, hb_cfg_owned.repository.as_ref());
+    let branch = crate::util::resolve_branch_or_versioned(
+        ctx,
+        hb_cfg_owned.repository.as_ref(),
+        formula_name,
+        &version,
+    );
 
     let outcome = commit_files_to_tap(
         ctx,
@@ -1185,6 +1190,7 @@ mod tests {
                     github: Some(anodizer_core::config::ScmRepoConfig {
                         owner: "myorg".to_string(),
                         name: "mytool".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),

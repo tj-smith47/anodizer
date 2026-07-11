@@ -52,6 +52,7 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 |-------|------|---------|-------------|
 | `github.owner` | string | auto-detected | GitHub owner/org |
 | `github.name` | string | auto-detected | Repository name |
+| `github.token` | string | pipeline token | Token override for this release repository (templates allowed). Useful when the release repo needs a different token than the build repo — e.g. releasing to another organization. |
 | `draft` | bool | `false` | Create as draft release |
 | `prerelease` | string/bool | `auto` | Mark as prerelease: `auto` (detect from version), `true`, `false` |
 | `make_latest` | string/bool | `auto` | Mark as latest: `auto`, `true`, `false` |
@@ -71,6 +72,7 @@ release:
   github:
     owner: myorg              # auto-detected from git remote if omitted
     name: myapp
+    token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"  # optional; overrides the default token
   draft: false
   prerelease: auto            # auto | true | false
   make_latest: auto           # auto | true | false

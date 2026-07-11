@@ -68,7 +68,7 @@ crates:
           owner: myorg              # required
           name: scoop-bucket        # required
           token: ""                 # falls back to GITHUB_TOKEN
-          branch: ""                # default: repo default branch
+          branch: ""                # default: repo default branch (versioned <manifest>-<version> when pull_request.enabled)
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
         directory: bucket                # optional; default "bucket" ("" targets the repo root)

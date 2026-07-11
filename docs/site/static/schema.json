@@ -9659,7 +9659,7 @@
           ]
         },
         "formats": {
-          "description": "Package formats to produce: deb, rpm, apk, archlinux (at least one required).",
+          "description": "Package formats to produce: deb, rpm, apk, archlinux, termux.deb, ipk, msix (at least one required).",
           "default": [],
           "type": "array",
           "items": {
@@ -9747,6 +9747,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "msix": {
+          "description": "MSIX-specific configuration (Windows app packages).\n\nOnly consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.\n\n```yaml msix: publisher: \"CN=My Company, O=My Company, C=US\" properties: logo: assets/logo.png applications: - id: MyApp executable: myapp.exe ```",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "mtime": {
@@ -10313,6 +10325,340 @@
         },
         "header": {
           "description": "Installation directory for C header files.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixApplication": {
+      "description": "An application entry in an MSIX package.",
+      "type": "object",
+      "properties": {
+        "entry_point": {
+          "description": "Application entry point (default: `Windows.FullTrustApplication`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executable": {
+          "description": "Executable path inside the package (e.g. `myapp.exe`). Required by nfpm.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Application identifier (e.g. `\"MyApp\"`). Required by nfpm.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "visual_elements": {
+          "description": "Visual presentation settings for this application.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixVisualElements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixCapabilities": {
+      "description": "Capability declarations for MSIX packages.",
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "description": "General capabilities (e.g. `[\"internetClient\"]`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "device_capabilities": {
+          "description": "Device capabilities (e.g. `[\"microphone\"]`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "restricted": {
+          "description": "Restricted capabilities (e.g. `[\"runFullTrust\"]` — added automatically when an application uses the full-trust entry point).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixConfig": {
+      "description": "MSIX (Windows app package) specific configuration.\n\nField names mirror nfpm's `msix:` YAML block. nfpm validates that `publisher`, `properties.logo`, and at least one application (with `id` and `executable`) are set; the remaining fields have derived defaults (e.g. `entry_point` defaults to `Windows.FullTrustApplication`, display names default to the package name, and `dependencies` defaults to a `Windows.Desktop` 10.0.17763.0–10.0.22621.0 target device family).",
+      "type": "object",
+      "properties": {
+        "applications": {
+          "description": "Applications contained in the package (at least one required by nfpm, each with `id` and `executable`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/NfpmMsixApplication"
+          }
+        },
+        "arch": {
+          "description": "Target architecture override in MSIX nomenclature (`x64`, `x86`, `arm64`, `arm`, `neutral`). When unset, derived from the build target (e.g. `x86_64` → `x64`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "description": "Capability declarations for the package.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dependencies": {
+          "description": "Target device family dependencies. Defaults to `Windows.Desktop` min `10.0.17763.0` / max tested `10.0.22621.0`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixDependencies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identity": {
+          "description": "Package identity fields.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "properties": {
+          "description": "Package display properties.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixProperties"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publisher": {
+          "description": "Publisher identity, matching the signing certificate subject (e.g. `\"CN=My Company, O=My Company, C=US\"`). Required by nfpm. Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signature": {
+          "description": "MSIX signing configuration.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmMsixSignature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixDependencies": {
+      "description": "Dependency information for MSIX packages.",
+      "type": "object",
+      "properties": {
+        "target_device_families": {
+          "description": "Target device families the package supports.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/NfpmMsixTargetDeviceFamily"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixIdentity": {
+      "description": "Identity fields for MSIX packages.",
+      "type": "object",
+      "properties": {
+        "resource_id": {
+          "description": "Resource identifier for the package identity (e.g. `\"en-us\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixProperties": {
+      "description": "Display properties for MSIX packages.",
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "description": "Package display name (defaults to the package name). Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logo": {
+          "description": "Path to the package logo image (e.g. `assets/logo.png`). Required by nfpm. Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publisher_display_name": {
+          "description": "Publisher display name (defaults to the package name). Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixSignature": {
+      "description": "Signing configuration for MSIX packages.\n\nThe passphrase is NOT a config field: nfpm reads it from the `NFPM_MSIX_PASSPHRASE` environment variable, which anodizer resolves via the same `NFPM_{ID}_MSIX_PASSPHRASE` → `NFPM_{ID}_PASSPHRASE` → `NFPM_PASSPHRASE` fallback the other signature blocks use and forwards to the nfpm subprocess.",
+      "type": "object",
+      "properties": {
+        "pfx_file": {
+          "description": "Path to the PFX certificate file used to sign the package. Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixTargetDeviceFamily": {
+      "description": "A target device family for an MSIX package.",
+      "type": "object",
+      "properties": {
+        "max_version_tested": {
+          "description": "Maximum tested OS version (e.g. `\"10.0.22621.0\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "min_version": {
+          "description": "Minimum OS version (e.g. `\"10.0.17763.0\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Device family name (e.g. `\"Windows.Desktop\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NfpmMsixVisualElements": {
+      "description": "Visual presentation settings for an MSIX application.",
+      "type": "object",
+      "properties": {
+        "background_color": {
+          "description": "Tile background color (default: `transparent`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Application description (defaults to the package description).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "description": "Application display name (defaults to the package name).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "square150x150_logo": {
+          "description": "Path to the 150x150 tile logo (defaults to `properties.logo`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "square44x44_logo": {
+          "description": "Path to the 44x44 tile logo (defaults to `properties.logo`).",
           "default": null,
           "type": [
             "string",
@@ -12897,6 +13243,13 @@
         "owner": {
           "description": "Repository owner (user or organization).",
           "type": "string"
+        },
+        "token": {
+          "description": "Auth token override for this repository, instead of the default one. Useful when the release repository requires a different token than the one used to build from — for instance, when publishing to a repository in another organization. Supports templates (environment variables). Unset falls back to the pipeline token.\n\n```yaml release: github: owner: my-org name: my-repo token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\" ```",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -15584,6 +15937,14 @@
         },
         "copyright_url": {
           "description": "Copyright URL.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_locale": {
+          "description": "Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.\n\n```yaml winget: default_locale: \"pt-BR\" ```",
           "default": null,
           "type": [
             "string",

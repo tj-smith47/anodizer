@@ -133,6 +133,7 @@ fn multi_publisher_crate(winget_publisher_url: &str) -> CrateConfig {
             github: Some(ScmRepoConfig {
                 owner: "acme".to_string(),
                 name: "widget".to_string(),
+                token: None,
             }),
             ..Default::default()
         }),

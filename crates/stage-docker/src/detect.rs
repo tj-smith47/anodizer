@@ -14,7 +14,7 @@ use anodizer_core::log::StageLogger;
 /// `timeout`) fast-fail — waiting through a 10× exponential backoff when the
 /// registry is unreachable just delays the inevitable error for the user.
 ///
-/// Used by the legacy (V1) docker build path. V2 uses [`is_retriable_error_v2`].
+/// Used by the manifest create/push path. Builds use [`is_retriable_build`].
 pub fn is_retriable_error(error_msg: &str) -> bool {
     if error_msg == "EOF" || error_msg.ends_with(": EOF") || error_msg.contains("\nEOF\n") {
         return true;
@@ -30,17 +30,70 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
     retriable_patterns.iter().any(|p| error_msg.contains(p))
 }
 
-/// V2-specific retry predicate. A narrow predicate matching
-/// `isRetriableManifestCreate`: only retries when
-/// the output contains `"manifest verification failed for digest"`. All
-/// other errors — network timeouts, build failures, registry 5xx — are
-/// considered fatal under V2, because V2 runs `buildx build --push` as a
-/// single atomic operation and its own internal retry already covers the
-/// lower-level transient cases.
-pub fn is_retriable_error_v2(error_msg: &str) -> bool {
-    error_msg
-        .to_lowercase()
-        .contains("manifest verification failed for digest")
+/// Lower-cased substrings that indicate a transient network failure.
+///
+/// Docker builds and pushes talk to registries and package mirrors, so
+/// network-level flakiness (resets, refused connections, timeouts) is worth
+/// retrying regardless of which subcommand produced it.
+const NETWORK_ERROR_PATTERNS: &[&str] = &[
+    "connection reset",
+    "network is unreachable",
+    "connection closed",
+    "connection refused",
+    "tls handshake timeout",
+    "i/o timeout",
+    "broken pipe",
+    "timeout awaiting response headers",
+    "context deadline exceeded",
+];
+
+/// Lower-cased substrings that, when found in a docker build output,
+/// indicate a transient failure worth retrying.
+///
+/// Besides genuine network errors, docker builds routinely fail for
+/// transient reasons a retry can recover from: pulling base images may hit
+/// registry rate limits or 5xx responses, and installing packages from other
+/// sources (apt, apk, ...) inside `RUN` steps may hit flaky mirrors or DNS
+/// hiccups.
+const RETRIABLE_BUILD_PATTERNS: &[&str] = &[
+    // base image pulls / registry
+    "manifest verification failed for digest",
+    "toomanyrequests",
+    "too many requests",
+    "failed to do request",
+    "error pulling image",
+    "internal server error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "gateway time-out",
+    "unexpected eof",
+    // dns / name resolution
+    "temporary failure in name resolution",
+    "temporary failure resolving",
+    "could not resolve",
+    // package managers (apt, apk, yum, dnf, ...)
+    "failed to fetch",
+    "connection timed out",
+    "could not connect to",
+    "unable to connect to",
+    "hash sum mismatch",
+    "temporary error (try again later)",
+];
+
+/// Build-scoped retry predicate for the V2 (`buildx build --push` / podman)
+/// path: retries transient network errors plus a case-insensitive substring
+/// list covering registry rate limits and 5xx responses, DNS hiccups, and
+/// flaky package-manager mirrors inside `RUN` steps.
+pub fn is_retriable_build(error_msg: &str) -> bool {
+    if error_msg == "EOF" || error_msg.ends_with(": EOF") || error_msg.contains("\nEOF\n") {
+        return true;
+    }
+    let lower = error_msg.to_lowercase();
+    NETWORK_ERROR_PATTERNS
+        .iter()
+        .chain(RETRIABLE_BUILD_PATTERNS.iter())
+        .any(|p| lower.contains(p))
 }
 
 // ---------------------------------------------------------------------------

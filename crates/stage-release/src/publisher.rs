@@ -236,7 +236,7 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
                 continue;
             }
         }
-        let Some(ScmRepoConfig { owner, name }) =
+        let Some(ScmRepoConfig { owner, name, .. }) =
             resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)?
         else {
             continue;
@@ -336,7 +336,7 @@ fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
                 continue;
             }
         }
-        if let Ok(Some(ScmRepoConfig { owner, name })) =
+        if let Ok(Some(ScmRepoConfig { owner, name, .. })) =
             resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)
         {
             out.push((owner, name));
@@ -816,6 +816,7 @@ mod publisher_tests {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
                     name: "widget".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

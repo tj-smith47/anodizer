@@ -85,7 +85,20 @@ impl Stage for super::ReleaseStage {
                 continue;
             }
             validate_release_flags(release_cfg, &crate_cfg.name)?;
-            release_one_crate(ctx, &log, &rt, &token, crate_cfg, release_cfg, dry_run)?;
+            // A `token` set on the release repo config overrides the pipeline
+            // token for this crate's release API calls (cross-releasing, e.g.
+            // code private / release public).
+            let crate_token =
+                crate::resolve_release_token(ctx, release_cfg).or_else(|| token.clone());
+            release_one_crate(
+                ctx,
+                &log,
+                &rt,
+                &crate_token,
+                crate_cfg,
+                release_cfg,
+                dry_run,
+            )?;
         }
 
         Ok(())
@@ -1095,6 +1108,7 @@ mod tests {
             github: Some(anodizer_core::config::ScmRepoConfig {
                 owner: "tj-smith47".to_string(),
                 name: "anodizer".to_string(),
+                token: None,
             }),
             ..Default::default()
         };
@@ -1120,6 +1134,7 @@ mod tests {
             github: Some(anodizer_core::config::ScmRepoConfig {
                 owner: "tj-smith47".to_string(),
                 name: "anodizer".to_string(),
+                token: None,
             }),
             ..Default::default()
         };

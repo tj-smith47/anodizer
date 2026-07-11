@@ -1139,7 +1139,12 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     }
     let commit_file_refs: Vec<&str> = commit_files.iter().map(String::as_str).collect();
     let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref(), log)?;
-    let branch = util::resolve_branch(ctx, scoop_cfg.repository.as_ref());
+    let branch = util::resolve_branch_or_versioned(
+        ctx,
+        scoop_cfg.repository.as_ref(),
+        manifest_name,
+        &version,
+    );
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         &commit_file_refs,
@@ -1268,10 +1273,23 @@ fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
             continue;
         };
         if let Some((owner, name)) = util::resolve_repo_owner_name(sc.repository.as_ref()) {
+            // Mirror the publish path's branch resolution (including the
+            // versioned PR-branch default) so the recorded rollback branch
+            // matches the branch actually pushed.
+            let manifest_raw = sc.name.as_deref().unwrap_or(&c.name);
+            let manifest_name = ctx
+                .render_template(manifest_raw)
+                .unwrap_or_else(|_| manifest_raw.to_string());
+            let version = util::crate_scoped_version(ctx, c);
             out.push(ScoopTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: util::resolve_branch(ctx, sc.repository.as_ref()),
+                branch: util::resolve_branch_or_versioned(
+                    ctx,
+                    sc.repository.as_ref(),
+                    &manifest_name,
+                    &version,
+                ),
                 token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
             });
         }
@@ -3082,6 +3100,7 @@ mod publish_flow_tests {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
                     name: "widget".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

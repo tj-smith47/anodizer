@@ -1177,6 +1177,7 @@ mod login_enricher_gating_tests {
                     github: Some(ScmRepoConfig {
                         owner: owner.to_string(),
                         name: name.to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),

@@ -88,6 +88,7 @@ fn release_crate_with_conflicting_draft_flags() -> CrateConfig {
         github: Some(anodizer_core::config::ScmRepoConfig {
             owner: "o".to_string(),
             name: "r".to_string(),
+            token: None,
         }),
         ..Default::default()
     });
@@ -1010,6 +1011,7 @@ fn test_release_missing_token_errors() {
                 github: Some(GitHubConfig {
                     owner: "testowner".to_string(),
                     name: "testrepo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -1510,6 +1512,7 @@ fn test_release_missing_token_error_message_is_actionable() {
                 github: Some(GitHubConfig {
                     owner: "testowner".to_string(),
                     name: "testrepo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3172,6 +3175,7 @@ fn test_dry_run_gitlab_token_type_shows_gitlab_release() {
                 gitlab: Some(ScmRepoConfig {
                     owner: "mygroup".to_string(),
                     name: "myproject".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3201,6 +3205,7 @@ fn test_dry_run_gitlab_with_custom_urls() {
                 gitlab: Some(ScmRepoConfig {
                     owner: "corp".to_string(),
                     name: "app".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3263,6 +3268,7 @@ fn test_gitlab_backend_falls_back_to_github_config() {
                 github: Some(ScmRepoConfig {
                     owner: "fallback-owner".to_string(),
                     name: "fallback-repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3294,6 +3300,7 @@ fn test_gitea_dry_run_with_gitea_config() {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3349,6 +3356,7 @@ fn test_gitea_backend_falls_back_to_github_config() {
                 github: Some(ScmRepoConfig {
                     owner: "fallback-owner".to_string(),
                     name: "fallback-repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -3378,6 +3386,7 @@ fn test_gitea_missing_token_errors() {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -4053,6 +4062,7 @@ fn test_snapshot_without_dry_run_does_not_reach_live_backend() {
                 github: Some(ScmRepoConfig {
                     owner: "octocat".to_string(),
                     name: "hello".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -4309,6 +4319,7 @@ fn test_release_tag_override_drifts_from_pushed_tag_does_not_fail() {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -4379,6 +4390,7 @@ fn test_ids_filter_zero_match_warns_and_proceeds() {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -4471,6 +4483,7 @@ fn test_gitea_dry_run_derives_download_url_from_api_url() {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -4998,6 +5011,7 @@ fn test_release_tag_override_matches_pushed_tag_no_drift() {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5040,6 +5054,7 @@ fn test_selected_crates_excludes_other_release_configured_crate() {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
                         name: "keep-repo".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -5053,6 +5068,7 @@ fn test_selected_crates_excludes_other_release_configured_crate() {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
                         name: "drop-repo".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -5160,6 +5176,7 @@ fn test_gitlab_missing_token_errors() {
                 gitlab: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5196,6 +5213,7 @@ fn test_gitea_dry_run_default_urls() {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5388,6 +5406,7 @@ fn test_dry_run_gitea_skip_tls_verify_true_logs() {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5419,6 +5438,7 @@ fn test_dry_run_gitlab_use_job_token_logs() {
                 gitlab: Some(ScmRepoConfig {
                     owner: "g".to_string(),
                     name: "p".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5456,6 +5476,7 @@ fn test_release_tag_override_with_empty_pushed_tag_no_warn() {
                 github: Some(ScmRepoConfig {
                     owner: "o".to_string(),
                     name: "r".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5495,6 +5516,7 @@ fn test_release_stage_multiple_crates_processed_independently() {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
                         name: "c1".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -5508,6 +5530,7 @@ fn test_release_stage_multiple_crates_processed_independently() {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
                         name: "c2".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -5694,6 +5717,7 @@ fn test_dry_run_with_make_latest_template_string() {
                 github: Some(ScmRepoConfig {
                     owner: "o".to_string(),
                     name: "r".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5720,6 +5744,7 @@ fn test_dry_run_target_commitish_template_renders() {
                 github: Some(ScmRepoConfig {
                     owner: "o".to_string(),
                     name: "r".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5770,6 +5795,7 @@ fn test_dry_run_gitlab_skip_tls_verify_and_use_package_registry_logs() {
                 gitlab: Some(ScmRepoConfig {
                     owner: "g".to_string(),
                     name: "p".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5839,6 +5865,7 @@ fn test_dry_run_with_artifacts_present_lists_uploads() {
                 github: Some(ScmRepoConfig {
                     owner: "o".to_string(),
                     name: "r".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -5930,4 +5957,62 @@ fn compose_release_url_github_always_includes_owner_segment() {
         url,
         "https://github.com/tj-smith47/anodizer/releases/tag/v1.0.0"
     );
+}
+
+// ---------------------------------------------------------------------------
+// resolve_release_token: per-release-repo token override
+// ---------------------------------------------------------------------------
+
+fn release_cfg_with_token(token: Option<&str>) -> ReleaseConfig {
+    ReleaseConfig {
+        github: Some(anodizer_core::config::ScmRepoConfig {
+            owner: "octocat".to_string(),
+            name: "hello".to_string(),
+            token: token.map(str::to_string),
+        }),
+        ..Default::default()
+    }
+}
+
+/// A plain `token` set on the release repo wins over the pipeline token.
+#[test]
+fn resolve_release_token_set_is_used() {
+    let ctx = TestContextBuilder::new().build();
+    let cfg = release_cfg_with_token(Some("ghp_override"));
+    assert_eq!(
+        crate::resolve_release_token(&ctx, &cfg).as_deref(),
+        Some("ghp_override")
+    );
+}
+
+/// A templated `token` (`{{ .Env.RELEASE_TOKEN }}`) is rendered to the env
+/// value before use — the literal template string must never become the
+/// bearer credential.
+#[test]
+fn resolve_release_token_renders_template() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.template_vars_mut()
+        .set_env("RELEASE_TOKEN", "ghp_from_env");
+    let cfg = release_cfg_with_token(Some("{{ .Env.RELEASE_TOKEN }}"));
+    assert_eq!(
+        crate::resolve_release_token(&ctx, &cfg).as_deref(),
+        Some("ghp_from_env")
+    );
+}
+
+/// No `token` on the repo config yields `None` so callers fall back to the
+/// pipeline token.
+#[test]
+fn resolve_release_token_unset_falls_back() {
+    let ctx = TestContextBuilder::new().build();
+    let cfg = release_cfg_with_token(None);
+    assert_eq!(crate::resolve_release_token(&ctx, &cfg), None);
+}
+
+/// An empty `token` behaves like unset (falls back to the pipeline token).
+#[test]
+fn resolve_release_token_empty_falls_back() {
+    let ctx = TestContextBuilder::new().build();
+    let cfg = release_cfg_with_token(Some(""));
+    assert_eq!(crate::resolve_release_token(&ctx, &cfg), None);
 }

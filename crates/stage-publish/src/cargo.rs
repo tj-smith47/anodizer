@@ -9163,6 +9163,7 @@ mod binstall_on_publish_tests {
                 github: Some(GitHubConfig {
                     owner: "tj-smith47".to_string(),
                     name: repo.to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

@@ -39,6 +39,17 @@ pub struct WingetConfig {
     pub license_url: Option<String>,
     /// Short description (required, max 256 chars).
     pub short_description: Option<String>,
+    /// Locale stamped into the WinGet manifests: the version manifest's
+    /// `DefaultLocale`, the installer manifest's `InstallerLocale`, the
+    /// locale manifest's `PackageLocale`, and the locale manifest's
+    /// `.locale.<locale>.yaml` file name. Supports templates.
+    /// Default: `en-US`.
+    ///
+    /// ```yaml
+    /// winget:
+    ///   default_locale: "pt-BR"
+    /// ```
+    pub default_locale: Option<String>,
     /// Full package description displayed in the WinGet gallery.
     pub description: Option<String>,
     /// Project homepage URL.

@@ -2555,6 +2555,7 @@ mod tests {
                 github: Some(anodizer_core::config::ScmRepoConfig {
                     owner: "acme".to_string(),
                     name: "widget".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

@@ -1547,6 +1547,7 @@ fn github_release(owner: &str, repo: &str) -> anodizer_core::config::ReleaseConf
         github: Some(ScmRepoConfig {
             owner: owner.to_string(),
             name: repo.to_string(),
+            token: None,
         }),
         ..Default::default()
     }

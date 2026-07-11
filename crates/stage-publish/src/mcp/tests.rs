@@ -502,6 +502,7 @@ fn cfg_with_release(host: &str, owner: &str, name: &str) -> Config {
     let repo = Some(ScmRepoConfig {
         owner: owner.to_string(),
         name: name.to_string(),
+        token: None,
     });
     let release = match host {
         "github" => ReleaseConfig {

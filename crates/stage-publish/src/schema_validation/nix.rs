@@ -452,6 +452,7 @@ mod tests {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
                     name: "widget".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

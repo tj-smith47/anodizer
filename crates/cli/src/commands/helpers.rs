@@ -1288,6 +1288,7 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
                 release.github = Some(GitHubConfig {
                     owner: slug.owner().to_string(),
                     name: slug.name().to_string(),
+                    token: None,
                 });
             } else {
                 log.warn("could not auto-detect GitHub repo from git remote");

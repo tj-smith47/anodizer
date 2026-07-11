@@ -172,6 +172,9 @@ pub(crate) struct WingetManifestParams<'a> {
     pub(crate) moniker: Option<&'a str>,
     /// `UpgradeBehavior` for every installer entry (default resolved upstream).
     pub(crate) upgrade_behavior: &'a str,
+    /// Manifest locale (`DefaultLocale` / `InstallerLocale` / `PackageLocale`,
+    /// default resolved upstream).
+    pub(crate) default_locale: &'a str,
     /// Documentation links (`Documentations[]`). Empty omits the key.
     pub(crate) documentations: &'a [anodizer_core::config::WingetDocumentation],
 }
@@ -394,7 +397,7 @@ pub(crate) fn generate_manifests(
     let version = VersionManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
-        default_locale: "en-US".to_string(),
+        default_locale: params.default_locale.to_string(),
         manifest_type: "version".to_string(),
         manifest_version: "1.12.0".to_string(),
     };
@@ -421,7 +424,7 @@ pub(crate) fn generate_manifests(
     let installer = InstallerManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
-        installer_locale: "en-US".to_string(),
+        installer_locale: params.default_locale.to_string(),
         installer_type: installer_type.to_string(),
         commands: top_commands,
         product_code: params.product_code.map(|s| s.to_string()),
@@ -484,7 +487,7 @@ pub(crate) fn generate_manifests(
     let locale = LocaleManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
-        package_locale: "en-US".to_string(),
+        package_locale: params.default_locale.to_string(),
         publisher: params.publisher.to_string(),
         publisher_url: params
             .publisher_url
@@ -1304,11 +1307,13 @@ fn render_winget_fields(
 
 /// Compute the on-disk manifest directory inside the cloned winget repo
 /// and write the three manifest files. Returns the directory for logging.
+#[allow(clippy::too_many_arguments)]
 fn write_winget_manifests_to_disk(
     repo_path: &std::path::Path,
     package_id: &str,
     version: &str,
     path_rendered: Option<&str>,
+    default_locale: &str,
     ver_yaml: &str,
     inst_yaml: &str,
     locale_yaml: &str,
@@ -1332,7 +1337,7 @@ fn write_winget_manifests_to_disk(
 
     let ver_path = manifest_dir.join(format!("{}.yaml", package_id));
     let inst_path = manifest_dir.join(format!("{}.installer.yaml", package_id));
-    let locale_path = manifest_dir.join(format!("{}.locale.en-US.yaml", package_id));
+    let locale_path = manifest_dir.join(format!("{}.locale.{}.yaml", package_id, default_locale));
 
     std::fs::write(&ver_path, ver_yaml)?;
     std::fs::write(&inst_path, inst_yaml)?;
@@ -1431,8 +1436,11 @@ pub(crate) struct RenderedWingetManifests {
     pub(crate) version_yaml: String,
     /// Installer manifest YAML (the `<PackageIdentifier>.installer.yaml` file).
     pub(crate) installer_yaml: String,
-    /// Locale manifest YAML (the `<PackageIdentifier>.locale.en-US.yaml` file).
+    /// Locale manifest YAML (the `<PackageIdentifier>.locale.<locale>.yaml` file).
     pub(crate) locale_yaml: String,
+    /// Resolved manifest locale (default `en-US`); also names the locale
+    /// manifest file.
+    pub(crate) default_locale: String,
     /// Resolved fork repository owner the manifests are pushed under.
     pub(crate) repo_owner: String,
     /// Resolved fork repository name the manifests are pushed under.
@@ -1569,6 +1577,14 @@ fn render_winget_manifests_with_identity(
         .filter(|s| !s.is_empty())
         .unwrap_or("install");
     let documentations = winget_cfg.documentations.as_deref().unwrap_or(&[]);
+    // Manifest locale: templated, defaults to en-US.
+    let default_locale_raw = winget_cfg
+        .default_locale
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("en-US");
+    let default_locale =
+        crate::util::render_or_warn(ctx, log, "winget.default_locale", default_locale_raw)?;
 
     let rendered = render_winget_fields(
         ctx,
@@ -1608,6 +1624,7 @@ fn render_winget_manifests_with_identity(
         release_date: release_date_ref,
         moniker: moniker.as_deref(),
         upgrade_behavior,
+        default_locale: &default_locale,
         documentations,
     })?;
 
@@ -1615,6 +1632,7 @@ fn render_winget_manifests_with_identity(
         version_yaml,
         installer_yaml,
         locale_yaml,
+        default_locale,
         repo_owner: identity.repo_owner.clone(),
         repo_name: identity.repo_name.clone(),
         package_id: package_id.to_string(),
@@ -1705,6 +1723,7 @@ fn submit_winget_manifests(
         package_id,
         &version,
         rendered.path.as_deref(),
+        &rendered.default_locale,
         ver_yaml,
         inst_yaml,
         locale_yaml,
@@ -2534,6 +2553,7 @@ mod publisher_tests {
             moniker: None,
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         };
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
         assert!(inst.contains("InstallerType: msi"), "got:\n{inst}");
@@ -3300,7 +3320,74 @@ mod tests {
             moniker: Some("mytool"),
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         }
+    }
+
+    /// Default locale stays `en-US` in all three manifests (byte-level
+    /// stability for existing configs).
+    #[test]
+    fn test_generate_manifests_default_locale_en_us() {
+        let params = default_params();
+        let (ver, inst, locale) = generate_manifests(&params).unwrap();
+        assert!(
+            ver.contains("DefaultLocale: en-US"),
+            "version manifest:\n{ver}"
+        );
+        assert!(
+            inst.contains("InstallerLocale: en-US"),
+            "installer manifest:\n{inst}"
+        );
+        assert!(
+            locale.contains("PackageLocale: en-US"),
+            "locale manifest:\n{locale}"
+        );
+    }
+
+    /// A configured `default_locale` reaches the version, installer, and
+    /// locale manifests, with no en-US residue.
+    #[test]
+    fn test_generate_manifests_custom_locale() {
+        let mut params = default_params();
+        params.default_locale = "pt-BR";
+        let (ver, inst, locale) = generate_manifests(&params).unwrap();
+        assert!(
+            ver.contains("DefaultLocale: pt-BR"),
+            "version manifest:\n{ver}"
+        );
+        assert!(
+            inst.contains("InstallerLocale: pt-BR"),
+            "installer manifest:\n{inst}"
+        );
+        assert!(
+            locale.contains("PackageLocale: pt-BR"),
+            "locale manifest:\n{locale}"
+        );
+        for y in [&ver, &inst, &locale] {
+            assert!(!y.contains("en-US"), "no en-US residue expected:\n{y}");
+        }
+    }
+
+    /// The locale manifest file name carries the configured locale
+    /// (`<PackageIdentifier>.locale.<locale>.yaml`).
+    #[test]
+    fn test_write_manifests_locale_filename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = write_winget_manifests_to_disk(
+            tmp.path(),
+            "Org.MyTool",
+            "1.0.0",
+            None,
+            "pt-BR",
+            "v",
+            "i",
+            "l",
+        )
+        .unwrap();
+        assert!(dir.join("Org.MyTool.locale.pt-BR.yaml").is_file());
+        assert!(dir.join("Org.MyTool.yaml").is_file());
+        assert!(dir.join("Org.MyTool.installer.yaml").is_file());
+        assert!(!dir.join("Org.MyTool.locale.en-US.yaml").exists());
     }
 
     #[test]
@@ -3671,6 +3758,7 @@ mod tests {
             moniker: Some("mytool"),
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         };
 
         let (ver, inst, locale) = generate_manifests(&params).unwrap();
@@ -3903,6 +3991,7 @@ mod tests {
             moniker: Some("myapp"),
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
@@ -3952,6 +4041,7 @@ mod tests {
             moniker: Some("myapp"),
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
@@ -4005,6 +4095,7 @@ mod tests {
             moniker: None,
             upgrade_behavior: "install",
             documentations: &[],
+            default_locale: "en-US",
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();

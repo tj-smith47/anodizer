@@ -52,7 +52,7 @@ pub(crate) use artifacts::{
     OsArtifact, filter_by_ids, find_all_platform_artifacts_with_variant,
     find_artifacts_by_os_with_variant,
 };
-pub(crate) use branch::resolve_branch;
+pub(crate) use branch::{crate_scoped_version, resolve_branch, resolve_branch_or_versioned};
 pub(crate) use clone::{
     aur_default_git_url, clone_repo, clone_repo_ssh, clone_repo_with_auth, ssh_auth_probe,
 };

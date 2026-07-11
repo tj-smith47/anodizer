@@ -22,6 +22,51 @@ pub(crate) fn resolve_branch(ctx: &Context, repo: Option<&RepositoryConfig>) -> 
         .map(|b| ctx.render_template(b).unwrap_or_else(|_| b.to_string()))
 }
 
+/// Resolve the push branch, defaulting to a per-release versioned branch
+/// (`{name}-{version}`) when a pull request is enabled and no `branch:`
+/// is configured.
+///
+/// Each release then gets its own head branch and PR. Falling back to the
+/// repository default branch would stack successive releases onto a single
+/// branch/PR, and registries reject pull requests that touch more than one
+/// version. When no pull request is configured, an unset `branch:` still
+/// returns `None` so direct pushes keep targeting the repo default branch.
+pub(crate) fn resolve_branch_or_versioned(
+    ctx: &Context,
+    repo: Option<&RepositoryConfig>,
+    name: &str,
+    version: &str,
+) -> Option<String> {
+    resolve_branch(ctx, repo).or_else(|| {
+        let pr_enabled = repo
+            .and_then(|r| r.pull_request.as_ref())
+            .is_some_and(|pr| pr.enabled == Some(true));
+        pr_enabled.then(|| format!("{name}-{version}"))
+    })
+}
+
+/// Per-crate version for rollback-target branch derivation: the crate's own
+/// tag-derived version when one resolves (matching the value
+/// `with_crate_scope` stamps during the publish), falling back to the
+/// context-global version. Keeps the recorded rollback branch identical to
+/// the branch the per-crate publish actually pushed, including in workspace
+/// per-crate independent-version mode.
+pub(crate) fn crate_scoped_version(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+) -> String {
+    anodizer_core::crate_scope::resolve_crate_tag(ctx, crate_cfg)
+        .and_then(|tag| {
+            anodizer_core::crate_scope::crate_template_overrides(&crate_cfg.name, &tag).ok()
+        })
+        .and_then(|ov| {
+            ov.into_iter()
+                .find(|(k, _)| *k == "Version")
+                .map(|(_, v)| v)
+        })
+        .unwrap_or_else(|| ctx.version())
+}
+
 /// Look up a GitHub repo's `default_branch` via the REST API, resolving
 /// the API base through the injected `env` (honoring
 /// `ANODIZER_GITHUB_API_BASE`) so an in-process responder can intercept
@@ -130,6 +175,70 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_branch(&ctx, Some(&repo)).as_deref(), Some("main"));
+    }
+
+    /// With `pull_request.enabled: true` and no `branch:`, the helper
+    /// defaults to a per-release versioned head branch so each release gets
+    /// its own branch and PR (a static head would stack releases onto one
+    /// PR, which registries reject).
+    #[test]
+    fn resolve_branch_or_versioned_defaults_when_pr_enabled() {
+        let ctx = TestContextBuilder::new().build();
+        let repo = RepositoryConfig {
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_branch_or_versioned(&ctx, Some(&repo), "myapp", "1.2.3").as_deref(),
+            Some("myapp-1.2.3")
+        );
+    }
+
+    /// Without a pull request, an unset `branch:` still resolves to `None`
+    /// so direct pushes keep targeting the repository default branch.
+    #[test]
+    fn resolve_branch_or_versioned_none_without_pr() {
+        let ctx = TestContextBuilder::new().build();
+        let repo = RepositoryConfig::default();
+        assert!(resolve_branch_or_versioned(&ctx, Some(&repo), "myapp", "1.2.3").is_none());
+        assert!(resolve_branch_or_versioned(&ctx, None, "myapp", "1.2.3").is_none());
+    }
+
+    /// `pull_request.enabled: false` (or unset) does not trigger the
+    /// versioned default.
+    #[test]
+    fn resolve_branch_or_versioned_none_when_pr_disabled() {
+        let ctx = TestContextBuilder::new().build();
+        let repo = RepositoryConfig {
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(resolve_branch_or_versioned(&ctx, Some(&repo), "myapp", "1.2.3").is_none());
+    }
+
+    /// An explicit `branch:` always wins over the versioned default, even
+    /// with a pull request enabled.
+    #[test]
+    fn resolve_branch_or_versioned_explicit_branch_wins() {
+        let ctx = TestContextBuilder::new().build();
+        let repo = RepositoryConfig {
+            branch: Some("release/custom".into()),
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_branch_or_versioned(&ctx, Some(&repo), "myapp", "1.2.3").as_deref(),
+            Some("release/custom")
+        );
     }
 
     // -----------------------------------------------------------------

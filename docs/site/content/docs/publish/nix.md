@@ -86,7 +86,7 @@ crates:
         repository:
           owner: my-org                      # optional; inferred if omitted
           name: nixpkgs                      # optional
-          branch: main                       # optional
+          branch: main                       # optional; default: repo default branch (versioned <name>-<version> when pull_request.enabled)
           token: "{{ Env.GITHUB_TOKEN }}"   # optional
           pull_request:
             enabled: false                   # optional; open PR instead of direct push

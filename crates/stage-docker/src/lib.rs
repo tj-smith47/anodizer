@@ -7,7 +7,7 @@ mod spelling;
 // is_retriable_error / docker_supports_provenance / check_buildx_driver
 // ---------------------------------------------------------------------------
 mod detect;
-pub use detect::{is_retriable_error, is_retriable_error_v2};
+pub use detect::{is_retriable_build, is_retriable_error};
 
 // ---------------------------------------------------------------------------
 // platform_to_arch / tag_suffix

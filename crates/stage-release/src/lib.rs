@@ -161,6 +161,32 @@ pub(crate) use anodizer_core::download_url::{
     populate_artifact_download_urls, resolve_release_repo,
 };
 
+/// Resolve a per-release token override from the release repo config.
+///
+/// A `token` set on the SCM repo block selected by [`resolve_release_repo`]
+/// (`release.github` / `release.gitlab` / `release.gitea`, honoring the
+/// `provider` override) wins over the pipeline token for that repo's API
+/// calls. The value may be templated (`{{ .Env.RELEASE_TOKEN }}`) and is
+/// rendered before use — the literal template string must never become the
+/// bearer credential; a failed render falls back to the raw value, mirroring
+/// publisher `repository.token` resolution. Empty values (unset, or a
+/// template that renders to nothing) yield `None` so callers fall back to
+/// the pipeline token.
+pub(crate) fn resolve_release_token(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+) -> Option<String> {
+    let repo = resolve_release_repo(release_cfg, ctx.token_type, ctx)
+        .ok()
+        .flatten()?;
+    let tok = repo.token.as_deref()?;
+    if tok.is_empty() {
+        return None;
+    }
+    let rendered = ctx.render_template(tok).unwrap_or_else(|_| tok.to_string());
+    (!rendered.is_empty()).then_some(rendered)
+}
+
 /// Compose the public release HTML URL for the active SCM provider.
 ///
 /// GitLab omits the `/{owner}` segment when `owner` is empty (a top-level

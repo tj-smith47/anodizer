@@ -3377,6 +3377,7 @@ mod tests {
                     github: Some(anodizer_core::config::ScmRepoConfig {
                         owner: "myorg".to_string(),
                         name: "mytool".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 })

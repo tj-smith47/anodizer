@@ -103,6 +103,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `short_description` | string | `description` | Short description (max 256 chars). Falls back to the (Cargo-derived) description. |
 | `description` | string | Cargo `[package].description` | Full package description. Derived from `Cargo.toml`; set to override. |
 | `homepage` | string | Cargo `[package].homepage` | Project homepage URL. Derived from `Cargo.toml`; set to override. |
+| `default_locale` | string | `en-US` | Manifest locale: stamped into the version manifest (`DefaultLocale`), installer manifest (`InstallerLocale`), locale manifest (`PackageLocale`), and the `.locale.<locale>.yaml` file name. Templates allowed. |
 | `url_template` | string | release URL | Custom download URL template |
 | `ids` | list of strings | all | Build IDs filter: only include matching artifacts |
 | `skip_upload` | bool or string | `false` | Skip publishing (`true` always skips, `"auto"` skips for prereleases) |
@@ -172,6 +173,7 @@ crates:
         license_url: ""
         short_description: ""             # max 256 chars; derived from Cargo.toml description if omitted
         description: ""                   # derived from Cargo.toml description if omitted
+        default_locale: en-US             # manifest locale (also names the .locale.<locale>.yaml file)
         homepage: ""                      # derived from Cargo.toml homepage if omitted
         url_template: ""
         ids: []
@@ -361,7 +363,7 @@ Anodizer generates the WinGet 3-file manifest format:
 
 - **`PackageId.yaml`** -- Version manifest declaring the package identifier, version, and default locale.
 - **`PackageId.installer.yaml`** -- Installer manifest with download URLs, SHA-256 checksums, architecture mappings, and upgrade behavior. For `.zip` archives, nested installer entries map each binary as a portable executable.
-- **`PackageId.locale.en-US.yaml`** -- Default locale manifest with publisher info, descriptions, license, tags, release notes, and other metadata.
+- **`PackageId.locale.<locale>.yaml`** -- Default locale manifest with publisher info, descriptions, license, tags, release notes, and other metadata. The locale defaults to `en-US`; set `default_locale` to change it.
 
 Each file includes a YAML language server schema reference header and a generated-by-anodizer comment.
 

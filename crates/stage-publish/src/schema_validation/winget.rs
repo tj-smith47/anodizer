@@ -196,6 +196,7 @@ mod tests {
             required: Some(true),
             if_condition: None,
             retain_on_rollback: None,
+            default_locale: None,
         }
     }
 

@@ -8,7 +8,8 @@ use super::command::{
     is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend, resolve_skip_push,
 };
 use super::detect::{
-    BuildxVersionProbe, format_buildx_version_warning, is_retriable_error, run_buildx_version_check,
+    BuildxVersionProbe, format_buildx_version_warning, is_retriable_build, is_retriable_error,
+    run_buildx_version_check,
 };
 use super::platform::{platform_to_arch, tag_suffix};
 use super::retry::{parse_duration_string, resolve_retry_params};
@@ -2478,6 +2479,7 @@ fn crate_with_owner(name: &str, owner: Option<&str>) -> anodizer_core::config::C
         github: Some(ScmRepoConfig {
             owner: o.to_string(),
             name: "repo".to_string(),
+            token: None,
         }),
         ..ReleaseConfig::default()
     });
@@ -2506,6 +2508,7 @@ fn test_resolve_registry_owner_per_crate_wins_over_top_level() {
             github: Some(ScmRepoConfig {
                 owner: "top-level-owner".to_string(),
                 name: "repo".to_string(),
+                token: None,
             }),
             ..ReleaseConfig::default()
         }),
@@ -2532,6 +2535,7 @@ fn test_resolve_registry_owner_top_level_when_no_per_crate() {
             github: Some(ScmRepoConfig {
                 owner: "top-level-owner".to_string(),
                 name: "repo".to_string(),
+                token: None,
             }),
             ..ReleaseConfig::default()
         }),
@@ -2674,6 +2678,7 @@ fn test_docker_v2_derived_image_default_reaches_rendered_tag() {
             github: Some(ScmRepoConfig {
                 owner: "acme".to_string(),
                 name: "svc".to_string(),
+                token: None,
             }),
             ..ReleaseConfig::default()
         }),
@@ -3632,6 +3637,78 @@ fn test_is_retriable_error_510() {
     assert!(is_retriable_error(
         "received unexpected HTTP status: 510 Not Extended"
     ));
+}
+
+// -----------------------------------------------------------------------
+// is_retriable_build: build-scoped retry breadth
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_is_retriable_build_registry_and_rate_limit_patterns() {
+    for msg in [
+        "manifest verification failed for digest sha256:abc",
+        "toomanyrequests: you have hit the rate limit",
+        "429 Too Many Requests",
+        "failed to do request: Head https://registry",
+        "error pulling image configuration",
+        "500 Internal Server Error",
+        "502 Bad Gateway",
+        "503 Service Unavailable",
+        "504 Gateway Timeout",
+        "504 Gateway Time-out",
+        "unexpected EOF while reading response",
+    ] {
+        assert!(is_retriable_build(msg), "expected retriable: {msg}");
+    }
+}
+
+#[test]
+fn test_is_retriable_build_dns_and_package_manager_patterns() {
+    for msg in [
+        "Temporary failure in name resolution",
+        "Temporary failure resolving 'deb.debian.org'",
+        "Could not resolve 'archive.ubuntu.com'",
+        "E: Failed to fetch http://deb.debian.org/pool/foo.deb",
+        "connect: Connection timed out",
+        "Could not connect to archive.ubuntu.com:80",
+        "ERROR: unable to connect to dl-cdn.alpinelinux.org",
+        "Hash Sum mismatch",
+        "temporary error (try again later)",
+    ] {
+        assert!(is_retriable_build(msg), "expected retriable: {msg}");
+    }
+}
+
+#[test]
+fn test_is_retriable_build_network_errors_and_eof() {
+    for msg in [
+        "read tcp 1.2.3.4: connection reset by peer",
+        "dial tcp: network is unreachable",
+        "connection closed before message completed",
+        "dial tcp 1.2.3.4:443: connection refused",
+        "net/http: TLS handshake timeout",
+        "read: i/o timeout",
+        "write: broken pipe",
+        "timeout awaiting response headers",
+        "context deadline exceeded",
+        "EOF",
+        "reading body: EOF",
+    ] {
+        assert!(is_retriable_build(msg), "expected retriable: {msg}");
+    }
+}
+
+#[test]
+fn test_is_retriable_build_rejects_non_transient_errors() {
+    for msg in [
+        "Dockerfile parse error line 3: unknown instruction: RUUN",
+        "COPY failed: file not found in build context",
+        "exit code 1: cargo build failed",
+        "denied: requested access to the resource is denied",
+        "executable file not found in $PATH",
+    ] {
+        assert!(!is_retriable_build(msg), "expected non-retriable: {msg}");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -6552,6 +6629,7 @@ fn workspace_per_crate_docker_renders_distinct_image_per_crate() {
             github: Some(ScmRepoConfig {
                 owner: "acme".to_string(),
                 name: name.to_string(),
+                token: None,
             }),
             ..ReleaseConfig::default()
         }),

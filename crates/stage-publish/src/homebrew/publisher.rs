@@ -96,10 +96,23 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
             continue;
         };
         if let Some((owner, name)) = crate::util::resolve_repo_owner_name(hb.repository.as_ref()) {
+            // Mirror the publish path's branch resolution (including the
+            // versioned PR-branch default) so the recorded rollback branch
+            // matches the branch actually pushed.
+            let formula_raw = hb.name.as_deref().unwrap_or(&c.name);
+            let formula_name = ctx
+                .render_template(formula_raw)
+                .unwrap_or_else(|_| formula_raw.to_string());
+            let version = crate::util::crate_scoped_version(ctx, c);
             out.push(HomebrewTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch(ctx, hb.repository.as_ref()),
+                branch: crate::util::resolve_branch_or_versioned(
+                    ctx,
+                    hb.repository.as_ref(),
+                    &formula_name,
+                    &version,
+                ),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
             });
         }
@@ -114,10 +127,20 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
             if let Some((owner, name)) =
                 crate::util::resolve_repo_owner_name(cask.repository.as_ref())
             {
+                // Top-level casks always publish at the context-global
+                // version; mirror publish_top's branch resolution (its
+                // nameless-cask fallback is the project name, not the
+                // "homebrew_casks" evidence label).
+                let cask_name = cask.name.as_deref().unwrap_or(&ctx.config.project_name);
                 out.push(HomebrewTarget {
-                    target: label,
+                    target: label.clone(),
                     repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                    branch: crate::util::resolve_branch(ctx, cask.repository.as_ref()),
+                    branch: crate::util::resolve_branch_or_versioned(
+                        ctx,
+                        cask.repository.as_ref(),
+                        cask_name,
+                        &ctx.version(),
+                    ),
                     token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
                 });
             }

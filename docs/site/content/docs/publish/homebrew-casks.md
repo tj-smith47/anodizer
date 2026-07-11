@@ -51,7 +51,7 @@ homebrew_casks:
       owner: myorg                   # required
       name: homebrew-tap             # required
       token: "{{ Env.GITHUB_TOKEN }}"  # optional; falls back to GITHUB_TOKEN env
-      branch: main                   # optional; target branch
+      branch: main                   # optional; push branch (default: repo default branch, or versioned <cask>-<version> when pull_request.enabled)
       pull_request:
         enabled: false               # optional; open PR instead of direct push
         base: main

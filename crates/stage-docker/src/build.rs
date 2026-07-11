@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 use anodizer_core::log::StageLogger;
 use anodizer_core::run::run_capture_timeout;
 
-use super::detect::is_retriable_error_v2;
+use super::detect::is_retriable_build;
 
 /// Wall-clock bound on a single `podman push <tag>` to a remote registry. A
 /// stalled registry upload (wedged TLS handshake, half-open connection, a
@@ -249,7 +249,7 @@ pub(crate) fn execute_docker_build(
                 }
                 Err(e) => {
                     let err_msg = format!("{:#}", e);
-                    let is_retriable = is_retriable_error_v2(&err_msg);
+                    let is_retriable = is_retriable_build(&err_msg);
                     if !is_retriable {
                         if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
                             log.warn(
@@ -446,7 +446,7 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
                     Ok(_) => Ok(()),
                     Err(e) => {
                         let err_msg = format!("{:#}", e);
-                        if is_retriable_error_v2(&err_msg) {
+                        if is_retriable_build(&err_msg) {
                             Err(ControlFlow::Continue(e))
                         } else {
                             Err(ControlFlow::Break(e.context(format!(

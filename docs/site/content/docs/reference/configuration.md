@@ -1076,7 +1076,7 @@ When set, the auto-emitted binary content entry is installed under this name (in
 | `description` | string | — | Package description (multiline supported). |
 | `epoch` | string | — | Package epoch for versioning (integer as string). |
 | `file_name_template` | string | — | Package filename template (supports templates). |
-| `formats` | list of string | `[]` | Package formats to produce: deb, rpm, apk, archlinux (at least one required). |
+| `formats` | list of string | `[]` | Package formats to produce: deb, rpm, apk, archlinux, termux.deb, ipk, msix (at least one required). |
 | `homepage` | string | — | Project homepage URL. |
 | `id` | string | — | Unique identifier for cross-referencing this nFPM config. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated `builds:` spelling via serde alias for back-compat with imported configs (the legacy `builds` key marked `deprecated`, aliasing `ids`). |
@@ -1086,6 +1086,11 @@ When set, the auto-emitted binary content entry is installed under this name (in
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `maintainer` | string | — | Package maintainer in "Name <email>" format. |
 | `meta` | bool | — | Whether this is a meta-package (no files, only dependencies). |
+| `msix` | NfpmMsixConfig | — | MSIX-specific configuration (Windows app packages).
+
+Only consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.
+
+```yaml msix: publisher: "CN=My Company, O=My Company, C=US" properties: logo: assets/logo.png applications: - id: MyApp executable: myapp.exe ``` |
 | `mtime` | string | — | Default modification time for files in the package. |
 | `overrides` | map | — | Per-format setting overrides (e.g., {"deb": {compression: "xz"}}). |
 | `package_name` | string | — | Package name (defaults to crate name). |
@@ -1328,6 +1333,9 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `copyright` | string | — | Copyright notice. |
 | `copyright_url` | string | — | Copyright URL. |
+| `default_locale` | string | — | Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.
+
+```yaml winget: default_locale: "pt-BR" ``` |
 | `dependencies` | list of WingetDependency | — | Package dependencies. |
 | `description` | string | — | Full package description displayed in the WinGet gallery. |
 | `documentations` | list of WingetDocumentation | — | Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.

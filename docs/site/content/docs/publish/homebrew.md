@@ -88,7 +88,7 @@ crates:
           owner: myorg          # required
           name: homebrew-tap    # required
           token: ""             # falls back to GITHUB_TOKEN
-          branch: ""            # default: repo default branch
+          branch: ""            # default: repo default branch (versioned <formula>-<version> when pull_request.enabled)
           pull_request:
             enabled: false
             draft: false

@@ -2410,6 +2410,7 @@ mod tests {
                 github: Some(anodizer_core::config::ScmRepoConfig {
                     owner: "octocat".to_string(),
                     name: name.to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

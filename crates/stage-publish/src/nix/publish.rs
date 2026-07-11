@@ -1024,7 +1024,7 @@ fn finalize_publish(
         ctx.render_is_strict(),
     )?;
     let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref(), log)?;
-    let branch = util::resolve_branch(ctx, nix_cfg.repository.as_ref());
+    let branch = util::resolve_branch_or_versioned(ctx, nix_cfg.repository.as_ref(), name, version);
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         files,
@@ -2041,6 +2041,7 @@ mod tests {
                 github: Some(ScmRepoConfig {
                     owner: owner.to_string(),
                     name: repo.to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -2583,6 +2584,7 @@ mod tests {
                         github: Some(anodizer_core::config::ScmRepoConfig {
                             owner: "myorg".to_string(),
                             name: "mytool".to_string(),
+                            token: None,
                         }),
                         ..Default::default()
                     }),
@@ -3056,6 +3058,7 @@ mod tests {
                         github: Some(anodizer_core::config::ScmRepoConfig {
                             owner: "myorg".to_string(),
                             name: "mytool".to_string(),
+                            token: None,
                         }),
                         ..Default::default()
                     }),

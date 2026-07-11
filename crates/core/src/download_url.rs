@@ -258,7 +258,11 @@ pub fn resolve_release_repo(
     let name = ctx
         .render_template(&repo.name)
         .with_context(|| format!("release: render repo.name '{}'", repo.name))?;
-    Ok(Some(ScmRepoConfig { owner, name }))
+    Ok(Some(ScmRepoConfig {
+        owner,
+        name,
+        token: repo.token.clone(),
+    }))
 }
 
 #[cfg(test)]
@@ -290,6 +294,7 @@ mod tests {
                 github: Some(ScmRepoConfig {
                     owner: "octocat".to_string(),
                     name: "hello".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),

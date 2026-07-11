@@ -328,6 +328,21 @@ pub struct ScmRepoConfig {
     pub owner: String,
     /// Repository name.
     pub name: String,
+    /// Auth token override for this repository, instead of the default one.
+    /// Useful when the release repository requires a different token than
+    /// the one used to build from — for instance, when publishing to a
+    /// repository in another organization. Supports templates
+    /// (environment variables). Unset falls back to the pipeline token.
+    ///
+    /// ```yaml
+    /// release:
+    ///   github:
+    ///     owner: my-org
+    ///     name: my-repo
+    ///     token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// Backward-compatible alias — existing code can continue to use `GitHubConfig`.

@@ -633,6 +633,7 @@ mod tests {
                     github: Some(ScmRepoConfig {
                         owner: "toss45".into(),
                         name: "anodize".into(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -652,6 +653,7 @@ mod tests {
                     github: Some(ScmRepoConfig {
                         owner: String::new(),
                         name: String::new(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -903,6 +905,7 @@ mod tests {
                 repo: Some(ScmRepoConfig {
                     owner: "explicit".into(),
                     name: "override".into(),
+                    token: None,
                 }),
                 ..Default::default()
             },
@@ -927,6 +930,7 @@ mod tests {
                 repo: Some(ScmRepoConfig {
                     owner: "explicit".into(),
                     name: "override".into(),
+                    token: None,
                 }),
                 ..Default::default()
             },
@@ -1015,6 +1019,7 @@ mod tests {
         let mk = |p: (&str, &str)| ScmRepoConfig {
             owner: p.0.to_string(),
             name: p.1.to_string(),
+            token: None,
         };
         ReleaseConfig {
             github: github.map(mk),
@@ -1047,6 +1052,7 @@ mod tests {
             repo: Some(ScmRepoConfig {
                 owner: "explicit".into(),
                 name: "override".into(),
+                token: None,
             }),
             ..Default::default()
         };
@@ -1070,6 +1076,7 @@ mod tests {
             repo: Some(ScmRepoConfig {
                 owner: String::new(),
                 name: String::new(),
+                token: None,
             }),
             ..Default::default()
         };
@@ -1573,6 +1580,7 @@ mod tests {
                     gitlab: Some(ScmRepoConfig {
                         owner: "org".into(),
                         name: "repo".into(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -1627,6 +1635,7 @@ mod tests {
                     gitlab: Some(ScmRepoConfig {
                         owner: "org".into(),
                         name: "repo".into(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -1677,6 +1686,7 @@ mod tests {
                     gitlab: Some(ScmRepoConfig {
                         owner: "org".into(),
                         name: "repo".into(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -1726,6 +1736,7 @@ mod tests {
                     gitlab: Some(ScmRepoConfig {
                         owner: "org".into(),
                         name: "repo".into(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),

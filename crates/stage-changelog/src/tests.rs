@@ -35,6 +35,7 @@ fn github_native_has_repo_sees_workspace_only_crate() {
                     github: Some(anodizer_core::config::ScmRepoConfig {
                         owner: "acme".to_string(),
                         name: "ws-only".to_string(),
+                        token: None,
                     }),
                     ..Default::default()
                 }),
@@ -809,6 +810,7 @@ fn test_changelog_stage_github_native_dry_run_skips_api() {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -856,6 +858,7 @@ fn test_changelog_stage_github_native_requires_token() {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
                     name: "repo".to_string(),
+                    token: None,
                 }),
                 ..Default::default()
             }),
@@ -917,6 +920,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
             github: Some(ScmRepoConfig {
                 owner: "owner".to_string(),
                 name: "repo".to_string(),
+                token: None,
             }),
             ..Default::default()
         }),

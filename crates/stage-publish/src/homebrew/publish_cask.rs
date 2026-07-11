@@ -194,7 +194,12 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         .collect();
     let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref(), log)?;
-    let branch = crate::util::resolve_branch(ctx, hb_cfg.repository.as_ref());
+    let branch = crate::util::resolve_branch_or_versioned(
+        ctx,
+        hb_cfg.repository.as_ref(),
+        &cask_result.cask_name,
+        &version,
+    );
     let outcome = crate::util::commit_and_push_with_opts(
         repo_path,
         &path_refs,

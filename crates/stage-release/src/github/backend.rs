@@ -94,6 +94,7 @@ pub(crate) fn run_github_backend(
         Some((owner, name)) => anodizer_core::config::ScmRepoConfig {
             owner: owner.clone(),
             name: name.clone(),
+            token: None,
         },
         None => github,
     };
@@ -875,6 +876,7 @@ mod orchestrator_tests {
             github: Some(ScmRepoConfig {
                 owner: "o".to_string(),
                 name: "r".to_string(),
+                token: None,
             }),
             mode: Some("replace".to_string()),
             ..Default::default()
