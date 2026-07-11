@@ -1961,6 +1961,175 @@ fn cross_gnu_cargo_fallback_warning_silent_for_native_and_non_gnu() {
 }
 
 #[test]
+fn cross_gnu_cargo_fallback_gate_table() {
+    use crate::command::{CrossGnuFallback, cross_gnu_cargo_fallback_gate};
+    use anodizer_core::MapEnvSource;
+
+    const HOST: &str = "x86_64-unknown-linux-gnu";
+    const TARGET: &str = "aarch64-unknown-linux-gnu";
+
+    enum Want {
+        Error,
+        Warn,
+        Silent,
+    }
+
+    struct Case {
+        name: &'static str,
+        target: &'static str,
+        resolved: CrossStrategy,
+        gcc_on_path: bool,
+        env: &'static [(&'static str, &'static str)],
+        build_env: &'static [(&'static str, &'static str)],
+        cargo_config_linker: bool,
+        want: Want,
+    }
+
+    let base = |name| Case {
+        name,
+        target: TARGET,
+        resolved: CrossStrategy::Cargo,
+        gcc_on_path: false,
+        env: &[],
+        build_env: &[],
+        cargo_config_linker: false,
+        want: Want::Error,
+    };
+
+    let cases = [
+        // The doomed shape: cross-arch gnu on plain cargo, no gcc, no
+        // overrides — must hard-fail before cargo burns minutes.
+        base("doomed: no gcc, no overrides"),
+        Case {
+            gcc_on_path: true,
+            want: Want::Warn,
+            ..base("gcc on PATH downgrades to warn")
+        },
+        // Each operator-override class individually downgrades to warn.
+        Case {
+            env: &[("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "lld")],
+            want: Want::Warn,
+            ..base("env: per-target linker")
+        },
+        Case {
+            env: &[("RUSTFLAGS", "-Clinker=aarch64-linux-gnu-gcc")],
+            want: Want::Warn,
+            ..base("env: RUSTFLAGS linker=")
+        },
+        Case {
+            env: &[("CARGO_ENCODED_RUSTFLAGS", "-Clinker=foo")],
+            want: Want::Warn,
+            ..base("env: CARGO_ENCODED_RUSTFLAGS linker=")
+        },
+        Case {
+            env: &[("RUSTFLAGS", "-Copt-level=3")],
+            want: Want::Error,
+            ..base("env: RUSTFLAGS without linker= is not an override")
+        },
+        Case {
+            env: &[("TARGET_CC", "aarch64-linux-gnu-gcc")],
+            want: Want::Warn,
+            ..base("env: TARGET_CC")
+        },
+        Case {
+            env: &[("CC_aarch64-unknown-linux-gnu", "clang")],
+            want: Want::Warn,
+            ..base("env: CC_<triple> dashed")
+        },
+        Case {
+            env: &[("CC_aarch64_unknown_linux_gnu", "clang")],
+            want: Want::Warn,
+            ..base("env: CC_<triple> underscored")
+        },
+        Case {
+            env: &[("CROSS_COMPILE", "aarch64-linux-gnu-")],
+            want: Want::Warn,
+            ..base("env: CROSS_COMPILE")
+        },
+        Case {
+            build_env: &[("RUSTFLAGS", "-Clinker=aarch64-linux-gnu-gcc")],
+            want: Want::Warn,
+            ..base("build config env: rustflags linker=")
+        },
+        Case {
+            build_env: &[("CC_aarch64_unknown_linux_gnu", "clang")],
+            want: Want::Warn,
+            ..base("build config env: CC override")
+        },
+        Case {
+            cargo_config_linker: true,
+            want: Want::Warn,
+            ..base(".cargo/config mentions linker")
+        },
+        // Existing silent behavior pinned: not plain cargo / not cross gnu.
+        Case {
+            resolved: CrossStrategy::Zigbuild,
+            want: Want::Silent,
+            ..base("zigbuild strategy: silent")
+        },
+        Case {
+            target: "aarch64-unknown-linux-musl",
+            want: Want::Silent,
+            ..base("non-gnu target: silent")
+        },
+        Case {
+            target: HOST,
+            want: Want::Silent,
+            ..base("native target: silent")
+        },
+    ];
+
+    for case in cases {
+        let env = MapEnvSource::from(
+            case.env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<HashMap<_, _>>(),
+        );
+        let build_env: HashMap<String, String> = case
+            .build_env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let got = cross_gnu_cargo_fallback_gate(
+            HOST,
+            case.target,
+            &case.resolved,
+            &build_env,
+            &env,
+            &|_gcc: &str| case.gcc_on_path,
+            case.cargo_config_linker,
+        );
+        match (case.want, got) {
+            (Want::Silent, None) => {}
+            (Want::Warn, Some(CrossGnuFallback::Warn(msg))) => {
+                assert!(
+                    msg.contains("aarch64-linux-gnu-gcc"),
+                    "{}: {msg}",
+                    case.name
+                );
+            }
+            (Want::Error, Some(CrossGnuFallback::Error(msg))) => {
+                assert!(msg.contains(case.target), "{}: {msg}", case.name);
+                assert!(msg.contains("plain cargo"), "{}: {msg}", case.name);
+                assert!(
+                    msg.contains("`aarch64-linux-gnu-gcc` was not found on PATH"),
+                    "{}: {msg}",
+                    case.name
+                );
+                assert!(msg.contains("cargo-zigbuild + zig"), "{}: {msg}", case.name);
+                assert!(
+                    msg.contains("system cross toolchain"),
+                    "{}: {msg}",
+                    case.name
+                );
+            }
+            (_, got) => panic!("{}: unexpected outcome {got:?}", case.name),
+        }
+    }
+}
+
+#[test]
 fn resolved_strategy_for_target_passes_explicit_strategy_through() {
     // Only Auto consults the host/tool probes; explicit strategies are
     // taken verbatim regardless of target.

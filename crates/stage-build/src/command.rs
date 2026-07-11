@@ -188,6 +188,111 @@ pub(crate) fn cross_gnu_cargo_fallback_warning(
     ))
 }
 
+/// Outcome of [`cross_gnu_cargo_fallback_gate`]: how loudly to surface a
+/// cross-arch `*-linux-gnu` target resolving to plain `cargo build`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CrossGnuFallback {
+    /// Working (or plausibly operator-managed) setup — surface the routing
+    /// decision but let the build proceed.
+    Warn(String),
+    /// Provably doomed: no cross gcc on PATH and no operator override.
+    /// Failing at planning time saves the minutes cargo would burn before
+    /// cc-rs dies with an opaque `ToolNotFound` in the first native-code
+    /// dependency.
+    Error(String),
+}
+
+/// Escalation decision for the cross-gnu plain-cargo fallback. Returns
+/// `None` in exactly the cases [`cross_gnu_cargo_fallback_warning`] is
+/// silent (not plain cargo, not glibc Linux, native target, unknown host).
+/// Otherwise escalates the warning to a hard error iff the implied cross
+/// gcc is absent from PATH AND no operator override signal is present —
+/// a setup where the build cannot succeed. Pure: the PATH probe, process
+/// env, and `.cargo/config*` linker check are all injected.
+pub(crate) fn cross_gnu_cargo_fallback_gate(
+    host: &str,
+    target: &str,
+    resolved: &CrossStrategy,
+    build_env: &HashMap<String, String>,
+    env: &dyn anodizer_core::EnvSource,
+    gcc_on_path: &dyn Fn(&str) -> bool,
+    cargo_config_mentions_linker: bool,
+) -> Option<CrossGnuFallback> {
+    let warn_msg = cross_gnu_cargo_fallback_warning(host, target, resolved)?;
+    // The warning implies a cross gcc exists for this host/target pair.
+    let gcc = cross_gnu_cargo_gcc(host, target)?;
+    if gcc_on_path(&gcc)
+        || cargo_config_mentions_linker
+        || cross_gnu_operator_override(target, build_env, env)
+    {
+        return Some(CrossGnuFallback::Warn(warn_msg));
+    }
+    Some(CrossGnuFallback::Error(format!(
+        "cross gnu target '{target}' resolved to plain cargo (cargo-zigbuild/cross not \
+         installed) and `{gcc}` was not found on PATH — native-code dependencies cannot \
+         compile, so the build is guaranteed to fail after minutes of compilation; \
+         install cargo-zigbuild + zig for a hermetic cross build, or install the system \
+         cross toolchain / set an explicit linker (e.g. CARGO_TARGET_{triple}_LINKER)",
+        triple = env_triple(target),
+    )))
+}
+
+/// `<triple>` uppercased with `-`/`.` mapped to `_`, the spelling cargo's
+/// per-target env vars use (`CARGO_TARGET_<TRIPLE>_LINKER`). Glibc-pinned
+/// suffixes are stripped first — plain cargo only ever sees the bare triple.
+fn env_triple(target: &str) -> String {
+    let (bare, _) = crate::validation::strip_glibc_suffix(target);
+    bare.to_uppercase().replace(['-', '.'], "_")
+}
+
+/// True when the operator has visibly taken manual control of the target's
+/// C toolchain / linker, via the process env or the build config's own env
+/// map — any such signal downgrades the doomed-build error back to the
+/// warning, so exotic-but-working local setups are never false-blocked.
+fn cross_gnu_operator_override(
+    target: &str,
+    build_env: &HashMap<String, String>,
+    env: &dyn anodizer_core::EnvSource,
+) -> bool {
+    let (bare, _) = crate::validation::strip_glibc_suffix(target);
+    let lookup = |key: &str| env.var(key).or_else(|| build_env.get(key).cloned());
+
+    // Explicit per-target linker.
+    if lookup(&format!("CARGO_TARGET_{}_LINKER", env_triple(target))).is_some() {
+        return true;
+    }
+    // A linker override buried in rustflags (encoded form uses \x1f
+    // separators, but plain containment still matches `linker=`).
+    for key in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"] {
+        if lookup(key).is_some_and(|v| v.contains("linker=")) {
+            return true;
+        }
+    }
+    // cc-rs C-compiler overrides: TARGET_CC, CC_<triple> in both the
+    // dashed and underscored spellings cc-rs accepts, plus the classic
+    // CROSS_COMPILE prefix.
+    let cc_keys = [
+        "TARGET_CC".to_string(),
+        "CROSS_COMPILE".to_string(),
+        format!("CC_{bare}"),
+        format!("CC_{}", bare.replace('-', "_")),
+    ];
+    cc_keys.iter().any(|key| lookup(key).is_some())
+}
+
+/// Cheap containment check: does any `.cargo/config.toml` / `.cargo/config`
+/// directly under one of `dirs` mention `linker` at all? Deliberately
+/// over-permissive — if the file talks about linkers, assume the setup is
+/// operator-managed and warn instead of hard-failing.
+pub(crate) fn cargo_config_mentions_linker(dirs: &[&Path]) -> bool {
+    dirs.iter().any(|dir| {
+        ["config.toml", "config"].iter().any(|name| {
+            std::fs::read_to_string(dir.join(".cargo").join(name))
+                .is_ok_and(|content| content.contains("linker"))
+        })
+    })
+}
+
 /// The system cross C compiler a plain-`cargo` build of `target` would resolve
 /// through cc-rs: `{arch}-linux-gnu-gcc`, where `arch` is the first `-`-split
 /// component of the glibc-suffix-stripped triple (e.g. `aarch64-linux-gnu-gcc`

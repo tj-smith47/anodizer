@@ -825,10 +825,24 @@ fn plan_build_jobs(
                 if cross_tool.is_none() {
                     let resolved = crate::command::resolved_strategy_for_target(&strategy, target);
                     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
-                    if let Some(msg) =
-                        crate::command::cross_gnu_cargo_fallback_warning(&host, target, &resolved)
-                    {
-                        log.warn(&msg);
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    match crate::command::cross_gnu_cargo_fallback_gate(
+                        &host,
+                        target,
+                        &resolved,
+                        &target_env,
+                        ctx.env_source(),
+                        &anodizer_core::tool_detect::on_path,
+                        crate::command::cargo_config_mentions_linker(&[
+                            cwd.as_path(),
+                            std::path::Path::new(&crate_cfg.path),
+                        ]),
+                    ) {
+                        Some(crate::command::CrossGnuFallback::Error(msg)) => {
+                            anyhow::bail!(msg)
+                        }
+                        Some(crate::command::CrossGnuFallback::Warn(msg)) => log.warn(&msg),
+                        None => {}
                     }
                 }
 
