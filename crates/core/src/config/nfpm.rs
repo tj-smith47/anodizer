@@ -450,8 +450,11 @@ pub struct NfpmMsixConfig {
     pub identity: Option<NfpmMsixIdentity>,
     /// Package display properties.
     pub properties: Option<NfpmMsixProperties>,
-    /// Applications contained in the package (at least one required by nfpm,
-    /// each with `id` and `executable`).
+    /// Applications contained in the package (nfpm requires at least one,
+    /// each with `id` and `executable`). When omitted, anodizer derives one
+    /// application per packaged binary — `executable` is the binary's file
+    /// name and `id` its sanitized file stem — so this only needs setting to
+    /// override entry points or visual elements.
     pub applications: Option<Vec<NfpmMsixApplication>>,
     /// Target device family dependencies. Defaults to
     /// `Windows.Desktop` min `10.0.17763.0` / max tested `10.0.22621.0`.

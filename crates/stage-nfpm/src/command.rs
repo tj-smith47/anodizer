@@ -8,13 +8,19 @@ use anyhow::Result;
 /// path nfpm writes the package to that exact location, which avoids
 /// mismatches between the predicted and actual output filename.
 pub fn nfpm_command(config_path: &str, format: &str, target: &str) -> Vec<String> {
+    // nfpm registers no `termux.deb` packager — Termux packages are the deb
+    // packager plus the termux arch/prefix overrides carried in the generated
+    // YAML, so the CLI takes the underlying packager name (GoReleaser strips
+    // the same prefix before `nfpm.Get`). The termux-specific filename is
+    // preserved by `--target`.
+    let packager = format.strip_prefix("termux.").unwrap_or(format);
     vec![
         "nfpm".to_string(),
         "pkg".to_string(),
         "--config".to_string(),
         config_path.to_string(),
         "--packager".to_string(),
-        format.to_string(),
+        packager.to_string(),
         "--target".to_string(),
         target.to_string(),
     ]

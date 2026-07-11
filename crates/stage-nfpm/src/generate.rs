@@ -14,7 +14,7 @@ use anodizer_core::config::NfpmConfig;
 
 use crate::builders::{
     build_yaml_apk, build_yaml_archlinux, build_yaml_deb, build_yaml_ipk, build_yaml_msix,
-    build_yaml_rpm,
+    build_yaml_rpm, derive_msix_applications,
 };
 use crate::yaml::{NfpmYamlConfig, NfpmYamlContent, NfpmYamlFileInfo, NfpmYamlScripts};
 
@@ -415,11 +415,29 @@ pub fn generate_nfpm_yaml_with_env(
         .as_ref()
         .filter(|i| !i.is_empty())
         .map(build_yaml_ipk);
+    // Only the msix packager reads the `msix:` section; emitting it in other
+    // formats' YAML is dead config that additionally violates nfpm's schema
+    // (an `msix` object requires `applications`, derived only for the msix
+    // format). Format-less callers (introspection, tests) keep the section.
+    let msix_section_applies = matches!(format, None | Some("msix"));
     let msix = config
         .msix
         .as_ref()
-        .filter(|m| !m.is_empty())
-        .map(|m| build_yaml_msix(m, skip_sign));
+        .filter(|m| !m.is_empty() && msix_section_applies)
+        .map(|m| {
+            let mut yaml = build_yaml_msix(m, skip_sign);
+            // nfpm hard-requires at least one application (with `id` and
+            // `executable`), but anodizer already knows every binary the
+            // package carries — derive the list instead of forcing the user
+            // to restate it. Explicit `applications:` always wins.
+            if format == Some("msix") && yaml.applications.as_ref().is_none_or(|a| a.is_empty()) {
+                let derived = derive_msix_applications(binary_paths);
+                if !derived.is_empty() {
+                    yaml.applications = Some(derived);
+                }
+            }
+            yaml
+        });
 
     let yaml_config = NfpmYamlConfig {
         name: (!target.pkg_name.is_empty()).then(|| target.pkg_name.to_string()),

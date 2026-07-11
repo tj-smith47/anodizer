@@ -239,6 +239,38 @@ pub(super) fn build_yaml_msix(msix: &NfpmMsixConfig, skip_sign: bool) -> NfpmYam
     }
 }
 
+/// Derive one MSIX `<Application>` per packaged binary: `executable` is the
+/// binary's file name (MSIX packages are rooted at the install location, so
+/// the name alone addresses it) and `id` is the file stem sanitized to the
+/// AppxManifest `Id` alphabet (letters, digits, periods; must not start with
+/// a digit or period).
+pub(super) fn derive_msix_applications(binary_paths: &[String]) -> Vec<NfpmYamlMsixApplication> {
+    binary_paths
+        .iter()
+        .filter_map(|bp| {
+            let file_name = std::path::Path::new(bp).file_name()?.to_str()?.to_string();
+            let stem = std::path::Path::new(&file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&file_name);
+            let mut id: String = stem
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
+            id = id.trim_matches('.').to_string();
+            if !id.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                id.insert_str(0, "App");
+            }
+            Some(NfpmYamlMsixApplication {
+                id: Some(id),
+                executable: Some(file_name),
+                entry_point: None,
+                visual_elements: None,
+            })
+        })
+        .collect()
+}
+
 pub(super) fn build_yaml_ipk(ipk: &NfpmIpkConfig) -> NfpmYamlIpk {
     NfpmYamlIpk {
         abi_version: ipk.abi_version.clone(),

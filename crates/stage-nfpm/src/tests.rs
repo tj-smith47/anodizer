@@ -187,6 +187,23 @@ fn test_nfpm_command() {
     assert!(cmd.contains(&"deb".to_string()));
 }
 
+/// nfpm has no `termux.deb` packager; the CLI must be invoked with `deb`
+/// while the termux-specific naming rides in `--target`.
+#[test]
+fn test_nfpm_command_termux_uses_deb_packager() {
+    let cmd = nfpm_command(
+        "/tmp/nfpm.yaml",
+        "termux.deb",
+        "/tmp/demo_0.1.0_aarch64.termux.deb",
+    );
+    let packager_idx = cmd.iter().position(|a| a == "--packager").unwrap();
+    assert_eq!(cmd[packager_idx + 1], "deb");
+    assert!(
+        cmd.iter().any(|a| a.ends_with(".termux.deb")),
+        "target filename must keep the termux spelling: {cmd:?}"
+    );
+}
+
 #[test]
 fn test_stage_skips_when_no_nfpm_config() {
     use anodizer_core::config::Config;
@@ -2345,7 +2362,7 @@ fn test_generate_nfpm_yaml_deb_triggers_all_fields() {
 
 #[test]
 fn test_format_extension_termux_deb() {
-    assert_eq!(format_extension("termux.deb"), ".deb");
+    assert_eq!(format_extension("termux.deb"), ".termux.deb");
 }
 
 #[test]
@@ -2397,8 +2414,8 @@ fn test_termux_deb_format_produces_artifact() {
     );
     let path_str = pkgs[0].path.to_string_lossy();
     assert!(
-        path_str.ends_with(".deb"),
-        "termux.deb package should have .deb extension, got: {path_str}"
+        path_str.ends_with(".termux.deb"),
+        "termux.deb package should have .termux.deb extension, got: {path_str}"
     );
 }
 
@@ -2546,6 +2563,95 @@ fn test_msix_format_produces_installer_artifact() {
         path_str.ends_with("windows/myapp_1.0.0.0_x64.msix"),
         "msix lands under dist/windows with the conventional name, got: {path_str}"
     );
+}
+
+/// msix with no `properties.logo` hard-fails at planning: nfpm rejects a
+/// logo-less MSIX at pack time, so the guard surfaces the requirement as a
+/// config diagnostic instead.
+#[test]
+fn test_msix_empty_logo_hard_fails() {
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = msix_test_config();
+    if let Some(msix) = cfg.msix.as_mut()
+        && let Some(props) = msix.properties.as_mut()
+    {
+        props.logo = None;
+    }
+    let mut ctx = ctx_with_single_binary(&tmp, cfg, "x86_64-pc-windows-msvc");
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("msix without a logo must hard-fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("msix.properties.logo"),
+        "names the field: {msg}"
+    );
+    assert!(msg.contains("myapp"), "names the crate: {msg}");
+}
+
+/// msix with no `publisher` hard-fails at planning: nfpm requires the
+/// publisher identity (it must match the signing certificate subject).
+#[test]
+fn test_msix_empty_publisher_hard_fails() {
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = msix_test_config();
+    if let Some(msix) = cfg.msix.as_mut() {
+        msix.publisher = None;
+    }
+    let mut ctx = ctx_with_single_binary(&tmp, cfg, "x86_64-pc-windows-msvc");
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("msix without a publisher must hard-fail");
+    let msg = err.to_string();
+    assert!(msg.contains("msix.publisher"), "names the field: {msg}");
+    assert!(msg.contains("myapp"), "names the crate: {msg}");
+}
+
+/// An explicitly-supplied application missing `executable` hard-fails with a
+/// message naming the exact list index and field.
+#[test]
+fn test_msix_incomplete_application_hard_fails() {
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = msix_test_config();
+    if let Some(msix) = cfg.msix.as_mut()
+        && let Some(apps) = msix.applications.as_mut()
+    {
+        apps[0].executable = None;
+    }
+    let mut ctx = ctx_with_single_binary(&tmp, cfg, "x86_64-pc-windows-msvc");
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("msix application without an executable must hard-fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("msix.applications[0].executable"),
+        "names the indexed field: {msg}"
+    );
+}
+
+/// With `applications:` omitted, anodizer derives one application per
+/// packaged binary (executable = file name, id = sanitized stem).
+#[test]
+fn test_msix_applications_derived_from_binaries() {
+    let mut cfg = msix_test_config();
+    if let Some(msix) = cfg.msix.as_mut() {
+        msix.applications = None;
+    }
+    let yaml = generate_nfpm_yaml(
+        &cfg,
+        "1.0.0",
+        &["dist/my-app.exe".to_string()],
+        Some("msix"),
+        true,
+        &Default::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("executable: my-app.exe"),
+        "derived executable missing:\n{yaml}"
+    );
+    // '-' is outside the AppxManifest Id alphabet and must be stripped.
+    assert!(yaml.contains("id: myapp"), "derived id missing:\n{yaml}");
 }
 
 /// The windows↔msix XOR gate: msix skips non-Windows binaries, and every
@@ -2774,7 +2880,10 @@ fn test_termux_deb_yaml_and_filename_use_termux_arch() {
         assert_eq!(pkgs.len(), 1, "{triple}");
         let path_str = pkgs[0].path.to_string_lossy().into_owned();
         assert!(
-            path_str.ends_with(&format!("myapp_1.0.0_{want_arch}.deb")),
+            // GoReleaser appends the full `.termux.deb` extension whenever the
+            // rendered template doesn't already end with it — including after
+            // a `.deb`-suffixed ConventionalFileName.
+            path_str.ends_with(&format!("myapp_1.0.0_{want_arch}.deb.termux.deb")),
             "{triple}: termux filename must use '{want_arch}', got: {path_str}"
         );
 

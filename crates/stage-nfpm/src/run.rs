@@ -268,6 +268,7 @@ fn process_nfpm_format(
     // not false-fail a config whose only target is skipped. A deb/apk that
     // genuinely builds still hard-fails when no maintainer can be resolved.
     require_deb_apk_maintainer(&ctx.config, nfpm_cfg, crate_name, format)?;
+    require_msix_essentials(nfpm_cfg, crate_name, format)?;
 
     let pkg_name_owned = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
     let pkg_name: &str = pkg_name_owned.as_str();
@@ -420,7 +421,11 @@ pub(crate) fn artifact_kind_for_format(format: &str) -> ArtifactKind {
 /// Return the file extension for a given nfpm packager format.
 pub(crate) fn format_extension(format: &str) -> &str {
     match format {
-        "deb" | "termux.deb" => ".deb",
+        "deb" => ".deb",
+        // GoReleaser keeps the full format as the extension for Termux
+        // (`ext := "." + format`, explicitly skipping the deb packager's
+        // ConventionalExtension), so Termux repos can distinguish the file.
+        "termux.deb" => ".termux.deb",
         "rpm" => ".rpm",
         "apk" => ".apk",
         "archlinux" => ".pkg.tar.zst",
@@ -614,6 +619,76 @@ fn resolve_effective_maintainer<'a>(
 /// This is a Rust-additive correctness improvement beyond GoReleaser (which
 /// only warns), per the repo rule against advisory/continue-on-error on a
 /// genuinely-broken output.
+/// nfpm's msix packager hard-requires `publisher`, `properties.logo`, and at
+/// least one application with `id` + `executable`, rejecting the package at
+/// pack time otherwise; failing here, before any packaging work, turns those
+/// mid-run errors into actionable config diagnostics. An absent
+/// `applications:` list is fine — anodizer derives one per packaged binary —
+/// but an explicitly-supplied entry must be complete.
+fn require_msix_essentials(
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    format: &str,
+) -> Result<()> {
+    if format != "msix" {
+        return Ok(());
+    }
+    let id = nfpm_cfg.id.as_deref().unwrap_or("default");
+    let msix = nfpm_cfg.msix.as_ref();
+    let publisher = msix
+        .and_then(|m| m.publisher.as_deref())
+        .map(str::trim)
+        .unwrap_or("");
+    if publisher.is_empty() {
+        bail!(
+            "nfpm config '{id}' builds an 'msix' package for crate '{crate_name}' but \
+             `msix.publisher` is empty — nfpm requires the publisher identity (it must \
+             match the signing certificate subject). Set `msix.publisher` \
+             (e.g. `publisher: \"CN=My Company, O=My Company, C=US\"`)."
+        );
+    }
+    let logo = msix
+        .and_then(|m| m.properties.as_ref())
+        .and_then(|p| p.logo.as_deref())
+        .map(str::trim)
+        .unwrap_or("");
+    if logo.is_empty() {
+        bail!(
+            "nfpm config '{id}' builds an 'msix' package for crate '{crate_name}' but \
+             `msix.properties.logo` is empty — nfpm requires a logo image for MSIX packages \
+             and rejects the package without one. Set `msix.properties.logo` to a path to a \
+             PNG (e.g. `logo: assets/logo.png`)."
+        );
+    }
+    if let Some(apps) = msix.and_then(|m| m.applications.as_ref()) {
+        for (i, app) in apps.iter().enumerate() {
+            let missing = if app.id.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                Some("id")
+            } else if app
+                .executable
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                Some("executable")
+            } else {
+                None
+            };
+            if let Some(field) = missing {
+                bail!(
+                    "nfpm config '{id}' builds an 'msix' package for crate '{crate_name}' but \
+                     `msix.applications[{i}].{field}` is empty — nfpm requires every \
+                     application to declare both `id` and `executable`. Fill in the field, or \
+                     omit `msix.applications` entirely to let anodizer derive one application \
+                     per packaged binary."
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn require_deb_apk_maintainer(
     config: &anodizer_core::config::Config,
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
@@ -1556,14 +1631,22 @@ fn execute_nfpm_jobs(
                 job.format, job.crate_name, job.target
             )
         })?;
+        // Older nfpm binaries report an unregistered packager for msix; point
+        // the user at the version floor. Only on that signature — attaching it
+        // to every msix failure (config validation, IO) misdirects users whose
+        // nfpm is already new enough. nfpm prints errors to stdout, which the
+        // error chain doesn't embed, so probe the captured output directly.
+        let unregistered_packager = job.format == "msix"
+            && [&output.stdout, &output.stderr]
+                .iter()
+                .any(|s| String::from_utf8_lossy(s).contains("no packager registered"));
         let checked = thread_log.check_output(output, "nfpm");
-        if job.format == "msix" {
-            // Older nfpm binaries report an unknown packager for msix; point
-            // the user at the version floor instead of the raw error alone.
-            checked.context("the 'msix' packager requires nfpm >= 2.46.0")?;
-        } else {
-            checked?;
-        }
+        match checked {
+            Err(e) if unregistered_packager => {
+                return Err(e.context("the 'msix' packager requires nfpm >= 2.46.0"));
+            }
+            other => other?,
+        };
 
         let pkg_name = job
             .pkg_path
@@ -1806,4 +1889,56 @@ fn render_offline_nfpm_yaml(
         lib_paths,
         ctx.template_vars().all_env(),
     )
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    /// Build a job whose "nfpm" is a stub script printing `msg` to stdout
+    /// (where nfpm reports its errors) and exiting 1.
+    fn failing_job(dir: &tempfile::TempDir, msg: &str) -> NfpmJob {
+        let stub = dir.path().join("nfpm-stub.sh");
+        std::fs::write(&stub, format!("#!/bin/sh\necho '{msg}'\nexit 1\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        NfpmJob {
+            _tmp_dir: tempfile::TempDir::new().unwrap(),
+            pkg_path: dir.path().join("out.msix"),
+            format: "msix".to_string(),
+            cmd_args: vec![stub.to_string_lossy().into_owned()],
+            mtime: None,
+            mtime_repr: None,
+            extra_env: Vec::new(),
+            target: None,
+            crate_name: "demo".to_string(),
+            pkg_metadata: Default::default(),
+        }
+    }
+
+    /// The version-floor hint fires only on the unregistered-packager
+    /// signature an old nfpm emits — not on other msix failures.
+    #[test]
+    #[cfg(unix)]
+    fn msix_version_floor_hint_scoped_to_unregistered_packager() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let job = failing_job(&dir, "no packager registered for the format msix");
+        let err = execute_nfpm_jobs(&[job], 1, anodizer_core::log::Verbosity::Quiet)
+            .expect_err("stub exits 1");
+        assert!(
+            format!("{err:#}").contains("requires nfpm >= 2.46.0"),
+            "hint must fire on the unregistered-packager signature: {err:#}"
+        );
+
+        let job = failing_job(&dir, "package msix.applications must be provided");
+        let err = execute_nfpm_jobs(&[job], 1, anodizer_core::log::Verbosity::Quiet)
+            .expect_err("stub exits 1");
+        assert!(
+            !format!("{err:#}").contains("requires nfpm >= 2.46.0"),
+            "hint must NOT fire on a config-validation failure: {err:#}"
+        );
+    }
 }

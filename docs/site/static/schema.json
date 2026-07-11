@@ -10422,7 +10422,7 @@
       "type": "object",
       "properties": {
         "applications": {
-          "description": "Applications contained in the package (at least one required by nfpm, each with `id` and `executable`).",
+          "description": "Applications contained in the package (nfpm requires at least one, each with `id` and `executable`). When omitted, anodizer derives one application per packaged binary — `executable` is the binary's file name and `id` its sanitized file stem — so this only needs setting to override entry points or visual elements.",
           "default": null,
           "type": [
             "array",
