@@ -252,17 +252,15 @@ fn os_package_axes_gated_to_os_package_publishers() {
             "{p} delivers no OS package; smoke + libc-ceiling must be out of scope"
         );
     }
-    // Every carrier of an installable OS package — the `LinuxPackage`-consuming
-    // registries (artifactory/cloudsmith/gemfury) and the raw file carriers
-    // (github-release/blob/uploads) — must keep both axes IN scope.
-    for p in [
-        "github-release",
-        "blob",
-        "uploads",
-        "artifactory",
-        "cloudsmith",
-        "gemfury",
-    ] {
+    // Every carrier of an installable OS package — the set derived from
+    // `PublisherKind::carries_os_packages` — must keep both axes IN scope.
+    let carriers = os_package_consumers();
+    assert_eq!(
+        carriers.len(),
+        6,
+        "expected the six documented carriers; got {carriers:?}"
+    );
+    for p in carriers {
         let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
         ctx.options.publisher_allowlist = vec![p.to_string()];
         assert!(
@@ -270,6 +268,128 @@ fn os_package_axes_gated_to_os_package_publishers() {
             "{p} delivers installable OS packages; smoke + libc-ceiling must stay in scope"
         );
     }
+}
+
+#[test]
+fn artifactory_only_surface_runs_os_package_axes() {
+    // `--publishers artifactory` ships installable OS packages, so the stage
+    // must NOT self-skip and the libc-ceiling axis must actually inspect the
+    // produced package: the deb here carries an ELF above the ceiling, so the
+    // gate fails and the verdict records the defect — proof the axis ran.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let elf = elf32_le_with_glibc_2_99();
+    let deb = make_deb(&gz(&make_tar(&[("usr/bin/app", &elf)])));
+
+    let mut ctx = libc_ctx("2.36");
+    register_package(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
+    ctx.options.publisher_allowlist = vec!["artifactory".to_string()];
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("artifactory-only surface must run the libc-ceiling axis");
+    assert!(
+        format!("{err:#}").contains("2.99"),
+        "the axis inspected the deb and found the defect: {err:#}"
+    );
+    assert!(
+        ctx.verify_release.is_some(),
+        "a real inspection with issues must stamp the failing verdict"
+    );
+}
+
+#[test]
+fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
+    // A configured custom `publishers:` entry with no artifact_types filter
+    // (default set includes linux_package) is an OS-package carrier: selecting
+    // only it must keep the OS-package axes in scope, and the stage must not
+    // self-skip.
+    let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("mypub".to_string()),
+        cmd: "true".to_string(),
+        ..Default::default()
+    }]);
+    ctx.options.publisher_allowlist = vec!["mypub".to_string()];
+    assert!(
+        os_package_publisher_selected(&ctx),
+        "a selected custom exec publisher that can carry OS packages keeps the axes in scope"
+    );
+
+    // Explicitly filtering the entry to non-package artifact types drops it
+    // from the OS-package surface.
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("mypub".to_string()),
+        cmd: "true".to_string(),
+        artifact_types: Some(vec!["archive".to_string()]),
+        ..Default::default()
+    }]);
+    assert!(
+        !os_package_publisher_selected(&ctx),
+        "an archive-only custom publisher ships no OS package"
+    );
+
+    // An explicit linux_package artifact_types entry is back in scope.
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("mypub".to_string()),
+        cmd: "true".to_string(),
+        artifact_types: Some(vec!["linux_package".to_string()]),
+        ..Default::default()
+    }]);
+    assert!(os_package_publisher_selected(&ctx));
+
+    // Deselected (not in the allowlist), skipped, or cmd-less entries are out.
+    ctx.options.publisher_allowlist = vec!["other".to_string()];
+    assert!(
+        !os_package_publisher_selected(&ctx),
+        "a deselected custom publisher is out of the surface"
+    );
+    ctx.options.publisher_allowlist = vec!["mypub".to_string()];
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("mypub".to_string()),
+        cmd: "true".to_string(),
+        skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+        ..Default::default()
+    }]);
+    assert!(
+        !os_package_publisher_selected(&ctx),
+        "a skip=true custom publisher is out of the surface"
+    );
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("mypub".to_string()),
+        cmd: String::new(),
+        ..Default::default()
+    }]);
+    assert!(
+        !os_package_publisher_selected(&ctx),
+        "an empty-cmd custom publisher publishes nothing"
+    );
+}
+
+#[test]
+fn custom_exec_publisher_only_surface_runs_libc_axis_end_to_end() {
+    // End-to-end companion: with ONLY a custom exec publisher selected, the
+    // stage must not self-skip and the libc-ceiling axis must inspect the
+    // produced deb (whose ELF exceeds the ceiling => failing verdict).
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let elf = elf32_le_with_glibc_2_99();
+    let deb = make_deb(&gz(&make_tar(&[("usr/bin/app", &elf)])));
+
+    let mut ctx = libc_ctx("2.36");
+    ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
+        name: Some("minio-mirror".to_string()),
+        cmd: "true".to_string(),
+        ..Default::default()
+    }]);
+    register_package(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
+    ctx.options.publisher_allowlist = vec!["minio-mirror".to_string()];
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("custom-exec-only surface must run the libc-ceiling axis");
+    assert!(
+        format!("{err:#}").contains("2.99"),
+        "the axis inspected the deb and found the defect: {err:#}"
+    );
 }
 
 #[test]
@@ -835,6 +955,13 @@ fn asset_existence_skipped_when_crate_has_no_github_repo() {
         log.lock().expect("log mutex").is_empty(),
         "no GitHub repo configured => no live fetch is attempted"
     );
+    // Every crate hit the Ok(None) silent-skip: zero assets were compared,
+    // and with no landing evidence recorded no other check ran either — the
+    // stage must not stamp a green verdict off a run that proved nothing.
+    assert!(
+        ctx.verify_release.is_none(),
+        "all-crates-Ok(None) asset axis inspected nothing; no verdict may be stamped"
+    );
 }
 
 #[test]
@@ -908,7 +1035,8 @@ fn multi_crate_asset_check_bails_naming_the_offending_crate() {
 }
 
 // ===========================================================================
-// libc-ceiling — the local-file half (check_one_deb_libc / extract_deb_main_elf
+// libc-ceiling — the local-file half (check_one_package_libc /
+// extract_package_main_elf
 // / linux_packages). Synthetic .deb files are built on disk in a tempdir and
 // the stage drives the real ELF extraction + glibc compare. assert_assets is
 // turned OFF so these tests exercise only the libc path with no network.
@@ -1070,12 +1198,12 @@ fn minimal_elf32_le() -> Vec<u8> {
     h
 }
 
-/// Register a `.deb` file on disk and add it as a `LinuxPackage` artifact whose
+/// Write a package file on disk and add it as a `LinuxPackage` artifact whose
 /// path points at the real file (so `linux_packages` canonicalizes it and the
-/// libc check can read it). Returns the directory to keep it alive.
-fn register_deb(ctx: &mut Context, dir: &std::path::Path, name: &str, deb_bytes: &[u8]) {
+/// libc check can read it).
+fn register_package(ctx: &mut Context, dir: &std::path::Path, name: &str, pkg_bytes: &[u8]) {
     let path = dir.join(name);
-    std::fs::write(&path, deb_bytes).expect("write deb");
+    std::fs::write(&path, pkg_bytes).expect("write package");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         name: name.to_string(),
@@ -1113,7 +1241,7 @@ fn libc_check_bails_when_deb_exceeds_ceiling() {
     let deb = make_deb(&gz(&make_tar(&[("usr/bin/app", &elf)])));
 
     let mut ctx = libc_ctx("2.36");
-    register_deb(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
+    register_package(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
 
     let err = VerifyReleaseStage
         .run(&mut ctx)
@@ -1138,7 +1266,7 @@ fn libc_check_passes_when_deb_has_no_glibc_requirement() {
     let deb = make_deb(&gz(&make_tar(&[("usr/bin/app", &elf)])));
 
     let mut ctx = libc_ctx("2.36");
-    register_deb(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
+    register_package(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
 
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
@@ -1149,16 +1277,23 @@ fn libc_check_passes_when_deb_has_no_glibc_requirement() {
 #[test]
 fn libc_check_skips_deb_with_no_inspectable_elf() {
     // A .deb whose data.tar contains only non-ELF members yields Ok(None) from
-    // extract_deb_main_elf => the libc check is skipped (no issue), gate passes.
+    // extract_package_main_elf => the libc check is skipped (no issue), gate
+    // passes — and, since nothing was actually inspected, no verdict may be
+    // stamped off it.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let deb = make_deb(&gz(&make_tar(&[("usr/share/doc/readme", b"plain text")])));
 
     let mut ctx = libc_ctx("2.36");
-    register_deb(&mut ctx, tmp.path(), "data_amd64.deb", &deb);
+    register_package(&mut ctx, tmp.path(), "data_amd64.deb", &deb);
 
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
         "a deb with no inspectable ELF skips the libc check"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "an uninspectable-only candidate set counts as zero inspections; \
+         no verdict may be stamped"
     );
 }
 
@@ -1190,10 +1325,10 @@ fn libc_check_bails_when_deb_unreadable() {
 }
 
 #[test]
-fn libc_check_ignores_non_deb_linux_packages() {
-    // The libc check only inspects `.deb`s; a `.rpm` LinuxPackage artifact must
-    // be skipped at the extension filter — even a bogus rpm body must not error
-    // the gate.
+fn libc_check_degrades_malformed_rpm_to_skip() {
+    // The libc check inspects `.deb`/`.rpm`/`.apk`; a body that is not
+    // actually an rpm degrades to the no-inspectable-ELF skip (not counted,
+    // no error) rather than failing the gate.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let mut ctx = libc_ctx("2.36");
     let path = tmp.path().join("app.x86_64.rpm");
@@ -1210,7 +1345,55 @@ fn libc_check_ignores_non_deb_linux_packages() {
 
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
-        "a non-.deb package is skipped by the libc check"
+        "a malformed rpm degrades to a skip, not a gate failure"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "nothing was inspected, so no verdict may be stamped"
+    );
+}
+
+#[test]
+fn libc_check_bails_when_rpm_exceeds_ceiling() {
+    // The glibc-ceiling axis covers `.rpm` packages: an rpm whose cpio payload
+    // carries an ELF requiring GLIBC_2.99 must fail a 2.36 ceiling exactly
+    // like the .deb path does.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let elf = elf32_le_with_glibc_2_99();
+    let cpio = crate::rpm::tests::make_cpio_newc(&[("usr/bin/app", &elf)]);
+    let rpm = crate::rpm::tests::make_rpm(&gz(&cpio));
+
+    let mut ctx = libc_ctx("2.36");
+    register_package(&mut ctx, tmp.path(), "app.x86_64.rpm", &rpm);
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("an rpm above the glibc ceiling must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("2.99") && msg.contains("2.36"),
+        "failure names the required and ceiling glibc: {msg}"
+    );
+}
+
+#[test]
+fn libc_check_bails_when_apk_exceeds_ceiling() {
+    // The glibc-ceiling axis covers `.apk` packages: an apk (gzipped tar)
+    // carrying an ELF requiring GLIBC_2.99 must fail a 2.36 ceiling.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let elf = elf32_le_with_glibc_2_99();
+    let apk = gz(&make_tar(&[("usr/bin/app", &elf)]));
+
+    let mut ctx = libc_ctx("2.36");
+    register_package(&mut ctx, tmp.path(), "app_x86_64.apk", &apk);
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("an apk above the glibc ceiling must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("2.99") && msg.contains("2.36"),
+        "failure names the required and ceiling glibc: {msg}"
     );
 }
 
@@ -1233,7 +1416,7 @@ fn libc_check_off_does_not_inspect_debs() {
         glibc_ceiling: None,
         install_smoke: None,
     };
-    register_deb(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
+    register_package(&mut ctx, tmp.path(), "app_amd64.deb", &deb);
 
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
@@ -1298,10 +1481,10 @@ fn linux_packages_resolves_absolute_path_and_basename() {
 }
 
 #[test]
-fn extract_deb_main_elf_picks_largest_elf_member() {
-    // extract_deb_main_elf walks the .deb's data.tar and returns the LARGEST
-    // ELF member (the shipped binary in the single-binary case), skipping
-    // non-ELF members.
+fn extract_package_main_elf_picks_largest_elf_member() {
+    // extract_package_main_elf walks the .deb's data.tar and returns the
+    // LARGEST ELF member (the shipped binary in the single-binary case),
+    // skipping non-ELF members.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let small = [b"\x7fELF".as_slice(), &[1u8; 8]].concat();
     let big = [b"\x7fELF".as_slice(), &[2u8; 64]].concat();
@@ -1313,17 +1496,51 @@ fn extract_deb_main_elf_picks_largest_elf_member() {
     let path = tmp.path().join("multi_amd64.deb");
     std::fs::write(&path, &deb).expect("write deb");
 
-    let elf = extract_deb_main_elf(&path)
+    let elf = extract_package_main_elf(&path)
         .expect("read deb")
         .expect("an ELF member");
     assert_eq!(elf, big, "the largest ELF (the binary) is selected");
 
-    // A non-.deb file (no ar magic) yields Ok(None) rather than erroring.
-    let txt = tmp.path().join("plain.bin");
+    // A .deb whose bytes carry no ar magic yields Ok(None) rather than erroring.
+    let txt = tmp.path().join("plain.deb");
     std::fs::write(&txt, b"not a deb").expect("write");
     assert!(
-        extract_deb_main_elf(&txt).expect("read").is_none(),
+        extract_package_main_elf(&txt).expect("read").is_none(),
         "a non-ar file degrades to None, not an error"
+    );
+    // An unknown extension is out of the extractor's vocabulary entirely.
+    let other = tmp.path().join("app.tar.gz");
+    std::fs::write(&other, b"whatever").expect("write");
+    assert!(
+        extract_package_main_elf(&other).expect("read").is_none(),
+        "an unknown package extension degrades to None"
+    );
+}
+
+#[test]
+fn extract_package_main_elf_reads_rpm_and_apk() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let elf = [b"\x7fELF".as_slice(), &[9u8; 32]].concat();
+
+    let cpio = crate::rpm::tests::make_cpio_newc(&[("usr/bin/app", &elf)]);
+    let rpm_path = tmp.path().join("app.x86_64.rpm");
+    std::fs::write(&rpm_path, crate::rpm::tests::make_rpm(&gz(&cpio))).expect("write rpm");
+    assert_eq!(
+        extract_package_main_elf(&rpm_path)
+            .expect("read rpm")
+            .as_deref(),
+        Some(elf.as_slice()),
+        "rpm payload ELF extracted"
+    );
+
+    let apk_path = tmp.path().join("app_x86_64.apk");
+    std::fs::write(&apk_path, gz(&make_tar(&[("usr/bin/app", &elf)]))).expect("write apk");
+    assert_eq!(
+        extract_package_main_elf(&apk_path)
+            .expect("read apk")
+            .as_deref(),
+        Some(elf.as_slice()),
+        "apk tar ELF extracted"
     );
 }
 

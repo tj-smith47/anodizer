@@ -876,6 +876,15 @@ impl Context {
                 && !self.options.publisher_allowlist.iter().any(|s| s == name))
     }
 
+    /// Whether ANY of the named publishers survives the operator-selection
+    /// filter — the positive dual of [`Self::publisher_deselected`] over a
+    /// set. One helper for both registers ("is any consumer selected?" and
+    /// its negation "are all consumers deselected?") so callers never
+    /// hand-roll De Morgan twins that can drift apart.
+    pub fn any_publisher_selected(&self, names: &[&str]) -> bool {
+        names.iter().any(|n| !self.publisher_deselected(n))
+    }
+
     /// A distinguished, operator-facing summary line for a deselected
     /// publisher, naming WHICH selector excluded it so the operator can fix
     /// their command. `--skip` always wins, so it is tested first: a publisher
@@ -1904,6 +1913,18 @@ mod tests {
         };
         let ctx = Context::new(Config::default(), opts);
         assert!(ctx.publisher_deselected("cargo"));
+    }
+
+    #[test]
+    fn any_publisher_selected_matches_deselection_dual() {
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), opts);
+        assert!(ctx.any_publisher_selected(&["npm", "cargo"]));
+        assert!(!ctx.any_publisher_selected(&["npm", "blob"]));
+        assert!(!ctx.any_publisher_selected(&[]));
     }
 
     #[test]

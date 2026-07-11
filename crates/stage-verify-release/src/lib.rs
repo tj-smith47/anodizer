@@ -27,8 +27,9 @@
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
 //!   notice when Docker is unavailable.
-//! - **libc ceiling** — no glibc-linked `.deb` may require a glibc newer than
-//!   the configured floor ([`libc_check`]). musl binaries are skipped.
+//! - **libc ceiling** — no glibc-linked binary shipped in a `.deb`, `.rpm`,
+//!   or `.apk` may require a glibc newer than the configured floor
+//!   ([`libc_check`]). musl binaries are skipped.
 //!
 //! ## Failure semantics
 //!
@@ -66,6 +67,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{CrateConfig, VerifyReleaseConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::publisher_kind::PublisherKind;
 use anodizer_core::stage::Stage;
 use anyhow::Result;
 
@@ -80,16 +82,23 @@ const STAGE_NAME: &str = "verify-release";
 /// than re-running a publish.
 const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 
-/// Publishers whose published surface this gate verifies. When EVERY one is
-/// deselected by the active `--publishers`/`--skip` surface, this run
-/// published nothing the gate can check, so the stage self-skips — the same
-/// consumer-aware gating `signs:` uses ([`anodizer_stage_sign::signs_consumers`]).
+/// Publishers whose LANDING / asset surface this gate verifies. This list is
+/// one of the stage's in-scope triggers, not the whole model: the stage runs
+/// when ANY of (this list ∪ the OS-package carriers derived from
+/// [`PublisherKind::carries_os_packages`] ∪ in-scope custom `publishers:`
+/// entries that can carry OS packages) survives the active
+/// `--publishers`/`--skip` surface — an `--publishers artifactory` run ships
+/// installable packages, so the OS-package axes must still fire. Only when
+/// NONE of those is selected did the run publish nothing the gate can check,
+/// and the stage self-skips — the same consumer-aware gating `signs:` uses
+/// ([`anodizer_stage_sign::signs_consumers`]).
 ///
 /// Each check axis is additionally gated on ITS OWN publisher: the asset
-/// existence/content check consumes only github-release, and each landing
-/// check fires only when its publisher's recorded outcome is `Succeeded` —
-/// so a `--publishers npm` run still verifies the npm landing while skipping
-/// the GitHub asset check.
+/// existence/content check consumes only github-release, each landing
+/// check fires only when its publisher's recorded outcome is `Succeeded`,
+/// and the OS-package axes gate on [`os_package_publisher_selected`] — so a
+/// `--publishers npm` run still verifies the npm landing while skipping
+/// the GitHub asset check and the package matrix.
 pub fn verify_release_consumers() -> &'static [&'static str] {
     &[
         "github-release",
@@ -100,35 +109,79 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
     ]
 }
 
-/// Publishers that can DELIVER installable OS packages (`.deb`/`.rpm`/`.apk`)
-/// to users — the package registries that consume `LinuxPackage`
-/// (`artifactory`, `cloudsmith`, `gemfury`) plus the raw carriers that ship the
-/// package file itself (`github-release` assets, `blob`, `uploads`). The
-/// OS-package verify axes (install-smoke and libc-ceiling) verify those
-/// produced artifacts, so — like the asset check gating on `github-release` —
-/// they run only when at least one such publisher is in the selected publish
-/// surface. Over-inclusion is safe (a surface that ships no package finds
-/// nothing to check); under-inclusion would drop coverage on a shipped
-/// package, so err toward listing a carrier.
-fn os_package_consumers() -> &'static [&'static str] {
-    &[
-        "github-release",
-        "blob",
-        "uploads",
-        "artifactory",
-        "cloudsmith",
-        "gemfury",
-    ]
+/// Built-in publishers that can DELIVER installable OS packages
+/// (`.deb`/`.rpm`/`.apk`) to users, derived from
+/// [`PublisherKind::carries_os_packages`] so the set tracks the enum instead
+/// of a hand-maintained string list. The OS-package verify axes
+/// (install-smoke and libc-ceiling) verify those produced artifacts, so —
+/// like the asset check gating on `github-release` — they run only when at
+/// least one such publisher is in the selected publish surface.
+/// Over-inclusion is safe (a surface that ships no package finds nothing to
+/// check); under-inclusion would drop coverage on a shipped package.
+pub fn os_package_consumers() -> Vec<&'static str> {
+    PublisherKind::all()
+        .filter(|k| k.carries_os_packages())
+        .map(PublisherKind::token)
+        .collect()
 }
 
 /// Whether the selected publish surface delivers any installable OS package,
 /// i.e. whether the OS-package verify axes (install-smoke, libc-ceiling) have
 /// anything in scope. A `--publishers npm` run ships no OS package, so those
-/// axes are out of scope there.
+/// axes are out of scope there; an in-scope custom `publishers:` entry that
+/// can carry OS packages keeps them in scope just like a built-in carrier.
 fn os_package_publisher_selected(ctx: &Context) -> bool {
-    os_package_consumers()
-        .iter()
-        .any(|p| !ctx.publisher_deselected(p))
+    ctx.any_publisher_selected(&os_package_consumers()) || custom_os_package_publisher_selected(ctx)
+}
+
+/// Whether any configured custom `publishers:` entry that can carry an OS
+/// package is selected this run.
+///
+/// A custom exec publisher carries OS packages when its `artifact_types`
+/// filter is absent (the curated default set includes `linux_package`) or
+/// explicitly lists `linux_package`. An entry is out of scope when its `cmd`
+/// is empty, the operator deselected its effective name (the `name:` field,
+/// falling back to the same `publisher[i]` index label the exec dispatch
+/// uses), its `skip:` renders true, or its `if:` renders falsy. Template
+/// evaluation is best-effort here: a render failure counts the entry as
+/// selected, because over-inclusion only makes the axes look at packages the
+/// run produced anyway, while under-inclusion would silently drop coverage.
+fn custom_os_package_publisher_selected(ctx: &Context) -> bool {
+    let Some(publishers) = ctx.config.publishers.as_ref() else {
+        return false;
+    };
+    publishers.iter().enumerate().any(|(i, p)| {
+        if p.cmd.is_empty() {
+            return false;
+        }
+        let carries = p.artifact_types.as_ref().is_none_or(|types| {
+            types
+                .iter()
+                .any(|t| t == ArtifactKind::LinuxPackage.as_str())
+        });
+        if !carries {
+            return false;
+        }
+        let name = p.name.clone().unwrap_or_else(|| format!("publisher[{i}]"));
+        if ctx.publisher_deselected(&name) {
+            return false;
+        }
+        if let Some(skip) = p.skip.as_ref()
+            && skip
+                .try_evaluates_to_true(|s| ctx.render_template(s))
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        !matches!(
+            anodizer_core::config::evaluate_if_condition(
+                p.if_condition.as_deref(),
+                &format!("publisher '{name}'"),
+                |s| ctx.render_template(s),
+            ),
+            Ok(false)
+        )
+    })
 }
 
 impl Stage for VerifyReleaseStage {
@@ -144,11 +197,13 @@ impl Stage for VerifyReleaseStage {
         if ctx.should_skip(STAGE_NAME) {
             return Ok(());
         }
-        // A `--skip=github-release,cargo,npm,blob`-style run touched none of
-        // the verifiable surfaces — nothing to verify here.
-        if verify_release_consumers()
-            .iter()
-            .all(|p| ctx.publisher_deselected(p))
+        // A `--skip=github-release,cargo,npm,blob,...`-style run touched none
+        // of the verifiable surfaces — nothing to verify here. OS-package
+        // carriers (built-in or custom exec) count as verifiable: their
+        // shipped packages are exactly what the install-smoke / libc-ceiling
+        // axes exist to check.
+        if !ctx.any_publisher_selected(verify_release_consumers())
+            && !os_package_publisher_selected(ctx)
         {
             ctx.logger(STAGE_NAME)
                 .status("skipped — no verifiable publisher in the selected publish surface");
@@ -191,11 +246,7 @@ impl Stage for VerifyReleaseStage {
             log.verbose("github-release not in the selected publish surface — asset check skipped");
         }
 
-        let mut issues: Vec<String> = Vec::new();
-        // Emit the resolved install-smoke strategy once, the first time a smoke job
-        // runs, so a CI operator can tell a slow copy path (dind without a shared
-        // work dir) from a fast bind-mount path.
-        let mut smoke_strategy_logged = false;
+        let mut run_state = VerifyRun::default();
 
         // The install-smoke axis verifies produced OS packages (.deb/.rpm/.apk)
         // are installable — coverage owned by the publishers that DELIVER those
@@ -217,9 +268,11 @@ impl Stage for VerifyReleaseStage {
             false
         };
         if smoke_enabled && !smoke_in_surface {
-            log.verbose(
-                "install smoke-test out of the selected publish surface \
-                 (no OS-package publisher selected) — skipped",
+            // status-ok: operator-visible axis skip, same class as the
+            // Docker-unavailable skip below — not a command echo.
+            log.status(
+                "skipped install smoke-test — out of the selected publish surface \
+                 (no OS-package publisher selected)",
             );
         } else if smoke_enabled && !docker_ok {
             log.status(
@@ -228,38 +281,30 @@ impl Stage for VerifyReleaseStage {
             );
         }
         if cfg.glibc_check_enabled() && !os_pkg_selected {
-            log.verbose(
-                "libc-ceiling out of the selected publish surface \
-                 (no OS-package publisher selected) — skipped",
+            // status-ok: operator-visible axis skip, symmetric with the
+            // smoke-axis skip above — not a command echo.
+            log.status(
+                "skipped libc-ceiling — out of the selected publish surface \
+                 (no OS-package publisher selected)",
             );
         }
 
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("verify-release: create tokio runtime: {e}"))?;
 
-        // Tallies of packages ACTUALLY examined by the OS-package axes, summed
-        // across crates. `..._enabled && surface-selected` proves only that an
-        // axis was in scope; these prove it inspected ≥1 artifact — the
-        // difference between "verified" and "had nothing to verify".
-        let mut libc_inspected = 0usize;
-        let mut smoke_inspected = 0usize;
+        let scope = AxisScope {
+            github_selected,
+            os_pkg_selected,
+            smoke_enabled,
+            docker_ok,
+        };
+        let mut totals = CrateVerifyOutcome::default();
         for crate_cfg in &crates {
-            verify_one_crate(
-                ctx,
-                &log,
-                &rt,
-                &cfg,
-                crate_cfg,
-                github_selected,
-                os_pkg_selected,
-                smoke_enabled,
-                docker_ok,
-                &mut issues,
-                &mut smoke_strategy_logged,
-                &mut libc_inspected,
-                &mut smoke_inspected,
-            )?;
+            let outcome =
+                verify_one_crate(ctx, &log, &rt, &cfg, crate_cfg, &scope, &mut run_state)?;
+            totals.absorb(&outcome);
         }
+        let mut issues = run_state.issues;
 
         let mut landing_probed = 0usize;
         if cfg.landing_checks_enabled() {
@@ -290,14 +335,7 @@ impl Stage for VerifyReleaseStage {
         // Distinguish "everything verified" from "nothing was in scope to
         // verify": stamping a passing verdict when no check actually ran
         // would fabricate green evidence for a run that proved nothing.
-        let asset_check_ran = cfg.assert_assets_enabled() && github_selected && !crates.is_empty();
-        // A libc ceiling or smoke config that inspected zero produced packages
-        // verified nothing — count it as "ran" only when it actually examined
-        // an artifact, so a package-less run leaves the verdict unstamped
-        // instead of fabricating a green "verified" off a vacuous check.
-        let libc_ran = libc_inspected > 0;
-        let smoke_ran = smoke_inspected > 0;
-        let any_check_ran = asset_check_ran || libc_ran || smoke_ran || landing_probed > 0;
+        let any_check_ran = totals.any_inspected() || landing_probed > 0;
         if !any_check_ran && issues.is_empty() {
             log.verbose("no check ran against the selected publish surface — no verdict recorded");
             return Ok(());
@@ -638,36 +676,89 @@ fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
     Ok(anodizer_core::hashing::hex_lower(&hasher.finalize()))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Which check axes the selected publish surface leaves in scope, resolved
+/// once in [`VerifyReleaseStage::run`] and read per crate.
+struct AxisScope {
+    /// github-release survives the operator selection (asset axis in scope).
+    github_selected: bool,
+    /// At least one OS-package carrier is selected (libc + smoke in scope).
+    os_pkg_selected: bool,
+    /// `install_smoke:` is configured.
+    smoke_enabled: bool,
+    /// Docker probe succeeded (only probed when smoke is in surface).
+    docker_ok: bool,
+}
+
+/// Mutable cross-crate accumulation for the verify loop.
+#[derive(Default)]
+struct VerifyRun {
+    /// Every post-publish defect found, across all crates and axes.
+    issues: Vec<String>,
+    /// The resolved install-smoke strategy is emitted once per run, on the
+    /// first smoke job, so a CI operator can tell a slow copy path (dind
+    /// without a shared work dir) from a fast bind-mount path.
+    smoke_strategy_logged: bool,
+}
+
+/// Per-crate tally of what each check axis ACTUALLY examined.
+///
+/// An axis being enabled and in-surface proves only that it was in scope;
+/// these counters prove it inspected ≥1 artifact — the difference between
+/// "verified" and "had nothing to verify". The aggregation site refuses to
+/// stamp a green verdict off all-zero counters, so a run that proved nothing
+/// never fabricates passing evidence.
+#[derive(Default)]
+struct CrateVerifyOutcome {
+    /// Published releases whose asset set was fetched and diffed/byte-checked.
+    assets_inspected: usize,
+    /// Packages whose embedded ELF was extracted and glibc-evaluated, or
+    /// whose read failed (the failure pushed an issue, so it still counts as
+    /// a real inspection).
+    libc_inspected: usize,
+    /// Packages actually submitted to the install-smoke matrix.
+    smoke_inspected: usize,
+}
+
+impl CrateVerifyOutcome {
+    /// Fold another crate's tally into this one.
+    fn absorb(&mut self, other: &Self) {
+        self.assets_inspected += other.assets_inspected;
+        self.libc_inspected += other.libc_inspected;
+        self.smoke_inspected += other.smoke_inspected;
+    }
+
+    /// Whether any axis examined at least one artifact.
+    fn any_inspected(&self) -> bool {
+        self.assets_inspected > 0 || self.libc_inspected > 0 || self.smoke_inspected > 0
+    }
+}
+
 fn verify_one_crate(
     ctx: &Context,
     log: &StageLogger,
     rt: &tokio::runtime::Runtime,
     cfg: &VerifyReleaseConfig,
     crate_cfg: &CrateConfig,
-    github_selected: bool,
-    os_pkg_selected: bool,
-    smoke_enabled: bool,
-    docker_ok: bool,
-    issues: &mut Vec<String>,
-    smoke_strategy_logged: &mut bool,
-    libc_inspected: &mut usize,
-    smoke_inspected: &mut usize,
-) -> Result<()> {
+    scope: &AxisScope,
+    run: &mut VerifyRun,
+) -> Result<CrateVerifyOutcome> {
+    let mut outcome = CrateVerifyOutcome::default();
     // The caller filters to crates carrying a release block; if absent there
     // is no published release to verify, so skip this crate rather than panic.
     let Some(release_cfg) = crate_cfg.release.as_ref() else {
-        return Ok(());
+        return Ok(outcome);
     };
+    let issues = &mut run.issues;
 
     // (a) asset existence + content ------------------------------------------
-    if cfg.assert_assets_enabled() && github_selected {
+    if cfg.assert_assets_enabled() && scope.github_selected {
         match rt.block_on(anodizer_stage_release::fetch_published_assets(
             ctx,
             release_cfg,
             crate_cfg,
         )) {
             Ok(Some(published_assets)) => {
+                outcome.assets_inspected += 1;
                 let published: Vec<String> =
                     published_assets.iter().map(|a| a.name.clone()).collect();
                 let produced = produced_asset_names(
@@ -799,26 +890,28 @@ fn verify_one_crate(
     // `if let` keeps that an invariant the type system enforces rather than an
     // unwrap that could panic if the predicate ever diverges from the field.
     if cfg.glibc_check_enabled()
-        && os_pkg_selected
+        && scope.os_pkg_selected
         && let Some(ceiling) = cfg.glibc_ceiling.as_deref()
     {
         for (path, name, _) in linux_packages(ctx, &crate_cfg.name) {
-            if !name.to_ascii_lowercase().ends_with(".deb") {
+            if PackageType::from_filename(&name).is_none() {
                 continue;
             }
-            // Count the .deb actually examined, not merely that the axis was
-            // configured: a ceiling over zero produced packages verifies
-            // nothing, so the caller must not stamp a green verdict off it.
-            *libc_inspected += 1;
-            check_one_deb_libc(log, &crate_cfg.name, path, ceiling, issues);
+            if check_one_package_libc(log, &crate_cfg.name, path, ceiling, issues) {
+                outcome.libc_inspected += 1;
+            }
         }
     }
 
     // (b) install smoke-test ------------------------------------------------
     // `smoke_enabled` is derived from `install_smoke.is_some()`; the `if let`
     // ties the config presence to its enablement flag without an unwrap.
-    if smoke_enabled
-        && docker_ok
+    // Gating on the OS-package surface here (not only at the caller's
+    // docker-probe site) keeps the loop's precondition local instead of
+    // relying on the caller having zeroed `docker_ok` when out of surface.
+    if scope.smoke_enabled
+        && scope.os_pkg_selected
+        && scope.docker_ok
         && let Some(smoke_cfg) = cfg.install_smoke.as_ref()
     {
         let binary = crate_binary_name(crate_cfg);
@@ -826,10 +919,7 @@ fn verify_one_crate(
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
             };
-            // Count the package actually submitted to the smoke matrix, so a
-            // configured-but-empty run leaves the verdict unstamped rather than
-            // fabricating green evidence off zero installs.
-            *smoke_inspected += 1;
+            outcome.smoke_inspected += 1;
             let image = match pt {
                 PackageType::Deb => smoke_cfg.deb_image(),
                 PackageType::Rpm => smoke_cfg.rpm_image(),
@@ -843,12 +933,12 @@ fn verify_one_crate(
                 binary: binary.clone(),
                 platform: smoke::job_platform(target.as_deref()),
             };
-            if !*smoke_strategy_logged {
+            if !run.smoke_strategy_logged {
                 log.verbose(&format!(
                     "using install-smoke strategy {}",
                     smoke::strategy_label(&job.image)
                 ));
-                *smoke_strategy_logged = true;
+                run.smoke_strategy_logged = true;
             }
             match smoke::run_smoke(&job) {
                 Ok(SmokeOutcome::Passed) => {
@@ -873,33 +963,37 @@ fn verify_one_crate(
         }
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
-/// Run the libc-ceiling check on one `.deb`'s embedded ELF binary.
-fn check_one_deb_libc(
+/// Run the libc-ceiling check on one Linux package's embedded ELF binary.
+///
+/// Returns whether an ELF was actually extracted and evaluated (or the read
+/// failed, which pushed an issue) — `false` on the no-inspectable-ELF skip,
+/// so the caller does not count a package that yielded nothing to check.
+fn check_one_package_libc(
     log: &StageLogger,
     crate_name: &str,
-    deb_path: std::path::PathBuf,
+    pkg_path: std::path::PathBuf,
     ceiling: &str,
     issues: &mut Vec<String>,
-) {
-    let elf_bytes = match extract_deb_main_elf(&deb_path) {
+) -> bool {
+    let elf_bytes = match extract_package_main_elf(&pkg_path) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             log.verbose(&format!(
                 "skipped libc check for crate '{crate_name}' {} — \
                  has no inspectable ELF",
-                deb_path.display()
+                pkg_path.display()
             ));
-            return;
+            return false;
         }
         Err(e) => {
             issues.push(format!(
                 "could not read {} of crate '{crate_name}' for the libc check: {e}",
-                deb_path.display()
+                pkg_path.display()
             ));
-            return;
+            return true;
         }
     };
     match libc_check::check_glibc_ceiling(&elf_bytes, ceiling) {
@@ -907,29 +1001,30 @@ fn check_one_deb_libc(
             log.verbose(&format!(
                 "crate '{crate_name}' {} has no glibc requirement \
                  (static/musl) — skipped",
-                deb_path.display()
+                pkg_path.display()
             ));
         }
         Ok(LibcCheckOutcome::WithinCeiling { max }) => {
             log.verbose(&format!(
                 "crate '{crate_name}' {} requires glibc {max} (<= {ceiling})",
-                deb_path.display()
+                pkg_path.display()
             ));
         }
         Ok(LibcCheckOutcome::ExceedsCeiling { max, ceiling }) => {
             issues.push(format!(
                 "{} of crate '{crate_name}' requires glibc {max}, exceeding the \
                  configured ceiling {ceiling}",
-                deb_path.display()
+                pkg_path.display()
             ));
         }
         Err(e) => {
             issues.push(format!(
                 "libc check failed for {} of crate '{crate_name}': {e}",
-                deb_path.display()
+                pkg_path.display()
             ));
         }
     }
+    true
 }
 
 /// All Linux-package artifacts for a crate as `(absolute_path, basename,
@@ -955,26 +1050,52 @@ fn linux_packages(
         .collect()
 }
 
-/// Extract the largest executable ELF from a `.deb`'s `data.tar.*` payload.
+/// Extract the largest executable ELF from a Linux package's payload —
+/// `.deb` (ar + `data.tar.{gz,xz,zst}`), `.rpm` (lead + headers + compressed
+/// cpio newc payload), or `.apk` (gzipped tar).
 ///
-/// A `.deb` is an `ar` archive containing `data.tar.{gz,xz,zst}`; the shipped
-/// binary lives under `usr/bin/` (or similar). We pick the largest ELF member
-/// as the binary to glibc-check — the common single-binary case. Returns
-/// `Ok(None)` when no ELF is found (e.g. a data-only package).
+/// The shipped binary lives under `usr/bin/` (or similar). We pick the
+/// largest ELF member as the binary to glibc-check — the common
+/// single-binary case. Returns `Ok(None)` when no ELF is found (e.g. a
+/// data-only package).
 ///
 /// Extraction is intentionally minimal and dependency-free: it scans the
-/// `data.tar.*` for ELF members by magic bytes. When the payload is
-/// compressed with a codec not linked into this build it returns `Ok(None)`
-/// rather than erroring — the libc check is best-effort.
-fn extract_deb_main_elf(deb_path: &std::path::Path) -> Result<Option<Vec<u8>>> {
-    let bytes = std::fs::read(deb_path)?;
-    let Some(data_tar) = deb::find_data_tar(&bytes)? else {
-        return Ok(None);
-    };
-    Ok(deb::largest_elf_in_tar(&data_tar))
+/// payload for ELF members by magic bytes. A malformed container or a
+/// compression codec not linked into this build returns `Ok(None)` rather
+/// than erroring — the libc check is best-effort.
+fn extract_package_main_elf(pkg_path: &std::path::Path) -> Result<Option<Vec<u8>>> {
+    let bytes = std::fs::read(pkg_path)?;
+    let name = pkg_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.ends_with(".deb") {
+        let Some(data_tar) = deb::find_data_tar(&bytes)? else {
+            return Ok(None);
+        };
+        Ok(deb::largest_elf_in_tar(&data_tar))
+    } else if name.ends_with(".rpm") {
+        rpm::payload_largest_elf(&bytes)
+    } else if name.ends_with(".apk") {
+        // An apk is (possibly concatenated) gzip streams of tar segments;
+        // MultiGzDecoder crosses the stream boundaries so the data segment's
+        // members are walked the same way the deb data.tar walk is.
+        use std::io::Read as _;
+        let mut tar_bytes = Vec::new();
+        if flate2::read::MultiGzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut tar_bytes)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(deb::largest_elf_in_tar(&tar_bytes))
+    } else {
+        Ok(None)
+    }
 }
 
 mod deb;
+mod rpm;
 
 #[cfg(test)]
 mod tests;

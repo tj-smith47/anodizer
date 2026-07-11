@@ -124,6 +124,53 @@ impl PublisherKind {
         }
     }
 
+    /// All publisher variants, in declaration order.
+    ///
+    /// Thin wrapper over the derived strum iterator so downstream crates can
+    /// enumerate the publisher vocabulary without depending on `strum`
+    /// themselves.
+    pub fn all() -> impl Iterator<Item = Self> {
+        <Self as strum::IntoEnumIterator>::iter()
+    }
+
+    /// Whether this publisher can DELIVER installable OS packages
+    /// (`.deb`/`.rpm`/`.apk`) to users.
+    ///
+    /// `true` for the package registries that consume `LinuxPackage`
+    /// artifacts (`artifactory`, `cloudsmith`, `gemfury`) plus the raw
+    /// carriers that ship the package file itself (`github-release` assets,
+    /// `blob`, `uploads`). The post-release OS-package verify axes
+    /// (install-smoke, libc-ceiling) scope themselves to this set.
+    /// Exhaustive `match` (no wildcard): a new variant must declare whether
+    /// it carries OS packages or the crate fails to compile.
+    pub const fn carries_os_packages(self) -> bool {
+        match self {
+            Self::Artifactory
+            | Self::Uploads
+            | Self::Cloudsmith
+            | Self::GithubRelease
+            | Self::Gemfury
+            | Self::Blob => true,
+            Self::Cargo
+            | Self::Dockerhub
+            | Self::Homebrew
+            | Self::Scoop
+            | Self::Nix
+            | Self::Mcp
+            | Self::Aur
+            | Self::Krew
+            | Self::Schemastore
+            | Self::Npm
+            | Self::Chocolatey
+            | Self::Winget
+            | Self::UpstreamAur
+            | Self::SnapcraftPublish
+            | Self::Docker
+            | Self::DockerSign
+            | Self::Announce => false,
+        }
+    }
+
     /// Whether this publisher fires its external publish from a pipeline
     /// **stage** rather than the trait-based dispatch chokepoint.
     ///
@@ -203,6 +250,26 @@ mod tests {
                 "announce"
             ]),
             "publish-stage set drifted from the documented five"
+        );
+    }
+
+    #[test]
+    fn os_package_carriers_are_the_documented_six() {
+        let carriers: BTreeSet<&str> = PublisherKind::all()
+            .filter(|k| k.carries_os_packages())
+            .map(|k| k.token())
+            .collect();
+        assert_eq!(
+            carriers,
+            BTreeSet::from([
+                "github-release",
+                "blob",
+                "uploads",
+                "artifactory",
+                "cloudsmith",
+                "gemfury"
+            ]),
+            "OS-package carrier set drifted from the documented six"
         );
     }
 
