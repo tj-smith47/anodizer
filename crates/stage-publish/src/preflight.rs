@@ -490,64 +490,28 @@ impl CheckerFactory for RealCheckerFactory {
 ///
 /// Checkers run sequentially. Each checker is only constructed when the
 /// corresponding publisher is configured for at least one selected crate.
-///
-/// Takes `&mut Context` so the gpg capability probe can append to
-/// `ctx.determinism.compile_time_allowlist` when the local gpg binary
-/// lacks `--faked-system-time` support.
 pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightReport> {
     // Production entry point: wires the REAL `cargo publish --dry-run` spawn
     // for the publish-simulation preflight.
     let dry_run_runner = |krate: &str| run_cargo_dry_run(krate, log);
-    run_preflight_inner(
-        ctx,
-        log,
-        &RealCheckerFactory,
-        anodizer_core::signing::gpg_supports_faked_system_time,
-        &dry_run_runner,
-        true,
-    )
+    run_preflight_inner(ctx, log, &RealCheckerFactory, &dry_run_runner, true)
 }
 
 /// [`run_preflight`] with the checker construction injected — exposed so
-/// tests can drive the orchestration without spawning HTTP servers. Uses
-/// the real gpg probe; tests that need to drive the probe use
-/// [`run_preflight_with_factory_and_gpg_probe`] instead.
+/// tests can drive the orchestration without spawning HTTP servers.
 ///
 /// The publish-simulation dry-run runner is a NO-OP here: this seam exists for
-/// publisher-state / rollback-scope / gpg-probe tests, none of which configure
-/// real workspace crates, so spawning `cargo publish --dry-run` would only
-/// produce spurious "package ID did not match" noise. Tests that target the
-/// simulation drive [`run_cargo_publish_simulation_with`] directly with an
-/// injected index query + runner.
+/// publisher-state / rollback-scope tests, none of which configure real
+/// workspace crates, so spawning `cargo publish --dry-run` would only produce
+/// spurious "package ID did not match" noise. Tests that target the simulation
+/// drive [`run_cargo_publish_simulation_with`] directly with an injected index
+/// query + runner.
 pub fn run_preflight_with_factory(
     ctx: &mut Context,
     log: &StageLogger,
     factory: &dyn CheckerFactory,
 ) -> Result<PreflightReport> {
-    run_preflight_inner(
-        ctx,
-        log,
-        factory,
-        anodizer_core::signing::gpg_supports_faked_system_time,
-        &noop_dry_run_runner,
-        false,
-    )
-}
-
-/// Like [`run_preflight_with_factory`] but with the gpg `--faked-system-time`
-/// capability probe also injected. Tests pass a closure returning the
-/// canned support state without spawning a real `gpg` subprocess.
-///
-/// Uses the NO-OP dry-run runner for the same reason as
-/// [`run_preflight_with_factory`] — these are publisher/probe tests, not
-/// publish-simulation tests.
-pub fn run_preflight_with_factory_and_gpg_probe(
-    ctx: &mut Context,
-    log: &StageLogger,
-    factory: &dyn CheckerFactory,
-    gpg_probe: fn() -> bool,
-) -> Result<PreflightReport> {
-    run_preflight_inner(ctx, log, factory, gpg_probe, &noop_dry_run_runner, false)
+    run_preflight_inner(ctx, log, factory, &noop_dry_run_runner, false)
 }
 
 /// A dry-run runner that never spawns and always reports the simulation
@@ -559,15 +523,13 @@ fn noop_dry_run_runner(_krate: &str) -> DryRunOutcome {
 }
 
 /// The single orchestrator behind every `run_preflight*` entry point. Threads
-/// the checker factory, gpg probe, AND the publish-simulation dry-run runner so
-/// each is independently injectable. Production wires the real implementations;
-/// tests wire stubs (no-op runner by default — see the `*_with_factory*`
-/// wrappers).
+/// the checker factory AND the publish-simulation dry-run runner so each is
+/// independently injectable. Production wires the real implementations; tests
+/// wire stubs (no-op runner by default — see the `*_with_factory*` wrappers).
 fn run_preflight_inner(
     ctx: &mut Context,
     log: &StageLogger,
     factory: &dyn CheckerFactory,
-    gpg_probe: fn() -> bool,
     dry_run_runner: &DryRunRunner<'_>,
     live_publisher_preflight: bool,
 ) -> Result<PreflightReport> {
@@ -683,8 +645,6 @@ fn run_preflight_inner(
     }
 
     run_publisher_preflight_extension(ctx, &mut report, live_publisher_preflight)?;
-
-    run_gpg_capability_probe(ctx, &mut report, gpg_probe);
 
     run_cargo_publish_simulation(ctx, log, &mut report, factory, dry_run_runner);
 
@@ -1178,50 +1138,6 @@ fn first_nonempty_line(stderr: &str) -> String {
         .find(|l| !l.is_empty())
         .unwrap_or("non-zero exit, no diagnostic")
         .to_string()
-}
-
-// ---------------------------------------------------------------------------
-// gpg --faked-system-time capability probe
-// ---------------------------------------------------------------------------
-
-/// If gpg is configured for signing somewhere in the config AND the
-/// local gpg binary doesn't support `--faked-system-time`, register the
-/// `gpg-signature.asc` artifact in the compile-time allow-list so the
-/// determinism harness excludes it from drift detection. Also emit a
-/// preflight warning so the operator sees the fallback at pipeline
-/// start.
-///
-/// `gpg --faked-system-time` is how anodize asks gpg to embed a
-/// deterministic timestamp; without it, gpg embeds the real wall-clock
-/// time and the signature bytes drift between runs.
-fn run_gpg_capability_probe(
-    ctx: &mut anodizer_core::context::Context,
-    report: &mut PreflightReport,
-    gpg_probe: fn() -> bool,
-) {
-    if !ctx.config.has_gpg_sign_configured() {
-        return;
-    }
-    // This probe exists solely to inform the determinism harness's compile-time
-    // allow-list; its warning and mutation are meaningless outside a determinism
-    // run. A real publish (e.g. the `--publishers npm` job) carries no
-    // `determinism` state, so skip — otherwise it emits a determinism-drift
-    // warning that has no bearing on the release the operator is running.
-    if ctx.determinism.is_none() {
-        return;
-    }
-    if gpg_probe() {
-        return;
-    }
-    report.warnings.push(
-        "gpg binary does not support --faked-system-time; gpg signatures will be excluded from determinism harness drift detection".into(),
-    );
-    if let Some(state) = ctx.determinism.as_mut() {
-        state.compile_time_allowlist.push((
-            "gpg-signature.asc".into(),
-            "gpg binary does not support --faked-system-time".into(),
-        ));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2439,213 +2355,6 @@ mod tests {
         assert!(
             homebrew_scope_warnings.is_empty(),
             "ANODIZER_GITHUB_TOKEN fallback must satisfy GITHUB_TOKEN scope; warnings: {:?}",
-            report.warnings
-        );
-    }
-
-    // ---- gpg --faked-system-time capability probe ----
-
-    /// Build a Context whose top-level `signs:` declares a gpg signature
-    /// covering all artifacts (the canonical user-facing way to enable
-    /// gpg signing). The probe path only fires when
-    /// `Config::has_gpg_sign_configured()` is true.
-    fn fixture_gpg_signing() -> anodizer_core::context::Context {
-        use anodizer_core::config::{Config, SignConfig};
-        use anodizer_core::context::{Context, ContextOptions};
-        let config = Config {
-            project_name: "mytool".to_string(),
-            signs: vec![SignConfig {
-                artifacts: Some("all".to_string()),
-                // cmd: None — defaults to gpg
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.determinism =
-            Some(anodizer_core::DeterminismState::seed_from_commit(0).expect("0 is non-negative"));
-        ctx
-    }
-
-    fn fixture_cosign_only() -> anodizer_core::context::Context {
-        use anodizer_core::config::{Config, SignConfig};
-        use anodizer_core::context::{Context, ContextOptions};
-        let config = Config {
-            project_name: "mytool".to_string(),
-            signs: vec![SignConfig {
-                artifacts: Some("all".to_string()),
-                cmd: Some("cosign".to_string()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.determinism =
-            Some(anodizer_core::DeterminismState::seed_from_commit(0).expect("0 is non-negative"));
-        ctx
-    }
-
-    fn gpg_probe_returns_false() -> bool {
-        false
-    }
-
-    fn gpg_probe_returns_true() -> bool {
-        true
-    }
-
-    #[test]
-    fn preflight_warns_when_gpg_lacks_faked_system_time() {
-        use anodizer_core::log::{StageLogger, Verbosity};
-        let mut ctx = fixture_gpg_signing();
-        let log = StageLogger::new("preflight", Verbosity::Normal);
-        let factory = empty_factory();
-        let report = run_preflight_with_factory_and_gpg_probe(
-            &mut ctx,
-            &log,
-            &factory,
-            gpg_probe_returns_false,
-        )
-        .expect("ok");
-
-        let gpg_warnings: Vec<&String> = report
-            .warnings
-            .iter()
-            .filter(|w| w.contains("--faked-system-time"))
-            .collect();
-        assert_eq!(
-            gpg_warnings.len(),
-            1,
-            "expected exactly one gpg-fallback warning, got: {:?}",
-            report.warnings
-        );
-    }
-
-    #[test]
-    fn preflight_adds_compile_time_allowlist_entry_when_gpg_unsupported() {
-        use anodizer_core::log::{StageLogger, Verbosity};
-        let mut ctx = fixture_gpg_signing();
-        let log = StageLogger::new("preflight", Verbosity::Normal);
-        let factory = empty_factory();
-        let _report = run_preflight_with_factory_and_gpg_probe(
-            &mut ctx,
-            &log,
-            &factory,
-            gpg_probe_returns_false,
-        )
-        .expect("ok");
-
-        let state = ctx.determinism.expect("determinism state seeded");
-        let entry = state
-            .compile_time_allowlist
-            .iter()
-            .find(|(name, _)| name == "gpg-signature.asc")
-            .expect("gpg-signature.asc allowlist entry must be present");
-        assert!(
-            entry.1.contains("--faked-system-time"),
-            "reason text must reference --faked-system-time: {}",
-            entry.1
-        );
-    }
-
-    #[test]
-    fn preflight_no_gpg_warning_when_probe_succeeds() {
-        use anodizer_core::log::{StageLogger, Verbosity};
-        let mut ctx = fixture_gpg_signing();
-        let log = StageLogger::new("preflight", Verbosity::Normal);
-        let factory = empty_factory();
-        let report = run_preflight_with_factory_and_gpg_probe(
-            &mut ctx,
-            &log,
-            &factory,
-            gpg_probe_returns_true,
-        )
-        .expect("ok");
-
-        assert!(
-            !report
-                .warnings
-                .iter()
-                .any(|w| w.contains("--faked-system-time")),
-            "no gpg-fallback warning expected when probe succeeds: {:?}",
-            report.warnings
-        );
-        let state = ctx.determinism.expect("determinism state seeded");
-        assert!(
-            !state
-                .compile_time_allowlist
-                .iter()
-                .any(|(n, _)| n == "gpg-signature.asc"),
-            "no gpg-signature.asc allowlist entry expected when probe succeeds"
-        );
-    }
-
-    #[test]
-    fn preflight_skips_gpg_probe_when_no_gpg_config() {
-        use anodizer_core::log::{StageLogger, Verbosity};
-        let mut ctx = fixture_cosign_only();
-        let log = StageLogger::new("preflight", Verbosity::Normal);
-        let factory = empty_factory();
-        // Pass the always-false probe — the probe path must not run because
-        // no gpg-using sign config is present.
-        let report = run_preflight_with_factory_and_gpg_probe(
-            &mut ctx,
-            &log,
-            &factory,
-            gpg_probe_returns_false,
-        )
-        .expect("ok");
-
-        assert!(
-            !report
-                .warnings
-                .iter()
-                .any(|w| w.contains("--faked-system-time")),
-            "no gpg-fallback warning when only cosign is configured: {:?}",
-            report.warnings
-        );
-        let state = ctx.determinism.expect("determinism state seeded");
-        assert!(
-            !state
-                .compile_time_allowlist
-                .iter()
-                .any(|(n, _)| n == "gpg-signature.asc"),
-            "no gpg-signature.asc allowlist entry when only cosign is configured"
-        );
-    }
-
-    #[test]
-    fn gpg_probe_skipped_outside_determinism_run() {
-        use anodizer_core::config::{Config, SignConfig};
-        use anodizer_core::context::{Context, ContextOptions};
-        // gpg signing IS configured, but this is a real publish (no determinism
-        // state) — e.g. the `--publishers npm` job. The probe's only product is
-        // a determinism-harness allow-list hint, so with no harness to inform it
-        // must stay silent rather than emit a determinism-drift warning that has
-        // no bearing on the operator's release.
-        let config = Config {
-            project_name: "mytool".to_string(),
-            signs: vec![SignConfig {
-                artifacts: Some("all".to_string()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
-        assert!(
-            ctx.determinism.is_none(),
-            "fixture must have no determinism state",
-        );
-        let mut report = PreflightReport::new();
-        run_gpg_capability_probe(&mut ctx, &mut report, gpg_probe_returns_false);
-        assert!(
-            !report
-                .warnings
-                .iter()
-                .any(|w| w.contains("--faked-system-time")),
-            "no gpg warning may fire outside a determinism run: {:?}",
             report.warnings
         );
     }

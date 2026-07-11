@@ -12,15 +12,14 @@
 //!   (`healthcheck`, validator availability): a broken stub on `PATH`
 //!   passes [`on_path`] but not [`runs`].
 //!
-//! Also hosts `<tool> <args>` capability probes (e.g.
-//! `signing::gpg_supports_faked_system_time`, which delegates to
-//! [`tool_runs_with_args`]).
+//! Also hosts `<tool> <args>` capability probes (e.g. the `docker info`
+//! reachability probe in the publish preflight) via [`tool_runs_with_args`].
 //!
 //! Centralised here so the `Command::new(<tool>)` probe shell-outs live
 //! inside the module-boundaries allow-list. The CLI used to do these
 //! probes inline; that put `Command::new` outside the allow-list and
 //! counted as a boundary violation. Capability probes in other core
-//! modules (signing, etc.) delegate here for the same reason.
+//! modules delegate here for the same reason.
 
 use std::io;
 use std::path::Path;
@@ -175,9 +174,8 @@ pub fn tool_version(name: &str) -> io::Result<Option<String>> {
 
 /// Probe whether `<name> <args...>` runs and exits zero.
 ///
-/// Used by capability probes that pass extra flags beyond bare
-/// `--version` (e.g. `gpg --faked-system-time 0! --version` to check
-/// whether the local gpg supports deterministic-timestamp signing).
+/// Used by capability probes that pass extra flags beyond a bare
+/// `--version` (e.g. `docker info` to check daemon reachability).
 /// stdout/stderr are silenced; `false` covers both "binary missing"
 /// and "exited non-zero" — callers that need to distinguish those two
 /// cases should use [`runs`] / [`tool_version`] instead.
