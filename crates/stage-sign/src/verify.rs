@@ -125,13 +125,9 @@ fn tlog_upload_disabled(args: &[String]) -> bool {
 }
 
 /// True when `cmd`'s basename is a gpg binary (`gpg`, `gpg2`, absolute
-/// paths thereto). Mirrors `SignConfig::is_gpg`'s basename test.
+/// paths thereto). Delegates to the canonical core predicate.
 fn is_gpg_cmd(cmd: &str) -> bool {
-    std::path::Path::new(cmd)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(cmd)
-        .starts_with("gpg")
+    anodizer_core::signing::is_gpg_command(cmd)
 }
 
 /// Derive the keyless certificate identity + issuer.

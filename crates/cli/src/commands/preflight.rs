@@ -567,6 +567,91 @@ fn verify_cosign_keys_load_with(
     all_loaded
 }
 
+/// Distinct gpg signing commands the collected requirements declare: every
+/// `Tool` requirement sourced from the sign/docker-sign stages whose command
+/// classifies as gpg (`anodizer_core::signing::is_gpg_command`). Deduped so
+/// several sign configs sharing one cmd probe it once. Requirements are
+/// collected AFTER stage/publisher gating, so a skipped or deselected sign
+/// surface never contributes a probe.
+fn gpg_sign_cmds(requirements: &[SourcedRequirement]) -> Vec<String> {
+    let mut cmds: Vec<String> = Vec::new();
+    for sr in requirements {
+        if sr.source != "stage:sign" && sr.source != "stage:docker-sign" {
+            continue;
+        }
+        if let anodizer_core::EnvRequirement::Tool { name } = &sr.requirement {
+            if anodizer_core::signing::is_gpg_command(name) && !cmds.contains(name) {
+                cmds.push(name.clone());
+            }
+        }
+    }
+    cmds
+}
+
+/// Probe every configured gpg signing command for `--faked-system-time`
+/// support. When `SOURCE_DATE_EPOCH` is set, the sign stage injects
+/// `--faked-system-time=<epoch>!` into every gpg invocation to pin the
+/// OpenPGP signature timestamp — a gpg too old for the flag (< 2.0.10)
+/// would otherwise die mid-pipeline with a raw "invalid option" after the
+/// full build.
+///
+/// Returns `true` when every gpg cmd accepts the flag (or none is
+/// configured). A failing probe is a hard failure only when
+/// `SOURCE_DATE_EPOCH` is currently set (the injection WILL fire this
+/// run); otherwise it WARNs about the latent incompatibility.
+fn verify_gpg_faked_system_time(
+    requirements: &[SourcedRequirement],
+    ctx: &Context,
+    log: &StageLogger,
+) -> bool {
+    let sde_set = ctx.env_var("SOURCE_DATE_EPOCH").is_some();
+    verify_gpg_faked_system_time_with(requirements, sde_set, log, |cmd| {
+        // A gpg missing from PATH entirely is already reported by the Tool
+        // requirement's own evaluation — don't double-report it as a
+        // flag-support failure.
+        if !anodizer_core::tool_detect::on_path(cmd) {
+            return true;
+        }
+        anodizer_core::tool_detect::tool_runs_with_args(
+            cmd,
+            &["--faked-system-time=19700101T000000!", "--version"],
+        )
+    })
+}
+
+/// Inner of [`verify_gpg_faked_system_time`] with the probe and the
+/// `SOURCE_DATE_EPOCH` presence injected, so tests can drive both branches
+/// deterministically regardless of the host's gpg and process env.
+fn verify_gpg_faked_system_time_with(
+    requirements: &[SourcedRequirement],
+    sde_set: bool,
+    log: &StageLogger,
+    probe: impl Fn(&str) -> bool,
+) -> bool {
+    let mut all_support = true;
+    for cmd in gpg_sign_cmds(requirements) {
+        if probe(&cmd) {
+            log.status(&format!(
+                "{cmd} accepts --faked-system-time (deterministic signature timestamps)"
+            ));
+            continue;
+        }
+        if sde_set {
+            all_support = false;
+            log.error(&format!(
+                "{cmd} rejects --faked-system-time (gpg < 2.0.10?) — SOURCE_DATE_EPOCH is set, \
+                 so the sign stage will inject the flag and gpg will fail mid-release"
+            ));
+        } else {
+            log.warn(&format!(
+                "{cmd} rejects --faked-system-time (gpg < 2.0.10?) — harmless now, but any run \
+                 with SOURCE_DATE_EPOCH set injects the flag and fails at sign time"
+            ));
+        }
+    }
+    all_support
+}
+
 /// Emit each advisory (non-blocking) preflight warning as a `log.warn` line.
 /// These are tools the run would PREFER but does not require — the declaring
 /// stage degrades gracefully without them (e.g. the build's cross-compile
@@ -603,6 +688,12 @@ pub fn run_env_preflight(
         report.note_failure(
             "stage:sign",
             "cosign signing key failed offline load verification",
+        );
+    }
+    if !verify_gpg_faked_system_time(&requirements, ctx, log) {
+        report.note_failure(
+            "stage:sign",
+            "gpg rejects --faked-system-time while SOURCE_DATE_EPOCH is set",
         );
     }
     report
@@ -670,6 +761,12 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         report.note_failure(
             "stage:sign",
             "cosign signing key failed offline load verification",
+        );
+    }
+    if !verify_gpg_faked_system_time(&requirements, &ctx, &log) {
+        report.note_failure(
+            "stage:sign",
+            "gpg rejects --faked-system-time while SOURCE_DATE_EPOCH is set",
         );
     }
 
@@ -1767,6 +1864,131 @@ builds:
             msgs.iter()
                 .any(|(lvl, m)| *lvl == LogLevel::Error && m.contains("failed to load")),
             "a bad key must emit an Error: {msgs:?}"
+        );
+    }
+
+    /// gpg cmd extraction: only sign/docker-sign-sourced `Tool` requirements
+    /// that classify as gpg, deduped across configs sharing one cmd; cosign
+    /// and non-sign sources never contribute.
+    #[test]
+    fn gpg_sign_cmds_filters_and_dedupes() {
+        let tool = |source: &str, name: &str| {
+            SourcedRequirement::new(
+                source,
+                EnvRequirement::Tool {
+                    name: name.to_string(),
+                },
+            )
+        };
+        let reqs = vec![
+            tool("stage:sign", "gpg"),
+            tool("stage:sign", "gpg"),
+            tool("stage:sign", "cosign"),
+            tool("stage:docker-sign", "/usr/bin/gpg2"),
+            tool("stage:build", "gpg"),
+        ];
+        assert_eq!(
+            gpg_sign_cmds(&reqs),
+            vec!["gpg".to_string(), "/usr/bin/gpg2".to_string()]
+        );
+    }
+
+    /// No gpg sign cmd in the requirement set ⇒ nothing to probe ⇒ no
+    /// output, returns `true`.
+    #[test]
+    fn verify_gpg_faked_system_time_noop_without_gpg_config() {
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::Tool {
+                name: "cosign".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        assert!(verify_gpg_faked_system_time_with(&reqs, true, &log, |_| {
+            panic!("no gpg cmd must mean no probe")
+        }));
+        assert!(
+            capture.all_messages().is_empty(),
+            "no gpg requirement must emit nothing: {:?}",
+            capture.all_messages()
+        );
+    }
+
+    /// A failing probe with SOURCE_DATE_EPOCH UNSET must WARN (latent
+    /// incompatibility) and NOT fail the gate.
+    #[test]
+    fn verify_gpg_faked_system_time_warns_without_sde() {
+        use anodizer_core::log::LogLevel;
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::Tool {
+                name: "gpg".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        let ok = verify_gpg_faked_system_time_with(&reqs, false, &log, |_| false);
+        assert!(ok, "flag-unsupported without SDE must not fail the gate");
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter().any(|(lvl, m)| *lvl == LogLevel::Warn
+                && m.contains("--faked-system-time")
+                && m.contains("SOURCE_DATE_EPOCH")),
+            "must WARN naming the flag and the consequence: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|(lvl, _)| *lvl == LogLevel::Error),
+            "must NOT emit an error without SDE: {msgs:?}"
+        );
+    }
+
+    /// A failing probe with SOURCE_DATE_EPOCH SET must FAIL the gate and
+    /// emit an Error — the sign stage WILL inject the flag this run.
+    #[test]
+    fn verify_gpg_faked_system_time_blocks_with_sde() {
+        use anodizer_core::log::LogLevel;
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::Tool {
+                name: "gpg2".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        let ok = verify_gpg_faked_system_time_with(&reqs, true, &log, |_| false);
+        assert!(!ok, "flag-unsupported with SDE set must fail the gate");
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter().any(|(lvl, m)| *lvl == LogLevel::Error
+                && m.contains("gpg2 rejects --faked-system-time")),
+            "must emit an Error naming the cmd: {msgs:?}"
+        );
+    }
+
+    /// A passing probe emits the per-cmd status line and keeps the gate
+    /// clean — for a bare `gpg` and an absolute-path cmd alike.
+    #[test]
+    fn verify_gpg_faked_system_time_passes_on_supported_gpg() {
+        use anodizer_core::log::LogLevel;
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::Tool {
+                name: "/usr/bin/gpg".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        assert!(verify_gpg_faked_system_time_with(&reqs, true, &log, |_| {
+            true
+        }));
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter().any(|(lvl, m)| *lvl == LogLevel::Status
+                && m.contains("/usr/bin/gpg accepts --faked-system-time")),
+            "supported gpg must emit the status result: {msgs:?}"
+        );
+        assert!(
+            !msgs
+                .iter()
+                .any(|(lvl, _)| matches!(*lvl, LogLevel::Warn | LogLevel::Error)),
+            "supported gpg must not warn or error: {msgs:?}"
         );
     }
 

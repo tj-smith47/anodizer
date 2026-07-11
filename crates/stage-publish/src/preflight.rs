@@ -722,6 +722,7 @@ fn run_cargo_publish_simulation(
     // or probing the crates.io index here would falsely abort a cargo-less
     // release on a cargo-only concern. Mirrors the state-probe gate above.
     if ctx.publisher_deselected("cargo") {
+        log.verbose("cargo deselected from the publish surface; skipping cargo publish simulation");
         return;
     }
 

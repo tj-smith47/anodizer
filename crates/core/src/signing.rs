@@ -363,15 +363,26 @@ impl SignConfig {
         }
         match self.cmd.as_deref() {
             None => true, // default cmd is gpg
-            Some(cmd) => {
-                let basename = std::path::Path::new(cmd)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(cmd);
-                basename.starts_with("gpg")
-            }
+            Some(cmd) => is_gpg_command(cmd),
         }
     }
+}
+
+/// True when `cmd` names a gpg binary: its basename starts with `gpg`,
+/// so `gpg`, `gpg2`, `gpg.exe`, and absolute paths thereto all qualify
+/// while `cosign`, `notation`, etc. do not.
+///
+/// The single gpg-detection predicate: every site that branches on
+/// "is this signing command gpg" (config classification, signature
+/// verification arg derivation, deterministic-timestamp injection)
+/// must route through it so a `gpg2`/absolute-path cmd behaves like
+/// plain `gpg` everywhere.
+pub fn is_gpg_command(cmd: &str) -> bool {
+    std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd)
+        .starts_with("gpg")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -686,6 +697,33 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.is_gpg());
+    }
+
+    // ---- is_gpg_command() -------------------------------------------
+
+    #[test]
+    fn is_gpg_command_matches_gpg_variants() {
+        for cmd in [
+            "gpg",
+            "gpg2",
+            "gpg.exe",
+            "/usr/bin/gpg",
+            "/usr/local/bin/gpg2",
+        ] {
+            assert!(is_gpg_command(cmd), "{cmd} must classify as gpg");
+        }
+    }
+
+    #[test]
+    fn is_gpg_command_rejects_non_gpg() {
+        for cmd in [
+            "cosign",
+            "notation",
+            "/usr/bin/cosign",
+            "mygpg-wrapper/cosign",
+        ] {
+            assert!(!is_gpg_command(cmd), "{cmd} must not classify as gpg");
+        }
     }
 
     // ---- AuthenticodeConfig::resolved_*() (lazy-defaults policy) ----

@@ -1538,7 +1538,7 @@ fn label_to_static(label: &str) -> &'static str {
 /// byte-identical detached signatures across runs (RFC 8032). No-op if
 /// the user already supplied `--faked-system-time`.
 fn inject_gpg_faked_system_time(cmd: &str, args: &mut Vec<String>, env: &dyn EnvSource) {
-    if cmd != "gpg" {
+    if !anodizer_core::signing::is_gpg_command(cmd) {
         return;
     }
     let Some(sde) = env.var("SOURCE_DATE_EPOCH") else {
@@ -1618,6 +1618,22 @@ mod faked_time_tests {
             .count();
         assert_eq!(count, 1);
         assert_eq!(args[1], "--faked-system-time=999!");
+    }
+
+    #[test]
+    fn injects_for_gpg2_and_absolute_gpg_path() {
+        // Regression: the injection once required cmd == "gpg" EXACT, so
+        // gpg2/absolute-path configs silently produced timestamp-drifting
+        // signatures under SOURCE_DATE_EPOCH.
+        for cmd in ["gpg2", "/usr/bin/gpg"] {
+            let env = env_with_sde("1715000000");
+            let mut args = vec!["--batch".into(), "--detach-sig".into()];
+            inject_gpg_faked_system_time(cmd, &mut args, &env);
+            assert_eq!(
+                args[1], "--faked-system-time=1715000000!",
+                "injection must fire for cmd '{cmd}'"
+            );
+        }
     }
 
     #[test]

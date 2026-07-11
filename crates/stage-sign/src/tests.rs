@@ -3866,21 +3866,15 @@ fn test_docker_sign_digest_go_compat_syntax() {
 // `Command::new`. There are no `Utc::now()` / `SystemTime::now()`
 // callsites in stage-sign — the SDE goes in as an env var on the
 // `Command`. Byte-stable signature output requires the signer itself to
-// honor SDE (and, for GPG, `--faked-system-time`). These two
-// signer-dependent tests are gated as `#[ignore]` because:
+// honor SDE (and, for GPG, `--faked-system-time`, whose support the
+// preflight now probes via `<cmd> --faked-system-time=...! --version`).
 //
-//   1. cosign's signature output is intentionally non-deterministic by
-//      default (random nonce); deterministic-signing mode requires
-//      `--key-ref` with a specific KMS configuration the test harness
-//      cannot provision.
-//   2. gpg's `--faked-system-time` flag requires a preflight check that
-//      fails fast on gpg < 2.0.10 (no `--faked-system-time` support);
-//      without it, a test that pins gpg byte-stability is flaky on
-//      hosts where the flag isn't supported.
-//
-// Both tests remain in the suite as documentation of the contract; they
-// will be un-ignored once the preflight gpg check + cosign-KMS fixture
-// are wired up.
+// The gpg half is exercised live below (gated on gpg + cosign
+// availability, keys provisioned ephemerally via
+// `core::harness_signing`). The cosign half stays `#[ignore]`: cosign's
+// signature output is intentionally non-deterministic by default
+// (random nonce), and deterministic-signing mode requires `--key-ref`
+// with a KMS configuration the test harness cannot provision.
 
 #[test]
 #[ignore = "cosign deterministic-signing requires KMS key fixture"]
@@ -3890,20 +3884,65 @@ fn cosign_signature_byte_stable_for_same_sde() {
     //   - Set SOURCE_DATE_EPOCH=1715000000 on two separate sign invocations.
     //   - Assert the two `.sig` outputs are byte-identical.
     //
-    // Blocked on: deterministic-signing KMS fixture (preflight will
-    // surface whether the host's cosign supports `--key-ref kms://`).
+    // Blocked on: deterministic-signing KMS fixture (a KMS-backed
+    // `--key-ref` is the only cosign mode with a stable nonce).
 }
 
 #[test]
-#[ignore = "requires gpg --faked-system-time preflight"]
 fn gpg_signature_byte_stable_for_same_sde() {
-    // Sketch:
-    //   - Skip if `gpg --version` doesn't print 2.x+.
-    //   - Sign the same payload twice with the same `--faked-system-time`.
-    //   - Assert byte-equal `.sig` outputs.
-    //
-    // Blocked on: a preflight that fails fast on gpg < 2.0.10 (no
-    // `--faked-system-time` support).
+    use std::process::Command;
+
+    // Key provisioning spawns BOTH gpg and cosign, so gate on both.
+    for tool in ["gpg", "cosign"] {
+        match anodizer_core::tool_detect::runs(tool) {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            probe => {
+                eprintln!("skipping gpg_signature_byte_stable_for_same_sde: {tool}={probe:?}");
+                return;
+            }
+        }
+    }
+    let sde: i64 = 1_715_000_000;
+    let keys = anodizer_core::harness_signing::provision_ephemeral_keys(sde)
+        .expect("provision ephemeral gpg keypair");
+
+    let tmp = tempfile::tempdir().expect("tempdir for gpg sign payload");
+    let payload = tmp.path().join("payload.txt");
+    std::fs::write(&payload, b"byte-stability probe payload").expect("write payload");
+
+    let sign = |sig_name: &str| -> Vec<u8> {
+        let sig = tmp.path().join(sig_name);
+        let out = Command::new("gpg")
+            .env("GNUPGHOME", &keys.gnupg_home)
+            .args([
+                "--batch",
+                "--yes",
+                "--local-user",
+                &keys.gpg_fingerprint,
+                &format!("--faked-system-time={sde}!"),
+                "--output",
+            ])
+            .arg(&sig)
+            .arg("--detach-sig")
+            .arg(&payload)
+            .output()
+            .expect("spawn gpg --detach-sig");
+        assert!(
+            out.status.success(),
+            "gpg sign failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read(&sig).expect("read detached signature")
+    };
+
+    // Same payload + same pinned timestamp + EdDSA (deterministic per
+    // RFC 8032) must yield byte-identical detached signatures.
+    let first = sign("payload.sig.1");
+    let second = sign("payload.sig.2");
+    assert_eq!(
+        first, second,
+        "detached gpg signatures must be byte-identical under a pinned --faked-system-time"
+    );
 }
 
 #[test]
