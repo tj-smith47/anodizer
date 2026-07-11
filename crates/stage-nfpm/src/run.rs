@@ -49,6 +49,10 @@ struct NfpmJob {
     /// when the config leaves `mtime` unset.
     mtime: Option<std::time::SystemTime>,
     mtime_repr: Option<String>,
+    /// Extra environment for the nfpm subprocess. nfpm reads the msix signing
+    /// passphrase from ITS OWN env (`NFPM_MSIX_PASSPHRASE`) instead of a YAML
+    /// field, so anodizer resolves it from the ctx env map and forwards it here.
+    extra_env: Vec<(String, String)>,
     target: Option<String>,
     crate_name: String,
     pkg_metadata: std::collections::HashMap<String, String>,
@@ -229,6 +233,18 @@ fn process_nfpm_format(
 ) -> Result<()> {
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
+    // msix is the only Windows format, and it only packages Windows binaries
+    // (mirrors GoReleaser's windows↔msix XOR gate). Silent-verbose skip, not
+    // a strict guard: a multi-format config legitimately routes each target
+    // to its matching subset of formats.
+    if !format_matches_platform(base_os, format) {
+        log.verbose(&format!(
+            "skipped nfpm format '{}' for {}/{} — not supported",
+            format, base_os, base_arch
+        ));
+        return Ok(());
+    }
+
     let Some((os, arch)) = resolve_format_os_arch(base_os, base_arch, format, log) else {
         return Ok(());
     };
@@ -288,7 +304,12 @@ fn process_nfpm_format(
         dry_run,
     )?;
 
-    let output_dir = dist.join("linux");
+    // msix is a Windows package; it lands next to the MSI/NSIS outputs.
+    let output_dir = if format == "msix" {
+        dist.join("windows")
+    } else {
+        dist.join("linux")
+    };
     if !dry_run {
         fs::create_dir_all(&output_dir)
             .with_context(|| format!("create nfpm output dir: {}", output_dir.display()))?;
@@ -359,7 +380,7 @@ fn process_nfpm_format(
             crate_name, target
         ));
         new_artifacts.push(Artifact {
-            kind: ArtifactKind::LinuxPackage,
+            kind: artifact_kind_for_format(format),
             name: String::new(),
             path: pkg_path,
             target: target.clone(),
@@ -385,6 +406,17 @@ fn process_nfpm_format(
     Ok(())
 }
 
+/// Artifact kind per nfpm packager format: `msix` is a Windows app package
+/// and rides the same `Installer` kind as MSI/NSIS outputs (checksummed,
+/// signed, released); everything else is a Linux package.
+pub(crate) fn artifact_kind_for_format(format: &str) -> ArtifactKind {
+    if format == "msix" {
+        ArtifactKind::Installer
+    } else {
+        ArtifactKind::LinuxPackage
+    }
+}
+
 /// Return the file extension for a given nfpm packager format.
 pub(crate) fn format_extension(format: &str) -> &str {
     match format {
@@ -393,6 +425,7 @@ pub(crate) fn format_extension(format: &str) -> &str {
         "apk" => ".apk",
         "archlinux" => ".pkg.tar.zst",
         "ipk" => ".ipk",
+        "msix" => ".msix",
         _ => "",
     }
 }
@@ -640,7 +673,11 @@ fn nfpm_eligible_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
         .filter(|b| {
             b.target
                 .as_deref()
-                .map(anodizer_core::target::is_nfpm_target)
+                // Windows binaries are eligible solely for the msix format;
+                // the per-format windows↔msix gate skips them everywhere else.
+                .map(|t| {
+                    anodizer_core::target::is_nfpm_target(t) || anodizer_core::target::is_windows(t)
+                })
                 .unwrap_or(false)
         })
         .cloned()
@@ -783,6 +820,13 @@ fn build_platform_groups(
             .map(|((t, v), pa)| (t, v, pa.binaries, pa.libs))
             .collect(),
     )
+}
+
+/// Windows↔msix XOR gate: `msix` packages ONLY Windows binaries, and Windows
+/// binaries package ONLY as `msix` — every other (platform, format) pairing
+/// keeps its existing eligibility.
+fn format_matches_platform(base_os: &str, format: &str) -> bool {
+    (base_os == "windows") == (format == "msix")
 }
 
 /// Resolve the effective `(os, arch)` for a packaging format, honoring the
@@ -989,6 +1033,22 @@ pub(crate) fn render_nfpm_config_fields(
             render_in_place(&mut scripts.postupgrade, vars)?;
         }
     }
+    // msix's identity/branding fields are templated (they carry
+    // per-release values like the version or publisher), matching the set
+    // GoReleaser runs through its template engine: publisher, the display
+    // names, the logo path, and the signature's pfx_file.
+    if let Some(ref mut msix) = rendered_cfg.msix {
+        render_in_place(&mut msix.publisher, vars)?;
+        if let Some(ref mut props) = msix.properties {
+            render_in_place(&mut props.display_name, vars)?;
+            render_in_place(&mut props.publisher_display_name, vars)?;
+            render_in_place(&mut props.logo, vars)?;
+        }
+        if let Some(ref mut sig) = msix.signature {
+            render_in_place(&mut sig.pfx_file, vars)?;
+        }
+    }
+
     if let Some(ref mut libdirs) = rendered_cfg.libdirs {
         render_in_place(&mut libdirs.header, vars)?;
         render_in_place(&mut libdirs.cshared, vars)?;
@@ -1325,7 +1385,12 @@ fn set_nfpm_per_pkg_template_vars(
     ctx.template_vars_mut().set("Format", format);
     ctx.template_vars_mut().set("PackageName", pkg_name);
     ctx.template_vars_mut().set("ConventionalExtension", ext);
-    let fn_info = filename::FileNameInfo::from_config(nfpm_cfg, pkg_name, version, arch);
+    let mut fn_info = filename::FileNameInfo::from_config(nfpm_cfg, pkg_name, version, arch);
+    // `msix.arch` overrides the derived MSIX arch verbatim (nfpm's
+    // ensureValidArch precedence).
+    if format == "msix" {
+        fn_info.arch_override = nfpm_cfg.msix.as_ref().and_then(|m| m.arch.as_deref());
+    }
     let conventional = filename::conventional_filename(format, &fn_info)
         .unwrap_or_else(|| format!("{pkg_name}_{version}_{os}_{arch}{ext}"));
     ctx.template_vars_mut()
@@ -1412,6 +1477,29 @@ fn build_nfpm_job(
         (None, None)
     };
 
+    // The msix passphrase cannot be embedded in the YAML (nfpm declares the
+    // field `yaml:"-"` and reads NFPM_MSIX_PASSPHRASE from its process env),
+    // so resolve it through the same NFPM_{ID}_{format}_PASSPHRASE →
+    // NFPM_{ID}_PASSPHRASE → NFPM_PASSPHRASE ladder the other formats use and
+    // forward it via the subprocess env. Only when a signature is configured
+    // and signing is not skipped.
+    let mut extra_env = Vec::new();
+    if format == "msix"
+        && !ctx.should_skip("sign")
+        && nfpm_cfg
+            .msix
+            .as_ref()
+            .is_some_and(|m| m.signature.is_some())
+        && let Some(passphrase) = crate::builders::resolve_passphrase_from_env(
+            ctx.template_vars().all_env(),
+            nfpm_cfg.id.as_deref().unwrap_or("default"),
+            // uppercase to match the documented NFPM_<ID>_MSIX_PASSPHRASE name
+            Some("MSIX"),
+        )
+    {
+        extra_env.push(("NFPM_MSIX_PASSPHRASE".to_string(), passphrase));
+    }
+
     Ok(NfpmJob {
         _tmp_dir: tmp_dir,
         pkg_path: pkg_path.to_path_buf(),
@@ -1419,6 +1507,7 @@ fn build_nfpm_job(
         cmd_args,
         mtime,
         mtime_repr,
+        extra_env,
         target: target.map(str::to_string),
         crate_name: crate_name.to_string(),
         pkg_metadata,
@@ -1456,16 +1545,25 @@ fn execute_nfpm_jobs(
 
         thread_log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
-        let output = Command::new(&job.cmd_args[0])
-            .args(&job.cmd_args[1..])
-            .output()
-            .with_context(|| {
-                format!(
-                    "execute nfpm for format {} (crate {} target {:?})",
-                    job.format, job.crate_name, job.target
-                )
-            })?;
-        thread_log.check_output(output, "nfpm")?;
+        let mut cmd = Command::new(&job.cmd_args[0]);
+        cmd.args(&job.cmd_args[1..]);
+        for (k, v) in &job.extra_env {
+            cmd.env(k, v);
+        }
+        let output = cmd.output().with_context(|| {
+            format!(
+                "execute nfpm for format {} (crate {} target {:?})",
+                job.format, job.crate_name, job.target
+            )
+        })?;
+        let checked = thread_log.check_output(output, "nfpm");
+        if job.format == "msix" {
+            // Older nfpm binaries report an unknown packager for msix; point
+            // the user at the version floor instead of the raw error alone.
+            checked.context("the 'msix' packager requires nfpm >= 2.46.0")?;
+        } else {
+            checked?;
+        }
 
         let pkg_name = job
             .pkg_path
@@ -1493,7 +1591,7 @@ fn execute_nfpm_jobs(
         }
 
         Ok(Artifact {
-            kind: ArtifactKind::LinuxPackage,
+            kind: artifact_kind_for_format(&job.format),
             name: String::new(),
             path: job.pkg_path.clone(),
             target: job.target.clone(),
@@ -1605,6 +1703,10 @@ pub fn nfpm_yaml_configs_for_crate(
             for format in &nfpm_cfg.formats {
                 validate_format(format)
                     .with_context(|| format!("nfpm config for crate {crate_name}"))?;
+
+                if !format_matches_platform(&base_os, format) {
+                    continue;
+                }
 
                 let Some((os, arch)) = resolve_format_os_arch(&base_os, &base_arch, format, &log)
                 else {

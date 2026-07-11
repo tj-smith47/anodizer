@@ -7,14 +7,17 @@
 use std::collections::HashMap;
 
 use anodizer_core::config::{
-    NfpmApkConfig, NfpmArchlinuxConfig, NfpmDebConfig, NfpmIpkConfig, NfpmRpmConfig,
-    NfpmSignatureConfig,
+    NfpmApkConfig, NfpmArchlinuxConfig, NfpmDebConfig, NfpmIpkConfig, NfpmMsixConfig,
+    NfpmRpmConfig, NfpmSignatureConfig,
 };
 
 use crate::yaml::{
     NfpmYamlApk, NfpmYamlApkScripts, NfpmYamlArchlinux, NfpmYamlArchlinuxScripts, NfpmYamlDeb,
-    NfpmYamlDebScripts, NfpmYamlDebTriggers, NfpmYamlIpk, NfpmYamlIpkAlternative, NfpmYamlRpm,
-    NfpmYamlRpmScripts, NfpmYamlSignature,
+    NfpmYamlDebScripts, NfpmYamlDebTriggers, NfpmYamlIpk, NfpmYamlIpkAlternative, NfpmYamlMsix,
+    NfpmYamlMsixApplication, NfpmYamlMsixCapabilities, NfpmYamlMsixDependencies,
+    NfpmYamlMsixIdentity, NfpmYamlMsixProperties, NfpmYamlMsixSignature,
+    NfpmYamlMsixTargetDeviceFamily, NfpmYamlMsixVisualElements, NfpmYamlRpm, NfpmYamlRpmScripts,
+    NfpmYamlSignature,
 };
 
 /// Resolve the signing passphrase using a 3-level env var fallback:
@@ -109,8 +112,10 @@ pub(super) fn build_yaml_deb(
     format: Option<&str>,
     skip_sign: bool,
     env_map: &HashMap<String, String>,
+    arch: Option<String>,
 ) -> NfpmYamlDeb {
     NfpmYamlDeb {
+        arch,
         compression: deb.compression.clone(),
         predepends: deb.predepends.clone(),
         triggers: deb.triggers.as_ref().map(|t| NfpmYamlDebTriggers {
@@ -169,6 +174,68 @@ pub(super) fn build_yaml_archlinux(arch: &NfpmArchlinuxConfig) -> NfpmYamlArchli
             preupgrade: s.preupgrade.clone(),
             postupgrade: s.postupgrade.clone(),
         }),
+    }
+}
+
+pub(super) fn build_yaml_msix(msix: &NfpmMsixConfig, skip_sign: bool) -> NfpmYamlMsix {
+    NfpmYamlMsix {
+        arch: msix.arch.clone(),
+        publisher: msix.publisher.clone(),
+        identity: msix.identity.as_ref().map(|i| NfpmYamlMsixIdentity {
+            resource_id: i.resource_id.clone(),
+        }),
+        properties: msix.properties.as_ref().map(|p| NfpmYamlMsixProperties {
+            display_name: p.display_name.clone(),
+            publisher_display_name: p.publisher_display_name.clone(),
+            logo: p.logo.clone(),
+        }),
+        applications: msix.applications.as_ref().map(|apps| {
+            apps.iter()
+                .map(|a| NfpmYamlMsixApplication {
+                    id: a.id.clone(),
+                    executable: a.executable.clone(),
+                    entry_point: a.entry_point.clone(),
+                    visual_elements: a.visual_elements.as_ref().map(|v| {
+                        NfpmYamlMsixVisualElements {
+                            display_name: v.display_name.clone(),
+                            description: v.description.clone(),
+                            background_color: v.background_color.clone(),
+                            square150x150_logo: v.square150x150_logo.clone(),
+                            square44x44_logo: v.square44x44_logo.clone(),
+                        }
+                    }),
+                })
+                .collect()
+        }),
+        dependencies: msix
+            .dependencies
+            .as_ref()
+            .map(|d| NfpmYamlMsixDependencies {
+                target_device_families: d.target_device_families.as_ref().map(|fams| {
+                    fams.iter()
+                        .map(|f| NfpmYamlMsixTargetDeviceFamily {
+                            name: f.name.clone(),
+                            min_version: f.min_version.clone(),
+                            max_version_tested: f.max_version_tested.clone(),
+                        })
+                        .collect()
+                }),
+            }),
+        capabilities: msix
+            .capabilities
+            .as_ref()
+            .map(|c| NfpmYamlMsixCapabilities {
+                capabilities: c.capabilities.clone(),
+                device_capabilities: c.device_capabilities.clone(),
+                restricted: c.restricted.clone(),
+            }),
+        signature: if skip_sign {
+            None
+        } else {
+            msix.signature.as_ref().map(|s| NfpmYamlMsixSignature {
+                pfx_file: s.pfx_file.clone(),
+            })
+        },
     }
 }
 

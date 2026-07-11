@@ -25,7 +25,15 @@ pub fn nfpm_command(config_path: &str, format: &str, target: &str) -> Vec<String
 // ---------------------------------------------------------------------------
 
 /// Recognized nfpm packager format names.
-pub(crate) const KNOWN_FORMATS: &[&str] = &["deb", "rpm", "apk", "archlinux", "termux.deb", "ipk"];
+pub(crate) const KNOWN_FORMATS: &[&str] = &[
+    "deb",
+    "rpm",
+    "apk",
+    "archlinux",
+    "termux.deb",
+    "ipk",
+    "msix",
+];
 
 /// Validate that a format string is a known nfpm packager.
 pub(crate) fn validate_format(format: &str) -> Result<()> {

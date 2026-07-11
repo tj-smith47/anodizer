@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use super::run::{render_and_generate_nfpm_yaml, render_nfpm_config_fields};
 use super::{
     KNOWN_FORMATS, NfpmLibraryPaths, NfpmStage, format_extension, generate_nfpm_yaml, nfpm_command,
-    validate_format,
+    nfpm_yaml_configs_for_crate, validate_format,
 };
 
 #[test]
@@ -2447,6 +2447,401 @@ fn test_ipk_format_produces_artifact() {
     assert!(
         path_str.ends_with(".ipk"),
         "ipk package should have .ipk extension, got: {path_str}"
+    );
+}
+
+#[test]
+fn test_format_extension_msix() {
+    assert_eq!(format_extension("msix"), ".msix");
+}
+
+#[test]
+fn test_msix_is_known_format() {
+    assert!(KNOWN_FORMATS.contains(&"msix"));
+    assert!(validate_format("msix").is_ok());
+}
+
+/// Build a Context with one nfpm config and one Binary artifact for `target`.
+fn ctx_with_single_binary(
+    tmp: &TempDir,
+    nfpm_cfg: anodizer_core::config::NfpmConfig,
+    target: &str,
+) -> anodizer_core::context::Context {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp"),
+        target: Some(target.to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    ctx
+}
+
+fn msix_test_config() -> anodizer_core::config::NfpmConfig {
+    use anodizer_core::config::{NfpmMsixApplication, NfpmMsixConfig, NfpmMsixProperties};
+    NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["msix".to_string()],
+        file_name_template: Some("{{ .ConventionalFileName }}".to_string()),
+        msix: Some(NfpmMsixConfig {
+            publisher: Some("CN=My Company, O=My Company, C=US".to_string()),
+            properties: Some(NfpmMsixProperties {
+                logo: Some("assets/logo.png".to_string()),
+                ..Default::default()
+            }),
+            applications: Some(vec![NfpmMsixApplication {
+                id: Some("MyApp".to_string()),
+                executable: Some("myapp.exe".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// msix packages a Windows binary as an Installer artifact under
+/// dist/windows with nfpm's conventional `{name}_{4part}_{msixarch}.msix`
+/// file name.
+#[test]
+fn test_msix_format_produces_installer_artifact() {
+    let tmp = TempDir::new().unwrap();
+    let mut ctx = ctx_with_single_binary(&tmp, msix_test_config(), "x86_64-pc-windows-msvc");
+
+    NfpmStage.run(&mut ctx).unwrap();
+
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::LinuxPackage).is_empty(),
+        "an msix must NOT be registered as a Linux package"
+    );
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::Installer);
+    assert_eq!(pkgs.len(), 1);
+    assert_eq!(pkgs[0].metadata.get("format"), Some(&"msix".to_string()));
+    let path_str = pkgs[0].path.to_string_lossy();
+    assert!(
+        path_str.ends_with("windows/myapp_1.0.0.0_x64.msix"),
+        "msix lands under dist/windows with the conventional name, got: {path_str}"
+    );
+}
+
+/// The windows↔msix XOR gate: msix skips non-Windows binaries, and every
+/// other format skips Windows binaries — a [deb, msix] config on a Linux
+/// binary yields only the deb.
+#[test]
+fn test_msix_windows_xor_gate() {
+    // msix + linux binary → nothing.
+    let tmp = TempDir::new().unwrap();
+    let mut ctx = ctx_with_single_binary(&tmp, msix_test_config(), "x86_64-unknown-linux-gnu");
+    NfpmStage.run(&mut ctx).unwrap();
+    assert!(ctx.artifacts.by_kind(ArtifactKind::Installer).is_empty());
+    assert!(ctx.artifacts.by_kind(ArtifactKind::LinuxPackage).is_empty());
+
+    // deb + windows binary → nothing.
+    let tmp2 = TempDir::new().unwrap();
+    let deb_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+        ..Default::default()
+    };
+    let mut ctx2 = ctx_with_single_binary(&tmp2, deb_cfg, "x86_64-pc-windows-msvc");
+    NfpmStage.run(&mut ctx2).unwrap();
+    assert!(
+        ctx2.artifacts
+            .by_kind(ArtifactKind::LinuxPackage)
+            .is_empty()
+    );
+    assert!(ctx2.artifacts.by_kind(ArtifactKind::Installer).is_empty());
+}
+
+/// The generated msix YAML carries the full msix block with nfpm's exact
+/// key names, and the binary content entry sits at the package root (an
+/// MSIX has no bindir).
+#[test]
+fn test_generate_nfpm_yaml_msix_block() {
+    let nfpm_cfg = msix_test_config();
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &["/path/to/myapp.exe".to_string()],
+        Some("msix"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(yaml.contains("msix:"), "msix block missing:\n{yaml}");
+    assert!(
+        yaml.contains("publisher: CN=My Company, O=My Company, C=US"),
+        "publisher missing:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("logo: assets/logo.png"),
+        "properties.logo missing:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("executable: myapp.exe"),
+        "application executable missing:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("dst: /myapp.exe"),
+        "msix binary must land at the package root, not a bindir:\n{yaml}"
+    );
+}
+
+/// skip_sign zeroes out the msix signature block like it does for
+/// deb/rpm/apk.
+#[test]
+fn test_generate_nfpm_yaml_msix_skip_sign() {
+    use anodizer_core::config::NfpmMsixSignature;
+    let mut nfpm_cfg = msix_test_config();
+    if let Some(msix) = nfpm_cfg.msix.as_mut() {
+        msix.signature = Some(NfpmMsixSignature {
+            pfx_file: Some("cert.pfx".to_string()),
+        });
+    }
+    let signed = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &[],
+        Some("msix"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(signed.contains("pfx_file: cert.pfx"), "{signed}");
+    let unsigned = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &[],
+        Some("msix"),
+        true,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(!unsigned.contains("pfx_file"), "{unsigned}");
+}
+
+#[test]
+fn test_config_parse_nfpm_msix_block() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [msix]
+        msix:
+          arch: x64
+          publisher: "CN=Test"
+          identity:
+            resource_id: en-us
+          properties:
+            display_name: Test App
+            publisher_display_name: Test Co
+            logo: assets/logo.png
+          applications:
+            - id: TestApp
+              executable: test.exe
+              entry_point: Windows.FullTrustApplication
+              visual_elements:
+                display_name: Test App
+                description: A test app
+                background_color: transparent
+                square150x150_logo: assets/150.png
+                square44x44_logo: assets/44.png
+          dependencies:
+            target_device_families:
+              - name: Windows.Desktop
+                min_version: 10.0.17763.0
+                max_version_tested: 10.0.22621.0
+          capabilities:
+            capabilities: [internetClient]
+            device_capabilities: [microphone]
+            restricted: [runFullTrust]
+          signature:
+            pfx_file: cert.pfx
+"#;
+    let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
+    let msix = nfpm.msix.as_ref().unwrap();
+    assert_eq!(msix.arch.as_deref(), Some("x64"));
+    assert_eq!(msix.publisher.as_deref(), Some("CN=Test"));
+    assert_eq!(
+        msix.identity.as_ref().unwrap().resource_id.as_deref(),
+        Some("en-us")
+    );
+    let apps = msix.applications.as_ref().unwrap();
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].executable.as_deref(), Some("test.exe"));
+    let fam = &msix
+        .dependencies
+        .as_ref()
+        .unwrap()
+        .target_device_families
+        .as_ref()
+        .unwrap()[0];
+    assert_eq!(fam.min_version.as_deref(), Some("10.0.17763.0"));
+    assert_eq!(
+        msix.capabilities.as_ref().unwrap().restricted.as_deref(),
+        Some(["runFullTrust".to_string()].as_slice())
+    );
+    assert_eq!(
+        msix.signature.as_ref().unwrap().pfx_file.as_deref(),
+        Some("cert.pfx")
+    );
+}
+
+/// termux.deb stamps the Termux arch nomenclature into BOTH the conventional
+/// filename and the control-file Architecture (via nfpm's deb.arch
+/// override); a plain deb keeps Debian names and gets no deb.arch override.
+#[test]
+fn test_termux_deb_yaml_and_filename_use_termux_arch() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    // (target triple, expected termux arch)
+    let cases = [
+        ("x86_64-linux-android", "x86_64"),
+        ("aarch64-linux-android", "aarch64"),
+        ("i686-linux-android", "i686"),
+    ];
+    for (triple, want_arch) in cases {
+        let tmp = TempDir::new().unwrap();
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["termux.deb".to_string()],
+            maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+            file_name_template: Some("{{ .ConventionalFileName }}".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpms: Some(vec![nfpm_cfg.clone()]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some(triple.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // Filename: dry-run artifact path carries the termux arch.
+        NfpmStage.run(&mut ctx).unwrap();
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1, "{triple}");
+        let path_str = pkgs[0].path.to_string_lossy().into_owned();
+        assert!(
+            path_str.ends_with(&format!("myapp_1.0.0_{want_arch}.deb")),
+            "{triple}: termux filename must use '{want_arch}', got: {path_str}"
+        );
+
+        // Control field: the generated YAML overrides deb.arch so the
+        // package's Architecture matches Termux's apt nomenclature.
+        let rendered = nfpm_yaml_configs_for_crate(&ctx, "myapp").unwrap();
+        assert_eq!(rendered.len(), 1, "{triple}");
+        assert!(
+            rendered[0].yaml.contains(&format!("arch: {want_arch}")),
+            "{triple}: deb.arch override missing:\n{}",
+            rendered[0].yaml
+        );
+    }
+}
+
+/// A plain deb for the same logical arch keeps Debian nomenclature — the
+/// termux mapping must not leak into deb.
+#[test]
+fn test_plain_deb_unchanged_by_termux_mapping() {
+    let tmp = TempDir::new().unwrap();
+    let deb_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+        file_name_template: Some("{{ .ConventionalFileName }}".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = ctx_with_single_binary(&tmp, deb_cfg, "x86_64-unknown-linux-gnu");
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 1);
+    let path_str = pkgs[0].path.to_string_lossy().into_owned();
+    assert!(
+        path_str.ends_with("myapp_1.0.0_amd64.deb"),
+        "plain deb keeps Debian arch names, got: {path_str}"
+    );
+    let rendered = nfpm_yaml_configs_for_crate(&ctx, "myapp").unwrap();
+    assert!(
+        !rendered[0].yaml.contains("deb:"),
+        "plain deb must not grow a deb.arch override:\n{}",
+        rendered[0].yaml
+    );
+}
+
+/// GoReleaser prefixes ANY non-empty termux dir — including non-/usr paths
+/// like /opt — with /data/data/com.termux/files.
+#[test]
+fn test_termux_bindir_prefix_is_unconditional() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["termux.deb".to_string()],
+        maintainer: Some("j@example.com".to_string()),
+        bindir: Some("/opt/myapp/bin".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &["/path/to/myapp".to_string()],
+        Some("termux.deb"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("dst: /data/data/com.termux/files/opt/myapp/bin/myapp"),
+        "non-/usr bindir must still be termux-prefixed:\n{yaml}"
     );
 }
 

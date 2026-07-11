@@ -9,7 +9,7 @@ Anodizer integrates with [nFPM](https://nfpm.goreleaser.com/) to generate native
 
 ## Classification
 
-Packager — generates deb/rpm/apk/archlinux/ipk packages from Linux binaries. Required: not a publisher; always runs unless disabled.
+Packager — generates deb/rpm/apk/archlinux/termux.deb/ipk packages from Linux binaries, and msix app packages from Windows binaries. Required: not a publisher; always runs unless disabled.
 
 ## Minimal config
 
@@ -33,7 +33,7 @@ crates:
   - name: myapp
     nfpm:
       - package_name: myapp            # optional; defaults to crate name
-        formats: [deb, rpm]            # REQUIRED (>= 1 entry): deb | rpm | apk | archlinux | ipk
+        formats: [deb, rpm]            # REQUIRED (>= 1 entry): deb | rpm | apk | archlinux | termux.deb | ipk | msix
                                        #   with no formats entry, this config emits nothing
         vendor: ""                     # optional
         homepage: ""                   # optional
@@ -61,6 +61,7 @@ crates:
         apk: {}                        # optional; apk-specific block
         archlinux: {}                  # optional; archlinux-specific block
         ipk: {}                        # optional; ipk (OpenWrt) block
+        msix: {}                       # optional; msix (Windows) block
 ```
 
 ## Authentication
@@ -71,7 +72,8 @@ Not applicable — nFPM generates package files locally. Uploading them to a pac
 
 - **`formats`**: the list must match the package types your downstream publishers expect. A mismatch (e.g., configuring cloudsmith for `deb` but nFPM only producing `rpm`) silently skips upload.
 - **`dependencies`**: per-format dependency maps allow different deps for deb vs rpm — use the `overrides` map for format-specific fields.
-- **Linux only**: nFPM only processes Linux binary artifacts. Darwin/Windows targets are ignored.
+- **Platform routing**: Linux (plus Android/iOS/AIX where supported) binaries feed the Linux formats; Windows binaries feed **only** `msix`. Darwin targets are ignored. A `[deb, msix]` config packages each target with its matching format and silently skips the rest.
+- **`msix` needs nfpm >= 2.46.0**: older nfpm binaries don't know the msix packager; anodizer surfaces the version floor in the error when packaging fails.
 
 ## Republish / update behavior
 
@@ -82,7 +84,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `package_name` | string | crate name | Package name |
-| `formats` | list | **required** | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `ipk`. At least one entry is required — a config with no `formats` produces no package. |
+| `formats` | list | **required** | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `termux.deb`, `ipk`, `msix`. At least one entry is required — a config with no `formats` produces no package. |
 | `vendor` | string | Cargo first author | Distributing entity recorded in the rpm/deb `Vendor` field. Auto-derives from the crate's first `Cargo.toml` author (with any `<email>` suffix stripped); set to override. See [Vendor](#vendor). |
 | `homepage` | string | none | Homepage URL |
 | `maintainer` | string | none | Maintainer email |
@@ -105,6 +107,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `apk` | object | none | APK-specific block |
 | `archlinux` | object | none | Archlinux-specific block |
 | `ipk` | object | none | IPK (OpenWrt) block |
+| `msix` | object | none | MSIX (Windows) block (see [MSIX packages](#msix-packages)) |
 
 ## Vendor
 
@@ -217,7 +220,85 @@ nfpm:
       tags: ["net"]
       fields:
         Maintainer: "team@example.com"
+    msix:                               # only consumed by formats: [msix]
+      arch: x64                         # optional; x64 | x86 | arm64 | arm | neutral (derived from the target)
+      publisher: "CN=My Company, O=My Company, C=US"   # REQUIRED; must match the signing cert subject
+      identity:
+        resource_id: en-us              # optional
+      properties:
+        display_name: "My App"          # optional; defaults to the package name
+        publisher_display_name: "My Company"  # optional; defaults to the package name
+        logo: assets/logo.png           # REQUIRED; package logo image
+      applications:                     # REQUIRED (>= 1 entry)
+        - id: MyApp                     # REQUIRED
+          executable: myapp.exe         # REQUIRED; path inside the package
+          entry_point: Windows.FullTrustApplication  # optional; this is the default
+          visual_elements:
+            display_name: "My App"      # optional; defaults to the package name
+            description: "A fast CLI"   # optional; defaults to the package description
+            background_color: transparent          # optional; this is the default
+            square150x150_logo: assets/150.png     # optional; defaults to properties.logo
+            square44x44_logo: assets/44.png        # optional; defaults to properties.logo
+      dependencies:
+        target_device_families:         # optional; this is the default family
+          - name: Windows.Desktop
+            min_version: 10.0.17763.0
+            max_version_tested: 10.0.22621.0
+      capabilities:
+        capabilities: [internetClient]  # optional
+        device_capabilities: []         # optional
+        restricted: []                  # optional; runFullTrust is auto-added for full-trust apps
+      signature:
+        pfx_file: cert.pfx              # optional; PFX certificate for signing
 ```
+
+## Termux packages
+
+`termux.deb` builds a `.deb` for [Termux](https://termux.dev/)'s apt
+repository from Android binaries. Termux uses its own architecture
+nomenclature — anodizer stamps it into **both** the conventional filename and
+the control-file `Architecture`, and rewrites install paths under the Termux
+filesystem prefix (`/data/data/com.termux/files`):
+
+| Build arch | deb name | termux.deb name |
+|---|---|---|
+| `amd64` | `amd64` | `x86_64` |
+| `arm64` | `arm64` | `aarch64` |
+| `386` | `i386` | `i686` |
+| `armv6` | `armhf` | `arm` |
+
+```yaml
+nfpm:
+  - package_name: myapp
+    formats: [termux.deb]
+    maintainer: "team@example.com"
+```
+
+```
+dist/linux/myapp_1.0.0_aarch64.deb   # aarch64-linux-android, Termux arch name
+```
+
+## MSIX packages
+
+`msix` builds a Windows app package (`.msix`) from Windows binaries — the one
+format that consumes Windows targets (all other formats skip them, and msix
+skips non-Windows targets). Requires nfpm >= 2.46.0. The binary is placed at
+the package root (an MSIX is a virtual filesystem rooted at the install
+location, so `bindir` does not apply), and the artifact is registered as a
+Windows installer (checksummed, signed, released) under `dist/windows/`.
+
+The conventional filename is `{name}_{version}_{arch}.msix` with a 4-part
+numeric version (`1.2.3` → `1.2.3.0`) and MSIX arch names (`x64`, `x86`,
+`arm64`, `arm`, `neutral`):
+
+```
+dist/windows/myapp_1.2.3.0_x64.msix   # x86_64-pc-windows-msvc
+```
+
+Signing uses a PFX certificate; the passphrase is never written to config —
+anodizer resolves it from `NFPM_<ID>_MSIX_PASSPHRASE`, then
+`NFPM_<ID>_PASSPHRASE`, then `NFPM_PASSPHRASE`, and forwards it to nfpm's
+environment.
 
 ## Full example
 

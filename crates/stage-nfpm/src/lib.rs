@@ -122,6 +122,19 @@ pub fn env_requirements(
             if let Some(sig) = n.apk.as_ref().and_then(|f| f.signature.as_ref()) {
                 signature_env_requirements(sig, false, &mut out);
             }
+            // msix signs with a PFX certificate, not PGP key material — only
+            // env vars referenced by a templated pfx_file are required.
+            if let Some(pfx) = n
+                .msix
+                .as_ref()
+                .and_then(|m| m.signature.as_ref())
+                .and_then(|s| s.pfx_file.as_deref())
+            {
+                let refs = anodizer_core::env_preflight::template_env_refs(pfx);
+                if !refs.is_empty() {
+                    out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+                }
+            }
         }
     }
     if any {

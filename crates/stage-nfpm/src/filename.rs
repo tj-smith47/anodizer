@@ -17,6 +17,8 @@
 //! - apk: `{name}_{pkgver}_{arch}.apk`
 //! - archlinux: `{name}-{version}-{pkgrel}-{arch}.pkg.tar.zst`
 //! - ipk: deb-shaped, with ipk-specific arch translation.
+//! - termux.deb: deb-shaped, with Termux-specific arch translation.
+//! - msix: `{name}_{4-part-version}_{msix-arch}.msix`.
 //!
 //! Arch translation tables match nfpm output byte-for-byte.
 
@@ -30,6 +32,7 @@ use anodizer_core::config::NfpmConfig;
 /// `armv6`, `386`, `mipsle`, `mips64le`, `ppc64le`, `s390`, `all`, ...)
 /// because the upstream translation tables are keyed by those strings.
 /// The per-format helpers translate to the packager-native arch inline.
+#[derive(Clone, Copy)]
 pub struct FileNameInfo<'a> {
     pub name: &'a str,
     pub version: &'a str,
@@ -71,11 +74,12 @@ impl<'a> FileNameInfo<'a> {
 pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<String> {
     match format {
         "deb" => Some(deb_filename(info)),
-        "termux.deb" => Some(deb_filename(info)),
+        "termux.deb" => Some(termux_deb_filename(info)),
         "rpm" => Some(rpm_filename(info)),
         "apk" => Some(apk_filename(info)),
         "archlinux" => Some(archlinux_filename(info)),
         "ipk" => Some(ipk_filename(info)),
+        "msix" => Some(msix_filename(info)),
         _ => None,
     }
 }
@@ -125,6 +129,39 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
     }
     let arch = info.arch_override.unwrap_or_else(|| debian_arch(info.arch));
     format!("{}_{}_{}.deb", info.name, version, arch)
+}
+
+// ---------------------------------------------------------------------------
+// termux.deb
+// ---------------------------------------------------------------------------
+
+/// Termux arch translation, keyed on Go-style arch (matching GoReleaser's
+/// `termuxArchReplacer`: `386→i686`, `amd64→x86_64`, `arm64→aarch64`,
+/// `arm6→arm`), plus anodizer's `armv6` alias for the `arm6` key.
+///
+/// Termux's apt repository uses its own architecture nomenclature — NOT
+/// Debian's — so `arm64`/`amd64` names in the filename or the control-file
+/// `Architecture` field make the package uninstallable on Termux. Unmapped
+/// archs pass through, matching the replacer's behaviour.
+fn termux_arch(arch: &str) -> &str {
+    match arch {
+        "386" => "i686",
+        "amd64" => "x86_64",
+        "arm64" => "aarch64",
+        "arm6" | "armv6" => "arm",
+        other => other,
+    }
+}
+
+/// termux.deb shares deb's version composition but stamps the Termux arch
+/// nomenclature into the filename (mirrors GoReleaser setting `Deb.Arch` to
+/// the termux-replaced arch before deriving the conventional file name).
+fn termux_deb_filename(info: &FileNameInfo<'_>) -> String {
+    let termuxed = FileNameInfo {
+        arch_override: Some(info.arch_override.unwrap_or_else(|| termux_arch(info.arch))),
+        ..*info
+    };
+    deb_filename(&termuxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +352,9 @@ fn valid_pkg_name(s: &str) -> String {
 /// generic arch through unchanged.
 pub fn control_arch(format: &str, arch: &str) -> String {
     let mapped = match format {
-        "deb" | "termux.deb" => debian_arch(arch),
+        "deb" => debian_arch(arch),
+        "termux.deb" => termux_arch(arch),
+        "msix" => msix_arch(arch),
         "rpm" => rpm_arch(arch),
         "apk" => apk_arch(arch),
         "archlinux" => archlinux_arch(arch),
@@ -369,6 +408,61 @@ fn ipk_filename(info: &FileNameInfo<'_>) -> String {
     }
     let arch = info.arch_override.unwrap_or_else(|| ipk_arch(info.arch));
     format!("{}_{}_{}.ipk", info.name, version, arch)
+}
+
+// ---------------------------------------------------------------------------
+// msix
+// ---------------------------------------------------------------------------
+
+/// MSIX arch translation, keyed on Go-style arch (matching nfpm's
+/// `archToMSIX`).
+///
+/// The identity rows (`arm64`, `arm`) are part of nfpm's map, so they're
+/// kept verbatim for byte-for-byte parity even though `other => other`
+/// would already cover them — an intentional replica, not deletable cruft.
+fn msix_arch(arch: &str) -> &str {
+    match arch {
+        "amd64" => "x64",
+        "x86_64" => "x64",
+        "386" => "x86",
+        "i386" => "x86",
+        "i686" => "x86",
+        "arm64" => "arm64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        "arm7" | "armv7" => "arm",
+        "all" => "neutral",
+        other => other,
+    }
+}
+
+/// Convert a semver-style version into MSIX's mandatory 4-part
+/// `Major.Minor.Build.Revision` numeric form (matching nfpm's
+/// `convertToMSIXVersion`): a leading `v` is stripped, the version splits on
+/// `.` into at most 4 parts, non-numeric parts (e.g. `3-rc1`) and missing
+/// parts become `0`.
+fn msix_version(version: &str) -> String {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let mut parts = version.splitn(4, '.');
+    let mut result = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let part = parts.next().unwrap_or("0");
+        if part.parse::<u64>().is_ok() {
+            result.push(part);
+        } else {
+            result.push("0");
+        }
+    }
+    result.join(".")
+}
+
+/// MSIX conventional file name: `{name}_{msix_version}_{msix_arch}.msix`
+/// (matching nfpm's `MSIX::ConventionalFileName`). `arch_override` carries
+/// the `msix.arch` config override when set, mirroring nfpm's
+/// `ensureValidArch`.
+fn msix_filename(info: &FileNameInfo<'_>) -> String {
+    let arch = info.arch_override.unwrap_or_else(|| msix_arch(info.arch));
+    format!("{}_{}_{}.msix", info.name, msix_version(info.version), arch)
 }
 
 // ---------------------------------------------------------------------------
@@ -658,10 +752,118 @@ mod tests {
         );
         assert_eq!(
             conventional_filename("termux.deb", &info).as_deref(),
-            Some("myapp_1.2.3_amd64.deb")
+            Some("myapp_1.2.3_x86_64.deb")
+        );
+        assert_eq!(
+            conventional_filename("msix", &info).as_deref(),
+            Some("myapp_1.2.3.0_x64.msix")
         );
         // Unknown formats return None so callers can fall back.
         assert_eq!(conventional_filename("snap", &info), None);
+    }
+
+    /// Termux's apt requires its own arch nomenclature in the .deb filename:
+    /// amd64→x86_64, arm64→aarch64, 386→i686, arm6→arm. Plain deb keeps the
+    /// Debian names — the two must diverge for the 64-bit arches.
+    #[test]
+    fn termux_deb_filename_uses_termux_arch_names() {
+        assert_eq!(
+            termux_deb_filename(&base("amd64")),
+            "myapp_1.2.3_x86_64.deb"
+        );
+        assert_eq!(
+            termux_deb_filename(&base("arm64")),
+            "myapp_1.2.3_aarch64.deb"
+        );
+        assert_eq!(termux_deb_filename(&base("386")), "myapp_1.2.3_i686.deb");
+        assert_eq!(termux_deb_filename(&base("armv6")), "myapp_1.2.3_arm.deb");
+        // Plain deb is unchanged by the termux mapping.
+        assert_eq!(deb_filename(&base("amd64")), "myapp_1.2.3_amd64.deb");
+        assert_eq!(deb_filename(&base("arm64")), "myapp_1.2.3_arm64.deb");
+        assert_eq!(deb_filename(&base("386")), "myapp_1.2.3_i386.deb");
+    }
+
+    /// The control-file `Architecture` cross-check surface must agree with the
+    /// termux filename nomenclature for termux.deb while deb keeps Debian's.
+    #[test]
+    fn control_arch_termux_vs_deb() {
+        let matrix = [
+            ("amd64", "amd64", "x86_64"),
+            ("arm64", "arm64", "aarch64"),
+            ("386", "i386", "i686"),
+            ("armv6", "armhf", "arm"),
+        ];
+        for (generic, deb, termux) in matrix {
+            assert_eq!(control_arch("deb", generic), deb, "deb {generic}");
+            assert_eq!(
+                control_arch("termux.deb", generic),
+                termux,
+                "termux.deb {generic}"
+            );
+        }
+    }
+
+    /// GoReleaser's `termuxArchReplacer`, verbatim: 386→i686, amd64→x86_64,
+    /// arm64→aarch64, arm6→arm — plus anodizer's `armv6` alias and the
+    /// unmapped-passthrough behaviour.
+    #[test]
+    fn termux_table_replicates_goreleaser() {
+        let replacer = [
+            ("386", "i686"),
+            ("amd64", "x86_64"),
+            ("arm64", "aarch64"),
+            ("arm6", "arm"),
+            ("armv6", "arm"),
+        ];
+        for (k, v) in replacer {
+            assert_eq!(termux_arch(k), v, "termux_arch({k})");
+        }
+        // arm7 is NOT in GoReleaser's replacer — it passes through.
+        assert_eq!(termux_arch("arm7"), "arm7");
+    }
+
+    /// nfpm `archToMSIX`, verbatim.
+    #[test]
+    fn msix_table_replicates_nfpm() {
+        let arch_to_msix = [
+            ("amd64", "x64"),
+            ("x86_64", "x64"),
+            ("386", "x86"),
+            ("i386", "x86"),
+            ("i686", "x86"),
+            ("arm64", "arm64"),
+            ("aarch64", "arm64"),
+            ("arm", "arm"),
+            ("arm7", "arm"),
+            ("all", "neutral"),
+        ];
+        for (k, v) in arch_to_msix {
+            assert_eq!(msix_arch(k), v, "msix_arch({k})");
+        }
+        assert_eq!(control_arch("msix", "amd64"), "x64");
+    }
+
+    /// MSIX requires a 4-part numeric Major.Minor.Build.Revision version:
+    /// missing parts pad with 0, non-numeric parts become 0, a leading `v`
+    /// is stripped (matching nfpm's `convertToMSIXVersion`).
+    #[test]
+    fn msix_version_is_four_part_numeric() {
+        assert_eq!(msix_version("1.2.3"), "1.2.3.0");
+        assert_eq!(msix_version("v1.2.3.4"), "1.2.3.4");
+        assert_eq!(msix_version("1.2"), "1.2.0.0");
+        assert_eq!(msix_version("1.2.3-rc1"), "1.2.0.0");
+        assert_eq!(msix_version("1.2.3.4.5"), "1.2.3.0");
+    }
+
+    #[test]
+    fn msix_filename_arch_override_wins() {
+        // `msix.arch` overrides the derived arch verbatim (nfpm's
+        // ensureValidArch precedence).
+        let info = FileNameInfo {
+            arch_override: Some("neutral"),
+            ..base("amd64")
+        };
+        assert_eq!(msix_filename(&info), "myapp_1.2.3.0_neutral.msix");
     }
 
     #[test]

@@ -13,7 +13,8 @@ use anyhow::{Context as _, Result};
 use anodizer_core::config::NfpmConfig;
 
 use crate::builders::{
-    build_yaml_apk, build_yaml_archlinux, build_yaml_deb, build_yaml_ipk, build_yaml_rpm,
+    build_yaml_apk, build_yaml_archlinux, build_yaml_deb, build_yaml_ipk, build_yaml_msix,
+    build_yaml_rpm,
 };
 use crate::yaml::{NfpmYamlConfig, NfpmYamlContent, NfpmYamlFileInfo, NfpmYamlScripts};
 
@@ -43,6 +44,21 @@ fn filter_provides_for_format(
             name != package_name
         })
         .collect()
+}
+
+/// Prefix a directory with the Termux filesystem root
+/// (`/data/data/com.termux/files`), mirroring GoReleaser's
+/// `termuxPrefixedDir`: any non-empty path is prefixed unconditionally —
+/// never guarded on `/usr` — and an empty path stays empty.
+fn termux_prefixed_dir(dir: &str) -> String {
+    if dir.is_empty() {
+        return String::new();
+    }
+    if dir.starts_with('/') {
+        format!("/data/data/com.termux/files{dir}")
+    } else {
+        format!("/data/data/com.termux/files/{dir}")
+    }
 }
 
 /// Paths to C library artifacts grouped by type.
@@ -152,9 +168,13 @@ pub fn generate_nfpm_yaml_with_env(
 
     // Build binary content entries for ALL binaries on this platform (skip for meta packages)
     let raw_bindir = config.bindir.as_deref().unwrap_or("/usr/bin");
-    // For termux.deb, rewrite bindir to the Termux filesystem prefix
-    let bindir = if format == Some("termux.deb") && raw_bindir.starts_with("/usr") {
-        format!("/data/data/com.termux/files{raw_bindir}")
+    let bindir = if format == Some("termux.deb") {
+        termux_prefixed_dir(raw_bindir)
+    } else if format == Some("msix") {
+        // bindir is a Linux filesystem concept that does not map to MSIX: the
+        // package is a virtual filesystem rooted at the install location, so
+        // the binary belongs at the package root.
+        String::new()
     } else {
         raw_bindir.to_string()
     };
@@ -246,27 +266,9 @@ pub fn generate_nfpm_yaml_with_env(
         // guarded by /usr or /etc; any non-empty path is prefixed.
         let (header_dir, carchive_dir, cshared_dir) = if format == Some("termux.deb") {
             (
-                header_dir.map(|d| {
-                    if d.is_empty() {
-                        d
-                    } else {
-                        format!("/data/data/com.termux/files{d}")
-                    }
-                }),
-                carchive_dir.map(|d| {
-                    if d.is_empty() {
-                        d
-                    } else {
-                        format!("/data/data/com.termux/files{d}")
-                    }
-                }),
-                cshared_dir.map(|d| {
-                    if d.is_empty() {
-                        d
-                    } else {
-                        format!("/data/data/com.termux/files{d}")
-                    }
-                }),
+                header_dir.map(|d| termux_prefixed_dir(&d)),
+                carchive_dir.map(|d| termux_prefixed_dir(&d)),
+                cshared_dir.map(|d| termux_prefixed_dir(&d)),
             )
         } else {
             (header_dir, carchive_dir, cshared_dir)
@@ -369,11 +371,35 @@ pub fn generate_nfpm_yaml_with_env(
         .as_ref()
         .filter(|r| !r.is_empty())
         .map(|r| build_yaml_rpm(r, nfpm_id, format, skip_sign, env_map));
-    let deb = config
-        .deb
-        .as_ref()
-        .filter(|d| !d.is_empty())
-        .map(|d| build_yaml_deb(d, nfpm_id, format, skip_sign, env_map));
+    // Termux's apt rejects Debian arch names: stamp the Termux nomenclature
+    // (x86_64/aarch64/i686/arm) into the control file's `Architecture` via
+    // nfpm's `deb.arch` override, which bypasses its Go-arch→Debian mapping
+    // (mirrors GoReleaser setting `Info.Deb.Arch` for termux.deb). This must
+    // materialize a deb block even when the user configured none.
+    let termux_deb_arch =
+        (format == Some("termux.deb")).then(|| crate::filename::control_arch("termux.deb", arch));
+    let deb = match (
+        config.deb.as_ref().filter(|d| !d.is_empty()),
+        termux_deb_arch,
+    ) {
+        (Some(d), arch_override) => Some(build_yaml_deb(
+            d,
+            nfpm_id,
+            format,
+            skip_sign,
+            env_map,
+            arch_override,
+        )),
+        (None, Some(arch_override)) => Some(build_yaml_deb(
+            &Default::default(),
+            nfpm_id,
+            format,
+            skip_sign,
+            env_map,
+            Some(arch_override),
+        )),
+        (None, None) => None,
+    };
     let apk = config
         .apk
         .as_ref()
@@ -389,6 +415,11 @@ pub fn generate_nfpm_yaml_with_env(
         .as_ref()
         .filter(|i| !i.is_empty())
         .map(build_yaml_ipk);
+    let msix = config
+        .msix
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| build_yaml_msix(m, skip_sign));
 
     let yaml_config = NfpmYamlConfig {
         name: (!target.pkg_name.is_empty()).then(|| target.pkg_name.to_string()),
@@ -429,6 +460,7 @@ pub fn generate_nfpm_yaml_with_env(
         apk,
         archlinux,
         ipk,
+        msix,
         changelog: config.changelog.clone(),
     };
 

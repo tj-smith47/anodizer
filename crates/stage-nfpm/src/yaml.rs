@@ -77,6 +77,8 @@ pub(super) struct NfpmYamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) ipk: Option<NfpmYamlIpk>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) msix: Option<NfpmYamlMsix>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) changelog: Option<String>,
 }
 
@@ -197,6 +199,11 @@ pub(super) struct NfpmYamlDebScripts {
 
 #[derive(Serialize)]
 pub(super) struct NfpmYamlDeb {
+    /// Control-file `Architecture` override in packager nomenclature. nfpm
+    /// uses this verbatim, bypassing its Go-arch→Debian mapping — the hook
+    /// termux.deb uses to stamp Termux arch names (x86_64/aarch64/i686/arm).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) arch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) compression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -265,6 +272,103 @@ pub(super) struct NfpmYamlIpk {
     pub(super) tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) fields: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsix {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) arch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) publisher: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) identity: Option<NfpmYamlMsixIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) properties: Option<NfpmYamlMsixProperties>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) applications: Option<Vec<NfpmYamlMsixApplication>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) dependencies: Option<NfpmYamlMsixDependencies>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) capabilities: Option<NfpmYamlMsixCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) signature: Option<NfpmYamlMsixSignature>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) resource_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixProperties {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) publisher_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) logo: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixApplication {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) executable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) entry_point: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) visual_elements: Option<NfpmYamlMsixVisualElements>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixVisualElements {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) background_color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) square150x150_logo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) square44x44_logo: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixDependencies {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) target_device_families: Option<Vec<NfpmYamlMsixTargetDeviceFamily>>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixTargetDeviceFamily {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) min_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) max_version_tested: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) capabilities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) device_capabilities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) restricted: Option<Vec<String>>,
+}
+
+/// The msix signature block carries only `pfx_file` — nfpm reads the
+/// passphrase from the `NFPM_MSIX_PASSPHRASE` env var of its own process,
+/// never from YAML, so anodizer forwards it via the subprocess env instead.
+#[derive(Serialize)]
+pub(super) struct NfpmYamlMsixSignature {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) pfx_file: Option<String>,
 }
 
 #[derive(Serialize)]

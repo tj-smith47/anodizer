@@ -16,7 +16,8 @@ pub struct NfpmConfig {
     pub id: Option<String>,
     /// Package name (defaults to crate name).
     pub package_name: Option<String>,
-    /// Package formats to produce: deb, rpm, apk, archlinux (at least one required).
+    /// Package formats to produce: deb, rpm, apk, archlinux, termux.deb, ipk,
+    /// msix (at least one required).
     pub formats: Vec<String>,
     /// Package vendor name — the distributing entity recorded in the
     /// rpm/deb Vendor field. When unset, derived from the crate's first
@@ -106,6 +107,22 @@ pub struct NfpmConfig {
     pub archlinux: Option<NfpmArchlinuxConfig>,
     /// IPK-specific configuration (OpenWrt packages).
     pub ipk: Option<NfpmIpkConfig>,
+    /// MSIX-specific configuration (Windows app packages).
+    ///
+    /// Only consumed when `formats` includes `msix`. nfpm requires
+    /// `publisher`, `properties.logo`, and at least one `applications` entry;
+    /// everything else has derived defaults.
+    ///
+    /// ```yaml
+    /// msix:
+    ///   publisher: "CN=My Company, O=My Company, C=US"
+    ///   properties:
+    ///     logo: assets/logo.png
+    ///   applications:
+    ///     - id: MyApp
+    ///       executable: myapp.exe
+    /// ```
+    pub msix: Option<NfpmMsixConfig>,
     /// CGo library installation directories (header, carchive, cshared).
     pub libdirs: Option<NfpmLibdirs>,
     /// Path to a YAML-format changelog file for deb/rpm packages.
@@ -408,6 +425,154 @@ impl NfpmIpkConfig {
             && self.tags.is_none()
             && self.fields.is_none()
     }
+}
+
+/// MSIX (Windows app package) specific configuration.
+///
+/// Field names mirror nfpm's `msix:` YAML block. nfpm validates that
+/// `publisher`, `properties.logo`, and at least one application (with `id`
+/// and `executable`) are set; the remaining fields have derived defaults
+/// (e.g. `entry_point` defaults to `Windows.FullTrustApplication`, display
+/// names default to the package name, and `dependencies` defaults to a
+/// `Windows.Desktop` 10.0.17763.0–10.0.22621.0 target device family).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixConfig {
+    /// Target architecture override in MSIX nomenclature (`x64`, `x86`,
+    /// `arm64`, `arm`, `neutral`). When unset, derived from the build target
+    /// (e.g. `x86_64` → `x64`).
+    pub arch: Option<String>,
+    /// Publisher identity, matching the signing certificate subject
+    /// (e.g. `"CN=My Company, O=My Company, C=US"`). Required by nfpm.
+    /// Templated.
+    pub publisher: Option<String>,
+    /// Package identity fields.
+    pub identity: Option<NfpmMsixIdentity>,
+    /// Package display properties.
+    pub properties: Option<NfpmMsixProperties>,
+    /// Applications contained in the package (at least one required by nfpm,
+    /// each with `id` and `executable`).
+    pub applications: Option<Vec<NfpmMsixApplication>>,
+    /// Target device family dependencies. Defaults to
+    /// `Windows.Desktop` min `10.0.17763.0` / max tested `10.0.22621.0`.
+    pub dependencies: Option<NfpmMsixDependencies>,
+    /// Capability declarations for the package.
+    pub capabilities: Option<NfpmMsixCapabilities>,
+    /// MSIX signing configuration.
+    pub signature: Option<NfpmMsixSignature>,
+}
+
+impl NfpmMsixConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.arch.is_none()
+            && self.publisher.is_none()
+            && self.identity.is_none()
+            && self.properties.is_none()
+            && self.applications.is_none()
+            && self.dependencies.is_none()
+            && self.capabilities.is_none()
+            && self.signature.is_none()
+    }
+}
+
+/// Identity fields for MSIX packages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixIdentity {
+    /// Resource identifier for the package identity (e.g. `"en-us"`).
+    pub resource_id: Option<String>,
+}
+
+/// Display properties for MSIX packages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixProperties {
+    /// Package display name (defaults to the package name). Templated.
+    pub display_name: Option<String>,
+    /// Publisher display name (defaults to the package name). Templated.
+    pub publisher_display_name: Option<String>,
+    /// Path to the package logo image (e.g. `assets/logo.png`). Required by
+    /// nfpm. Templated.
+    pub logo: Option<String>,
+}
+
+/// An application entry in an MSIX package.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixApplication {
+    /// Application identifier (e.g. `"MyApp"`). Required by nfpm.
+    pub id: Option<String>,
+    /// Executable path inside the package (e.g. `myapp.exe`). Required by nfpm.
+    pub executable: Option<String>,
+    /// Application entry point (default: `Windows.FullTrustApplication`).
+    pub entry_point: Option<String>,
+    /// Visual presentation settings for this application.
+    pub visual_elements: Option<NfpmMsixVisualElements>,
+}
+
+/// Visual presentation settings for an MSIX application.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixVisualElements {
+    /// Application display name (defaults to the package name).
+    pub display_name: Option<String>,
+    /// Application description (defaults to the package description).
+    pub description: Option<String>,
+    /// Tile background color (default: `transparent`).
+    pub background_color: Option<String>,
+    /// Path to the 150x150 tile logo (defaults to `properties.logo`).
+    pub square150x150_logo: Option<String>,
+    /// Path to the 44x44 tile logo (defaults to `properties.logo`).
+    pub square44x44_logo: Option<String>,
+}
+
+/// Dependency information for MSIX packages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixDependencies {
+    /// Target device families the package supports.
+    pub target_device_families: Option<Vec<NfpmMsixTargetDeviceFamily>>,
+}
+
+/// A target device family for an MSIX package.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixTargetDeviceFamily {
+    /// Device family name (e.g. `"Windows.Desktop"`).
+    pub name: Option<String>,
+    /// Minimum OS version (e.g. `"10.0.17763.0"`).
+    pub min_version: Option<String>,
+    /// Maximum tested OS version (e.g. `"10.0.22621.0"`).
+    pub max_version_tested: Option<String>,
+}
+
+/// Capability declarations for MSIX packages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixCapabilities {
+    /// General capabilities (e.g. `["internetClient"]`).
+    pub capabilities: Option<Vec<String>>,
+    /// Device capabilities (e.g. `["microphone"]`).
+    pub device_capabilities: Option<Vec<String>>,
+    /// Restricted capabilities (e.g. `["runFullTrust"]` — added
+    /// automatically when an application uses the full-trust entry point).
+    pub restricted: Option<Vec<String>>,
+}
+
+/// Signing configuration for MSIX packages.
+///
+/// The passphrase is NOT a config field: nfpm reads it from the
+/// `NFPM_MSIX_PASSPHRASE` environment variable, which anodizer resolves via
+/// the same `NFPM_{ID}_MSIX_PASSPHRASE` → `NFPM_{ID}_PASSPHRASE` →
+/// `NFPM_PASSPHRASE` fallback the other signature blocks use and forwards to
+/// the nfpm subprocess.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmMsixSignature {
+    /// Path to the PFX certificate file used to sign the package. Templated.
+    pub pfx_file: Option<String>,
 }
 
 /// An alternative file link for IPK's update-alternatives system.
