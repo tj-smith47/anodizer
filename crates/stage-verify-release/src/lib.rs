@@ -237,6 +237,12 @@ impl Stage for VerifyReleaseStage {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("verify-release: create tokio runtime: {e}"))?;
 
+        // Tallies of packages ACTUALLY examined by the OS-package axes, summed
+        // across crates. `..._enabled && surface-selected` proves only that an
+        // axis was in scope; these prove it inspected ≥1 artifact — the
+        // difference between "verified" and "had nothing to verify".
+        let mut libc_inspected = 0usize;
+        let mut smoke_inspected = 0usize;
         for crate_cfg in &crates {
             verify_one_crate(
                 ctx,
@@ -250,6 +256,8 @@ impl Stage for VerifyReleaseStage {
                 docker_ok,
                 &mut issues,
                 &mut smoke_strategy_logged,
+                &mut libc_inspected,
+                &mut smoke_inspected,
             )?;
         }
 
@@ -283,8 +291,12 @@ impl Stage for VerifyReleaseStage {
         // verify": stamping a passing verdict when no check actually ran
         // would fabricate green evidence for a run that proved nothing.
         let asset_check_ran = cfg.assert_assets_enabled() && github_selected && !crates.is_empty();
-        let libc_ran = cfg.glibc_check_enabled() && !crates.is_empty() && os_pkg_selected;
-        let smoke_ran = smoke_enabled && docker_ok;
+        // A libc ceiling or smoke config that inspected zero produced packages
+        // verified nothing — count it as "ran" only when it actually examined
+        // an artifact, so a package-less run leaves the verdict unstamped
+        // instead of fabricating a green "verified" off a vacuous check.
+        let libc_ran = libc_inspected > 0;
+        let smoke_ran = smoke_inspected > 0;
         let any_check_ran = asset_check_ran || libc_ran || smoke_ran || landing_probed > 0;
         if !any_check_ran && issues.is_empty() {
             log.verbose("no check ran against the selected publish surface — no verdict recorded");
@@ -639,6 +651,8 @@ fn verify_one_crate(
     docker_ok: bool,
     issues: &mut Vec<String>,
     smoke_strategy_logged: &mut bool,
+    libc_inspected: &mut usize,
+    smoke_inspected: &mut usize,
 ) -> Result<()> {
     // The caller filters to crates carrying a release block; if absent there
     // is no published release to verify, so skip this crate rather than panic.
@@ -792,6 +806,10 @@ fn verify_one_crate(
             if !name.to_ascii_lowercase().ends_with(".deb") {
                 continue;
             }
+            // Count the .deb actually examined, not merely that the axis was
+            // configured: a ceiling over zero produced packages verifies
+            // nothing, so the caller must not stamp a green verdict off it.
+            *libc_inspected += 1;
             check_one_deb_libc(log, &crate_cfg.name, path, ceiling, issues);
         }
     }
@@ -808,6 +826,10 @@ fn verify_one_crate(
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
             };
+            // Count the package actually submitted to the smoke matrix, so a
+            // configured-but-empty run leaves the verdict unstamped rather than
+            // fabricating green evidence off zero installs.
+            *smoke_inspected += 1;
             let image = match pt {
                 PackageType::Deb => smoke_cfg.deb_image(),
                 PackageType::Rpm => smoke_cfg.rpm_image(),

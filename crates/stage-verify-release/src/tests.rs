@@ -338,6 +338,35 @@ fn npm_surface_skips_libc_ceiling_without_stamping() {
 }
 
 #[test]
+fn libc_ceiling_over_zero_packages_stamps_no_verdict() {
+    // The vacuous-green guard: an OS-package publisher IS selected (blob), so
+    // the libc axis is in scope, and a ceiling is configured — but the run
+    // produced zero `.deb`s, so the axis inspects nothing. github-release is
+    // NOT selected (blob-only surface), so the asset check is also out of
+    // scope. With no axis having actually examined an artifact, the stage must
+    // record NO verdict rather than fabricate a green "verified" off a check
+    // that ran over an empty package set.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        glibc_ceiling: Some("2.31".to_string()),
+        ..Default::default()
+    };
+    ctx.options.publisher_allowlist = vec!["blob".to_string()];
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "a package-less libc run must be a clean no-op, not a failure"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "libc inspected zero packages, so no verdict may be stamped"
+    );
+}
+
+#[test]
 fn no_published_crates_is_noop() {
     // A crate with no release block is not "published"; the gate finds
     // nothing to verify and returns Ok without touching the network.
