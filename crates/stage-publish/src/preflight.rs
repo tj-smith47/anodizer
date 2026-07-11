@@ -756,6 +756,14 @@ fn run_cargo_publish_simulation(
     if ctx.is_snapshot() || ctx.is_nightly() || ctx.is_dry_run() || ctx.should_skip("publish") {
         return;
     }
+    // Cargo out of the selected publish surface (e.g. `--publishers npm` or
+    // `--skip cargo`) means the irreversible cargo door never fires this run,
+    // so there is nothing to simulate — and spawning `cargo publish --dry-run`
+    // or probing the crates.io index here would falsely abort a cargo-less
+    // release on a cargo-only concern. Mirrors the state-probe gate above.
+    if ctx.publisher_deselected("cargo") {
+        return;
+    }
 
     let policy = RetryPolicy::PREFLIGHT;
     let checker = factory.cargo(policy);
@@ -767,8 +775,8 @@ fn run_cargo_publish_simulation(
 /// [`run_cargo_publish_simulation`] with the index query and dry-run runner
 /// injected so tests can drive both checks without a network round-trip or a
 /// real `cargo` (beyond a PATH-injected stub). Does NOT re-apply the
-/// snapshot/nightly/dry-run gate — the production wrapper owns that so tests
-/// can exercise the logic directly.
+/// snapshot/nightly/dry-run or cargo-publisher-surface gates — the production
+/// wrapper owns those so tests can exercise the logic directly.
 fn run_cargo_publish_simulation_with(
     ctx: &mut Context,
     log: &StageLogger,
@@ -1192,6 +1200,14 @@ fn run_gpg_capability_probe(
     gpg_probe: fn() -> bool,
 ) {
     if !ctx.config.has_gpg_sign_configured() {
+        return;
+    }
+    // This probe exists solely to inform the determinism harness's compile-time
+    // allow-list; its warning and mutation are meaningless outside a determinism
+    // run. A real publish (e.g. the `--publishers npm` job) carries no
+    // `determinism` state, so skip — otherwise it emits a determinism-drift
+    // warning that has no bearing on the release the operator is running.
+    if ctx.determinism.is_none() {
         return;
     }
     if gpg_probe() {
@@ -2599,6 +2615,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn gpg_probe_skipped_outside_determinism_run() {
+        use anodizer_core::config::{Config, SignConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        // gpg signing IS configured, but this is a real publish (no determinism
+        // state) — e.g. the `--publishers npm` job. The probe's only product is
+        // a determinism-harness allow-list hint, so with no harness to inform it
+        // must stay silent rather than emit a determinism-drift warning that has
+        // no bearing on the operator's release.
+        let config = Config {
+            project_name: "mytool".to_string(),
+            signs: vec![SignConfig {
+                artifacts: Some("all".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        assert!(
+            ctx.determinism.is_none(),
+            "fixture must have no determinism state",
+        );
+        let mut report = PreflightReport::new();
+        run_gpg_capability_probe(&mut ctx, &mut report, gpg_probe_returns_false);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("--faked-system-time")),
+            "no gpg warning may fire outside a determinism run: {:?}",
+            report.warnings
+        );
+    }
+
     // -----------------------------------------------------------------------
     // crates.io publish-simulation preflight (task #25)
     // -----------------------------------------------------------------------
@@ -2906,6 +2957,23 @@ mod tests {
                 .crates(vec![cargo_crate("anodizer-core", &[])])
                 .skip_stages(vec!["publish".to_string()])
                 .build();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);
+            assert!(report.blockers.is_empty());
+        }
+
+        #[test]
+        fn cargo_deselected_surface_skips_simulation_entirely() {
+            // `--publishers npm` (or `--skip cargo`) leaves the irreversible
+            // cargo door out of this run's surface, so the simulation has
+            // nothing to guard. PanicFactory + panic_runner prove the wrapper
+            // takes the gate before querying the index or spawning cargo —
+            // otherwise a cargo-less release would abort on a cargo-only probe.
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![cargo_crate("anodizer-core", &[])])
+                .build();
+            ctx.options.publisher_allowlist = vec!["npm".to_string()];
             let log = quiet_log();
             let mut report = PreflightReport::new();
             run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);

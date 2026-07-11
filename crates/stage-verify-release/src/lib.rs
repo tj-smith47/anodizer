@@ -104,12 +104,13 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
 /// to users — the package registries that consume `LinuxPackage`
 /// (`artifactory`, `cloudsmith`, `gemfury`) plus the raw carriers that ship the
 /// package file itself (`github-release` assets, `blob`, `uploads`). The
-/// install-smoke axis verifies those produced artifacts are installable, so —
-/// like the asset check gating on `github-release` — it runs only when at least
-/// one is in the selected publish surface. Over-inclusion is safe (a surface
-/// that ships no package finds nothing to smoke); under-inclusion would drop
-/// coverage on a shipped package, so err toward listing a carrier.
-fn install_smoke_consumers() -> &'static [&'static str] {
+/// OS-package verify axes (install-smoke and libc-ceiling) verify those
+/// produced artifacts, so — like the asset check gating on `github-release` —
+/// they run only when at least one such publisher is in the selected publish
+/// surface. Over-inclusion is safe (a surface that ships no package finds
+/// nothing to check); under-inclusion would drop coverage on a shipped
+/// package, so err toward listing a carrier.
+fn os_package_consumers() -> &'static [&'static str] {
     &[
         "github-release",
         "blob",
@@ -121,10 +122,11 @@ fn install_smoke_consumers() -> &'static [&'static str] {
 }
 
 /// Whether the selected publish surface delivers any installable OS package,
-/// i.e. whether the install-smoke axis has anything in scope to verify. A
-/// `--publishers npm` run ships no OS package, so smoke is out of scope there.
-fn install_smoke_in_surface(ctx: &Context) -> bool {
-    install_smoke_consumers()
+/// i.e. whether the OS-package verify axes (install-smoke, libc-ceiling) have
+/// anything in scope. A `--publishers npm` run ships no OS package, so those
+/// axes are out of scope there.
+fn os_package_publisher_selected(ctx: &Context) -> bool {
+    os_package_consumers()
         .iter()
         .any(|p| !ctx.publisher_deselected(p))
 }
@@ -202,8 +204,11 @@ impl Stage for VerifyReleaseStage {
         // re-running the cross-arch smoke matrix there is both redundant (the
         // OS-package publish job already ran it) and unrunnable (an arm64
         // package cannot exec on an x86_64 runner without qemu/binfmt).
+        // The install-smoke and libc-ceiling axes both verify produced OS
+        // packages the run ships, so both are gated on the OS-package surface.
+        let os_pkg_selected = os_package_publisher_selected(ctx);
         let smoke_enabled = cfg.install_smoke.is_some();
-        let smoke_in_surface = smoke_enabled && install_smoke_in_surface(ctx);
+        let smoke_in_surface = smoke_enabled && os_pkg_selected;
         // Probe Docker only when smoke is actually in scope; an out-of-surface
         // run has nothing to smoke, so the probe would be wasted work.
         let docker_ok = if smoke_in_surface {
@@ -222,6 +227,12 @@ impl Stage for VerifyReleaseStage {
                  (asset-existence and libc-ceiling still run)",
             );
         }
+        if cfg.glibc_check_enabled() && !os_pkg_selected {
+            log.verbose(
+                "libc-ceiling out of the selected publish surface \
+                 (no OS-package publisher selected) — skipped",
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("verify-release: create tokio runtime: {e}"))?;
@@ -234,6 +245,7 @@ impl Stage for VerifyReleaseStage {
                 &cfg,
                 crate_cfg,
                 github_selected,
+                os_pkg_selected,
                 smoke_enabled,
                 docker_ok,
                 &mut issues,
@@ -271,7 +283,7 @@ impl Stage for VerifyReleaseStage {
         // verify": stamping a passing verdict when no check actually ran
         // would fabricate green evidence for a run that proved nothing.
         let asset_check_ran = cfg.assert_assets_enabled() && github_selected && !crates.is_empty();
-        let libc_ran = cfg.glibc_check_enabled() && !crates.is_empty();
+        let libc_ran = cfg.glibc_check_enabled() && !crates.is_empty() && os_pkg_selected;
         let smoke_ran = smoke_enabled && docker_ok;
         let any_check_ran = asset_check_ran || libc_ran || smoke_ran || landing_probed > 0;
         if !any_check_ran && issues.is_empty() {
@@ -622,6 +634,7 @@ fn verify_one_crate(
     cfg: &VerifyReleaseConfig,
     crate_cfg: &CrateConfig,
     github_selected: bool,
+    os_pkg_selected: bool,
     smoke_enabled: bool,
     docker_ok: bool,
     issues: &mut Vec<String>,
@@ -772,6 +785,7 @@ fn verify_one_crate(
     // `if let` keeps that an invariant the type system enforces rather than an
     // unwrap that could panic if the predicate ever diverges from the field.
     if cfg.glibc_check_enabled()
+        && os_pkg_selected
         && let Some(ceiling) = cfg.glibc_ceiling.as_deref()
     {
         for (path, name, _) in linux_packages(ctx, &crate_cfg.name) {

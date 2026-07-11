@@ -237,24 +237,24 @@ fn all_consumers_deselected_self_skips() {
 }
 
 #[test]
-fn install_smoke_gated_to_os_package_publishers() {
-    // The smoke axis verifies OS packages (.deb/.rpm/.apk) are installable; that
-    // coverage belongs to the publishers that deliver them. npm ships no OS
-    // package, so a `--publishers npm` surface leaves smoke OUT of scope —
-    // otherwise the hosted npm job re-runs the cross-arch matrix and exec-format-
-    // errors on an arm64 package on an x86_64 runner without qemu/binfmt.
-    // Publishers that ship no `.deb`/`.rpm`/`.apk` must leave smoke OUT of scope.
+fn os_package_axes_gated_to_os_package_publishers() {
+    // The OS-package verify axes — install-smoke AND libc-ceiling — both verify
+    // produced `.deb`/`.rpm`/`.apk` artifacts, so their scope is the set of
+    // publishers that DELIVER those packages. npm ships no OS package, so a
+    // `--publishers npm` surface leaves both axes OUT of scope — otherwise the
+    // hosted npm job re-runs the cross-arch matrix and exec-format-errors on an
+    // arm64 package on an x86_64 runner without qemu/binfmt.
     for p in ["npm", "cargo", "winget", "homebrew"] {
         let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
         ctx.options.publisher_allowlist = vec![p.to_string()];
         assert!(
-            !install_smoke_in_surface(&ctx),
-            "{p} delivers no OS package; smoke must be out of scope"
+            !os_package_publisher_selected(&ctx),
+            "{p} delivers no OS package; smoke + libc-ceiling must be out of scope"
         );
     }
     // Every carrier of an installable OS package — the `LinuxPackage`-consuming
     // registries (artifactory/cloudsmith/gemfury) and the raw file carriers
-    // (github-release/blob/uploads) — must keep smoke IN scope.
+    // (github-release/blob/uploads) — must keep both axes IN scope.
     for p in [
         "github-release",
         "blob",
@@ -266,8 +266,8 @@ fn install_smoke_gated_to_os_package_publishers() {
         let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
         ctx.options.publisher_allowlist = vec![p.to_string()];
         assert!(
-            install_smoke_in_surface(&ctx),
-            "{p} delivers installable OS packages; smoke must stay in scope"
+            os_package_publisher_selected(&ctx),
+            "{p} delivers installable OS packages; smoke + libc-ceiling must stay in scope"
         );
     }
 }
@@ -297,6 +297,39 @@ fn npm_surface_skips_smoke_without_stamping() {
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
         "npm-only surface must skip smoke instead of failing on it"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "nothing verifiable ran, so no verdict may be stamped"
+    );
+}
+
+#[test]
+fn npm_surface_skips_libc_ceiling_without_stamping() {
+    // End-to-end companion to the smoke test: a glibc ceiling is configured and
+    // an OS package is present, but the selected surface is npm-only. The
+    // libc-ceiling axis inspects `.deb`/`.rpm`/`.apk` symbols, so with no
+    // OS-package publisher selected it must be skipped, and — as the only
+    // configured check — must not stamp a verdict.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        glibc_ceiling: Some("2.31".to_string()),
+        ..Default::default()
+    };
+    add_artifact(
+        &mut ctx,
+        ArtifactKind::LinuxPackage,
+        "myapp_arm64.deb",
+        "myapp",
+    );
+    ctx.options.publisher_allowlist = vec!["npm".to_string()];
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "npm-only surface must skip libc-ceiling instead of running it"
     );
     assert!(
         ctx.verify_release.is_none(),
