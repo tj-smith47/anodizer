@@ -228,6 +228,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # A run cancelled or runner-lost between the tag push and advance-master
+      # leaves the bump commit reachable only through its tag (advance-master's
+      # `if:` skips silently on cancellation). Tagging again from pre-bump
+      # master recomputes the same version and dies on a bare non-fast-forward
+      # tag push, so detect the orphaned tag first and name the reconcile step.
+      - name: Guard against a stranded bump commit
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
+        run: |
+          git fetch --tags --force --quiet origin
+          latest="$(git tag --list 'v[0-9]*' | sort -V | tail -n1)"
+          if [ -z "$latest" ]; then
+            exit 0
+          fi
+          sha="$(git rev-parse "${latest}^{commit}")"
+          if ! git merge-base --is-ancestor "$sha" HEAD; then
+            echo "::error::release tag ${latest} (${sha}) is not an ancestor of ${RELEASE_REF}: a prior run was cancelled between the tag push and advance-master, stranding the bump commit. Reconcile with: git push origin ${sha}:refs/heads/${RELEASE_REF}  — then re-run this workflow."
+            exit 1
+          fi
+
       - name: Auto-tag release
         id: autotag
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}

@@ -14,6 +14,31 @@ cold without re-investigating.
 
 _(empty)_
 
+## Resolved (2026-07-11)
+
+- [x] 2026-07-11 cross-repo review (cfgd deferred-branch migration adopted anodizer's
+  advance-master topology and inherited this) — **release run cancelled or runner-lost after
+  the tag job strands the bump commit off master, and the next release wedges with no surfaced
+  cause.** `tag --changelog --push-tags-only` pushes only the tags; the bump commit becomes
+  reachable solely via them until `advance-master` fast-forwards master post-publish. If the run
+  is cancelled (manual cancel, runner outage) anywhere between the tag push and advance-master,
+  the job's `if:` skips silently — the loud recovery message exists only in the failed-PATCH
+  branch, which never executes. The NEXT release run then executes `anodizer tag` against
+  pre-bump master, recomputes the same versions, and dies on a non-fast-forward tag push — a
+  wedged pipeline whose cause (orphaned bump commit) nothing names. Evidence: anodizer
+  `.github/workflows/release.yml` `advance-master` (`if: ${{ always() && needs.release.result ==
+  'success' }}`) skips on cancellation; comments cover only the failed-release case, not
+  cancelled-after-tag. Proposed fix (cfgd is shipping the same shape its side): a pre-tag guard
+  step in the tag job — if a tag at the target version already exists and its commit is not an
+  ancestor of master, fail loud with reconcile instructions (`git push origin <tag-sha>:refs/heads/master`)
+  instead of letting the tag push produce a bare non-fast-forward error.
+  **RESOLVED 2026-07-11:** "Guard against a stranded bump commit" step added to the tag job in
+  `.github/workflows/release.yml` (before Auto-tag, same `if:` as the autotag step): fetches tags,
+  takes the highest `v[0-9]*` tag, and fails with `::error::` naming the orphaned tag SHA and the
+  exact reconcile command when that tag's commit is not an ancestor of the release ref.
+  `task audit:workflows` passes over the change.
+
+
 ## Resolved (2026-07-10)
 
 - [x] **scoop publisher writes the manifest to the bucket repo ROOT, which scoop ignores
