@@ -56,6 +56,11 @@ tag:
     - main
     - master
   initial_version: "0.1.0"
+  # Tagging rewrites Cargo.toml versions and re-locks; a lockfile already out
+  # of sync with the manifests would silently ride into the tag commit, so
+  # refuse to mint one from an inconsistent workspace.
+  tag_pre_hooks:
+    - "cargo metadata --locked --no-deps --format-version=1 > /dev/null"
 
 # Project metadata written to dist/metadata.json
 metadata:
@@ -453,6 +458,11 @@ crates:
       make_latest: auto
       mode: keep-existing
       target_commitish: "{{ .Commit }}"
+      # Explicit pacing (matches the derived defaults' intent): anodizer
+      # uploads ~40 assets per release, comfortably into GitHub's
+      # secondary-rate-limit burst territory.
+      upload_concurrency: 4
+      upload_pace: "250ms"
       discussion_category_name: "Announcements"
       replace_existing_draft: true
       replace_existing_artifacts: true
@@ -901,6 +911,22 @@ crates:
         s3_force_path_style: true
         disable_ssl: true
         directory: "{{ Tag }}"
+
+# AUR source package (`anodizer`, built from the release source tarball with
+# the derived cargo PKGBUILD) alongside the crate-level `aur:` binary package
+# (`anodizer-bin`, which already Provides/Conflicts `anodizer`). Same SSH key
+# and AUR account as the -bin package.
+aur_sources:
+  - name: anodizer
+    required: true
+    maintainers:
+      - "TJ Smith <tj@jarvispro.io>"
+    depends:
+      - glibc
+    private_key: "{{ .Env.AUR_SSH_KEY }}"
+    commit_author:
+      name: TJ Smith
+      email: tj@jarvispro.io
 
 # Top-level Homebrew Cask publisher — GR v2.16+ supported path.
 # GoReleaser v2.16 fully deprecated `brews:` (Formula). This block uses the
