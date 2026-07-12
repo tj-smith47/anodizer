@@ -2754,80 +2754,8 @@ mod orchestrator_tests {
         );
     }
 
-    /// Run the standard three-asset upload once and return the wall-clock
-    /// elapsed. The mock server is bound fresh per call so each run is an
-    /// independent, identical I/O scenario differing only by `pace_ms`.
-    fn time_three_asset_upload(pace_ms: &str) -> std::time::Duration {
-        use std::time::Instant;
-
-        let tmp = TempDir::new().expect("tempdir");
-        let a = write_artifact(tmp.path(), "a.tar.gz", b"aaaaa");
-        let b = write_artifact(tmp.path(), "b.tar.gz", b"bbbbb");
-        let c = write_artifact(tmp.path(), "c.tar.gz", b"ccccc");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let release = release_json(addr, 42, true, "v1.2.3");
-        let routes = multi_asset_routes(
-            release,
-            &[("a.tar.gz", 1), ("b.tar.gz", 2), ("c.tar.gz", 3)],
-        );
-        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
-
-        let ctx = build_ctx_with_pace_ms(addr, pace_ms);
-        let crate_cfg = build_crate_cfg();
-        let rt = tokio::runtime::Runtime::new().expect("rt");
-        let token = Some("test-token".to_string());
-        let artifacts = vec![
-            (a, Some("a.tar.gz".to_string())),
-            (b, Some("b.tar.gz".to_string())),
-            (c, Some("c.tar.gz".to_string())),
-        ];
-        let anc = spec_ancillary_default();
-
-        let t0 = Instant::now();
-        run_backend(
-            &rt,
-            &ctx,
-            &token,
-            &crate_cfg,
-            &make_spec(&anc),
-            &base_opts(),
-            &artifacts,
-        )
-        .expect("upload succeeds")
-        .expect("returns Some");
-        t0.elapsed()
-    }
-
-    /// With pace disabled (`ANODIZER_GITHUB_UPLOAD_PACE_MS=0`) the upload loop
-    /// must NOT insert any inter-start delay. Proving this with an absolute
-    /// wall-clock bound is timing-flaky: a slow/loaded runner can spend
-    /// hundreds of milliseconds on the same no-pace round-trips. Instead, run
-    /// the identical three-asset upload twice on the same machine — once
-    /// unpaced, once at a 500 ms pace — and assert the paced run is meaningfully
-    /// slower. Both runs share identical base I/O, so the difference isolates
-    /// the injected pacing (2 inter-start gaps * 500 ms * 0.8 jitter floor ~=
-    /// 800 ms). The 500 ms pace makes the injected signal dominate base-I/O
-    /// noise: a 300 ms margin still tolerates the unpaced run being ~500 ms
-    /// slower than the paced run's base I/O before tripping, so the comparison
-    /// holds even when the two sequential runs see very different cold/warm or
-    /// loaded conditions. A regression that paces even at the `0` sentinel makes
-    /// the two elapsed times converge, collapsing the gap below the margin and
-    /// tripping this assertion — independent of the runner's underlying I/O.
-    #[test]
-    fn upload_pace_zero_is_a_no_op() {
-        let unpaced = time_three_asset_upload("0");
-        let paced = time_three_asset_upload("500");
-
-        // Margin sits far above loopback jitter yet far below the ~800 ms
-        // injected by real pacing, so the comparison is robust on noisy runners
-        // (the two timed runs are sequential + independent and their base I/O
-        // can diverge widely) while still catching a regression that paces at 0.
-        let margin = std::time::Duration::from_millis(300);
-        assert!(
-            unpaced + margin < paced,
-            "pace=0 must add no inter-start delay (unpaced {unpaced:?} vs paced {paced:?})"
-        );
-    }
+    // The pace=0 no-op invariant is proven deterministically in
+    // `forge::tests::upload_pace_delay_tests` (pure `upload_pace_delay`), not
+    // by comparing two wall-clock runs here — that comparison was load-flaky
+    // under concurrent test hosts and false-reds the release gate.
 }

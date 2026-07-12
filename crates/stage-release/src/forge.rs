@@ -144,6 +144,15 @@ pub(crate) fn resolve_upload_pace<E: anodizer_core::EnvSource + ?Sized>(
     release_cfg.resolved_upload_pace()
 }
 
+/// The inter-start pace delay to apply before the upload at position `idx`, or
+/// `None` when no sleep should be inserted. The first upload (`idx == 0`) has
+/// no prior start to space from, and a zero `pace` is the "pacing disabled"
+/// sentinel. Pure so the pace=0 no-op invariant is provable without a
+/// wall-clock comparison; the loop jitters the returned base before sleeping.
+fn upload_pace_delay(idx: usize, pace: Duration) -> Option<Duration> {
+    (idx > 0 && !pace.is_zero()).then_some(pace)
+}
+
 /// Drive the bounded-parallel upload of `artifact_entries` through `client`.
 ///
 /// 1. Prepare the entry list: resolve each entry's upload name (custom name
@@ -209,8 +218,8 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
         // admit the first `upload_concurrency` POSTs in the same instant.
         // Skipped for the first task (no prior start to space from) and when
         // pacing is disabled.
-        if idx > 0 && !plan.upload_pace.is_zero() {
-            tokio::time::sleep(anodizer_core::retry::jitter_duration(plan.upload_pace)).await;
+        if let Some(pace) = upload_pace_delay(idx, plan.upload_pace) {
+            tokio::time::sleep(anodizer_core::retry::jitter_duration(pace)).await;
         }
         let sem = semaphore.clone();
         let client = client.clone();
@@ -641,6 +650,39 @@ mod tests {
             let cfg = cfg_with_pace("1s");
             let env = MapEnvSource::new().with("ANODIZER_GITHUB_UPLOAD_PACE_MS", "not-a-number");
             assert_eq!(resolve_upload_pace(&cfg, &env), Duration::from_secs(1));
+        }
+    }
+
+    mod upload_pace_delay_tests {
+        use super::super::upload_pace_delay;
+        use std::time::Duration;
+
+        #[test]
+        fn first_upload_never_paced() {
+            assert_eq!(upload_pace_delay(0, Duration::from_millis(500)), None);
+        }
+
+        #[test]
+        fn zero_pace_is_a_no_op_at_every_index() {
+            for idx in 0..5 {
+                assert_eq!(
+                    upload_pace_delay(idx, Duration::ZERO),
+                    None,
+                    "pace=0 must inject no delay at idx {idx}"
+                );
+            }
+        }
+
+        #[test]
+        fn subsequent_uploads_carry_the_pace() {
+            let pace = Duration::from_millis(500);
+            for idx in 1..5 {
+                assert_eq!(
+                    upload_pace_delay(idx, pace),
+                    Some(pace),
+                    "idx {idx} must space by the configured pace"
+                );
+            }
         }
     }
 
