@@ -11433,6 +11433,14 @@
             "null"
           ]
         },
+        "platform_name_template": {
+          "description": "Override the per-platform package naming in `optional-deps` mode.\n\nThe rendered template is the FULL package name for each platform, replacing the default `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Beyond the standard release context, four platform vars are available per package: `NpmOs` (npm's os selector: `linux`/`darwin`/`win32`), `NpmCpu` (`x64`/`arm64`/`ia32`/...), `NpmLibc` (`glibc`/`musl`, empty off-linux), plus anodizer's own `Os`/`Arch` target mapping (os `windows`, not `win32`). Example: `\"git-cliff-{{ Os }}-{{ NpmCpu }}\"` yields `git-cliff-linux-x64`, `git-cliff-darwin-arm64`, `git-cliff-windows-x64`. A rendered name without a leading `@` is prefixed with `scope` when one is set; with this template set, `scope` is optional and unscoped names are allowed. If the template renders the same name for two platforms (e.g. it omits `NpmLibc` while `libc_aware` is `true`), the publisher fails with a config error naming the colliding packages. The npm `os`/`cpu`/`libc` selector fields inside each `package.json` always use the npm tokens regardless of this template. Ignored (hard error) in `postinstall` mode.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "provenance": {
           "description": "npm `publishConfig.provenance` flag. When unset, anodizer emits `true` — the npm supply-chain norm that biome and swc both set, pairing with anodizer's signing story. Set to `false` to disable.",
           "default": null,
@@ -11473,7 +11481,7 @@
           ]
         },
         "scope": {
-          "description": "npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode; ignored in `postinstall` mode.",
+          "description": "npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode unless `platform_name_template` is set (a template can produce unscoped names); ignored in `postinstall` mode.",
           "default": null,
           "type": [
             "string",
@@ -11482,6 +11490,18 @@
         },
         "skip": {
           "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skip_metapackage": {
+          "description": "In `optional-deps` mode, emit and publish ONLY the per-platform packages — no metapackage (no `optionalDependencies` aggregate, no `bin` shim). Accepts bool or template string, like `skip`. For projects whose base npm package is hand-written (e.g. a TypeScript library owning the name) while anodizer owns the per-platform binary packages it lists under its own `optionalDependencies`. Hard error in `postinstall` mode (there is no metapackage to skip).",
           "default": null,
           "anyOf": [
             {

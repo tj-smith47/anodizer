@@ -61,6 +61,72 @@ npms:
     libc_aware: false     # one @acme/cli-linux-x64 instead of -musl / -glibc
 ```
 
+### Custom per-platform package names
+
+By default the per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]` using npm's tokens. `platform_name_template` replaces that entire name with a rendered template — the whole package name, per platform. With a template set, `scope:` becomes optional: a rendered name with no leading `@` is published unscoped (and validated as a legal npm name), or prefixed with `scope` when one is configured.
+
+Beyond the standard release template context, four platform variables are available (values shown for concrete targets):
+
+| Variable | Source | `x86_64-unknown-linux-musl` | `aarch64-apple-darwin` | `x86_64-pc-windows-msvc` |
+|----------|--------|------------------------------|------------------------|--------------------------|
+| `NpmOs` | npm `os` selector | `linux` | `darwin` | `win32` |
+| `NpmCpu` | npm `cpu` selector | `x64` | `arm64` | `x64` |
+| `NpmLibc` | npm `libc` selector | `musl` | *(empty)* | *(empty)* |
+| `Os` | anodizer target mapping | `linux` | `darwin` | `windows` |
+| `Arch` | anodizer target mapping | `amd64` | `arm64` | `amd64` |
+
+Use `Os` when you want `windows` in the name (git-cliff-style) rather than npm's `win32`:
+
+```yaml
+npms:
+  - metapackage: myapp
+    bin: myapp
+    libc_aware: false
+    platform_name_template: "myapp-{{ Os }}-{{ NpmCpu }}"
+```
+
+```
+myapp-linux-x64        package.json: { name: myapp-linux-x64,    os:[linux],  cpu:[x64] }
+myapp-darwin-arm64     package.json: { name: myapp-darwin-arm64, os:[darwin], cpu:[arm64] }
+myapp-windows-x64      package.json: { name: myapp-windows-x64,  os:[win32],  cpu:[x64] }
+```
+
+The npm `os`/`cpu`/`libc` selector **fields** inside each `package.json` always keep npm's tokens (`win32`, not `windows`) regardless of the name template — the template shapes only the package *name*, never the platform resolution.
+
+If the template renders the same name for two distinct platforms — the classic case is omitting `{{ NpmLibc }}` while `libc_aware: true` keeps musl and glibc separate — the publisher fails with a config error naming the colliding packages:
+
+```
+npm: platform_name_template renders the same package name for multiple
+platforms: myapp-linux-x64 — include enough platform vars (NpmOs / NpmCpu /
+NpmLibc) to make every per-platform name unique
+```
+
+`platform_name_template` applies to `optional-deps` mode only; setting it in `postinstall` mode is a hard error.
+
+### Publishing platform packages only
+
+`skip_metapackage` emits and publishes **only** the per-platform packages — no metapackage, no `optionalDependencies` aggregate, no `bin` shim. Use it when the base npm package is hand-maintained — e.g. a TypeScript library that owns the package name and lists the binary packages under its own `optionalDependencies` — while anodizer owns building and publishing the per-platform binary packages:
+
+```yaml
+npms:
+  - scope: "@myapp"
+    bin: myapp
+    access: public
+    skip_metapackage: true
+```
+
+This publishes `@myapp/myapp-linux-x64-musl`, `@myapp/myapp-darwin-arm64`, … and nothing else; the hand-written base package references them itself.
+
+Like `skip`, the field also accepts a template string, so a single config can gate the metapackage per release:
+
+```yaml
+npms:
+  - scope: "@myapp"
+    skip_metapackage: "{{ .IsSnapshot }}"   # snapshots publish platform packages only
+```
+
+`skip_metapackage` applies to `optional-deps` mode only; setting it in `postinstall` mode (which has no metapackage) is a hard error.
+
 ## postinstall mode
 
 ```yaml
@@ -90,10 +156,12 @@ package/
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mode` | string | `optional-deps` | Distribution strategy: `optional-deps` or `postinstall` |
-| `scope` | string | none | npm scope for per-platform packages (`optional-deps`; required) |
+| `scope` | string | none | npm scope for per-platform packages (`optional-deps`; required unless `platform_name_template` is set) |
 | `metapackage` | string | `name`/crate name | Metapackage name users install (`optional-deps`) |
 | `bin` | string | metapackage basename | Command name the metapackage installs (`optional-deps`) |
 | `libc_aware` | bool | `true` | Emit linux musl/glibc as separate packages (`optional-deps`) |
+| `platform_name_template` | string | none | Full-name template for per-platform packages (`optional-deps` only). See [Custom per-platform package names](#custom-per-platform-package-names) |
+| `skip_metapackage` | string/bool | none | Publish only the per-platform packages; no metapackage (`optional-deps` only, templated like `skip`). See [Publishing platform packages only](#publishing-platform-packages-only) |
 | `id` | string | none | Unique identifier (for `--id=...` selection) |
 | `ids` | list | none | Filter artifacts by build ID (matches `crate_name`) |
 | `name` | string | crate name | Package name (postinstall package, or metapackage fallback) |

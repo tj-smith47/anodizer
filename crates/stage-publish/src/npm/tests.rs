@@ -16,7 +16,7 @@ use super::manifest::{
     render_package_json, render_postinstall_js, resolve_access, resolve_extra_files,
     resolve_format, resolve_name, resolve_registry, resolve_tag, runner_supports_npm_provenance,
 };
-use super::optional_deps::generate_layout;
+use super::optional_deps::{MetapackageFiles, OptionalDepsLayout, generate_layout};
 use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth, encode_package_path,
@@ -26,6 +26,15 @@ use super::publish::{
 use super::publisher::NpmPublisher;
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 use std::sync::atomic::Ordering;
+
+/// The layout's metapackage files, asserted present (the default — every test
+/// that skips the metapackage checks `metapackage_files.is_none()` directly).
+fn meta_files(layout: &OptionalDepsLayout) -> &MetapackageFiles {
+    layout
+        .metapackage_files
+        .as_ref()
+        .expect("metapackage files present")
+}
 
 fn demo_crate() -> CrateConfig {
     CrateConfig {
@@ -619,7 +628,8 @@ fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     )
     .expect("layout");
 
-    let meta: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     assert_eq!(meta["name"], "demo");
     assert_eq!(meta["bin"]["demo"], "shim.js");
     let opt = meta["optionalDependencies"].as_object().expect("opt deps");
@@ -629,10 +639,14 @@ fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     }
 
     // shim resolves via require.resolve and detects musl.
-    assert!(layout.shim_js.contains("require.resolve"));
-    assert!(layout.shim_js.contains("BINARY_OVERRIDE"));
-    assert!(layout.shim_js.contains("musl"));
-    assert!(layout.shim_js.contains("@anodize/demo-linux-x64-musl"));
+    assert!(meta_files(&layout).shim_js.contains("require.resolve"));
+    assert!(meta_files(&layout).shim_js.contains("BINARY_OVERRIDE"));
+    assert!(meta_files(&layout).shim_js.contains("musl"));
+    assert!(
+        meta_files(&layout)
+            .shim_js
+            .contains("@anodize/demo-linux-x64-musl")
+    );
 }
 
 #[test]
@@ -737,11 +751,224 @@ fn optional_deps_layout_is_deterministic() {
         generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("l1");
     let l2 =
         generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("l2");
-    assert_eq!(l1.metapackage_json, l2.metapackage_json);
-    assert_eq!(l1.shim_js, l2.shim_js);
+    assert_eq!(meta_files(&l1).package_json, meta_files(&l2).package_json);
+    assert_eq!(meta_files(&l1).shim_js, meta_files(&l2).shim_js);
     let n1: Vec<&str> = l1.platforms.iter().map(|p| p.name.as_str()).collect();
     let n2: Vec<&str> = l2.platforms.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(n1, n2);
+}
+
+// -----------------------------------------------------------------------------
+// platform_name_template + skip_metapackage
+// -----------------------------------------------------------------------------
+
+#[test]
+fn parse_platform_name_template_and_skip_metapackage() {
+    let yaml = r#"
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ .Version }}"
+npms:
+  - metapackage: git-cliff
+    platform_name_template: "git-cliff-{{ Os }}-{{ NpmCpu }}"
+    skip_metapackage: true
+    libc_aware: false
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse npms");
+    let entry = &cfg.npms.as_ref().unwrap()[0];
+    assert_eq!(
+        entry.platform_name_template.as_deref(),
+        Some("git-cliff-{{ Os }}-{{ NpmCpu }}")
+    );
+    assert!(matches!(
+        entry.skip_metapackage,
+        Some(StringOrBool::Bool(true))
+    ));
+
+    // Templated skip_metapackage parses as the string form, like `skip`.
+    let yaml_tmpl = r#"
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ .Version }}"
+npms:
+  - scope: "@anodize"
+    skip_metapackage: "{{ .IsSnapshot }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml_tmpl).expect("parse templated");
+    assert!(matches!(
+        cfg.npms.as_ref().unwrap()[0].skip_metapackage,
+        Some(StringOrBool::String(_))
+    ));
+}
+
+#[test]
+fn platform_name_template_names_packages_git_cliff_style() {
+    let (tmp, mut ctx) = optional_deps_ctx();
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    let cfg = NpmConfig {
+        scope: None,
+        metapackage: Some("git-cliff".into()),
+        bin: Some("git-cliff".into()),
+        platform_name_template: Some("git-cliff-{{ Os }}-{{ NpmCpu }}".into()),
+        libc_aware: false,
+        ..Default::default()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    // `Os` is anodizer's target mapping (windows, not win32); `NpmCpu` is npm's.
+    assert!(names.contains(&"git-cliff-linux-x64"), "{names:?}");
+    assert!(names.contains(&"git-cliff-darwin-x64"), "{names:?}");
+    assert!(names.contains(&"git-cliff-darwin-arm64"), "{names:?}");
+    assert!(names.contains(&"git-cliff-windows-x64"), "{names:?}");
+
+    // The npm selector FIELDS keep npm tokens regardless of the name template.
+    let win = layout
+        .platforms
+        .iter()
+        .find(|p| p.name == "git-cliff-windows-x64")
+        .expect("windows pkg");
+    let j: serde_json::Value = serde_json::from_str(&win.package_json).expect("json");
+    assert_eq!(j["name"], "git-cliff-windows-x64");
+    assert_eq!(j["os"], serde_json::json!(["win32"]));
+
+    // The metapackage's optionalDependencies list the templated names.
+    let meta_j: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
+    let opt = meta_j["optionalDependencies"].as_object().expect("deps");
+    assert!(opt.contains_key("git-cliff-windows-x64"), "{opt:?}");
+}
+
+#[test]
+fn platform_name_template_scope_prefixes_unscoped_render() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        platform_name_template: Some("cli-{{ NpmOs }}-{{ NpmCpu }}".into()),
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"@anodize/cli-linux-x64"), "{names:?}");
+    assert!(names.contains(&"@anodize/cli-win32-x64"), "{names:?}");
+}
+
+#[test]
+fn platform_name_template_collision_errors_with_names() {
+    // libc_aware (default true) keeps musl + glibc as distinct platforms, but
+    // the template omits NpmLibc — both render `demo-linux-x64`.
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        scope: None,
+        platform_name_template: Some("demo-{{ NpmOs }}-{{ NpmCpu }}".into()),
+        ..opt_cfg()
+    };
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect_err("colliding names must error");
+    let msg = err.to_string();
+    assert!(msg.contains("same package name"), "{msg}");
+    assert!(msg.contains("demo-linux-x64"), "{msg}");
+}
+
+#[test]
+fn platform_name_template_invalid_name_errors() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        scope: None,
+        platform_name_template: Some("Demo-{{ NpmOs }}-{{ NpmCpu }}".into()),
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect_err("uppercase npm name must error");
+    assert!(
+        err.to_string().contains("not a legal npm package name"),
+        "{err}"
+    );
+}
+
+#[test]
+fn skip_metapackage_emits_platform_packages_only() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        ..opt_cfg()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+    assert!(layout.metapackage_files.is_none(), "no metapackage files");
+    assert_eq!(layout.platforms.len(), 4, "all platform packages emitted");
+    // The name still resolves (for logging / provenance probing).
+    assert_eq!(layout.metapackage, "demo");
+}
+
+#[test]
+fn skip_metapackage_templated_string_is_rendered() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::String("{{ 1 }}".into())),
+        ..opt_cfg()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+    assert!(layout.metapackage_files.is_none(), "'1' renders truthy");
+
+    let cfg_false = NpmConfig {
+        skip_metapackage: Some(StringOrBool::Bool(false)),
+        ..opt_cfg()
+    };
+    let layout = generate_layout(
+        &ctx,
+        &cfg_false,
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    assert!(
+        layout.metapackage_files.is_some(),
+        "false keeps metapackage"
+    );
+}
+
+#[test]
+fn skip_metapackage_rejected_in_postinstall_mode() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        ..npm_cfg()
+    };
+    let mut targets = Vec::new();
+    let err = publish_to_npm(&ctx, &cfg, "demo", &ctx.logger("publish"), &mut targets)
+        .expect_err("postinstall + skip_metapackage must error");
+    assert!(err.to_string().contains("skip_metapackage"), "{err}");
+    assert!(targets.is_empty());
+}
+
+#[test]
+fn platform_name_template_rejected_in_postinstall_mode() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        platform_name_template: Some("demo-{{ NpmOs }}".into()),
+        ..npm_cfg()
+    };
+    let mut targets = Vec::new();
+    let err = publish_to_npm(&ctx, &cfg, "demo", &ctx.logger("publish"), &mut targets)
+        .expect_err("postinstall + platform_name_template must error");
+    assert!(err.to_string().contains("platform_name_template"), "{err}");
+    assert!(targets.is_empty());
 }
 
 // -----------------------------------------------------------------------------
@@ -927,7 +1154,7 @@ fn metapackage_package_json_guard_rejects_residual_in_generated_output() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let residual = layout.metapackage_json.replacen(
+    let residual = meta_files(&layout).package_json.replacen(
         "\"name\"",
         "\"description\":\"{{ .NoSuchField }}\",\"name\"",
         1,
@@ -959,7 +1186,7 @@ fn metapackage_package_json_guard_dry_run_stays_lenient_on_residual() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let residual = layout.metapackage_json.replacen(
+    let residual = meta_files(&layout).package_json.replacen(
         "\"name\"",
         "\"description\":\"{{ .NoSuchField }}\",\"name\"",
         1,
@@ -2358,7 +2585,7 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
         .expect("layout");
 
     let meta_j: serde_json::Value =
-        serde_json::from_str(&layout.metapackage_json).expect("meta json");
+        serde_json::from_str(&meta_files(&layout).package_json).expect("meta json");
     assert_eq!(
         meta_j["description"], "Alpha tool",
         "alpha metapackage desc"
@@ -2368,7 +2595,7 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
     assert_eq!(meta_j["author"], "Alpha A <a@x>");
     assert_eq!(meta_j["repository"]["url"], "https://github.com/acme/alpha");
     // Categorically NOT beta's values.
-    let s = layout.metapackage_json.clone();
+    let s = meta_files(&layout).package_json.clone();
     assert!(!s.contains("Beta tool"), "must not leak beta metadata");
     assert!(!s.contains("Apache-2.0"), "must not leak beta license");
     assert!(!s.contains("acme/beta"), "must not leak beta repository");
@@ -2395,7 +2622,8 @@ fn engines_default_node_18_and_overridable() {
         &ctx_b.logger("publish"),
     )
     .expect("layout");
-    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let meta_j: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     assert_eq!(meta_j["engines"]["node"], ">=18");
     // Per-platform packages also carry engines.
     let plat_j: serde_json::Value =
@@ -2418,7 +2646,8 @@ fn engines_default_node_18_and_overridable() {
         &ctx_b.logger("publish"),
     )
     .expect("layout");
-    let j2: serde_json::Value = serde_json::from_str(&layout2.metapackage_json).expect("json");
+    let j2: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout2).package_json).expect("json");
     assert_eq!(j2["engines"]["node"], ">=20");
 
     // Empty map suppresses the field.
@@ -2435,7 +2664,8 @@ fn engines_default_node_18_and_overridable() {
         &ctx_b.logger("publish"),
     )
     .expect("layout");
-    let j3: serde_json::Value = serde_json::from_str(&layout3.metapackage_json).expect("json");
+    let j3: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout3).package_json).expect("json");
     assert!(
         j3.get("engines").is_none(),
         "empty engines map suppresses field"
@@ -2454,7 +2684,8 @@ fn publish_config_provenance_default_true_and_disable() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let meta_j: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     assert_eq!(
         meta_j["publishConfig"]["provenance"],
         serde_json::Value::Bool(true),
@@ -2475,7 +2706,7 @@ fn publish_config_provenance_default_true_and_disable() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
+    let j2: serde_json::Value = serde_json::from_str(&meta_files(&l2).package_json).expect("json");
     assert_eq!(j2["publishConfig"]["access"], "public");
     assert_eq!(
         j2["publishConfig"]["provenance"],
@@ -2496,7 +2727,7 @@ fn publish_config_provenance_default_true_and_disable() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let j3: serde_json::Value = serde_json::from_str(&l3.metapackage_json).expect("json");
+    let j3: serde_json::Value = serde_json::from_str(&meta_files(&l3).package_json).expect("json");
     assert_eq!(
         j3["publishConfig"]["provenance"],
         serde_json::Value::Bool(false)
@@ -2670,7 +2901,8 @@ fn optional_deps_provenance_degraded_uniformly_on_self_hosted() {
     assert_eq!(override_, Some(false));
 
     let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", override_, &log).expect("layout");
-    let meta: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     assert_eq!(
         meta["publishConfig"]["provenance"],
         serde_json::Value::Bool(false),
@@ -2701,7 +2933,8 @@ fn files_allowlist_derived_per_package() {
     .expect("layout");
 
     // Metapackage ships the shim + the default README*/LICENSE* extra_files.
-    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let meta_j: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     let mfiles = meta_j["files"].as_array().expect("files array");
     let mfiles: Vec<&str> = mfiles.iter().map(|v| v.as_str().unwrap()).collect();
     assert!(mfiles.contains(&"shim.js"), "{mfiles:?}");
@@ -2733,7 +2966,8 @@ fn files_explicit_override_and_empty_suppresses() {
     };
     let layout =
         generate_layout(&ctx, &cfg, "demo", "1.0.0", None, &ctx.logger("publish")).expect("layout");
-    let j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let j: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("json");
     assert_eq!(j["files"], serde_json::json!(["only-this"]));
 
     let cfg_empty = NpmConfig {
@@ -2749,7 +2983,7 @@ fn files_explicit_override_and_empty_suppresses() {
         &ctx.logger("publish"),
     )
     .expect("layout");
-    let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
+    let j2: serde_json::Value = serde_json::from_str(&meta_files(&l2).package_json).expect("json");
     assert!(
         j2.get("files").is_none(),
         "empty files list suppresses field"

@@ -912,14 +912,25 @@ fn publish_optional_deps(
     let layout = generate_layout(ctx, cfg, crate_name, &version, provenance_override, log)?;
 
     if ctx.is_dry_run() {
-        log.status(&format!(
-            "(dry-run) would publish npm metapackage '{}@{}' + {} platform package(s) to {} (tag={})",
-            layout.metapackage,
-            version,
-            layout.platforms.len(),
-            registry,
-            dist_tag
-        ));
+        if layout.metapackage_files.is_some() {
+            log.status(&format!(
+                "(dry-run) would publish npm metapackage '{}@{}' + {} platform package(s) to {} (tag={})",
+                layout.metapackage,
+                version,
+                layout.platforms.len(),
+                registry,
+                dist_tag
+            ));
+        } else {
+            log.status(&format!(
+                "(dry-run) would publish {} npm platform package(s) at {} to {} (tag={}) — metapackage '{}' skipped (skip_metapackage)",
+                layout.platforms.len(),
+                version,
+                registry,
+                dist_tag,
+                layout.metapackage
+            ));
+        }
         return Ok(());
     }
 
@@ -957,26 +968,29 @@ fn publish_optional_deps(
         )?);
     }
     // Metapackage staged last so it publishes last (its optionalDependencies
-    // must already resolve at install time).
-    let meta_embedded = vec![(
-        "shim.js".to_string(),
-        layout.shim_js.clone().into_bytes(),
-        0o755u32,
-    )];
-    crate::util::guard_no_unrendered(
-        ctx,
-        log,
-        "npm metapackage package.json",
-        &layout.metapackage_json,
-    )?;
-    staged_all.push(assemble_optional_deps_tarball(
-        ctx,
-        cfg,
-        &layout.metapackage,
-        &version,
-        &layout.metapackage_json,
-        &meta_embedded,
-    )?);
+    // must already resolve at install time). Absent under skip_metapackage —
+    // only the per-platform packages ship.
+    if let Some(meta) = layout.metapackage_files.as_ref() {
+        let meta_embedded = vec![(
+            "shim.js".to_string(),
+            meta.shim_js.clone().into_bytes(),
+            0o755u32,
+        )];
+        crate::util::guard_no_unrendered(
+            ctx,
+            log,
+            "npm metapackage package.json",
+            &meta.package_json,
+        )?;
+        staged_all.push(assemble_optional_deps_tarball(
+            ctx,
+            cfg,
+            &layout.metapackage,
+            &version,
+            &meta.package_json,
+            &meta_embedded,
+        )?);
+    }
 
     // All artifacts validated and staged — now publish in order (per-platform
     // packages first, metapackage last). Auth is resolved PER package (the
@@ -1011,6 +1025,29 @@ fn publish_postinstall(
     log: &StageLogger,
     targets: &mut Vec<NpmTarget>,
 ) -> Result<()> {
+    // These two knobs shape the optional-deps per-platform package set;
+    // silently ignoring them in postinstall mode would ship something other
+    // than what the config asked for, so fail loud like the multi-format
+    // ambiguity below.
+    if cfg.skip_metapackage.is_some() {
+        bail!(
+            "npm: `skip_metapackage:` only applies to optional-deps mode — \
+             postinstall mode emits a single package with no metapackage; \
+             remove the field or set mode: optional-deps"
+        );
+    }
+    if cfg
+        .platform_name_template
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        bail!(
+            "npm: `platform_name_template:` only applies to optional-deps mode — \
+             postinstall mode publishes one package named by `name:`; \
+             remove the field or set mode: optional-deps"
+        );
+    }
     preflight_multi_format_unambiguous(ctx, cfg, crate_name)?;
 
     let version = ctx.version();

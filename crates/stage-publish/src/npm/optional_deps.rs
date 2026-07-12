@@ -17,7 +17,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::NpmConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 use super::manifest::{
     NpmTriple, finalize_package_json, insert_common_metadata, insert_engines, insert_files,
@@ -45,17 +45,27 @@ pub(crate) struct PlatformPackage {
     pub binary_name: String,
 }
 
-/// The full set of packages an `optional-deps` entry emits: one metapackage
-/// plus its per-platform packages.
+/// The rendered metapackage file pair (`package.json` + `shim.js`), grouped so
+/// a skipped metapackage is a single `None` rather than two fields that could
+/// drift apart.
 #[derive(Debug, Clone)]
-pub(crate) struct OptionalDepsLayout {
-    /// Metapackage name (what users `npm install`).
-    pub metapackage: String,
+pub(crate) struct MetapackageFiles {
     /// Rendered metapackage `package.json` (carries `optionalDependencies` +
     /// `bin`).
-    pub metapackage_json: String,
+    pub package_json: String,
     /// Rendered `shim.js` for the metapackage `bin`.
     pub shim_js: String,
+}
+
+/// The full set of packages an `optional-deps` entry emits: the per-platform
+/// packages plus (unless `skip_metapackage`) one metapackage.
+#[derive(Debug, Clone)]
+pub(crate) struct OptionalDepsLayout {
+    /// Metapackage name (what users `npm install`). Resolved even when the
+    /// metapackage is skipped, for logging and provenance probing.
+    pub metapackage: String,
+    /// Rendered metapackage files; `None` when `skip_metapackage` is truthy.
+    pub metapackage_files: Option<MetapackageFiles>,
     /// Per-platform packages, sorted by name for deterministic emission.
     pub platforms: Vec<PlatformPackage>,
 }
@@ -101,6 +111,84 @@ fn platform_suffix(triple: &NpmTriple, libc_aware: bool) -> String {
     } else {
         format!("{}-{}", triple.os, triple.cpu)
     }
+}
+
+/// How per-platform package names are derived: the default
+/// `<scope>/<bin>-<suffix>` scheme, or a user-supplied
+/// `platform_name_template` (with which `scope` is optional).
+enum PlatformNaming<'a> {
+    /// Default `<scope>/<bin>-<os>-<cpu>[-<libc>]` naming.
+    Default { scope: &'a str },
+    /// `platform_name_template` naming; `scope` (when set) prefixes rendered
+    /// names that do not already carry a `@scope/`.
+    Template {
+        template: &'a str,
+        scope: Option<&'a str>,
+    },
+}
+
+/// Validate `name` against npm's package-name rules: ≤214 chars, lowercase
+/// URL-safe characters (`a-z 0-9 - _ . ~`), no leading `.`/`_`, scoped names
+/// as `@scope/name` with both parts non-empty.
+fn validate_npm_package_name(name: &str) -> Result<()> {
+    let part_ok = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && !part.starts_with('_')
+            && part.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '~')
+            })
+    };
+    let valid = name.len() <= 214
+        && match name.strip_prefix('@') {
+            Some(rest) => match rest.split_once('/') {
+                Some((scope, pkg)) => part_ok(scope) && part_ok(pkg),
+                None => false,
+            },
+            None => part_ok(name),
+        };
+    if !valid {
+        bail!(
+            "npm: rendered platform package name '{}' is not a legal npm package \
+             name (lowercase URL-safe characters, no leading '.'/'_', at most 214 \
+             chars; scoped names as '@scope/name')",
+            name
+        );
+    }
+    Ok(())
+}
+
+/// Render one per-platform package name from `platform_name_template`.
+///
+/// Beyond the standard release context, seeds `Os`/`Arch`/`Target` from
+/// anodizer's target mapping and `NpmOs`/`NpmCpu`/`NpmLibc` from the npm
+/// triple. A rendered name without a leading `@` is prefixed with `scope`
+/// when one is configured; the final name is validated as a legal npm name.
+fn render_platform_name(
+    ctx: &Context,
+    template: &str,
+    scope: Option<&str>,
+    target: &str,
+    triple: &NpmTriple,
+) -> Result<String> {
+    let mut vars = ctx.template_vars().clone();
+    let (os, arch) = anodizer_core::target::map_target(target);
+    vars.set("Os", &os);
+    vars.set("Arch", &arch);
+    vars.set("Target", target);
+    vars.set("NpmOs", &triple.os);
+    vars.set("NpmCpu", &triple.cpu);
+    vars.set("NpmLibc", &triple.libc);
+    let rendered = anodizer_core::template::render(template, &vars).with_context(|| {
+        format!("npm: render platform_name_template {template:?} for target '{target}'")
+    })?;
+    let rendered = rendered.trim();
+    let full = match scope {
+        Some(scope) if !rendered.starts_with('@') => format!("{}/{}", scope, rendered),
+        _ => rendered.to_string(),
+    };
+    validate_npm_package_name(&full)?;
+    Ok(full)
 }
 
 /// Render a per-platform `package.json`: `name`/`version` plus the npm
@@ -313,6 +401,10 @@ process.exit(result.status === null ? 1 : result.status);
 /// collapse to a single linux package per cpu (the glibc build wins the dedup
 /// deterministically — see [`libc_dedup_rank`]).
 ///
+/// `platform_name_template` overrides the default per-platform naming (see
+/// [`render_platform_name`]); a truthy `skip_metapackage` suppresses the
+/// metapackage files entirely (per-platform packages only).
+///
 /// Errors when no platform binary maps to an npm triple — emitting an empty
 /// `optionalDependencies` set would make `npm install` of the metapackage
 /// silently install nothing.
@@ -335,15 +427,29 @@ pub(crate) fn generate_layout(
         .scope
         .as_deref()
         .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_end_matches('/'));
+    let name_template = cfg
+        .platform_name_template
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty());
-    let Some(scope) = scope else {
-        bail!(
+    let naming = match (name_template, scope) {
+        (Some(template), scope) => PlatformNaming::Template { template, scope },
+        (None, Some(scope)) => PlatformNaming::Default { scope },
+        (None, None) => bail!(
             "npm: entry for '{}' uses optional-deps mode but `scope:` is unset — \
-             per-platform packages need a scope (e.g. scope: \"@acme\")",
+             per-platform packages need a scope (e.g. scope: \"@acme\"), or set \
+             `platform_name_template:` to name them without one",
             metapackage
-        );
+        ),
     };
-    let scope = scope.trim_end_matches('/');
+    let skip_metapackage = match cfg.skip_metapackage.as_ref() {
+        Some(s) => s
+            .try_evaluates_to_true(|t| ctx.render_template(t))
+            .context("npm: render skip_metapackage template")?,
+        None => false,
+    };
 
     let id_filter = cfg.ids.as_ref();
     // Source per-target binaries: prefer UploadableBinary (the
@@ -370,8 +476,15 @@ pub(crate) fn generate_layout(
             });
             continue;
         };
-        let suffix = platform_suffix(&triple, libc_aware);
-        let pkg_name = format!("{}/{}-{}", scope, bin, suffix);
+        let pkg_name = match naming {
+            PlatformNaming::Default { scope } => {
+                let suffix = platform_suffix(&triple, libc_aware);
+                format!("{}/{}-{}", scope, bin, suffix)
+            }
+            PlatformNaming::Template { template, scope } => {
+                render_platform_name(ctx, template, scope, target, &triple)?
+            }
+        };
         let binary_name = art.name.clone();
         let package_json = render_platform_json(
             ctx,
@@ -405,11 +518,38 @@ pub(crate) fn generate_layout(
             .cmp(&b.name)
             .then_with(|| libc_dedup_rank(&a.triple.libc).cmp(&libc_dedup_rank(&b.triple.libc)))
     });
+    // Identical (name, triple) pairs are the same package emitted twice (e.g.
+    // duplicate artifacts); keep one.
+    platforms.dedup_by(|a, b| a.name == b.name && a.triple == b.triple);
     // When not libc-aware, two linux binaries (musl + glibc) collapse to the
     // same package name; drop the duplicate so optionalDependencies has no
     // colliding key. The sort above guarantees glibc precedes musl, so the
-    // glibc binary is the one retained.
-    platforms.dedup_by(|a, b| a.name == b.name);
+    // glibc binary is the one retained. The collapse only spans a libc
+    // difference — same-name packages for DIFFERENT os/cpu pairs are a naming
+    // bug caught below, not silently merged.
+    if !libc_aware {
+        platforms.dedup_by(|a, b| {
+            a.name == b.name && a.triple.os == b.triple.os && a.triple.cpu == b.triple.cpu
+        });
+    }
+    // Any duplicate name that survives the collapses above means two distinct
+    // platforms rendered the same package name — with the default scheme that
+    // is impossible, so this is a platform_name_template that omits a
+    // distinguishing var (e.g. NpmLibc while libc_aware is true).
+    let mut colliding: Vec<&str> = platforms
+        .windows(2)
+        .filter(|w| w[0].name == w[1].name)
+        .map(|w| w[0].name.as_str())
+        .collect();
+    colliding.dedup();
+    if !colliding.is_empty() {
+        bail!(
+            "npm: platform_name_template renders the same package name for \
+             multiple platforms: {} — include enough platform vars (NpmOs / \
+             NpmCpu / NpmLibc) to make every per-platform name unique",
+            colliding.join(", ")
+        );
+    }
 
     if platforms.is_empty() {
         bail!(
@@ -419,22 +559,29 @@ pub(crate) fn generate_layout(
         );
     }
 
-    let metapackage_json = render_metapackage_json(
-        ctx,
-        cfg,
-        &metapackage,
-        crate_name,
-        &bin,
-        version,
-        &platforms,
-        provenance_override,
-    )?;
-    let shim_js = render_shim_js(&bin, &platforms);
+    let metapackage_files = if skip_metapackage {
+        None
+    } else {
+        let package_json = render_metapackage_json(
+            ctx,
+            cfg,
+            &metapackage,
+            crate_name,
+            &bin,
+            version,
+            &platforms,
+            provenance_override,
+        )?;
+        let shim_js = render_shim_js(&bin, &platforms);
+        Some(MetapackageFiles {
+            package_json,
+            shim_js,
+        })
+    };
 
     Ok(OptionalDepsLayout {
         metapackage,
-        metapackage_json,
-        shim_js,
+        metapackage_files,
         platforms,
     })
 }

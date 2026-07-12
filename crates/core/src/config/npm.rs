@@ -95,8 +95,39 @@ pub struct NpmConfig {
     /// npm scope for the per-platform packages emitted in `optional-deps`
     /// mode (e.g. `@biomejs`). The per-platform packages are named
     /// `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps`
-    /// mode; ignored in `postinstall` mode.
+    /// mode unless `platform_name_template` is set (a template can produce
+    /// unscoped names); ignored in `postinstall` mode.
     pub scope: Option<String>,
+
+    /// Override the per-platform package naming in `optional-deps` mode.
+    ///
+    /// The rendered template is the FULL package name for each platform,
+    /// replacing the default `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Beyond the
+    /// standard release context, four platform vars are available per package:
+    /// `NpmOs` (npm's os selector: `linux`/`darwin`/`win32`), `NpmCpu`
+    /// (`x64`/`arm64`/`ia32`/...), `NpmLibc` (`glibc`/`musl`, empty off-linux),
+    /// plus anodizer's own `Os`/`Arch` target mapping (os `windows`, not
+    /// `win32`). Example: `"git-cliff-{{ Os }}-{{ NpmCpu }}"` yields
+    /// `git-cliff-linux-x64`, `git-cliff-darwin-arm64`, `git-cliff-windows-x64`.
+    /// A rendered name without a leading `@` is prefixed with `scope` when one
+    /// is set; with this template set, `scope` is optional and unscoped names
+    /// are allowed. If the template renders the same name for two platforms
+    /// (e.g. it omits `NpmLibc` while `libc_aware` is `true`), the publisher
+    /// fails with a config error naming the colliding packages. The npm
+    /// `os`/`cpu`/`libc` selector fields inside each `package.json` always use
+    /// the npm tokens regardless of this template. Ignored (hard error) in
+    /// `postinstall` mode.
+    pub platform_name_template: Option<String>,
+
+    /// In `optional-deps` mode, emit and publish ONLY the per-platform
+    /// packages — no metapackage (no `optionalDependencies` aggregate, no
+    /// `bin` shim). Accepts bool or template string, like `skip`. For
+    /// projects whose base npm package is hand-written (e.g. a TypeScript
+    /// library owning the name) while anodizer owns the per-platform binary
+    /// packages it lists under its own `optionalDependencies`. Hard error in
+    /// `postinstall` mode (there is no metapackage to skip).
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub skip_metapackage: Option<StringOrBool>,
 
     /// Metapackage name for `optional-deps` mode (e.g. `biome`). This is the
     /// package users `npm install`; it lists every per-platform package under
@@ -255,6 +286,8 @@ impl Default for NpmConfig {
             ids: None,
             mode: NpmMode::default(),
             scope: None,
+            platform_name_template: None,
+            skip_metapackage: None,
             metapackage: None,
             bin: None,
             libc_aware: default_libc_aware(),
