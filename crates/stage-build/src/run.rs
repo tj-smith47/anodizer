@@ -271,6 +271,12 @@ fn plan_build_jobs(
     let commit_timestamp: &str = inputs.commit_timestamp;
     let crates = inputs.crates;
 
+    // A dry-run never dispatches cargo (see `run`'s `if dry_run` short-circuit),
+    // so the doomed-cross-build gate below has nothing to protect: downgrade its
+    // hard-fail to a warning rather than aborting a plan-only preview over a
+    // toolchain that would only matter for a real build.
+    let dry_run = ctx.options.dry_run;
+
     let mut build_jobs: Vec<BuildJob> = Vec::new();
     let mut copy_jobs: Vec<BuildJob> = Vec::new();
 
@@ -838,10 +844,15 @@ fn plan_build_jobs(
                             std::path::Path::new(&crate_cfg.path),
                         ]),
                     ) {
-                        Some(crate::command::CrossGnuFallback::Error(msg)) => {
+                        // A real build with a doomed toolchain fails fast here;
+                        // a dry-run (which never compiles) only warns, so a
+                        // plan-only preview on a host lacking the cross cc is
+                        // not aborted.
+                        Some(crate::command::CrossGnuFallback::Error(msg)) if !dry_run => {
                             anyhow::bail!(msg)
                         }
-                        Some(crate::command::CrossGnuFallback::Warn(msg)) => log.warn(&msg),
+                        Some(crate::command::CrossGnuFallback::Error(msg))
+                        | Some(crate::command::CrossGnuFallback::Warn(msg)) => log.warn(&msg),
                         None => {}
                     }
                 }
@@ -1354,6 +1365,13 @@ mod env_scope_tests {
     }
 
     fn plan(krate: &CrateConfig, ctx: &mut Context) -> (Vec<BuildJob>, Vec<BuildJob>) {
+        // These tests exercise planner env-scoping/stamps, never a real build,
+        // and use `x86_64-unknown-linux-gnu` as a fixture target — which is
+        // native on the Linux CI box but a cross-gnu target on macOS/Windows,
+        // where the doomed-build gate would otherwise abort planning. Marking
+        // the plan-only context as a dry-run reflects its intent and keeps the
+        // assertions host-independent.
+        ctx.options.dry_run = true;
         let log = ctx.logger("build");
         let strategy = ctx.config.default_cross_strategy();
         let inputs = PlanInputs {
@@ -1587,6 +1605,47 @@ mod env_scope_tests {
             !env.keys()
                 .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
             "linux target must carry no CC_/CXX_ pins: {env:?}"
+        );
+    }
+
+    /// A dry-run plan for a doomed cross-gnu target must NOT abort: dry-run
+    /// never compiles, so the doomed-build gate downgrades its hard-fail to a
+    /// warning. `aarch64-unknown-linux-gnu` is a cross target on the x86_64
+    /// Linux CI box as well as on macOS/Windows, so this holds host-
+    /// independently — whether or not a cross cc happens to be on PATH,
+    /// planning returns Ok and never `bail!`s.
+    #[test]
+    fn dry_run_plan_does_not_abort_on_doomed_cross_gnu_target() {
+        let cross = "aarch64-unknown-linux-gnu";
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            path: "no-such-dir".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("myapp".to_string()),
+                targets: Some(vec![cross.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .dry_run(true)
+            .sealed_env()
+            .build();
+        let log = ctx.logger("build");
+        let strategy = ctx.config.default_cross_strategy();
+        let inputs = PlanInputs {
+            crates: std::slice::from_ref(&krate),
+            default_targets: &[],
+            default_strategy: &strategy,
+            default_flags: &None,
+            default_ignores: &[],
+            default_overrides: &[],
+            commit_timestamp: "0",
+        };
+        assert!(
+            plan_build_jobs(&mut ctx, &log, &inputs).is_ok(),
+            "a dry-run plan for a doomed cross-gnu target must not abort"
         );
     }
 }

@@ -394,7 +394,14 @@ fn test_build_failure_nonzero_exit_produces_clear_error() {
         tag_template: "v{{ .Version }}".to_string(),
         builds: Some(vec![BuildConfig {
             binary: Some("this-binary-does-not-exist".to_string()),
-            targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+            // Target the host-native triple so cargo actually runs and fails at
+            // the missing binary on every OS. A hardcoded cross triple (e.g.
+            // linux-gnu) would trip the doomed-cross-build gate on non-Linux
+            // hosts before cargo ran, testing the wrong failure path.
+            targets: Some(vec![
+                anodizer_core::partial::detect_host_target()
+                    .expect("host target detected for the build-failure fixture"),
+            ]),
             ..Default::default()
         }]),
         ..Default::default()
