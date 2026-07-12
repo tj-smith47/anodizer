@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-12
+
+### Features
+
+* 5a21a5ae1464 fail fast on provably-doomed plain-cargo cross gnu builds ([@tj-smith47](https://github.com/tj-smith47))
+* 9d14a5a2e8c5 msix format and Termux-native arch naming (GoReleaser cd5f16b, 99a7173) ([@tj-smith47](https://github.com/tj-smith47))
+* c9c9cc872257 mirror GoReleaser upstream — docker build retry breadth, release-repo token, versioned PR branches, winget default_locale ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 247f062ef2d3 dry-run must not abort on a doomed cross-gnu plan ([@tj-smith47](https://github.com/tj-smith47))
+* 42c014f216b6 live-acceptance fixes for termux.deb and msix ([@tj-smith47](https://github.com/tj-smith47))
+* e817829d897b gate verify-release install-smoke to OS-package publishers ([@tj-smith47](https://github.com/tj-smith47))
+* 97a05071b795 gate verify/preflight axes to the selected publish surface ([@tj-smith47](https://github.com/tj-smith47))
+* e5dbbefbc069 one gpg predicate, a faked-system-time preflight, and honest skips ([@tj-smith47](https://github.com/tj-smith47))
+* fda1fdfb3a22 close the surface-gating and vacuous-verdict holes #minor ([@tj-smith47](https://github.com/tj-smith47))
+* 25ee7153d259 stamp no verdict when the OS-package axes inspect zero packages ([@tj-smith47](https://github.com/tj-smith47))
+* 4141cd8ae479 remove the vestigial gpg --faked-system-time preflight probe ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.16.1] - 2026-07-10
 
 ### Bug Fixes
@@ -617,7 +637,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/tj-smith47/anodizer/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/tj-smith47/anodizer/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...v0.16.0
 [0.15.5]: https://github.com/tj-smith47/anodizer/compare/v0.15.4...v0.15.5
