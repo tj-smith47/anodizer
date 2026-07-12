@@ -125,7 +125,12 @@ pub struct NpmConfig {
     /// projects whose base npm package is hand-written (e.g. a TypeScript
     /// library owning the name) while anodizer owns the per-platform binary
     /// packages it lists under its own `optionalDependencies`. Hard error in
-    /// `postinstall` mode (there is no metapackage to skip).
+    /// `postinstall` mode (there is no metapackage to skip) — but only when
+    /// it evaluates truthy: `skip_metapackage: false` (or a template
+    /// rendering falsey/empty) is inert. Example bool form:
+    /// `skip_metapackage: true`. Example templated form:
+    /// `skip_metapackage: "{{ if .Env.EXTERNAL_METAPACKAGE }}true{{ end }}"`
+    /// — skip only when the base package is published elsewhere.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub skip_metapackage: Option<StringOrBool>,
 

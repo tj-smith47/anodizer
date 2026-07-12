@@ -1017,6 +1017,63 @@ fn publish_optional_deps(
     Ok(())
 }
 
+/// How postinstall mode treats a configured optional-deps-only field.
+#[derive(Clone, Copy)]
+enum ModeGate {
+    /// Documented silent-ignore — kept for back-compat: these fields predate
+    /// the two-mode split and existing postinstall configs may carry them.
+    Ignore,
+    /// Hard error — silently ignoring the field would ship something other
+    /// than what the config asked for (a different package set / naming).
+    Error,
+}
+
+/// The single mode-gate for optional-deps-only fields in `postinstall` mode.
+///
+/// One table names every optional-deps-only field with its behavior: the
+/// legacy fields (`scope`/`metapackage`/`bin`/`libc_aware`) keep their
+/// documented silent-ignore for back-compat, while the two newer fields
+/// (`skip_metapackage`/`platform_name_template`) hard-error. The gate
+/// evaluates VALUES, not presence: `skip_metapackage: false` (or a template
+/// rendering falsey/empty) and an empty/whitespace `platform_name_template`
+/// are inert — no error.
+fn gate_optional_deps_only_fields(ctx: &Context, cfg: &NpmConfig) -> Result<()> {
+    let set = |v: &Option<String>| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty());
+    let skip_metapackage_active = match cfg.skip_metapackage.as_ref() {
+        Some(s) => s
+            .try_evaluates_to_true(|t| ctx.render_template(t))
+            .context("npm: render skip_metapackage template")?,
+        None => false,
+    };
+    let gates: &[(&str, ModeGate, bool)] = &[
+        ("scope", ModeGate::Ignore, set(&cfg.scope)),
+        ("metapackage", ModeGate::Ignore, set(&cfg.metapackage)),
+        ("bin", ModeGate::Ignore, set(&cfg.bin)),
+        // libc_aware defaults true; only an explicit non-default is "set".
+        ("libc_aware", ModeGate::Ignore, !cfg.libc_aware),
+        ("skip_metapackage", ModeGate::Error, skip_metapackage_active),
+        (
+            "platform_name_template",
+            ModeGate::Error,
+            set(&cfg.platform_name_template),
+        ),
+    ];
+    let offending: Vec<&str> = gates
+        .iter()
+        .filter(|(_, gate, active)| *active && matches!(gate, ModeGate::Error))
+        .map(|(name, _, _)| *name)
+        .collect();
+    if !offending.is_empty() {
+        bail!(
+            "npm: `{}` only applies to optional-deps mode — postinstall mode \
+             publishes one package named by `name:` with no metapackage; \
+             remove the field(s) or set mode: optional-deps",
+            offending.join("`, `")
+        );
+    }
+    Ok(())
+}
+
 /// `postinstall` publish: pack + publish a single download-shim package.
 fn publish_postinstall(
     ctx: &Context,
@@ -1025,29 +1082,7 @@ fn publish_postinstall(
     log: &StageLogger,
     targets: &mut Vec<NpmTarget>,
 ) -> Result<()> {
-    // These two knobs shape the optional-deps per-platform package set;
-    // silently ignoring them in postinstall mode would ship something other
-    // than what the config asked for, so fail loud like the multi-format
-    // ambiguity below.
-    if cfg.skip_metapackage.is_some() {
-        bail!(
-            "npm: `skip_metapackage:` only applies to optional-deps mode — \
-             postinstall mode emits a single package with no metapackage; \
-             remove the field or set mode: optional-deps"
-        );
-    }
-    if cfg
-        .platform_name_template
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty())
-    {
-        bail!(
-            "npm: `platform_name_template:` only applies to optional-deps mode — \
-             postinstall mode publishes one package named by `name:`; \
-             remove the field or set mode: optional-deps"
-        );
-    }
+    gate_optional_deps_only_fields(ctx, cfg)?;
     preflight_multi_format_unambiguous(ctx, cfg, crate_name)?;
 
     let version = ctx.version();

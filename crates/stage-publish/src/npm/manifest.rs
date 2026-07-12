@@ -51,6 +51,27 @@ pub(crate) struct NpmTriple {
     pub libc: String,
 }
 
+impl NpmTriple {
+    /// The per-platform naming template variables for one built target:
+    /// anodizer's `Os`/`Arch` mapping (from a single
+    /// [`anodizer_core::target::map_target`] call), the raw `Target` triple,
+    /// and the npm selector vars (`NpmOs`/`NpmCpu`/`NpmLibc`) from this
+    /// triple. Lives beside [`npm_triple`] so the target→npm naming authority
+    /// is single-sourced; `platform_name_template` rendering consumes these
+    /// pairs verbatim.
+    pub(crate) fn name_template_vars(&self, target: &str) -> Vec<(&'static str, String)> {
+        let (os, arch) = anodizer_core::target::map_target(target);
+        vec![
+            ("Os", os),
+            ("Arch", arch),
+            ("Target", target.to_string()),
+            ("NpmOs", self.os.clone()),
+            ("NpmCpu", self.cpu.clone()),
+            ("NpmLibc", self.libc.clone()),
+        ]
+    }
+}
+
 /// One platform-specific download entry emitted into `postinstall.js`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlatformBinary {

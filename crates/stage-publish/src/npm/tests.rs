@@ -893,6 +893,60 @@ fn platform_name_template_invalid_name_errors() {
 }
 
 #[test]
+fn default_naming_validates_rendered_package_name() {
+    // The default `<scope>/<bin>-<suffix>` path must run the same
+    // package-name validation as the template path: an uppercase `bin:`
+    // yields an illegal npm name and must error at layout time.
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        bin: Some("Demo".into()),
+        ..opt_cfg()
+    };
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect_err("uppercase bin must yield an illegal default name");
+    assert!(
+        err.to_string().contains("not a legal npm package name"),
+        "{err}"
+    );
+}
+
+#[test]
+fn bad_scope_errors_identically_on_both_naming_paths() {
+    // Scope shape is validated ONCE up front, blaming the scope itself —
+    // the same error whether the default scheme or a template names the
+    // per-platform packages.
+    let (_tmp, ctx) = optional_deps_ctx();
+    let default_path = NpmConfig {
+        scope: Some("@Acme".into()),
+        ..opt_cfg()
+    };
+    let template_path = NpmConfig {
+        scope: Some("@Acme".into()),
+        platform_name_template: Some("demo-{{ NpmOs }}-{{ NpmCpu }}-{{ NpmLibc }}".into()),
+        ..opt_cfg()
+    };
+    for cfg in [default_path, template_path] {
+        let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+            .expect_err("uppercase scope must error");
+        let msg = err.to_string();
+        assert!(msg.contains("not a legal npm scope"), "{msg}");
+        assert!(msg.contains("@Acme"), "error must blame the scope: {msg}");
+    }
+}
+
+#[test]
+fn scope_missing_at_sign_errors() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        scope: Some("acme".into()),
+        ..opt_cfg()
+    };
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect_err("scope without '@' must error");
+    assert!(err.to_string().contains("not a legal npm scope"), "{err}");
+}
+
+#[test]
 fn skip_metapackage_emits_platform_packages_only() {
     let (_tmp, ctx) = optional_deps_ctx();
     let cfg = NpmConfig {
@@ -969,6 +1023,62 @@ fn platform_name_template_rejected_in_postinstall_mode() {
         .expect_err("postinstall + platform_name_template must error");
     assert!(err.to_string().contains("platform_name_template"), "{err}");
     assert!(targets.is_empty());
+}
+
+#[test]
+fn postinstall_inert_optional_deps_only_values_do_not_error() {
+    // The mode gate evaluates VALUES, not presence: `skip_metapackage: false`
+    // and a whitespace-only `platform_name_template` are inert in postinstall
+    // mode. With no archive artifacts the publish warns and returns Ok — any
+    // Err here means the gate fired on mere presence.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::Bool(false)),
+        platform_name_template: Some("   ".into()),
+        ..npm_cfg()
+    };
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &ctx.logger("publish"), &mut targets)
+        .expect("inert values must not trip the postinstall mode gate");
+    assert!(targets.is_empty());
+}
+
+#[test]
+fn postinstall_falsey_skip_metapackage_template_is_inert() {
+    // A template rendering falsey/empty is inert, same as `false`.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::String("".into())),
+        ..npm_cfg()
+    };
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &ctx.logger("publish"), &mut targets)
+        .expect("falsey skip_metapackage template must not trip the mode gate");
+}
+
+#[test]
+fn postinstall_gate_names_every_offending_field() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        platform_name_template: Some("demo-{{ NpmOs }}".into()),
+        ..npm_cfg()
+    };
+    let mut targets = Vec::new();
+    let err = publish_to_npm(&ctx, &cfg, "demo", &ctx.logger("publish"), &mut targets)
+        .expect_err("both active optional-deps-only fields must error");
+    let msg = err.to_string();
+    assert!(msg.contains("skip_metapackage"), "{msg}");
+    assert!(msg.contains("platform_name_template"), "{msg}");
 }
 
 // -----------------------------------------------------------------------------

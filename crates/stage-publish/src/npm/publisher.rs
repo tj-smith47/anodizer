@@ -402,23 +402,75 @@ impl anodizer_core::Publisher for NpmPublisher {
                 };
                 acc = merge(acc, outcome);
             }
-            let name = crate::npm::manifest::resolve_name(cfg, &crate_name);
-            let url = format!(
-                "{registry}/{}/{version}",
-                super::publish::encode_package_path(name)
-            );
-            if probe_version_published(
-                &url,
-                "preflight: npm version",
-                &policy,
-                &ctx.logger("preflight"),
-            ) {
-                acc = merge(
-                    acc,
-                    PreflightCheck::Warning(format!(
-                        "npm {name}@{version} already published; republish will be rejected"
-                    )),
+            // Probe the package name(s) this entry will actually publish:
+            // * postinstall — the single `name:` package.
+            // * optional-deps — the metapackage (resolve_name may differ from
+            //   what publish creates), or, when `skip_metapackage` evaluates
+            //   truthy, the per-platform packages: the metapackage is owned by
+            //   an external pipeline and EXPECTED to exist at this version, so
+            //   probing it would false-warn while probing the per-platform
+            //   names keeps duplicate-version detection working.
+            let names: Vec<String> = match cfg.mode {
+                anodizer_core::config::NpmMode::Postinstall => {
+                    vec![crate::npm::manifest::resolve_name(cfg, &crate_name).to_string()]
+                }
+                anodizer_core::config::NpmMode::OptionalDeps => {
+                    let skip_meta = match cfg.skip_metapackage.as_ref() {
+                        Some(s) => match s.try_evaluates_to_true(|t| ctx.render_template(t)) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                acc = merge(
+                                    acc,
+                                    PreflightCheck::Blocker(format!(
+                                        "npm skip_metapackage template could not be rendered: {e:#}"
+                                    )),
+                                );
+                                continue;
+                            }
+                        },
+                        None => false,
+                    };
+                    if skip_meta {
+                        // Per-platform names derive from the built artifacts;
+                        // when preflight runs before a build (no artifacts
+                        // yet), skip this best-effort probe rather than
+                        // false-blocking on the layout error.
+                        match super::optional_deps::generate_layout(
+                            ctx,
+                            cfg,
+                            &crate_name,
+                            &version,
+                            None,
+                            &ctx.logger("preflight"),
+                        ) {
+                            Ok(layout) => layout.platforms.into_iter().map(|p| p.name).collect(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        vec![
+                            super::optional_deps::resolve_metapackage(cfg, &crate_name).to_string(),
+                        ]
+                    }
+                }
+            };
+            for name in &names {
+                let url = format!(
+                    "{registry}/{}/{version}",
+                    super::publish::encode_package_path(name)
                 );
+                if probe_version_published(
+                    &url,
+                    "preflight: npm version",
+                    &policy,
+                    &ctx.logger("preflight"),
+                ) {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "npm {name}@{version} already published; republish will be rejected"
+                        )),
+                    );
+                }
             }
         }
         Ok(acc)
@@ -478,6 +530,52 @@ mod preflight_tests {
                 assert!(m.contains("npm token invalid"), "{m}")
             }
             other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    /// optional-deps mode publishes the METAPACKAGE name, so preflight must
+    /// probe that name — not `resolve_name`'s `name:` — for duplicate
+    /// versions. The Warning must cite the metapackage.
+    #[test]
+    fn npm_preflight_optional_deps_probes_metapackage_name() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            http("200 OK", r#"{"username":"me"}"#),
+            http("200 OK", r#"{"name":"meta","version":"1.0.0"}"#),
+        ]);
+        let mut ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
+        let npms = ctx.config.npms.as_mut().expect("npms");
+        npms[0].metapackage = Some("meta".to_string());
+        match super::NpmPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Warning(m) => {
+                assert!(m.contains("meta@1.0.0"), "must probe the metapackage: {m}")
+            }
+            other => panic!("expected Warning, got {other:?}"),
+        }
+    }
+
+    /// With `skip_metapackage` truthy the metapackage is owned by an external
+    /// pipeline and EXPECTED to exist — preflight must not probe (and warn
+    /// on) its name. With no built artifacts the per-platform names cannot be
+    /// derived yet, so the version probe is skipped entirely: only the whoami
+    /// probe fires and the check passes.
+    #[test]
+    fn npm_preflight_skip_metapackage_skips_metapackage_probe() {
+        // Only the whoami response is provisioned; a metapackage version
+        // probe would hit a closed responder and surface as a Warning/probe
+        // noise instead of the clean Pass asserted here.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("200 OK", r#"{"username":"me"}"#)]);
+        let mut ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
+        let npms = ctx.config.npms.as_mut().expect("npms");
+        npms[0].skip_metapackage = Some(anodizer_core::config::StringOrBool::Bool(true));
+        match super::NpmPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Pass => {}
+            other => panic!("expected Pass, got {other:?}"),
         }
     }
 

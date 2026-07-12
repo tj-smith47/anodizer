@@ -90,5 +90,5 @@ pub(crate) use pr::{
 };
 pub(crate) use template::{
     guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
-    render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,
+    render_url_template_with_ctx, render_url_template_with_ctx_and_artifact, render_with_ctx_vars,
 };

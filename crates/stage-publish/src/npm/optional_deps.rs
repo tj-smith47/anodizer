@@ -127,18 +127,42 @@ enum PlatformNaming<'a> {
     },
 }
 
+/// True when `part` is a legal npm name part (a scope name or a package
+/// name): non-empty, lowercase URL-safe characters (`a-z 0-9 - _ . ~`), no
+/// leading `.`/`_`. Shared by package-name and scope validation.
+fn npm_name_part_ok(part: &str) -> bool {
+    !part.is_empty()
+        && !part.starts_with('.')
+        && !part.starts_with('_')
+        && part.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '~')
+        })
+}
+
+/// Validate a configured `scope:` shape once up front: `@` followed by a
+/// legal npm name part. Errors blame the scope itself, so a bad scope is
+/// caught identically on the default and template naming paths at config
+/// time instead of surfacing as a registry 4xx (or a confusing rendered-name
+/// error) mid-release.
+fn validate_npm_scope(scope: &str) -> Result<()> {
+    let ok = scope
+        .strip_prefix('@')
+        .is_some_and(|rest| !rest.contains('/') && npm_name_part_ok(rest));
+    if !ok {
+        bail!(
+            "npm: `scope:` value '{}' is not a legal npm scope — it must be '@' \
+             followed by a lowercase URL-safe name (e.g. scope: \"@acme\")",
+            scope
+        );
+    }
+    Ok(())
+}
+
 /// Validate `name` against npm's package-name rules: ≤214 chars, lowercase
 /// URL-safe characters (`a-z 0-9 - _ . ~`), no leading `.`/`_`, scoped names
 /// as `@scope/name` with both parts non-empty.
 fn validate_npm_package_name(name: &str) -> Result<()> {
-    let part_ok = |part: &str| {
-        !part.is_empty()
-            && !part.starts_with('.')
-            && !part.starts_with('_')
-            && part.chars().all(|c| {
-                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '~')
-            })
-    };
+    let part_ok = npm_name_part_ok;
     let valid = name.len() <= 214
         && match name.strip_prefix('@') {
             Some(rest) => match rest.split_once('/') {
@@ -160,10 +184,11 @@ fn validate_npm_package_name(name: &str) -> Result<()> {
 
 /// Render one per-platform package name from `platform_name_template`.
 ///
-/// Beyond the standard release context, seeds `Os`/`Arch`/`Target` from
-/// anodizer's target mapping and `NpmOs`/`NpmCpu`/`NpmLibc` from the npm
-/// triple. A rendered name without a leading `@` is prefixed with `scope`
-/// when one is configured; the final name is validated as a legal npm name.
+/// Beyond the standard release context, seeds the per-platform naming vars
+/// from [`NpmTriple::name_template_vars`] (`Os`/`Arch`/`Target` +
+/// `NpmOs`/`NpmCpu`/`NpmLibc`). A rendered name without a leading `@` is
+/// prefixed with `scope` when one is configured; the final name is validated
+/// as a legal npm name.
 fn render_platform_name(
     ctx: &Context,
     template: &str,
@@ -171,17 +196,11 @@ fn render_platform_name(
     target: &str,
     triple: &NpmTriple,
 ) -> Result<String> {
-    let mut vars = ctx.template_vars().clone();
-    let (os, arch) = anodizer_core::target::map_target(target);
-    vars.set("Os", &os);
-    vars.set("Arch", &arch);
-    vars.set("Target", target);
-    vars.set("NpmOs", &triple.os);
-    vars.set("NpmCpu", &triple.cpu);
-    vars.set("NpmLibc", &triple.libc);
-    let rendered = anodizer_core::template::render(template, &vars).with_context(|| {
-        format!("npm: render platform_name_template {template:?} for target '{target}'")
-    })?;
+    let rendered =
+        crate::util::render_with_ctx_vars(ctx, template, &triple.name_template_vars(target))
+            .with_context(|| {
+                format!("npm: render platform_name_template {template:?} for target '{target}'")
+            })?;
     let rendered = rendered.trim();
     let full = match scope {
         Some(scope) if !rendered.starts_with('@') => format!("{}/{}", scope, rendered),
@@ -429,6 +448,9 @@ pub(crate) fn generate_layout(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.trim_end_matches('/'));
+    if let Some(s) = scope {
+        validate_npm_scope(s)?;
+    }
     let name_template = cfg
         .platform_name_template
         .as_deref()
@@ -479,7 +501,9 @@ pub(crate) fn generate_layout(
         let pkg_name = match naming {
             PlatformNaming::Default { scope } => {
                 let suffix = platform_suffix(&triple, libc_aware);
-                format!("{}/{}-{}", scope, bin, suffix)
+                let name = format!("{}/{}-{}", scope, bin, suffix);
+                validate_npm_package_name(&name)?;
+                name
             }
             PlatformNaming::Template { template, scope } => {
                 render_platform_name(ctx, template, scope, target, &triple)?
@@ -507,6 +531,11 @@ pub(crate) fn generate_layout(
     }
     warn_excluded_targets(log, &excluded);
 
+    // ORDER-COUPLED PASSES: the exact dedup, the libc collapse, and the
+    // collision bail below all assume this name-sorted order — `dedup_by`
+    // only removes ADJACENT duplicates and the collision scan only compares
+    // `windows(2)` neighbours, so reordering or skipping the sort silently
+    // breaks all three.
     // Sort by name, breaking ties on libc so the dedup below has a
     // deterministic winner instead of one defined by artifact-insertion order.
     // When not libc-aware, a linux musl and glibc binary share the same package

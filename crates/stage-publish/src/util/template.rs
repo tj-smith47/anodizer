@@ -71,32 +71,52 @@ pub(crate) fn render_url_template_with_ctx_and_artifact(
     arch: &str,
     os: &str,
 ) -> String {
-    // Start from the full project template-vars surface and overlay the
-    // per-artifact pieces. The clone is cheap (small string maps) and keeps
-    // the original `ctx.template_vars()` immutable for sibling calls.
-    let mut vars = ctx.template_vars().clone();
     // Per-artifact overlays — both the lower-case shorthand (legacy
     // `name`/`version`/`arch`/`os`) and the canonical `Os`/`Arch`
     // dotted keys, so a config of either flavor renders.
-    vars.set("name", name);
-    vars.set("version", version);
-    vars.set("arch", arch);
-    vars.set("os", os);
-    vars.set("Os", os);
-    vars.set("Arch", arch);
+    let mut extra: Vec<(&str, String)> = vec![
+        ("name", name.to_string()),
+        ("version", version.to_string()),
+        ("arch", arch.to_string()),
+        ("os", os.to_string()),
+        ("Os", os.to_string()),
+        ("Arch", arch.to_string()),
+    ];
     match artifact_name {
         // Explicit artifact filename takes precedence.
-        Some(af) => vars.set("ArtifactName", af),
+        Some(af) => extra.push(("ArtifactName", af.to_string())),
         // When no explicit artifact filename is given, fall back: set
         // ArtifactName only if `name` itself looks like a filename (has an
         // extension). This preserves callers that pass a project/cask token.
         None => {
             if name.contains('.') {
-                vars.set("ArtifactName", name);
+                extra.push(("ArtifactName", name.to_string()));
             }
         }
     }
-    template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
+    render_with_ctx_vars(ctx, url_template, &extra).unwrap_or_else(|_| url_template.to_string())
+}
+
+/// Render `template` against the full context template-vars surface
+/// (`ProjectName`, `Tag`, `Version`, `Env.*`, …) plus per-call `extra`
+/// overlay pairs, propagating render errors to the caller.
+///
+/// The single owner of the clone-vars + overlay + render idiom: every
+/// publisher-side render that needs extra per-call variables (URL templates'
+/// per-artifact vars, npm's per-platform naming vars) goes through here so
+/// the variable-surface convention lives in one place. The clone is cheap
+/// (small string maps) and keeps the original `ctx.template_vars()`
+/// immutable for sibling calls.
+pub(crate) fn render_with_ctx_vars(
+    ctx: &Context,
+    template: &str,
+    extra: &[(&str, String)],
+) -> Result<String> {
+    let mut vars = ctx.template_vars().clone();
+    for (k, v) in extra {
+        vars.set(k, v);
+    }
+    template::render(template, &vars)
 }
 
 /// Render `raw` through the context template engine, named by `field` (e.g.
