@@ -12726,7 +12726,7 @@
           "type": "boolean"
         },
         "sdist_manifest": {
-          "description": "Directory containing the `pyproject.toml` that `maturin sdist` builds from, relative to the project root (e.g. `\"pypi/\"`). Required when `sdist: true`; unused otherwise.",
+          "description": "Templated directory containing the `pyproject.toml` that `maturin sdist` builds from, relative to the project root (e.g. `\"pypi/\"`). Required when `sdist: true`; unused otherwise.",
           "default": null,
           "type": [
             "string",

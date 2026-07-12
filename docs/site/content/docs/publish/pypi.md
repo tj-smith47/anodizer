@@ -22,7 +22,21 @@ The platform tag is **derived by inspecting each binary**, never guessed:
 | `i686-pc-windows-msvc` | — | `win32` |
 | `aarch64-pc-windows-msvc` | — | `win_arm64` |
 
-Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has. A gnu-target binary that declares **no** glibc requirement is a hard error — that means the wrong binary landed under that target. When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal).
+Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has. A gnu-target binary that declares **no** glibc requirement is a hard error — that means the wrong binary landed under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
+
+### One binary per platform per entry
+
+A wheel filename carries the **project name**, so two binaries that resolve to the same platform tag would collide on one identical `.whl` — the second silently overwriting the first (or, on the index, being rejected as a duplicate). This happens in a **multi-binary workspace** where more than one crate builds the same target triple. Give each `pypis[]` entry its own [`ids:`](#configuration) so it selects exactly one binary per platform:
+
+```yaml
+pypis:
+  - name: tool-a
+    ids: [crate-a]        # crate-a's binaries only
+  - name: tool-b
+    ids: [crate-b]        # crate-b's binaries only
+```
+
+`anodizer preflight` warns when the selected crates would build the same triple more than once, and the publish itself hard-errors on an actual duplicate platform tag.
 
 ## Classification
 
@@ -85,7 +99,7 @@ pypis:
 | `ids` | all crates | Only include binaries built from these crates |
 | `name` | crate name | PyPI project name; any PEP 508 form (`My.Tool`, `my_tool`) — PyPI normalizes per PEP 503, wheel filenames escape per PEP 427 |
 | `sdist` | `false` | Also build + upload a source distribution via `maturin sdist` |
-| `sdist_manifest` | — | Directory containing `pyproject.toml`; **required** when `sdist: true` |
+| `sdist_manifest` | — | Templated. Directory containing `pyproject.toml`; **required** when `sdist: true` |
 | `repository` | `https://upload.pypi.org/legacy/` | Templated upload endpoint |
 | `skip_existing` | `true` | Treat the index's already-exists rejection as an idempotent skip |
 | `requires_python` | — | `Requires-Python` specifier (pip honors it during resolution) |
@@ -107,13 +121,28 @@ PyPI only accepts PEP 440 versions, so the release's semver version is mapped �
 | semver | PEP 440 |
 |---|---|
 | `1.2.3` | `1.2.3` |
-| `1.2.3-alpha.4` | `1.2.3a4` |
-| `1.2.3-beta.4` | `1.2.3b4` |
-| `1.2.3-rc.1` / `-pre.1` / `-preview.1` | `1.2.3rc1` |
-| `1.2.3-dev.9` | `1.2.3.dev9` |
+| `1.2.3-alpha.4` / `-alpha4` / `-a.4` / `-a4` | `1.2.3a4` |
+| `1.2.3-beta.4` / `-beta4` / `-b.4` / `-b4` | `1.2.3b4` |
+| `1.2.3-rc.1` / `-rc1` / `-c.1` / `-pre.1` / `-preview.1` | `1.2.3rc1` |
+| `1.2.3-rc` (bare label, no number) | `1.2.3rc0` |
+| `1.2.3-dev.9` / `-dev9` | `1.2.3.dev9` |
 | `1.2.3+build.7` | `1.2.3+build.7` (local segment) |
 
-A prerelease with no faithful PEP 440 equivalent (e.g. `-nightly.20260712`) is an **error**, not a silent rename — uploading a version pip would order differently than cargo does is worse than failing.
+The label is matched case-sensitively against the supported set, with both
+dotted (`-rc.1`) and suffix (`-rc1`) number forms accepted:
+
+| semver label(s) | PEP 440 segment |
+|---|---|
+| `alpha`, `a` | `a` |
+| `beta`, `b` | `b` |
+| `rc`, `c`, `pre`, `preview` | `rc` |
+| `dev` | `.dev` |
+
+A **bare label with no number defaults the number to `0`** (`1.2.3-rc` →
+`1.2.3rc0`). A prerelease whose label is outside this set (e.g.
+`-nightly.20260712`) has no faithful PEP 440 equivalent and is an **error**,
+not a silent rename — uploading a version pip would order differently than
+cargo does is worse than failing.
 
 ## Source distributions (`sdist`)
 

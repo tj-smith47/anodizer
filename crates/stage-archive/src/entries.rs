@@ -96,19 +96,12 @@ pub(crate) fn write_archive_entries<W: std::io::Write>(
     Ok(())
 }
 
-/// Convert a unix timestamp to a `zip::DateTime` for setting zip entry mtime.
+/// Convert a unix timestamp to a `zip::DateTime` for setting zip entry mtime,
+/// via the canonical clamped conversion in [`anodizer_core::sde`] (shared with
+/// the source-archive and PyPI-wheel writers).
 fn unix_timestamp_to_zip_datetime(ts: u64) -> Option<zip::DateTime> {
-    use chrono::{TimeZone, Utc};
-    let dt = Utc.timestamp_opt(ts as i64, 0).single()?;
-    zip::DateTime::from_date_and_time(
-        dt.format("%Y").to_string().parse::<u16>().ok()?,
-        dt.format("%m").to_string().parse::<u8>().ok()?,
-        dt.format("%d").to_string().parse::<u8>().ok()?,
-        dt.format("%H").to_string().parse::<u8>().ok()?,
-        dt.format("%M").to_string().parse::<u8>().ok()?,
-        dt.format("%S").to_string().parse::<u8>().ok()?,
-    )
-    .ok()
+    let (y, mo, d, h, mi, s) = anodizer_core::sde::zip_datetime_fields(ts)?;
+    zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).ok()
 }
 
 /// Write a list of `ArchiveEntry` items into a zip writer, applying per-entry

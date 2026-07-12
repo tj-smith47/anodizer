@@ -23,6 +23,15 @@ use super::pep::escape_distribution_name;
 const MACOS_FALLBACK_X86_64: (u16, u16) = (10, 12);
 const MACOS_FALLBACK_ARM64: (u16, u16) = (11, 0);
 
+/// Lowest glibc pair a `manylinux` tag may claim: the PEP 513 manylinux1
+/// baseline (`glibc 2.5`). A gnu binary whose only glibc requirement is the
+/// ancient x86_64 baseline symbol `GLIBC_2.2.5` derives `(2, 2)` after the
+/// third component is dropped — but `manylinux_2_2` is below every
+/// recognized manylinux platform, so pip/packaging would not match it. The
+/// tag is floored to this pair so such a binary tags `manylinux_2_5` (which
+/// it genuinely runs on) instead of an unrecognized `manylinux_2_2`.
+const MANYLINUX_GLIBC_FLOOR: (u64, u64) = (2, 5);
+
 /// Inspection-derived traits of one built binary, separated from the file
 /// I/O so tag derivation is unit-testable on injected values.
 #[derive(Debug, Clone, Copy, Default)]
@@ -33,6 +42,11 @@ pub(crate) struct BinaryTraits {
     /// Mach-O minimum macOS version `(major, minor)`. `None` when the load
     /// command is absent or the file is not Mach-O.
     pub macos_min: Option<(u16, u16)>,
+    /// `true` when the bytes are a Mach-O object (thin or fat). Distinguishes
+    /// a healthy Mach-O missing its version load command (`macos_min: None`,
+    /// fallback OK) from a non-Mach-O artifact routed under a darwin triple
+    /// (the wrong binary — a hard error, mirroring the gnu glibc check).
+    pub macho: bool,
     /// `true` for a universal (fat) Mach-O serving multiple arches.
     pub universal: bool,
 }
@@ -52,6 +66,7 @@ pub(crate) fn inspect_binary(bytes: &[u8], universal: bool) -> Result<BinaryTrai
     Ok(BinaryTraits {
         glibc,
         macos_min,
+        macho: anodizer_core::macho_check::is_macho(bytes),
         universal,
     })
 }
@@ -97,6 +112,17 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
     }
     if triple.contains("apple-darwin") {
         let arch = triple.split('-').next().unwrap_or_default();
+        // A non-Mach-O artifact under a darwin triple is the wrong binary:
+        // hard-error rather than shipping an immutable wheel with a guessed
+        // fallback tag. A healthy Mach-O missing its version load command
+        // (`macos_min: None` but `macho: true`) still falls back below.
+        if !traits.macho {
+            bail!(
+                "pypi: binary for darwin target '{triple}' is not a Mach-O object — \
+                 a macOS artifact always is, so this looks like the wrong binary for \
+                 the target"
+            );
+        }
         let (maj, min) = traits
             .macos_min
             .unwrap_or(if traits.universal || arch == "aarch64" {
@@ -104,6 +130,11 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
             } else {
                 MACOS_FALLBACK_X86_64
             });
+        // macOS 11+ wheels carry a `_0` minor: pip/packaging only enumerate
+        // `macosx_<major>_0` platform tags for Big Sur and later, so a real
+        // `minos` of e.g. 11.2 must tag `macosx_11_0` or the wheel is
+        // uninstallable (maturin/cibuildwheel apply the same clamp).
+        let min = if maj >= 11 { 0 } else { min };
         let arch_token = if traits.universal {
             "universal2"
         } else {
@@ -128,6 +159,14 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
                      this looks like the wrong binary for the target"
                 );
             };
+            // Floor below-baseline pairs (e.g. `2.2` from the truncated
+            // `GLIBC_2.2.5` baseline symbol) up to the manylinux1 baseline —
+            // `manylinux_2_2` is below any recognized manylinux platform.
+            let (maj, min) = if (maj, min) < MANYLINUX_GLIBC_FLOOR {
+                MANYLINUX_GLIBC_FLOOR
+            } else {
+                (maj, min)
+            };
             return Ok(format!("manylinux_{maj}_{min}_{arch}"));
         }
         bail!("pypi: linux target '{triple}' is neither gnu nor musl — no wheel tag mapping");
@@ -145,6 +184,11 @@ pub(crate) struct WheelSpec {
     pub version: String,
     /// Wheel platform tag (e.g. `manylinux_2_28_x86_64`).
     pub platform_tag: String,
+    /// `Metadata-Version` reported in the upload form. `2.1` for wheels
+    /// (anodizer renders their METADATA itself); for an sdist it is parsed
+    /// from the maturin-built tarball's own `PKG-INFO` so the form matches
+    /// the file Warehouse validates it against.
+    pub metadata_version: String,
     /// Executable filename inside `.data/scripts/` (keeps `.exe` on windows).
     pub bin_name: String,
     pub summary: Option<String>,
@@ -174,10 +218,11 @@ impl WheelSpec {
     }
 }
 
-/// Render the wheel's core METADATA (Metadata-Version 2.1).
+/// Render the wheel's core METADATA (`Metadata-Version` from the spec,
+/// `2.1` for a wheel).
 pub(crate) fn render_metadata(spec: &WheelSpec) -> String {
     let mut out = String::new();
-    out.push_str("Metadata-Version: 2.1\n");
+    out.push_str(&format!("Metadata-Version: {}\n", spec.metadata_version));
     out.push_str(&format!("Name: {}\n", spec.name));
     out.push_str(&format!("Version: {}\n", spec.version));
     if let Some(s) = &spec.summary {
@@ -223,21 +268,14 @@ fn record_row(path: &str, contents: &[u8]) -> String {
     format!("{},sha256={},{}", path, b64, contents.len())
 }
 
-/// Convert a unix timestamp to a zip mtime, clamping pre-1980 values (zip's
-/// epoch) by returning `None` — the same degrade-to-default the archive
-/// stage applies.
+/// Convert a unix timestamp to a zip mtime via the canonical clamped
+/// conversion in [`anodizer_core::sde`] (shared with the source-archive and
+/// release-archive writers) — an out-of-range epoch clamps into zip's
+/// `1980..=2107` window instead of degrading to a wall-clock default, so a
+/// wheel stays byte-reproducible even for an extreme timestamp.
 fn zip_mtime(ts: Option<u64>) -> Option<zip::DateTime> {
-    use chrono::{Datelike as _, TimeZone as _, Timelike as _, Utc};
-    let dt = Utc.timestamp_opt(ts? as i64, 0).single()?;
-    zip::DateTime::from_date_and_time(
-        u16::try_from(dt.year()).ok()?,
-        dt.month() as u8,
-        dt.day() as u8,
-        dt.hour() as u8,
-        dt.minute() as u8,
-        dt.second() as u8,
-    )
-    .ok()
+    let (y, mo, d, h, mi, s) = anodizer_core::sde::zip_datetime_fields(ts?)?;
+    zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).ok()
 }
 
 /// Assemble the wheel at `out_dir/<filename>` and return its path.

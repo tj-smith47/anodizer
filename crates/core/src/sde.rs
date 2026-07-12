@@ -102,10 +102,49 @@ pub fn rfc2822_utc_from_epoch(secs: i64) -> Option<String> {
         .map(|dt| dt.format("%a, %d %b %Y %H:%M:%S +0000").to_string())
 }
 
+/// Convert a unix timestamp (seconds since epoch) into the calendar fields a
+/// zip (MS-DOS) `DateTime` carries: `(year, month, day, hour, minute,
+/// second)`.
+///
+/// The zip timestamp format spans `1980..=2107` at 2-second resolution, so
+/// the year is CLAMPED into that window — an out-of-range epoch (a pre-1980
+/// value, or a far-future one) still yields a deterministic stamp instead of
+/// degrading to a wall-clock default. This is the single source of the
+/// unix→zip conversion shared by every reproducible zip writer (source
+/// archives, release archives, PyPI wheels), so the three former hand-rolled
+/// copies cannot drift on the clamp again.
+///
+/// Returns `None` only when the seconds value is outside chrono's
+/// representable range.
+pub fn zip_datetime_fields(epoch_secs: u64) -> Option<(u16, u8, u8, u8, u8, u8)> {
+    use chrono::{Datelike as _, Timelike as _};
+    let dt = DateTime::<Utc>::from_timestamp(epoch_secs as i64, 0)?;
+    let year = u16::try_from(dt.year()).ok()?.clamp(1980, 2107);
+    Some((
+        year,
+        dt.month() as u8,
+        dt.day() as u8,
+        dt.hour() as u8,
+        dt.minute() as u8,
+        dt.second() as u8,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::env_source::MapEnvSource;
+
+    #[test]
+    fn zip_datetime_fields_clamps_out_of_range_years() {
+        // Epoch 0 = 1970, below zip's 1980 floor → year clamps to 1980
+        // (deterministic) rather than degrading to a wall-clock default.
+        let (y, ..) = zip_datetime_fields(0).expect("epoch 0 fields");
+        assert_eq!(y, 1980);
+        // A normal commit timestamp (2023-11-14T22:13:20Z) is preserved.
+        let fields = zip_datetime_fields(1_700_000_000).expect("fields");
+        assert_eq!(fields, (2023, 11, 14, 22, 13, 20));
+    }
 
     #[test]
     fn resolve_now_honors_source_date_epoch() {

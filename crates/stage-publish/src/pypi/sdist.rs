@@ -5,12 +5,100 @@
 //! publisher shells out to `maturin sdist --manifest-path <dir>/pyproject.toml`
 //! and uploads whatever tarball maturin produces.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
+
+/// The `PKG-INFO` fields the legacy upload form must echo for an sdist.
+///
+/// Warehouse validates the upload form's `metadata_version` / `name` /
+/// `version` against the values embedded in the tarball's own `PKG-INFO`, so
+/// they are parsed FROM the maturin-built sdist rather than assumed — maturin
+/// emits its own `Metadata-Version` (2.3/2.4) and the `pyproject.toml`
+/// version, which need not match anodizer's wheel METADATA (2.1) or the cargo
+/// version form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SdistPkgInfo {
+    pub metadata_version: String,
+    pub name: String,
+    pub version: String,
+}
+
+/// Parse the `metadata_version` / `name` / `version` headers from an sdist
+/// tarball's top-level `PKG-INFO` (`<name>-<version>/PKG-INFO`). `PKG-INFO`
+/// is an RFC 822-style header block; only the three fields the upload form
+/// needs are extracted, from the first `PKG-INFO` entry found.
+pub(crate) fn parse_pkg_info(sdist_path: &Path) -> Result<SdistPkgInfo> {
+    let file = std::fs::File::open(sdist_path)
+        .with_context(|| format!("pypi: open sdist '{}'", sdist_path.display()))?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut body = None;
+    for entry in archive.entries().context("pypi: read sdist tar entries")? {
+        let mut entry = entry.context("pypi: read sdist tar entry")?;
+        // Top-level `<name>-<version>/PKG-INFO` — exactly one path component
+        // before the file, so a nested `foo.egg-info/PKG-INFO` is ignored.
+        // Scoped so the `path` borrow drops before the mutable read below.
+        let is_top_level_pkg_info = {
+            let path = entry.path().context("pypi: sdist entry path")?;
+            path.file_name().is_some_and(|f| f == "PKG-INFO") && path.components().count() == 2
+        };
+        if is_top_level_pkg_info {
+            let mut s = String::new();
+            entry
+                .read_to_string(&mut s)
+                .context("pypi: read PKG-INFO")?;
+            body = Some(s);
+            break;
+        }
+    }
+    let body = body.ok_or_else(|| {
+        anyhow::anyhow!(
+            "pypi: sdist '{}' contains no top-level PKG-INFO",
+            sdist_path.display()
+        )
+    })?;
+    parse_pkg_info_headers(&body).with_context(|| {
+        format!(
+            "pypi: sdist '{}' PKG-INFO is missing a required header",
+            sdist_path.display()
+        )
+    })
+}
+
+/// Extract the three required headers from a `PKG-INFO` header block. Header
+/// parsing stops at the first blank line (the long-description body follows).
+fn parse_pkg_info_headers(body: &str) -> Result<SdistPkgInfo> {
+    let mut metadata_version = None;
+    let mut name = None;
+    let mut version = None;
+    for line in body.lines() {
+        if line.is_empty() {
+            break;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().to_string();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "metadata-version" if metadata_version.is_none() => metadata_version = Some(value),
+            "name" if name.is_none() => name = Some(value),
+            "version" if version.is_none() => version = Some(value),
+            _ => {}
+        }
+    }
+    match (metadata_version, name, version) {
+        (Some(metadata_version), Some(name), Some(version)) => Ok(SdistPkgInfo {
+            metadata_version,
+            name,
+            version,
+        }),
+        _ => bail!("PKG-INFO must carry Metadata-Version, Name, and Version headers"),
+    }
+}
 
 /// Build the sdist into `out_dir` and return the produced tarball path.
 ///

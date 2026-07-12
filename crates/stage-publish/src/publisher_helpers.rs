@@ -486,6 +486,44 @@ pub(crate) fn secret_requirement(
     anodizer_core::env_preflight::secret_requirement(config_value, fallback_env)
 }
 
+/// Resolve a publisher upload token from a configured (templated) value plus
+/// an ordered env-var fallback ladder.
+///
+/// Precedence: the rendered `configured` value when it renders non-empty,
+/// else the first NON-EMPTY env var in `env_ladder`, else an empty string
+/// (the caller surfaces a clear "missing token" error). Empty values are
+/// filtered at every rung — an exported-but-blank env var falls through to
+/// the next rung rather than resolving to `""`.
+///
+/// One idiom for the several publishers whose token resolution is
+/// "config-token-or-env-ladder" (currently pypi; npm/homebrew adopt this in a
+/// later pass — npm's private copy still has the empty-env-token gap this
+/// helper closes). `render_label` names the field in the render error's
+/// `.context`.
+pub(crate) fn resolve_token_with_ladder(
+    ctx: &anodizer_core::context::Context,
+    configured: Option<&str>,
+    render_label: &str,
+    env_ladder: &[&str],
+) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    if let Some(raw) = configured.filter(|r| !r.is_empty()) {
+        let rendered = ctx
+            .render_template(raw)
+            .with_context(|| render_label.to_string())?;
+        if !rendered.is_empty() {
+            return Ok(rendered);
+        }
+    }
+    let env = ctx.env_source();
+    for var in env_ladder {
+        if let Some(v) = env.var(var).filter(|v| !v.is_empty()) {
+            return Ok(v);
+        }
+    }
+    Ok(String::new())
+}
+
 /// True when a publisher entry is statically inactive for this run: its
 /// `skip:` / `skip_upload:` evaluates truthy, or its `if:` condition
 /// renders falsy. Mirrors the run-path gating for requirement derivation —

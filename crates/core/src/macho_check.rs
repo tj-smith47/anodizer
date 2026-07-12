@@ -29,30 +29,53 @@ pub fn macho_min_os_version(bytes: &[u8]) -> Result<Option<(u16, u16)>> {
     match kind {
         FileKind::MachO32 => thin_min_os::<MachHeader32<Endianness>>(bytes),
         FileKind::MachO64 => thin_min_os::<MachHeader64<Endianness>>(bytes),
-        FileKind::MachOFat32 => {
-            let fat = MachOFatFile32::parse(bytes).context("parse fat header")?;
-            let mut max: Option<(u16, u16)> = None;
-            for arch in fat.arches() {
-                let data = arch.data(bytes).context("fat slice bounds")?;
-                if let Some(v) = macho_min_os_version(data)? {
-                    max = Some(max.map_or(v, |m| m.max(v)));
-                }
-            }
-            Ok(max)
-        }
-        FileKind::MachOFat64 => {
-            let fat = MachOFatFile64::parse(bytes).context("parse fat header")?;
-            let mut max: Option<(u16, u16)> = None;
-            for arch in fat.arches() {
-                let data = arch.data(bytes).context("fat slice bounds")?;
-                if let Some(v) = macho_min_os_version(data)? {
-                    max = Some(max.map_or(v, |m| m.max(v)));
-                }
-            }
-            Ok(max)
-        }
+        FileKind::MachOFat32 => fat_max_min_os(
+            MachOFatFile32::parse(bytes)
+                .context("parse fat header")?
+                .arches(),
+            bytes,
+        ),
+        FileKind::MachOFat64 => fat_max_min_os(
+            MachOFatFile64::parse(bytes)
+                .context("parse fat header")?
+                .arches(),
+            bytes,
+        ),
         _ => Ok(None),
     }
+}
+
+/// Maximum `minos` across the slices of a fat (universal) Mach-O — the
+/// version below which at least one slice refuses to run, the honest floor
+/// for a single artifact serving every arch. Generic over the 32-/64-bit
+/// [`FatArch`] so the two fat-header classes share one body (they were
+/// token-identical modulo the arch type).
+fn fat_max_min_os<A: FatArch>(arches: &[A], bytes: &[u8]) -> Result<Option<(u16, u16)>> {
+    let mut max: Option<(u16, u16)> = None;
+    for arch in arches {
+        let data = arch.data(bytes).context("fat slice bounds")?;
+        if let Some(v) = macho_min_os_version(data)? {
+            max = Some(max.map_or(v, |m| m.max(v)));
+        }
+    }
+    Ok(max)
+}
+
+/// True when `bytes` begin with a Mach-O magic — thin (`MachO32`/`MachO64`)
+/// or fat (`MachOFat32`/`MachOFat64`).
+///
+/// Distinct from [`macho_min_os_version`], which returns `Ok(None)` both for
+/// a healthy Mach-O that declares no version load command AND for bytes that
+/// are not Mach-O at all. A darwin-target publisher needs to tell those apart:
+/// a real Mach-O missing its `LC_BUILD_VERSION` may fall back to a default
+/// deployment target, but a non-Mach-O artifact routed under a darwin triple
+/// is the wrong binary and must hard-error (the Mach-O analogue of the gnu
+/// path's "no GLIBC_* requirement" error).
+pub fn is_macho(bytes: &[u8]) -> bool {
+    matches!(
+        FileKind::parse(bytes),
+        Ok(FileKind::MachO32 | FileKind::MachO64 | FileKind::MachOFat32 | FileKind::MachOFat64)
+    )
 }
 
 /// Scan one thin Mach-O's load commands for a minimum-OS declaration.
@@ -100,5 +123,15 @@ mod tests {
     fn non_macho_bytes_are_none() {
         assert_eq!(macho_min_os_version(b"\x7fELF-not-really").unwrap(), None);
         assert_eq!(macho_min_os_version(&[]).unwrap(), None);
+    }
+
+    #[test]
+    fn is_macho_rejects_non_macho_bytes() {
+        // An ELF (or any non-Mach-O) under a darwin triple is the wrong
+        // binary — is_macho lets the wheel publisher hard-error instead of
+        // silently substituting a guessed deployment target.
+        assert!(!is_macho(b"\x7fELF-not-really"));
+        assert!(!is_macho(&[]));
+        assert!(!is_macho(b"#!/bin/sh\n"));
     }
 }

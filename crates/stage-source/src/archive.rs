@@ -32,18 +32,8 @@ pub(crate) struct SourceArchiveInputs<'a> {
 /// crate's `time` feature is enabled (with it on, `SimpleFileOptions::default`
 /// would otherwise stamp the wall-clock).
 fn zip_datetime_from_epoch(epoch_secs: u64) -> Option<zip::DateTime> {
-    use chrono::{Datelike as _, Timelike as _};
-    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(epoch_secs as i64, 0)?;
-    let year = u16::try_from(dt.year()).ok()?.clamp(1980, 2107);
-    zip::DateTime::from_date_and_time(
-        year,
-        dt.month() as u8,
-        dt.day() as u8,
-        dt.hour() as u8,
-        dt.minute() as u8,
-        dt.second() as u8,
-    )
-    .ok()
+    let (y, mo, d, h, mi, s) = anodizer_core::sde::zip_datetime_fields(epoch_secs)?;
+    zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).ok()
 }
 
 /// Extra files are placed under the prefix directory

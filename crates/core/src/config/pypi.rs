@@ -46,9 +46,9 @@ pub struct PypiConfig {
     /// ```
     pub sdist: bool,
 
-    /// Directory containing the `pyproject.toml` that `maturin sdist` builds
-    /// from, relative to the project root (e.g. `"pypi/"`). Required when
-    /// `sdist: true`; unused otherwise.
+    /// Templated directory containing the `pyproject.toml` that `maturin
+    /// sdist` builds from, relative to the project root (e.g. `"pypi/"`).
+    /// Required when `sdist: true`; unused otherwise.
     pub sdist_manifest: Option<String>,
 
     /// Templated upload endpoint URL. Default

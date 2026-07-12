@@ -175,22 +175,7 @@ pub(crate) fn write_archive_in_format(
 }
 
 pub(crate) fn resolve_archive_mtime(ctx: &anodizer_core::context::Context) -> Option<u64> {
-    let any_reproducible = ctx.config.crate_universe().into_iter().any(|c| {
-        c.builds
-            .as_ref()
-            .is_some_and(|builds| builds.iter().any(|b| b.reproducible.unwrap_or(false)))
-    });
-    let commit_ts = ctx
-        .template_vars()
-        .get("CommitTimestamp")
-        .and_then(|ts| ts.parse::<u64>().ok());
-    if any_reproducible {
-        commit_ts
-    } else {
-        ctx.env_var("SOURCE_DATE_EPOCH")
-            .and_then(|s| s.parse::<u64>().ok())
-            .or(commit_ts)
-    }
+    ctx.resolve_reproducible_mtime()
 }
 
 pub(crate) fn clear_archive_template_vars(ctx: &mut anodizer_core::context::Context) {

@@ -68,7 +68,14 @@ pub(crate) fn is_duplicate_rejection(status: u16, body: &str) -> bool {
     }
     if status == 400 || status == 403 {
         let lower = body.to_ascii_lowercase();
-        return lower.contains("already exist") || lower.contains("file already");
+        // "this filename has already been used" is Warehouse's rejection for a
+        // name whose FILE was deleted but whose slot is still burned (the
+        // one-way door); twine matches the same phrase. Without it an
+        // idempotent re-run after a file deletion hard-fails under
+        // skip_existing.
+        return lower.contains("already exist")
+            || lower.contains("file already")
+            || lower.contains("filename has already been used");
     }
     false
 }
@@ -93,8 +100,14 @@ pub(crate) fn upload_file(
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let bytes = std::fs::read(path).with_context(|| format!("pypi: read '{}'", path.display()))?;
-    let sha256 = anodizer_core::hashing::hex_lower(&Sha256::digest(&bytes));
+    // Read once to digest; the upload body itself streams from the file
+    // (a file-backed `Part` per attempt), so a retried upload never clones
+    // the whole distribution into memory again.
+    let sha256 = {
+        let bytes =
+            std::fs::read(path).with_context(|| format!("pypi: read '{}'", path.display()))?;
+        anodizer_core::hashing::hex_lower(&Sha256::digest(&bytes))
+    };
 
     log.verbose(&format!(
         "POST {} ({} {}, sha256 {})",
@@ -121,7 +134,7 @@ pub(crate) fn upload_file(
                 .text("version", spec.version.clone())
                 .text("filetype", file_type.filetype())
                 .text("pyversion", file_type.pyversion())
-                .text("metadata_version", "2.1")
+                .text("metadata_version", spec.metadata_version.clone())
                 .text("sha256_digest", sha256.clone());
             if let Some(s) = &spec.summary {
                 form = form.text("summary", s.clone());
@@ -144,7 +157,16 @@ pub(crate) fn upload_file(
             if let Some(d) = &spec.description {
                 form = form.text("description", d.clone());
             }
-            let file_part = match reqwest::blocking::multipart::Part::bytes(bytes.clone())
+            let file_part = match reqwest::blocking::multipart::Part::file(path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(ControlFlow::Break(
+                        anyhow::Error::new(e)
+                            .context(format!("pypi: open '{}' for upload", filename)),
+                    ));
+                }
+            };
+            let file_part = match file_part
                 .file_name(filename.clone())
                 .mime_str("application/octet-stream")
             {

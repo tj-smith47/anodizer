@@ -19,9 +19,13 @@ fn traits(
     macos_min: Option<(u16, u16)>,
     universal: bool,
 ) -> BinaryTraits {
+    // Healthy-binary traits: `macho: true` so darwin tag derivation exercises
+    // the fallback path, not the not-a-Mach-O hard error (that case builds
+    // BinaryTraits explicitly with `macho: false`).
     BinaryTraits {
         glibc,
         macos_min,
+        macho: true,
         universal,
     }
 }
@@ -132,6 +136,88 @@ fn windows_targets_map_to_win_tags() {
 }
 
 #[test]
+fn macosx_minor_clamps_to_zero_for_major_ge_11() {
+    // C1: pip/packaging only enumerate `macosx_<major>_0` for macOS 11+, so a
+    // real minos of 11.2 must tag `macosx_11_0`, not `macosx_11_2` (which is
+    // uninstallable). maturin/cibuildwheel apply the same clamp.
+    assert_eq!(
+        platform_tag("aarch64-apple-darwin", &traits(None, Some((11, 2)), false)).unwrap(),
+        "macosx_11_0_arm64"
+    );
+    assert_eq!(
+        platform_tag("x86_64-apple-darwin", &traits(None, Some((12, 3)), false)).unwrap(),
+        "macosx_12_0_x86_64"
+    );
+    // Pre-11 minors are preserved (Catalina 10.15 stays 10_15).
+    assert_eq!(
+        platform_tag("x86_64-apple-darwin", &traits(None, Some((10, 15)), false)).unwrap(),
+        "macosx_10_15_x86_64"
+    );
+}
+
+#[test]
+fn manylinux_floors_below_baseline_glibc() {
+    // C2: `GLIBC_2.2.5` (the ancient x86_64 baseline symbol) truncates to
+    // (2, 2); `manylinux_2_2` is below every recognized manylinux platform,
+    // so the tag floors to the manylinux1 baseline `manylinux_2_5`.
+    assert_eq!(
+        platform_tag(
+            "x86_64-unknown-linux-gnu",
+            &traits(Some((2, 2)), None, false)
+        )
+        .unwrap(),
+        "manylinux_2_5_x86_64"
+    );
+    // A below-floor minor also lifts to 2_5.
+    assert_eq!(
+        platform_tag(
+            "aarch64-unknown-linux-gnu",
+            &traits(Some((2, 4)), None, false)
+        )
+        .unwrap(),
+        "manylinux_2_5_aarch64"
+    );
+    // At/above the floor is preserved verbatim.
+    assert_eq!(
+        platform_tag(
+            "x86_64-unknown-linux-gnu",
+            &traits(Some((2, 5)), None, false)
+        )
+        .unwrap(),
+        "manylinux_2_5_x86_64"
+    );
+    assert_eq!(
+        platform_tag(
+            "x86_64-unknown-linux-gnu",
+            &traits(Some((2, 28)), None, false)
+        )
+        .unwrap(),
+        "manylinux_2_28_x86_64"
+    );
+}
+
+#[test]
+fn darwin_non_macho_bytes_error() {
+    // C3: a non-Mach-O artifact routed under a darwin triple is the wrong
+    // binary and must hard-error (not silently ship a guessed fallback tag) —
+    // the Mach-O analogue of the gnu "no GLIBC_*" error. A healthy Mach-O
+    // missing its load command still falls back.
+    let not_macho = BinaryTraits {
+        glibc: None,
+        macos_min: None,
+        macho: false,
+        universal: false,
+    };
+    let err = platform_tag("x86_64-apple-darwin", &not_macho).unwrap_err();
+    assert!(err.to_string().contains("not a Mach-O"), "{err:#}");
+
+    // ELF bytes inspected under a darwin triple → macho:false → error.
+    let inspected = inspect_binary(b"\x7fELF-not-a-macho", false).unwrap();
+    assert!(!inspected.macho);
+    assert!(platform_tag("aarch64-apple-darwin", &inspected).is_err());
+}
+
+#[test]
 fn unmapped_targets_error() {
     let t = traits(None, None, false);
     assert!(platform_tag("wasm32-unknown-unknown", &t).is_err());
@@ -154,6 +240,7 @@ fn spec(tag: &str) -> WheelSpec {
         name: "My-Tool".to_string(),
         version: "1.2.3".to_string(),
         platform_tag: tag.to_string(),
+        metadata_version: "2.1".to_string(),
         bin_name: "my-tool".to_string(),
         summary: Some("A tool".to_string()),
         description: Some("Long description".to_string()),
@@ -353,6 +440,12 @@ fn duplicate_rejection_shapes_are_matched_generously() {
         "File already exists. See https://pypi.org/help/#file-name-reuse"
     ));
     assert!(is_duplicate_rejection(403, "this file already exists"));
+    // C6: Warehouse's deleted-file rejection burns the slot but does not
+    // repeat "already exists" — skip_existing must fold it too.
+    assert!(is_duplicate_rejection(
+        400,
+        "This filename has already been used, use a different version."
+    ));
     assert!(!is_duplicate_rejection(400, "invalid classifier"));
     assert!(!is_duplicate_rejection(500, "already exists"));
 }
@@ -880,4 +973,310 @@ fn version_probe_maps_known_hosts_to_json_api() {
         ))
     );
     assert_eq!(version_probe("not a url", "my-tool", "1.2.3"), None);
+}
+
+// -----------------------------------------------------------------------------
+// C8 — anchored simple-index probe
+// -----------------------------------------------------------------------------
+
+#[test]
+fn simple_index_probe_matches_exact_version_only() {
+    use super::publisher::body_lists_version;
+    let page = r#"<!DOCTYPE html><html><body>
+        <a href="/x/foo-1.2.30-py3-none-any.whl">foo-1.2.30-py3-none-any.whl</a>
+        <a href="/x/foo-1.2.3rc1-py3-none-any.whl">foo-1.2.3rc1-py3-none-any.whl</a>
+        <a href="/x/foo-1.2.3.post1.tar.gz">foo-1.2.3.post1.tar.gz</a>
+        </body></html>"#;
+    // A 1.2.3 probe must NOT fire on 1.2.30 / 1.2.3rc1 / 1.2.3.post1.
+    assert!(!body_lists_version(page, "foo", "1.2.3"));
+
+    // The exact version present as a wheel → match.
+    let with_wheel = r#"<a href="/x/foo-1.2.3-py3-none-manylinux_2_28_x86_64.whl">w</a>"#;
+    assert!(body_lists_version(with_wheel, "foo", "1.2.3"));
+
+    // The exact version present as an sdist → match.
+    let with_sdist = r#"<a href="/x/foo-1.2.3.tar.gz">s</a>"#;
+    assert!(body_lists_version(with_sdist, "foo", "1.2.3"));
+
+    // Name is compared PEP 503-normalized (foo_bar wheel vs foo-bar probe).
+    let underscore = r#"<a>foo_bar-1.2.3-py3-none-any.whl</a>"#;
+    assert!(body_lists_version(underscore, "foo-bar", "1.2.3"));
+    // A different distribution at the same version does not match.
+    assert!(!body_lists_version(underscore, "foo", "1.2.3"));
+}
+
+// -----------------------------------------------------------------------------
+// C7 — sdist upload echoes PKG-INFO's own metadata_version + version
+// -----------------------------------------------------------------------------
+
+/// Build a minimal sdist `.tar.gz` carrying `<name>-<version>/PKG-INFO` with
+/// the given headers.
+fn write_fake_sdist(
+    dir: &std::path::Path,
+    name: &str,
+    version: &str,
+    pkg_info: &str,
+) -> std::path::PathBuf {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    let path = dir.join(format!("{name}-{version}.tar.gz"));
+    let file = std::fs::File::create(&path).expect("create sdist");
+    let enc = GzEncoder::new(file, Compression::default());
+    let mut builder = tar::Builder::new(enc);
+    let entry_path = format!("{name}-{version}/PKG-INFO");
+    let bytes = pkg_info.as_bytes();
+    let mut header = tar::Header::new_gnu();
+    header.set_path(&entry_path).expect("set path");
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder.append(&header, bytes).expect("append PKG-INFO");
+    builder
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gz");
+    path
+}
+
+#[test]
+fn parse_pkg_info_reads_maturin_metadata_and_version() {
+    use super::sdist::{SdistPkgInfo, parse_pkg_info};
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    // maturin emits its own Metadata-Version (2.4) and the pyproject version,
+    // neither of which matches anodizer's wheel METADATA (2.1) or a cargo
+    // version — the upload form must carry THESE.
+    let pkg_info = "Metadata-Version: 2.4\nName: my-tool\nVersion: 9.9.9\nSummary: x\n\nbody\n";
+    let path = write_fake_sdist(tmp.path(), "my_tool", "9.9.9", pkg_info);
+    assert_eq!(
+        parse_pkg_info(&path).expect("parse"),
+        SdistPkgInfo {
+            metadata_version: "2.4".to_string(),
+            name: "my-tool".to_string(),
+            version: "9.9.9".to_string(),
+        }
+    );
+}
+
+#[test]
+fn sdist_upload_form_carries_pkg_info_metadata_version() {
+    // The upload form's metadata_version comes from the spec, so an sdist spec
+    // stamped from PKG-INFO (2.4) sends 2.4, not the hardcoded wheel 2.1.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut s = spec("source");
+    s.metadata_version = "2.4".to_string();
+    s.version = "9.9.9".to_string();
+    let file = tmp.path().join("my_tool-9.9.9.tar.gz");
+    std::fs::write(&file, b"fake-sdist-bytes").expect("write");
+    let client =
+        anodizer_core::http::blocking_client(std::time::Duration::from_secs(5)).expect("client");
+    let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/legacy/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: Some(1),
+    }]);
+    upload_file(
+        &client,
+        &format!("http://{addr}/legacy/"),
+        "tok",
+        "my-tool",
+        &s,
+        FileType::Sdist,
+        &file,
+        true,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("upload");
+    let entries = log.lock().unwrap();
+    let body = &entries[0].body;
+    assert!(
+        body.contains("name=\"metadata_version\"\r\n\r\n2.4"),
+        "form must carry PKG-INFO metadata_version 2.4: {body}"
+    );
+    assert!(
+        body.contains("name=\"version\"\r\n\r\n9.9.9"),
+        "form must carry PKG-INFO version: {body}"
+    );
+    assert!(body.contains("name=\"filetype\"\r\n\r\nsdist"), "{body}");
+}
+
+// -----------------------------------------------------------------------------
+// C15 — per-entry metadata scoped to the entry's crate (ids)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn metadata_scopes_to_entry_crate_via_ids() {
+    use anodizer_core::config::MetadataConfig;
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/legacy/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+    // Per-crate workspace: two crates with DIFFERENT metadata. An entry scoped
+    // to `other` must publish under other's name/license/homepage, never the
+    // primary crate's.
+    let mut ctx = publish_ctx(
+        tmp.path(),
+        vec![demo_crate("demo", "."), demo_crate("other", "other")],
+        PypiConfig {
+            ids: Some(vec!["other".into()]),
+            repository: Some(format!("http://{addr}/legacy/")),
+            ..Default::default()
+        },
+    );
+    ctx.config.derived_metadata.insert(
+        "demo".into(),
+        MetadataConfig {
+            license: Some("MIT".into()),
+            homepage: Some("https://demo.example".into()),
+            description: Some("demo summary".into()),
+            ..Default::default()
+        },
+    );
+    ctx.config.derived_metadata.insert(
+        "other".into(),
+        MetadataConfig {
+            license: Some("Apache-2.0".into()),
+            homepage: Some("https://other.example".into()),
+            description: Some("other summary".into()),
+            ..Default::default()
+        },
+    );
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-unknown-linux-musl",
+        "other",
+        "other",
+    );
+    let mut files = Vec::new();
+    publish_to_pypi(&ctx, &ctx.logger("publish"), &mut files).expect("publish");
+    assert_eq!(files.len(), 1);
+    assert!(
+        files[0].filename.starts_with("other-1.2.3"),
+        "{:?}",
+        files[0]
+    );
+
+    // Read the staged wheel's METADATA and assert other's identity, not demo's.
+    let staging = tmp.path().join("dist").join("pypi").join("pypis[0]");
+    let wheel = std::fs::read_dir(&staging)
+        .expect("staging dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().is_some_and(|x| x == "whl"))
+        .expect("a wheel");
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&wheel).expect("open")).expect("zip");
+    let meta = read_entry(&mut zip, "other-1.2.3.dist-info/METADATA");
+    assert!(meta.contains("Name: other\n"), "{meta}");
+    assert!(meta.contains("License: Apache-2.0\n"), "{meta}");
+    assert!(
+        meta.contains("Project-URL: Homepage, https://other.example\n"),
+        "{meta}"
+    );
+    assert!(meta.contains("Summary: other summary\n"), "{meta}");
+    assert!(
+        !meta.contains("MIT"),
+        "demo's license must not leak: {meta}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// C19 — metadata template errors propagate (never ship raw source)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn metadata_template_error_aborts_publish() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = publish_ctx(
+        tmp.path(),
+        vec![demo_crate("demo", ".")],
+        PypiConfig {
+            // Unterminated template — must error, not ship "{{ " raw into
+            // immutable METADATA.
+            summary: Some("{{ ".into()),
+            ..Default::default()
+        },
+    );
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-unknown-linux-musl",
+        "demo",
+        "demo",
+    );
+    let mut files = Vec::new();
+    let err = publish_to_pypi(&ctx, &ctx.logger("publish"), &mut files).unwrap_err();
+    assert!(err.to_string().contains("summary"), "{err:#}");
+    assert!(files.is_empty());
+}
+
+// -----------------------------------------------------------------------------
+// C11 — config-time platform-tag collision preflight
+// -----------------------------------------------------------------------------
+
+fn crate_with_targets(name: &str, path: &str, targets: &[&str]) -> CrateConfig {
+    use anodizer_core::config::BuildConfig;
+    CrateConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        builds: Some(vec![BuildConfig {
+            targets: Some(targets.iter().map(|t| t.to_string()).collect()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn preflight_warns_on_cross_crate_platform_tag_collision() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![
+            crate_with_targets("demo", ".", &["x86_64-unknown-linux-gnu"]),
+            crate_with_targets("other", "other", &["x86_64-unknown-linux-gnu"]),
+        ])
+        .build();
+    // No `ids:` → both crates selected; both build the same triple → same
+    // wheel platform tag → identical filename collision. `not a url` keeps the
+    // version probe offline.
+    ctx.config.pypis = Some(vec![PypiConfig {
+        repository: Some("not a url".into()),
+        ..Default::default()
+    }]);
+    match PypiPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Warning(m) => {
+            assert!(m.contains("same target triple"), "{m}");
+            assert!(m.contains("x86_64-unknown-linux-gnu"), "{m}");
+        }
+        other => panic!("expected Warning, got {other:?}"),
+    }
+}
+
+#[test]
+fn preflight_passes_single_crate_multi_target() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![crate_with_targets(
+            "demo",
+            ".",
+            &["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
+        )])
+        .build();
+    // Distinct triples in one crate never collide (different platform tags).
+    ctx.config.pypis = Some(vec![PypiConfig {
+        repository: Some("not a url".into()),
+        ..Default::default()
+    }]);
+    assert!(matches!(
+        PypiPublisher::new().preflight(&ctx).expect("preflight"),
+        PreflightCheck::Pass
+    ));
 }

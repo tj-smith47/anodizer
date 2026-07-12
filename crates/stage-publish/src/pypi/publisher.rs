@@ -56,36 +56,38 @@ pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["PYPI_TOKEN", "MATURIN_PYPI_TOKEN"
 /// first non-empty env var from [`TOKEN_ENV_VARS`]. Empty string when all
 /// are unset — the caller surfaces a clear "missing token" error.
 pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
-    if let Some(raw) = cfg.token.as_deref()
-        && !raw.is_empty()
-    {
-        let rendered = ctx
-            .render_template(raw)
-            .context("pypi: render token template")?;
-        if !rendered.is_empty() {
-            return Ok(rendered);
-        }
-    }
-    let env = ctx.env_source();
-    for var in TOKEN_ENV_VARS {
-        if let Some(v) = env.var(var).filter(|v| !v.is_empty()) {
-            return Ok(v);
-        }
-    }
-    Ok(String::new())
+    crate::publisher_helpers::resolve_token_with_ladder(
+        ctx,
+        cfg.token.as_deref(),
+        "pypi: render token template",
+        &TOKEN_ENV_VARS,
+    )
 }
 
-/// Resolve the display-form project name: `cfg.name` else the crate name.
+/// The crate this entry is scoped to: the first `ids:` entry (the entry's
+/// selected crate) when set, else the primary crate, else the project name.
+///
+/// Every per-entry identity — the PyPI project name fallback and the
+/// summary/license/homepage METADATA fallbacks — resolves through THIS crate,
+/// so an entry with `ids: ["other-crate"]` publishes other-crate's binary
+/// under other-crate's metadata instead of the primary crate's (the npm
+/// optional-deps publisher scopes the same way).
+pub(crate) fn entry_crate_name(ctx: &Context, cfg: &PypiConfig) -> String {
+    cfg.ids
+        .as_ref()
+        .and_then(|ids| ids.iter().find(|id| !id.is_empty()))
+        .cloned()
+        .or_else(|| ctx.config.primary_crate_name().map(str::to_string))
+        .unwrap_or_else(|| ctx.config.project_name.clone())
+}
+
+/// Resolve the display-form project name: `cfg.name` else the entry's scoped
+/// crate name.
 pub(crate) fn resolve_name(ctx: &Context, cfg: &PypiConfig) -> String {
     cfg.name
         .clone()
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| {
-            ctx.config
-                .primary_crate_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| ctx.config.project_name.clone())
-        })
+        .unwrap_or_else(|| entry_crate_name(ctx, cfg))
 }
 
 /// Resolve the (templated) repository URL, defaulting to production PyPI.
@@ -98,18 +100,13 @@ pub(crate) fn resolve_repository(ctx: &Context, cfg: &PypiConfig) -> Result<Stri
     }
 }
 
-/// Wheel mtime seed: `SOURCE_DATE_EPOCH` when exported (the standard
-/// reproducibility contract), else the commit timestamp — the same ladder
-/// the archive stage applies, so wheel bytes are stable across re-runs of
-/// one commit.
+/// Wheel mtime seed — the shared reproducible-mtime ladder
+/// ([`Context::resolve_reproducible_mtime`]) that the archive stage also
+/// uses, so a wheel and an archive built in the same run pin to the SAME
+/// timestamp (a reproducible build prefers the commit timestamp; otherwise
+/// `SOURCE_DATE_EPOCH` then the commit timestamp).
 fn wheel_mtime(ctx: &Context) -> Option<u64> {
-    ctx.env_var("SOURCE_DATE_EPOCH")
-        .and_then(|s| s.parse().ok())
-        .or_else(|| {
-            ctx.template_vars()
-                .get("CommitTimestamp")
-                .and_then(|ts| ts.parse().ok())
-        })
+    ctx.resolve_reproducible_mtime()
 }
 
 /// Build the [`WheelSpec`] metadata shared by every file of one entry,
@@ -121,38 +118,40 @@ fn build_spec_base(
     name: &str,
     version: &str,
     crate_name: &str,
-) -> WheelSpec {
-    let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
-    let summary = cfg.summary.as_deref().map(&render).or_else(|| {
+) -> Result<WheelSpec> {
+    // Template errors PROPAGATE: these fields land in immutable published
+    // METADATA, so a broken template must abort the release rather than ship
+    // its raw source (every other render in this file propagates the same
+    // way).
+    let render = |field: &str, s: &str| -> Result<String> {
+        ctx.render_template(s)
+            .with_context(|| format!("pypi: render {field} template"))
+    };
+    let render_opt = |field: &'static str, v: Option<&str>| -> Result<Option<String>> {
+        v.map(|s| render(field, s)).transpose()
+    };
+    let summary = render_opt("summary", cfg.summary.as_deref())?.or_else(|| {
         ctx.config
             .meta_description_for(crate_name)
             .map(str::to_string)
     });
-    WheelSpec {
+    Ok(WheelSpec {
         name: name.to_string(),
         version: version.to_string(),
         platform_tag: String::new(),
+        metadata_version: "2.1".to_string(),
         bin_name: String::new(),
-        description: cfg
-            .description
-            .as_deref()
-            .map(&render)
+        description: render_opt("description", cfg.description.as_deref())?
             .or_else(|| summary.clone()),
         summary,
-        license: cfg
-            .license
-            .as_deref()
-            .map(&render)
+        license: render_opt("license", cfg.license.as_deref())?
             .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string)),
-        homepage: cfg
-            .homepage
-            .as_deref()
-            .map(&render)
+        homepage: render_opt("homepage", cfg.homepage.as_deref())?
             .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string)),
         requires_python: cfg.requires_python.clone(),
         keywords: cfg.keywords.clone().unwrap_or_default(),
         classifiers: cfg.classifiers.clone().unwrap_or_default(),
-    }
+    })
 }
 
 /// One assembled distribution file awaiting upload.
@@ -232,11 +231,7 @@ pub(crate) fn publish_to_pypi(
         }
 
         // ---- Name + version forms ----
-        let crate_name = ctx
-            .config
-            .primary_crate_name()
-            .map(str::to_string)
-            .unwrap_or_else(|| ctx.config.project_name.clone());
+        let crate_name = entry_crate_name(ctx, cfg);
         let name = resolve_name(ctx, cfg);
         validate_project_name(&name)?;
         let normalized = normalize_project_name(&name);
@@ -259,7 +254,7 @@ pub(crate) fn publish_to_pypi(
             ));
             continue;
         }
-        let spec_base = build_spec_base(ctx, cfg, &name, &version, &crate_name);
+        let spec_base = build_spec_base(ctx, cfg, &name, &version, &crate_name)?;
         let staging = ctx.config.dist.join("pypi").join(&label);
         let mtime = wheel_mtime(ctx);
 
@@ -313,21 +308,29 @@ pub(crate) fn publish_to_pypi(
             let manifest_dir = ctx
                 .render_template(cfg.sdist_manifest.as_deref().unwrap_or_default())
                 .context("pypi: render sdist_manifest template")?;
+            let sdist_out = staging.join("sdist");
             if ctx.is_dry_run() {
                 log.status(&format!(
-                    "(dry-run) would run: maturin sdist --manifest-path {}/pyproject.toml",
-                    manifest_dir.trim_end_matches('/')
+                    "(dry-run) would run: maturin sdist --manifest-path {}/pyproject.toml --out {}",
+                    manifest_dir.trim_end_matches('/'),
+                    sdist_out.display()
                 ));
             } else {
-                let path =
-                    super::sdist::build_sdist(ctx, &manifest_dir, &staging.join("sdist"), log)?;
+                let path = super::sdist::build_sdist(ctx, &manifest_dir, &sdist_out, log)?;
                 let sdist_name = path
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 log.status(&format!("built sdist {}", sdist_name));
+                // The upload form must echo the sdist's OWN PKG-INFO
+                // metadata_version + version (maturin emits its own
+                // Metadata-Version and the pyproject version), or Warehouse
+                // 400s the form/PKG-INFO mismatch mid-release.
+                let pkg_info = super::sdist::parse_pkg_info(&path)?;
                 let mut spec = spec_base.clone();
                 spec.platform_tag = "source".to_string();
+                spec.version = pkg_info.version;
+                spec.metadata_version = pkg_info.metadata_version;
                 dist_files.push(DistFile {
                     path,
                     spec,
@@ -442,20 +445,141 @@ pub(crate) fn version_probe(
 }
 
 /// Best-effort probe of a PEP 503 simple-index page for a released file of
-/// `<escaped>-<version>`. Any failure (transport, non-200, unreadable body)
-/// folds to `false` — the duplicate warning must never be fabricated from a
-/// network blip.
-fn simple_index_lists_version(url: &str, escaped_prefix: &str) -> bool {
+/// exactly `normalized_name` at `version`. Any failure (transport, non-200,
+/// unreadable body) folds to `false` — the duplicate warning must never be
+/// fabricated from a network blip.
+fn simple_index_lists_version(url: &str, normalized_name: &str, version: &str) -> bool {
     let Ok(client) = anodizer_core::http::blocking_client(Duration::from_secs(10)) else {
         return false;
     };
     match client.get(url).send() {
         Ok(resp) if resp.status().is_success() => resp
             .text()
-            .map(|body| body.contains(escaped_prefix))
+            .map(|body| body_lists_version(&body, normalized_name, version))
             .unwrap_or(false),
         _ => false,
     }
+}
+
+/// True when a simple-index page body lists a distribution file whose parsed
+/// name (PEP 503 normalized) and version EXACTLY equal the probe's.
+///
+/// The filenames are parsed and compared field-wise rather than substring-
+/// matched: an unanchored `contains("foo-1.2.3")` false-positives `foo-1.2.30`
+/// and `foo-1.2.3rc1`, so a `1.2.3` probe must not fire on either.
+pub(crate) fn body_lists_version(body: &str, normalized_name: &str, version: &str) -> bool {
+    body.split(|c: char| c == '"' || c == '\'' || c == '<' || c == '>' || c.is_whitespace())
+        .filter_map(distribution_name_version)
+        .any(|(name, ver)| ver == version && normalize_project_name(&name) == normalized_name)
+}
+
+/// Parse a distribution filename token into its `(name, version)`, or `None`
+/// when the token is not a wheel/sdist filename.
+///
+/// PEP 427 escapes the distribution name so it carries no `-`, hence the
+/// first `-` separates name from version for a wheel
+/// (`foo_bar-1.2.3-py3-none-any.whl`) and the last `-` before the extension
+/// does for an sdist (`foo_bar-1.2.3.tar.gz`).
+fn distribution_name_version(token: &str) -> Option<(String, String)> {
+    // A simple-index href is a path with an optional `#sha256=…` fragment
+    // (`/simple/foo/foo-1.2.3-…whl#sha256=…`); reduce it to the bare filename
+    // before parsing the escaped name has no `/`.
+    let token = token.rsplit('/').next().unwrap_or(token);
+    let token = token.split('#').next().unwrap_or(token);
+    if let Some(stem) = token.strip_suffix(".whl") {
+        let mut parts = stem.splitn(3, '-');
+        let name = parts.next().filter(|s| !s.is_empty())?;
+        let version = parts.next().filter(|s| !s.is_empty())?;
+        return Some((name.to_string(), version.to_string()));
+    }
+    for ext in [".tar.gz", ".tar.bz2", ".tar.xz", ".zip"] {
+        if let Some(stem) = token.strip_suffix(ext) {
+            let (name, version) = stem.rsplit_once('-')?;
+            if name.is_empty() || version.is_empty() {
+                return None;
+            }
+            return Some((name.to_string(), version.to_string()));
+        }
+    }
+    None
+}
+
+/// Config-time platform-tag collision check: two selected binaries that build
+/// the SAME target triple derive the SAME wheel platform tag and — because a
+/// wheel filename carries the PROJECT name, not the crate name — collide on
+/// one identical `.whl`. The publish-time `seen_tags` bail catches this only
+/// once binary bytes exist; this surfaces the likely collision at preflight
+/// from config-derivable build targets so a multi-binary workspace is told to
+/// narrow per-entry `ids:` before the run reaches the Manager group.
+///
+/// A Warning, not a Blocker: preflight cannot read each binary's glibc floor,
+/// so two gnu binaries on one triple with different floors would tag distinct
+/// `manylinux` versions and NOT collide — the run-path bail stays the hard
+/// gate.
+fn platform_tag_collision_check(ctx: &Context, cfg: &PypiConfig) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    use std::collections::BTreeMap;
+
+    let mut owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for c in ctx.config.crate_universe() {
+        let selected = match cfg.ids.as_ref() {
+            Some(ids) => ids.iter().any(|id| id == &c.name),
+            None => true,
+        };
+        if !selected {
+            continue;
+        }
+        for triple in crate_build_targets(ctx, c) {
+            owners.entry(triple).or_default().push(c.name.clone());
+        }
+    }
+    let mut collisions: Vec<String> = owners
+        .into_iter()
+        .filter(|(_, o)| o.len() >= 2)
+        .map(|(t, mut o)| {
+            o.dedup();
+            format!("{t} (crates: {})", o.join(", "))
+        })
+        .collect();
+    if collisions.is_empty() {
+        return PreflightCheck::Pass;
+    }
+    collisions.sort();
+    PreflightCheck::Warning(format!(
+        "pypi: multiple selected binaries build the same target triple(s) [{}] — each \
+         derives the same wheel platform tag and would collide on one filename; narrow \
+         this entry's `ids:` so it publishes one binary per platform",
+        collisions.join("; ")
+    ))
+}
+
+/// Distinct-per-build target triples a crate would produce: each build's
+/// explicit `targets` (or `effective_default_targets` when it inherits),
+/// skipping builds whose `skip:` statically renders truthy. Over-collecting
+/// is safe — a spurious hit is only a Warning.
+fn crate_build_targets(ctx: &Context, c: &anodizer_core::config::CrateConfig) -> Vec<String> {
+    let Some(builds) = c.builds.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for b in builds {
+        let off = b
+            .skip
+            .as_ref()
+            .map(|s| {
+                s.try_evaluates_to_true(|t| ctx.render_template(t))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if off {
+            continue;
+        }
+        match b.targets.as_ref().filter(|t| !t.is_empty()) {
+            Some(t) => out.extend(t.iter().cloned()),
+            None => out.extend(ctx.config.effective_default_targets()),
+        }
+    }
+    out
 }
 
 impl anodizer_core::Publisher for PypiPublisher {
@@ -635,15 +759,19 @@ impl anodizer_core::Publisher for PypiPublisher {
                     ),
                 );
             }
-            let Ok(repository) = resolve_repository(ctx, cfg) else {
-                acc = merge(
-                    acc,
-                    PreflightCheck::Blocker(
-                        "pypi: repository template could not be rendered".to_string(),
-                    ),
-                );
-                continue;
+            let repository = match resolve_repository(ctx, cfg) {
+                Ok(r) => r,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Blocker(format!(
+                            "pypi: repository template could not be rendered: {e:#}"
+                        )),
+                    );
+                    continue;
+                }
             };
+            acc = merge(acc, platform_tag_collision_check(ctx, cfg));
             let normalized = normalize_project_name(&name);
             let already_published = match version_probe(&repository, &normalized, &version) {
                 Some((url, false)) => probe_version_published(
@@ -654,12 +782,7 @@ impl anodizer_core::Publisher for PypiPublisher {
                 )
                 .then_some(url),
                 Some((url, true)) => {
-                    let prefix = format!(
-                        "{}-{}",
-                        super::pep::escape_distribution_name(&name),
-                        version
-                    );
-                    simple_index_lists_version(&url, &prefix).then_some(url)
+                    simple_index_lists_version(&url, &normalized, &version).then_some(url)
                 }
                 None => None,
             };
