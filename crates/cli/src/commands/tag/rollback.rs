@@ -358,6 +358,24 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
                 &log,
             )
         };
+        let npm_probe = |registry: &str, package: &str, version: &str| {
+            anodizer_stage_publish::npm::version_visible_on_registry(
+                registry,
+                package,
+                version,
+                &probe_policy,
+                &log,
+            )
+        };
+        let pypi_probe = |repository: &str, project: &str, version: &str| {
+            anodizer_stage_publish::pypi::pypi_version_live(
+                repository,
+                project,
+                version,
+                &probe_policy,
+                &log,
+            )
+        };
         let winget_token = winget_probe_token(&anodizer_core::ProcessEnvSource);
         let choco_probe = |package: &str, version: &str| {
             anodizer_stage_publish::post_publish::chocolatey::version_blocked_on_gallery(
@@ -380,6 +398,8 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         };
         let probes = BurnProbes {
             crates_io: &index_probe,
+            npm: &npm_probe,
+            pypi: &pypi_probe,
             chocolatey: &choco_probe,
             winget: &winget_probe,
         };
@@ -743,6 +763,14 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 /// - `crates_io` — [`anodizer_stage_publish::cargo::published_on_crates_io`]:
 ///   `(crate, version) -> published?`. Fail-CLOSED evidence: an `Err` refuses
 ///   rollback.
+/// - `npm` — [`anodizer_stage_publish::npm::version_visible_on_registry`]:
+///   `(registry, package, version) -> published?`. Fail-CLOSED like
+///   `crates_io`: an npm version is immutable once published, so an `Err`
+///   refuses rollback.
+/// - `pypi` — [`anodizer_stage_publish::pypi::pypi_version_live`]:
+///   `(repository, project, version) -> published?`. Fail-CLOSED like
+///   `crates_io`: a PyPI filename is a permanent index slot, so an `Err`
+///   refuses rollback.
 /// - `chocolatey` —
 ///   [`anodizer_stage_publish::post_publish::chocolatey::version_blocked_on_gallery`]:
 ///   `(package id, version) -> Some(blocking state)`. Advisory: an `Err`
@@ -753,6 +781,8 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 ///   `chocolatey`.
 struct BurnProbes<'a> {
     crates_io: &'a (dyn Fn(&str, &str) -> Result<bool> + Sync),
+    npm: &'a (dyn Fn(&str, &str, &str) -> Result<bool> + Sync),
+    pypi: &'a (dyn Fn(&str, &str, &str) -> Result<bool> + Sync),
     chocolatey: &'a (dyn Fn(&str, &str) -> Result<Option<String>> + Sync),
     winget: &'a (dyn Fn(&WingetProbeSpec) -> Result<Option<String>> + Sync),
 }
@@ -973,17 +1003,20 @@ fn check_not_burned_on_moderated_registries(
 ///    whose `tag` matches a tag about to be deleted — the
 ///    per-publisher truth written by the release run itself, including
 ///    failed runs. A summary that shows a landed Submitter REFUSES.
-/// 2. The crates.io sparse index, for every tag that maps (via the repo
-///    config's crate tag families) to a crates.io-targeting crate. The
-///    run summary answers a PER-RUN question; whether a version is
+/// 2. The immutable one-way-door registries — the crates.io sparse index,
+///    the npm registry, and the PyPI index — for every tag that maps (via
+///    the repo config's crate tag families) to a crate/entry publishing to
+///    them. The run summary answers a PER-RUN question; whether a version is
 ///    burned on a one-way-door registry is GLOBAL state — a PRIOR run
 ///    may have published it, and that run's summary lives on another
-///    runner. A version live on the index REFUSES even when this run's
-///    summary is clean; an unreachable index FAILS CLOSED (publication
-///    state unverifiable). A tag that maps to NO crate while the config
-///    publishes to crates.io also fails closed (the mapping is the
-///    probe's eyes); a tag whose mapped crates simply don't target
-///    crates.io carries no cargo one-way door and proceeds.
+///    runner. A version live on any of these indexes REFUSES even when
+///    this run's summary is clean; an unreachable index FAILS CLOSED
+///    (publication state unverifiable). A crates.io tag that maps to NO
+///    crate while the config publishes to crates.io also fails closed (the
+///    mapping is the probe's eyes), and an npm/pypi package whose name or
+///    endpoint is templated (unresolvable outside a release run) fails
+///    closed too. A tag whose mapped crates/entries simply don't target
+///    an immutable registry carries no such one-way door and proceeds.
 /// 3. Only for tags with no matching summary (e.g. a fresh checkout
 ///    that never ran the release): fall back to probing the GitHub
 ///    Releases API for a published (non-draft) release at the tag.
@@ -1065,6 +1098,7 @@ fn check_not_irreversibly_published(
         .into());
     }
     check_not_burned_on_crates_io(tags, &unsummarized, repo_config, probes.crates_io, log)?;
+    check_not_burned_on_npm_pypi(tags, &unsummarized, repo_config, probes, log)?;
     check_not_burned_on_moderated_registries(tags, repo_config, probes, log)?;
     if unsummarized.is_empty() {
         return Ok(unsummarized);
@@ -1320,6 +1354,233 @@ fn check_not_burned_on_crates_io(
              crates/tag_template families cover these tag(s), or pass --force if you are \
              certain nothing irreversible shipped.",
             unmapped.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// One pending immutable-registry probe (npm or pypi), collected up front so
+/// the network round-trips run on the shared bounded pool.
+enum ImmutableProbe {
+    Npm {
+        tag: String,
+        registry: String,
+        package: String,
+        version: String,
+    },
+    Pypi {
+        tag: String,
+        repository: String,
+        project: String,
+        version: String,
+    },
+}
+
+/// Layer 2 (alongside [`check_not_burned_on_crates_io`]): refuse rollback when
+/// any tag's configured npm package or PyPI project@version is already live on
+/// its registry — both are true immutable one-way doors (a published npm
+/// version can never be cleanly re-cut; a PyPI filename is a permanent index
+/// slot), so the same GLOBAL-state, fail-closed treatment crates.io gets
+/// applies: a prior run on another runner may have burned the version, leaving
+/// no local summary. Probed ONLY for the `unsummarized` tags — a summarized
+/// tag's burn is already covered by layer 1 (npm/pypi are Submitter-group).
+///
+/// - version live on the registry → REFUSE (burned; fix forward).
+/// - registry unreachable → REFUSE (fail closed: publication state
+///   unverifiable — gambling a destructive delete on a transient outage is the
+///   poison-guard anti-pattern). `--force` is the operator escape.
+/// - package name / endpoint templated (unresolvable without a release
+///   context) while the config publishes to npm/pypi → REFUSE (fail closed:
+///   the guard cannot prove the immutable version it would orphan is safe).
+///   This is the npm/pypi analogue of crates.io's unmappable-tag posture, and
+///   is STRICTER than the moderated-registry probe's warn-and-skip — those
+///   registries are additionally covered by run-summary evidence and are only
+///   advisory, whereas an unresolvable immutable door leaves a real burn
+///   possibility unproven.
+/// - a config that publishes nothing to npm/pypi, or whose entries aren't
+///   versioned by the tag → proceed: no such one-way door exists to have
+///   burned.
+fn check_not_burned_on_npm_pypi(
+    tags: &[String],
+    unsummarized: &[String],
+    config: &anodizer_core::config::Config,
+    probes: &BurnProbes<'_>,
+    log: &StageLogger,
+) -> Result<()> {
+    let npm_entries = config.npms.as_deref().unwrap_or(&[]);
+    let pypi_entries = config.pypis.as_deref().unwrap_or(&[]);
+    if npm_entries.is_empty() && pypi_entries.is_empty() {
+        log.status("no npm/pypi publisher is configured — no immutable one-way door to probe");
+        return Ok(());
+    }
+    // Pass 1 — resolve every deduplicated probe up front so the network
+    // round-trips run concurrently. The immutable-door guard only consults
+    // tags with no run summary (a summarized burn is already caught by layer
+    // 1); a summarized tag's version stays covered without a live probe.
+    let mut pending: Vec<ImmutableProbe> = Vec::new();
+    let mut unresolvable: Vec<String> = Vec::new();
+    let mut probed: std::collections::HashSet<(&'static str, String, String)> =
+        std::collections::HashSet::new();
+    for tag in tags {
+        if !unsummarized.contains(tag) {
+            continue;
+        }
+        let versioned: std::collections::HashMap<&str, String> =
+            crates_versioned_by_tag(config, tag)
+                .into_iter()
+                .map(|(c, v)| (c.name.as_str(), v))
+                .collect();
+        for cfg in npm_entries {
+            let crate_name = anodizer_stage_publish::npm::static_entry_crate_name(config);
+            let Some(version) = versioned.get(crate_name.as_str()) else {
+                continue;
+            };
+            match (
+                anodizer_stage_publish::npm::static_registry(cfg),
+                anodizer_stage_publish::npm::static_published_name(&crate_name, cfg),
+            ) {
+                (Some(registry), Some(package)) => {
+                    if probed.insert(("npm", format!("{registry}#{package}"), version.clone())) {
+                        pending.push(ImmutableProbe::Npm {
+                            tag: tag.clone(),
+                            registry,
+                            package,
+                            version: version.clone(),
+                        });
+                    }
+                }
+                _ => unresolvable.push(format!(
+                    "  {tag}: npm package for crate '{crate_name}' — its name or registry is a \
+                     template expression that cannot be resolved outside a release run"
+                )),
+            }
+        }
+        for cfg in pypi_entries {
+            let crate_name = anodizer_stage_publish::pypi::static_entry_crate_name(config, cfg);
+            let Some(version) = versioned.get(crate_name.as_str()) else {
+                continue;
+            };
+            match (
+                anodizer_stage_publish::pypi::static_repository(cfg),
+                anodizer_stage_publish::pypi::static_project_name(&crate_name, cfg),
+            ) {
+                (Some(repository), Some(project)) => {
+                    if probed.insert(("pypi", format!("{repository}#{project}"), version.clone())) {
+                        pending.push(ImmutableProbe::Pypi {
+                            tag: tag.clone(),
+                            repository,
+                            project,
+                            version: version.clone(),
+                        });
+                    }
+                }
+                _ => unresolvable.push(format!(
+                    "  {tag}: pypi project for crate '{crate_name}' — its name or repository is a \
+                     template expression that cannot be resolved outside a release run"
+                )),
+            }
+        }
+    }
+    // Pass 2 — probe the registries concurrently; each probe's own Result is
+    // wrapped so a failed probe (fail-closed evidence, classified below)
+    // doesn't abort its in-flight siblings, and a worker panic surfaces as an
+    // attributed error.
+    let results = anodizer_core::parallel::run_parallel_chunks(
+        &pending,
+        MAX_PROBE_WORKERS,
+        "npm/pypi burn probe",
+        log,
+        |probe| {
+            Ok(match probe {
+                ImmutableProbe::Npm {
+                    registry,
+                    package,
+                    version,
+                    ..
+                } => (probes.npm)(registry, package, version),
+                ImmutableProbe::Pypi {
+                    repository,
+                    project,
+                    version,
+                    ..
+                } => (probes.pypi)(repository, project, version),
+            })
+        },
+    )?;
+    // Pass 3 — classify in the deterministic pass-1 order.
+    let mut burned: Vec<String> = Vec::new();
+    let mut indeterminate: Vec<String> = Vec::new();
+    for (probe, result) in pending.iter().zip(results) {
+        match probe {
+            ImmutableProbe::Npm {
+                tag,
+                registry,
+                package,
+                version,
+            } => match result {
+                Ok(true) => {
+                    burned.push(format!("  {tag}: npm '{package}@{version}' on {registry}"))
+                }
+                Ok(false) => log.status(&format!(
+                    "npm '{package}@{version}' is not published on {registry} — {tag} carries \
+                     no npm one-way door"
+                )),
+                Err(e) => indeterminate.push(format!(
+                    "  {tag}: npm '{package}@{version}' on {registry} ({e:#})"
+                )),
+            },
+            ImmutableProbe::Pypi {
+                tag,
+                repository,
+                project,
+                version,
+            } => match result {
+                Ok(true) => burned.push(format!(
+                    "  {tag}: pypi '{project}=={version}' on {repository}"
+                )),
+                Ok(false) => log.status(&format!(
+                    "pypi '{project}=={version}' is not released on {repository} — {tag} \
+                     carries no pypi one-way door"
+                )),
+                Err(e) => indeterminate.push(format!(
+                    "  {tag}: pypi '{project}=={version}' on {repository} ({e:#})"
+                )),
+            },
+        }
+    }
+    if !burned.is_empty() {
+        return Err(RollbackRefusal {
+            reason: format!(
+                "these version(s) are already live on an immutable registry (published by a \
+                 prior attempt, whatever this run's summaries say):\n{}\n\
+                 npm never accepts the same version cleanly and a PyPI filename can never be \
+                 re-uploaded, so deleting the tag(s) cannot lead to a clean same-version \
+                 re-cut — tags kept to protect the published state.",
+                burned.join("\n")
+            ),
+            next_step: refusal_next_step(),
+        }
+        .into());
+    }
+    if !indeterminate.is_empty() {
+        bail!(
+            "refusing to roll back: an immutable registry could not be reached to verify \
+             whether these version(s) are already published:\n{}\n\
+             Without the registry there is no proof the version(s) are safe to destroy — a \
+             prior run may have burned them on npm/pypi. Restore network access and retry, \
+             or pass --force if you are certain nothing irreversible shipped.",
+            indeterminate.join("\n")
+        );
+    }
+    if !unresolvable.is_empty() {
+        bail!(
+            "refusing to roll back — could not resolve the npm/pypi package name(s) for \
+             these tag(s) without a release template context:\n{}\n\
+             This config publishes to npm/pypi, and an unresolvable package name might \
+             version a package that IS burned there, so proceeding blind is not safe. \
+             Roll back from a release checkout, or pass --force if you are certain nothing \
+             irreversible shipped.",
+            unresolvable.join("\n")
         );
     }
     Ok(())
@@ -2126,16 +2387,87 @@ mod tests {
         Ok(None)
     }
 
+    /// npm/pypi immutable-registry probe stub reporting "not published", so
+    /// tests targeting other layers (crates.io, summary, release) exercise
+    /// their subject in isolation.
+    fn immutable_probe_clear(_: &str, _: &str, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// npm/pypi probe stub that must never be consulted — pins that a path
+    /// leaves the immutable-registry probe layer quiet (no npm/pypi config, or
+    /// the tag doesn't version the entry).
+    fn immutable_probe_untouched(_: &str, _: &str, _: &str) -> Result<bool> {
+        panic!("npm/pypi burn probe must not be consulted on this path")
+    }
+
     /// Wrap a crates.io index probe into the full [`BurnProbes`] seam with
-    /// clear moderated-registry probes.
+    /// clear npm/pypi + moderated-registry probes.
     fn probes_with_crates_io(
         index: &(dyn Fn(&str, &str) -> Result<bool> + Sync),
     ) -> BurnProbes<'_> {
         BurnProbes {
             crates_io: index,
+            npm: &immutable_probe_clear,
+            pypi: &immutable_probe_clear,
             chocolatey: &moderated_probe_clear,
             winget: &winget_probe_clear,
         }
+    }
+
+    /// Wrap an npm + a pypi immutable-registry probe into the full
+    /// [`BurnProbes`] seam with a clear (never-burned) crates.io probe and
+    /// clear moderated-registry probes.
+    fn probes_with_npm_pypi<'a>(
+        npm: &'a (dyn Fn(&str, &str, &str) -> Result<bool> + Sync),
+        pypi: &'a (dyn Fn(&str, &str, &str) -> Result<bool> + Sync),
+    ) -> BurnProbes<'a> {
+        BurnProbes {
+            crates_io: &crates_io_probe_clear,
+            npm,
+            pypi,
+            chocolatey: &moderated_probe_clear,
+            winget: &winget_probe_clear,
+        }
+    }
+
+    /// crates.io index probe stub reporting "not published" — used by the
+    /// npm/pypi tests so the crates.io layer clears and their subject (the
+    /// immutable-registry probe) is exercised in isolation.
+    fn crates_io_probe_clear(_: &str, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// One crates.io-targeting crate plus a top-level `pypis:`/`npms:` entry
+    /// versioned by that crate's tag family, for the npm/pypi burn-probe tests.
+    fn config_with_pypi(
+        crate_name: &str,
+        tag_tmpl: &str,
+        entry: anodizer_core::config::PypiConfig,
+    ) -> anodizer_core::config::Config {
+        let mut config = single_crate_config(crate_name, tag_tmpl);
+        config.pypis = Some(vec![entry]);
+        config
+    }
+
+    fn config_with_npm(
+        crate_name: &str,
+        tag_tmpl: &str,
+        entry: anodizer_core::config::NpmConfig,
+    ) -> anodizer_core::config::Config {
+        let mut config = single_crate_config(crate_name, tag_tmpl);
+        config.npms = Some(vec![entry]);
+        config
+    }
+
+    fn single_crate_config(crate_name: &str, tag_tmpl: &str) -> anodizer_core::config::Config {
+        let mut config = anodizer_core::config::Config::default();
+        config.crates = vec![anodizer_core::config::CrateConfig {
+            name: crate_name.to_string(),
+            tag_template: tag_tmpl.to_string(),
+            ..Default::default()
+        }];
+        config
     }
 
     /// Config with no crates.io-targeting crate: layer 2 has nothing to
@@ -3168,6 +3500,276 @@ mod tests {
             .expect("absent versions must permit rollback");
     }
 
+    // -----------------------------------------------------------------
+    // Immutable-registry (npm / pypi) burn probe: the cross-runner layer
+    // that catches a version a PRIOR run burned on npm/pypi with no local
+    // summary — the second half of the same fail-closed treatment crates.io
+    // gets, since both are one-way doors (immutable npm version, permanent
+    // PyPI filename).
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_pypi_live_hit_refuses() {
+        // The gh stub answers 404 (would PERMIT) and there is no summary, so
+        // the refusal can only come from the live pypi probe.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_pypi(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::PypiConfig::default(),
+        );
+        let pypi = |repository: &str, project: &str, version: &str| -> Result<bool> {
+            assert_eq!(
+                (project, version),
+                ("mytool", "1.0.0"),
+                "probe must target the pypi project + version the tag stamps"
+            );
+            assert!(
+                repository.contains("pypi.org"),
+                "an unset repository defaults to production PyPI: {repository}"
+            );
+            Ok(true)
+        };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &pypi),
+            &quiet_log(),
+        )
+        .expect_err("a version live on PyPI must refuse rollback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("live on an immutable registry"),
+            "must name the global registry state: {msg}"
+        );
+        assert!(
+            msg.contains("mytool==1.0.0"),
+            "must name the burned project==version: {msg}"
+        );
+        assert!(msg.contains("cut the NEXT version"), "fix-forward: {msg}");
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "an immutable-registry burn must be typed for the failure policy"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_npm_live_hit_refuses() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_npm(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::NpmConfig::default(),
+        );
+        let npm = |registry: &str, package: &str, version: &str| -> Result<bool> {
+            assert_eq!(
+                (package, version),
+                ("mytool", "1.0.0"),
+                "probe must target the metapackage + version the tag stamps"
+            );
+            assert!(
+                registry.contains("registry.npmjs.org"),
+                "an unset registry defaults to the public npm registry: {registry}"
+            );
+            Ok(true)
+        };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&npm, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect_err("a version live on npm must refuse rollback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("live on an immutable registry"),
+            "must name the global registry state: {msg}"
+        );
+        assert!(
+            msg.contains("mytool@1.0.0"),
+            "must name the burned package@version: {msg}"
+        );
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "an immutable-registry burn must be typed for the failure policy"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_unreachable_registry_fails_closed() {
+        // The registry cannot be consulted: publication state is unverifiable,
+        // so the guard fails closed (a mechanical bail, NOT a typed refusal).
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_pypi(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::PypiConfig::default(),
+        );
+        let pypi = |_: &str, _: &str, _: &str| -> Result<bool> {
+            Err(anyhow::anyhow!("connection refused"))
+        };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &pypi),
+            &quiet_log(),
+        )
+        .expect_err("an unreachable immutable registry must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not be reached"),
+            "must explain the registry is unreachable: {msg}"
+        );
+        assert!(
+            msg.contains("no proof the version(s) are safe to destroy"),
+            "must explain publication state is unverifiable: {msg}"
+        );
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_none(),
+            "a transient unreachable-registry fail-closed is mechanical, not a by-design refusal"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_templated_name_fails_closed() {
+        // The pypi project name is a template expression that cannot be
+        // resolved outside a release run — the guard cannot name the immutable
+        // project it would orphan, so it fails closed (never probes).
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_pypi(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::PypiConfig {
+                name: Some("{{ .ProjectName }}-tool".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect_err("an unresolvable templated package name must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not resolve the npm/pypi package name"),
+            "must name the resolution failure: {msg}"
+        );
+        assert!(msg.contains("v1.0.0"), "must name the tag: {msg}");
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_unconfigured_config_proceeds() {
+        // No npm/pypi publisher in the config: no immutable one-way door to
+        // probe, so the guard proceeds without consulting either registry.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = single_crate_config("mytool", "v{{ Version }}");
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect("a config with no npm/pypi door must permit rollback without probing");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_entry_not_versioned_by_tag_proceeds() {
+        // The npm entry maps to crate 'mytool' (family `v...`), but the
+        // rolled-back tag belongs to a different family: the entry is not
+        // versioned by the tag, so no probe fires.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_npm(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::NpmConfig::default(),
+        );
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["app-v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect("a tag that versions no npm/pypi entry must permit rollback");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_pypi_summarized_tag_skips_live_probe() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // A tag WITH a clean run summary is Tier-1 covered; the cross-runner
+        // live probe (Tier-2) must not fire for it.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+        let config = config_with_npm(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::NpmConfig::default(),
+        );
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&immutable_probe_untouched, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect("a summarized clean tag must permit rollback without a live npm/pypi probe");
+    }
+
     /// Moderated-registry probe stub that must never be consulted — for
     /// fixtures with no chocolatey/winget publisher configured.
     fn moderated_probe_untouched(_: &str, _: &str) -> Result<Option<String>> {
@@ -3224,6 +3826,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &choco,
             winget: &winget_probe_untouched,
         };
@@ -3255,6 +3859,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &choco,
             winget: &winget_probe_untouched,
         };
@@ -3284,6 +3890,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget,
         };
@@ -3314,6 +3922,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &failing,
             winget: &winget_probe_untouched,
         };
@@ -3332,6 +3942,8 @@ mod tests {
         let config = config_with_cargo_crates(&[("mycrate", "v{{ Version }}")]);
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget_probe_untouched,
         };
@@ -3351,6 +3963,8 @@ mod tests {
         let config = config_with_choco_crate(Some("{{ .ProjectName }}"));
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget_probe_untouched,
         };
@@ -3378,6 +3992,8 @@ mod tests {
             .source_repo = Some("https://nuget.internal.example/v2/".to_string());
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget_probe_untouched,
         };
@@ -3409,6 +4025,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &choco,
             winget: &winget_probe_untouched,
         };
@@ -3451,6 +4069,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget,
         };
@@ -3485,6 +4105,8 @@ mod tests {
         };
         let probes = BurnProbes {
             crates_io: &probe_untouched,
+            npm: &immutable_probe_untouched,
+            pypi: &immutable_probe_untouched,
             chocolatey: &moderated_probe_untouched,
             winget: &winget,
         };

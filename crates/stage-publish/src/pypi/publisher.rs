@@ -73,12 +73,60 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
 /// under other-crate's metadata instead of the primary crate's (the npm
 /// optional-deps publisher scopes the same way).
 pub(crate) fn entry_crate_name(ctx: &Context, cfg: &PypiConfig) -> String {
+    static_entry_crate_name(&ctx.config, cfg)
+}
+
+/// Context-free form of [`entry_crate_name`] for failure-recovery tooling
+/// (`tag rollback`'s burn probe): resolve the crate a `pypis:` entry versions
+/// from the config alone — its first non-empty `ids` entry, else the primary
+/// crate name, else the project name. No render context is consulted, so it
+/// works outside a release run where the guard maps a tag's version onto the
+/// pypi project.
+pub fn static_entry_crate_name(config: &anodizer_core::config::Config, cfg: &PypiConfig) -> String {
     cfg.ids
         .as_ref()
         .and_then(|ids| ids.iter().find(|id| !id.is_empty()))
         .cloned()
-        .or_else(|| ctx.config.primary_crate_name().map(str::to_string))
-        .unwrap_or_else(|| ctx.config.project_name.clone())
+        .or_else(|| config.primary_crate_name().map(str::to_string))
+        .unwrap_or_else(|| config.project_name.clone())
+}
+
+/// Static (context-free) PyPI project name for the rollback burn probe:
+/// `cfg.name` when it is not a template expression, else `crate_name`.
+/// Returns `None` when `cfg.name` is templated — outside a release run there
+/// is nothing to render it with, and a destructive rollback that cannot name
+/// the immutable project it would orphan must fail closed rather than probe a
+/// guessed name. Mirrors [`resolve_name`] without a render context, the same
+/// way winget's `static_package_identifier` mirrors its publisher's id
+/// resolution.
+///
+/// Public for the same reason as [`crate::cargo::published_on_crates_io`]:
+/// `tag rollback`'s published-state guard must name the same project the
+/// publisher would upload.
+pub fn static_project_name(crate_name: &str, cfg: &PypiConfig) -> Option<String> {
+    match cfg.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) if n.contains("{{") => None,
+        Some(n) => Some(n.to_string()),
+        None => Some(crate_name.to_string()),
+    }
+}
+
+/// Static (context-free) upload repository for the rollback burn probe:
+/// `cfg.repository` when set and not templated, else the production PyPI
+/// default. Returns `None` when `cfg.repository` is a template expression —
+/// its host cannot be known outside a release run, so the guard cannot map it
+/// to an index endpoint and must fail closed.
+pub fn static_repository(cfg: &PypiConfig) -> Option<String> {
+    match cfg
+        .repository
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(r) if r.contains("{{") => None,
+        Some(r) => Some(r.to_string()),
+        None => Some(DEFAULT_REPOSITORY.to_string()),
+    }
 }
 
 /// Resolve the display-form project name: `cfg.name` else the entry's scoped
@@ -458,6 +506,75 @@ fn simple_index_lists_version(url: &str, normalized_name: &str, version: &str) -
             .map(|body| body_lists_version(&body, normalized_name, version))
             .unwrap_or(false),
         _ => false,
+    }
+}
+
+/// Live-index probe for `tag rollback`'s published-state guard: is
+/// `<project>@<version>` already released on `repository`'s PyPI index?
+/// `Ok(true)` = a released file exists (the version is BURNED — a PyPI
+/// filename is a permanent index slot that can never be re-uploaded, even
+/// after deletion), `Ok(false)` = positively absent, `Err` = the index could
+/// not be consulted (a caller making a destructive rollback decision must FAIL
+/// CLOSED on this, exactly like [`crate::cargo::published_on_crates_io`]).
+///
+/// Reuses [`version_probe`] to pick the version-precise JSON API for the
+/// public PyPI hosts and the PEP 503 simple-index page for any other
+/// PyPI-protocol repository, so the rollback guard and the publisher's own
+/// duplicate-version detection can never disagree about what "already on the
+/// index" means. HTTP stays in this crate; the CLI guard only wires the closure.
+pub fn pypi_version_live(
+    repository: &str,
+    project_name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<bool> {
+    let normalized = normalize_project_name(project_name);
+    let Some((url, expect_filename)) = version_probe(repository, &normalized, version) else {
+        bail!(
+            "pypi: could not derive an index-probe URL for repository {repository:?} \
+             (project '{normalized}' at {version})"
+        );
+    };
+    if expect_filename {
+        simple_index_lists_version_checked(&url, &normalized, version, policy, log)
+    } else {
+        crate::publisher_preflight::probe_version_landing(
+            &url,
+            "rollback: pypi version probe",
+            policy,
+            log,
+        )
+    }
+}
+
+/// Fail-closed sibling of [`simple_index_lists_version`]: a definitive 404
+/// (the project has no index page) folds to `Ok(false)`, a 200 parses the body
+/// for exactly `normalized_name@version`, and any other outcome (transport
+/// failure, 5xx) surfaces `Err` so the rollback guard never mistakes an
+/// unreachable index for "not published". The best-effort variant is still
+/// correct for the pre-publish duplicate *warning*, where an outage safely
+/// folds to "no warning".
+fn simple_index_lists_version_checked(
+    url: &str,
+    normalized_name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<bool> {
+    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
+        .context("build HTTP client for pypi simple-index probe")?;
+    match retry_http_blocking(
+        RetryLog::new("rollback: pypi simple-index probe", log),
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(url).send(),
+        |status, body| format!("{status}: {body}"),
+    ) {
+        Ok((_, body)) => Ok(body_lists_version(&body, normalized_name, version)),
+        Err(err) if http_status(&err) == 404 => Ok(false),
+        Err(err) => Err(err),
     }
 }
 

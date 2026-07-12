@@ -1280,3 +1280,169 @@ fn preflight_passes_single_crate_multi_target() {
         PreflightCheck::Pass
     ));
 }
+
+// -----------------------------------------------------------------------------
+// Rollback burn-probe surface: static (context-free) name/repository
+// resolvers + the fail-closed live-index probe.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn static_project_name_prefers_cfg_name_else_crate() {
+    use super::publisher::static_project_name;
+    let named = PypiConfig {
+        name: Some("my-tool".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        static_project_name("mycrate", &named),
+        Some("my-tool".to_string())
+    );
+    // Unset name falls back to the crate name.
+    assert_eq!(
+        static_project_name("mycrate", &PypiConfig::default()),
+        Some("mycrate".to_string())
+    );
+    // A templated name is unresolvable outside a release run — fail closed.
+    let templated = PypiConfig {
+        name: Some("{{ .ProjectName }}".into()),
+        ..Default::default()
+    };
+    assert_eq!(static_project_name("mycrate", &templated), None);
+}
+
+#[test]
+fn static_repository_defaults_and_rejects_template() {
+    use super::publisher::static_repository;
+    // Unset → production PyPI default.
+    let def = static_repository(&PypiConfig::default()).expect("default repo");
+    assert!(def.contains("pypi.org"), "default is public PyPI: {def}");
+    // Explicit static value is preserved.
+    assert_eq!(
+        static_repository(&PypiConfig {
+            repository: Some("https://test.pypi.org/legacy/".into()),
+            ..Default::default()
+        }),
+        Some("https://test.pypi.org/legacy/".to_string())
+    );
+    // Templated repository → unresolvable host → fail closed.
+    assert_eq!(
+        static_repository(&PypiConfig {
+            repository: Some("https://{{ .Env.HOST }}/legacy/".into()),
+            ..Default::default()
+        }),
+        None
+    );
+}
+
+#[test]
+fn static_entry_crate_name_prefers_ids_then_primary() {
+    use super::publisher::static_entry_crate_name;
+    let mut config = Config {
+        project_name: "proj".into(),
+        ..Default::default()
+    };
+    config.crates = vec![CrateConfig {
+        name: "primary".into(),
+        ..Default::default()
+    }];
+    // `ids` first non-empty wins.
+    assert_eq!(
+        static_entry_crate_name(
+            &config,
+            &PypiConfig {
+                ids: Some(vec!["chosen".into()]),
+                ..Default::default()
+            }
+        ),
+        "chosen"
+    );
+    // Else the primary crate.
+    assert_eq!(
+        static_entry_crate_name(&config, &PypiConfig::default()),
+        "primary"
+    );
+    // Else the project name (no crates).
+    config.crates.clear();
+    assert_eq!(
+        static_entry_crate_name(&config, &PypiConfig::default()),
+        "proj"
+    );
+}
+
+fn probe_policy() -> anodizer_core::retry::RetryPolicy {
+    anodizer_core::retry::RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(2),
+    }
+}
+
+fn probe_logger() -> anodizer_core::log::StageLogger {
+    anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
+}
+
+#[test]
+fn pypi_version_live_reports_true_on_simple_index_hit() {
+    use super::publisher::pypi_version_live;
+    // A custom-host repository routes through the PEP 503 /simple/ page; a
+    // released wheel of the exact version means the slot is burned.
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/simple/my-tool/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 61\r\n\r\n\
+                   <a href=\"/x/my_tool-1.2.3-py3-none-any.whl\">my_tool-1.2.3</a>",
+        times: None,
+    }]);
+    assert!(
+        pypi_version_live(
+            &format!("http://{addr}/legacy/"),
+            "my-tool",
+            "1.2.3",
+            &probe_policy(),
+            &probe_logger(),
+        )
+        .expect("reachable index resolves")
+    );
+}
+
+#[test]
+fn pypi_version_live_reports_false_when_absent_from_simple_index() {
+    use super::publisher::pypi_version_live;
+    // Page exists but lists only a different version → positively absent.
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/simple/my-tool/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 61\r\n\r\n\
+                   <a href=\"/x/my_tool-9.9.9-py3-none-any.whl\">my_tool-9.9.9</a>",
+        times: None,
+    }]);
+    assert!(
+        !pypi_version_live(
+            &format!("http://{addr}/legacy/"),
+            "my-tool",
+            "1.2.3",
+            &probe_policy(),
+            &probe_logger(),
+        )
+        .expect("reachable index resolves")
+    );
+}
+
+#[test]
+fn pypi_version_live_fails_closed_when_unreachable() {
+    use super::publisher::pypi_version_live;
+    // Nothing listens on 127.0.0.1:1 → the /simple/ GET fails at the
+    // transport layer. An unreachable index must surface Err so the rollback
+    // guard fails closed (never mistaking an outage for "not published").
+    let err = pypi_version_live(
+        "http://127.0.0.1:1/legacy/",
+        "my-tool",
+        "1.2.3",
+        &probe_policy(),
+        &probe_logger(),
+    );
+    assert!(
+        err.is_err(),
+        "an unreachable index must surface Err, got {err:?}"
+    );
+}

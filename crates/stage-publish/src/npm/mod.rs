@@ -53,6 +53,61 @@ pub fn version_visible_on_registry(
     crate::publisher_preflight::probe_version_landing(&url, "npm landing probe", policy, log)
 }
 
+/// Context-free entry crate name for the top-level `npms:` block: the primary
+/// crate name, falling back to the project name — the same fallback the
+/// publisher applies (`npms:` entries carry no per-crate association). Used by
+/// `tag rollback`'s burn probe to map a tag's version onto the npm package
+/// outside a release run.
+pub fn static_entry_crate_name(config: &anodizer_core::config::Config) -> String {
+    config
+        .primary_crate_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| config.project_name.clone())
+}
+
+/// Static (context-free) published package name for the rollback burn probe:
+/// the metapackage name in optional-deps mode, else the postinstall package
+/// name — resolved without a render context ([`manifest::resolve_name`] /
+/// [`optional_deps::resolve_metapackage`]). Returns `None` when that name is a
+/// template expression: outside a release run there is nothing to render it
+/// with, and a destructive rollback that cannot name the immutable package it
+/// would orphan must fail closed rather than probe a guessed name (same
+/// posture as chocolatey's `static_package_id`).
+///
+/// Public for the same reason as [`version_visible_on_registry`]: `tag
+/// rollback`'s published-state guard must name the same package the publisher
+/// would push.
+pub fn static_published_name(
+    crate_name: &str,
+    cfg: &anodizer_core::config::NpmConfig,
+) -> Option<String> {
+    let name = match cfg.mode {
+        anodizer_core::config::NpmMode::Postinstall => manifest::resolve_name(cfg, crate_name),
+        anodizer_core::config::NpmMode::OptionalDeps => {
+            optional_deps::resolve_metapackage(cfg, crate_name)
+        }
+    };
+    (!name.contains("{{")).then(|| name.to_string())
+}
+
+/// Static (context-free) registry endpoint for the rollback burn probe:
+/// `cfg.registry` when set and not templated (trailing slash trimmed), else
+/// the default npm registry. Returns `None` when `cfg.registry` is a template
+/// expression — its host is unknown outside a release run, so the guard cannot
+/// name where the package would land and must fail closed.
+pub fn static_registry(cfg: &anodizer_core::config::NpmConfig) -> Option<String> {
+    match cfg
+        .registry
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(r) if r.contains("{{") => None,
+        Some(r) => Some(r.trim_end_matches('/').to_string()),
+        None => Some(manifest::DEFAULT_REGISTRY.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod version_visible_tests {
     use super::*;
@@ -96,6 +151,91 @@ mod version_visible_tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn static_published_name_resolves_by_mode_and_rejects_template() {
+        use anodizer_core::config::{NpmConfig, NpmMode};
+        // optional-deps → metapackage (cfg.metapackage else cfg.name else crate).
+        assert_eq!(
+            super::static_published_name(
+                "mycrate",
+                &NpmConfig {
+                    metapackage: Some("biome".into()),
+                    ..Default::default()
+                }
+            ),
+            Some("biome".to_string())
+        );
+        assert_eq!(
+            super::static_published_name("mycrate", &NpmConfig::default()),
+            Some("mycrate".to_string())
+        );
+        // postinstall → the single `name:` package (else crate).
+        assert_eq!(
+            super::static_published_name(
+                "mycrate",
+                &NpmConfig {
+                    mode: NpmMode::Postinstall,
+                    name: Some("@scope/app".into()),
+                    ..Default::default()
+                }
+            ),
+            Some("@scope/app".to_string())
+        );
+        // A templated name is unresolvable outside a release run → fail closed.
+        assert_eq!(
+            super::static_published_name(
+                "mycrate",
+                &NpmConfig {
+                    metapackage: Some("{{ .ProjectName }}".into()),
+                    ..Default::default()
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn static_registry_defaults_trims_and_rejects_template() {
+        use anodizer_core::config::NpmConfig;
+        let def = super::static_registry(&NpmConfig::default()).expect("default registry");
+        assert!(
+            def.contains("registry.npmjs.org"),
+            "default is public npm: {def}"
+        );
+        // Explicit value has its trailing slash trimmed.
+        assert_eq!(
+            super::static_registry(&NpmConfig {
+                registry: Some("https://npm.internal.example/".into()),
+                ..Default::default()
+            }),
+            Some("https://npm.internal.example".to_string())
+        );
+        // Templated registry → unresolvable host → fail closed.
+        assert_eq!(
+            super::static_registry(&NpmConfig {
+                registry: Some("https://{{ .Env.REG }}/".into()),
+                ..Default::default()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn static_entry_crate_name_prefers_primary_then_project() {
+        use anodizer_core::config::{Config, CrateConfig};
+        let mut config = Config {
+            project_name: "proj".into(),
+            ..Default::default()
+        };
+        config.crates = vec![CrateConfig {
+            name: "primary".into(),
+            ..Default::default()
+        }];
+        assert_eq!(super::static_entry_crate_name(&config), "primary");
+        config.crates.clear();
+        assert_eq!(super::static_entry_crate_name(&config), "proj");
     }
 
     #[test]
