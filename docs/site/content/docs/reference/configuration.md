@@ -20,11 +20,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `attestations` | AttestationConfig | — | SLSA build-provenance / attestation configuration for binaries and archives. In the default `subjects` mode, anodizer writes a subjects manifest for `actions/attest-build-provenance`; in `emit` mode it generates and signs a self-contained in-toto SLSA provenance statement. When omitted (or `enabled: false`), the attestation stage is a no-op. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
-| `before_publish` | HooksConfig | — | Hooks run after build/archive/sign/sbom/checksum complete but immediately before the publish phase dispatches any publisher.
-
-Use cases: smoke-test artifacts against the staged dist tree, run external validators (antivirus, vulnerability scanners), stage external state, or abort the release before any publisher writes to a registry.
-
-A non-zero exit code from any hook aborts the release before publish runs. Hooks fire in declared order. Use `--skip=before-publish` to bypass. |
+| `before_publish` | HooksConfig | — | Hooks run after build/archive/sign/sbom/checksum complete but immediately before the publish phase dispatches any publisher.<br><br>Use cases: smoke-test artifacts against the staged dist tree, run external validators (antivirus, vulnerability scanners), stage external state, or abort the release before any publisher writes to a registry.<br><br>A non-zero exit code from any hook aborts the release before publish runs. Hooks fire in declared order. Use `--skip=before-publish` to bypass. |
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`. |
 | `changelog` | ChangelogConfig | — | Changelog generation configuration. |
 | `cloudsmiths` | list of CloudSmithConfig | — | CloudSmith publisher configurations. |
@@ -33,9 +29,7 @@ A non-zero exit code from any hook aborts the release before publish runs. Hooks
 | `dist` | string | `./dist` | Output directory for build artifacts (default: ./dist). |
 | `docker_signs` | list of DockerSignConfig | — | Docker image signing configurations. |
 | `dockerhub` | list of DockerHubConfig | — | DockerHub description sync configurations. |
-| `env` | list of string | — | Environment variables available to all template expressions.
-
-List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ Tag }}` or `{{ Date }}` are expanded. |
+| `env` | list of string | — | Environment variables available to all template expressions.<br><br>List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ Tag }}` or `{{ Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
 | `gemfury` | list of GemFuryConfig | — | GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors The `gemfury:` block. The legacy spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by `warn_on_legacy_furies_alias`. |
@@ -53,11 +47,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `nightly` | NightlyConfig | — | Nightly release configuration. |
 | `notarize` | NotarizeConfig | — | macOS code signing and notarization configuration. |
 | `npms` | list of NpmConfig | — | NPM package registry publishing configurations. One entry per published package. In the default `optional-deps` mode anodizer emits npm's native per-platform packages (biome / git-cliff pattern); in `postinstall` mode it emits a download shim (the `npms:` parity). |
-| `on_error` | HooksConfig | — | Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...), after the failure policy (rollback / hold) has executed, so `{{ .RolledBack }}` reflects the taken path.
-
-Notification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.
-
-```yaml on_error: hooks: - cmd: ./notify-release-failed.sh ``` |
+| `on_error` | HooksConfig | — | Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...), after the failure policy (rollback / hold) has executed, so `{{ .RolledBack }}` reflects the taken path.<br><br>Notification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.<br><br>```yaml on_error: hooks: - cmd: ./notify-release-failed.sh ``` |
 | `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |
 | `preflight` | PreflightConfig | `{"strict":false}` | Pre-publish preflight tuning. `preflight.strict: true` promotes indeterminate probe outcomes (5xx / rate-limit / network failure / undeterminable permissions) from warnings to hard blockers. The probes themselves always run read-only before any publisher mutates a registry; the default (lenient) behavior needs no config. |
 | `project_name` | string | — | Human-readable project name used in templates and release titles. |
@@ -75,14 +65,10 @@ Notification / cleanup hooks: a hook's own failure is logged as a warning and ne
 | `template_files` | list of TemplateFileConfig | — | Template files to render and include as release artifacts. File contents are processed through the template engine. |
 | `uploads` | list of UploadConfig | — | Generic HTTP upload configurations. |
 | `upx` | list of UpxConfig | `[]` | UPX binary compression configurations. |
-| `variables` | map | — | Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
-
-Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
+| `variables` | map | — | Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.<br><br>Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
 | `verify_release` | VerifyReleaseConfig | `{"enabled":false,"assert_assets":true,"assert_landing":true,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
-| `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
-
-```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ``` |
+| `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.<br><br>```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ``` |
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
 ## `after`
@@ -101,9 +87,7 @@ Message bodies are secret-redacted before send: known secret env values are mask
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
-| `deadline` | HumanDuration | — | Overall wall-clock deadline for the announce stage (e.g. `"90s"`, `"2m"`). Optional — defaults to `DEFAULT_ANNOUNCE_DEADLINE` (90s).
-
-Announcers run concurrently; any still running when this deadline elapses is abandoned with a warning rather than awaited. This bounds the stage so unreachable channels cannot accumulate into a hang that trips the pipeline timeout *after* publishers already crossed one-way doors. Raise it only if a slow-but-reachable channel legitimately needs longer. |
+| `deadline` | HumanDuration | — | Overall wall-clock deadline for the announce stage (e.g. `"90s"`, `"2m"`). Optional — defaults to `DEFAULT_ANNOUNCE_DEADLINE` (90s).<br><br>Announcers run concurrently; any still running when this deadline elapses is abandoned with a warning rather than awaited. This bounds the stage so unreachable channels cannot accumulate into a hang that trips the pipeline timeout *after* publishers already crossed one-way doors. Raise it only if a slow-but-reachable channel legitimately needs longer. |
 | `discord` | DiscordAnnounce | — | Discord announcement configuration. |
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
 | `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because the field was renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Keeping the alias avoids forcing a re-yaml of legacy configs. |
@@ -156,9 +140,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `deb_architecture` | string | — | Override the Debian architecture for `.deb` uploads (`;deb.architecture=`). When unset (the default), the architecture is derived from each artifact's build target (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7` → `armhf`, `i686` → `i386`, …), so it never needs to be set by hand. Set this only to force a value for an artifact whose target can't be mapped. Ignored for non-`.deb` artifacts. |
 | `deb_components` | list of string | — | Debian repository component(s) for `.deb` uploads, written into the `;deb.component=` matrix param. Defaults to `["main"]` when unset. Multiple components are emitted comma-separated. Ignored for non-`.deb` artifacts. |
 | `deb_distributions` | list of string | — | Debian repository distribution(s) for `.deb` uploads, written into the Artifactory `;deb.distribution=` upload matrix param so apt can index the package. Defaults to `["stable"]` when unset. A multi-element list is emitted as Artifactory's comma-separated form (`deb.distribution=bookworm,bullseye`), publishing the same `.deb` into several distributions at once. Ignored for non-`.deb` artifacts. |
-| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
-
-```yaml artifactories: - target: "https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.<br><br>```yaml artifactories: - target: "https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload alongside build artifacts. |
 | `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
@@ -168,13 +150,9 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
-| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).
-
-With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally (Artifactory replaces the stored copy), restoring blind-overwrite behaviour for repos configured to allow it. |
+| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).<br><br>With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally (Artifactory replaces the stored copy), restoring blind-overwrite behaviour for repos configured to allow it. |
 | `password` | string | — | Artifactory password or API key (or env var reference). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
@@ -192,9 +170,7 @@ Two modes select how anodizer participates in attestation:
 YAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `artifacts` | list of AttestationArtifactKind | — | Which produced-artifact kinds to attest. Each entry selects a KIND (`archive`, `binary`, `checksum`); the concrete subject set (filenames + sha256) is DERIVED from the artifacts anodizer already produced.
-
-Defaults to `[archive, binary, checksum]` when omitted. |
+| `artifacts` | list of AttestationArtifactKind | — | Which produced-artifact kinds to attest. Each entry selects a KIND (`archive`, `binary`, `checksum`); the concrete subject set (filenames + sha256) is DERIVED from the artifacts anodizer already produced.<br><br>Defaults to `[archive, binary, checksum]` when omitted. |
 | `enabled` | bool | `false` | Enable attestation. When false (the default), the stage is a no-op. |
 | `mode` | AttestationMode | — | Participation mode: `subjects` (default) writes a manifest for `actions/attest-build-provenance`; `emit` generates and signs an in-toto SLSA provenance statement as a release asset. |
 | `skip` | StringOrBool | — | Skip the attestation stage. Accepts a bool or a template string. |
@@ -229,9 +205,7 @@ Defaults to `[archive, binary, checksum]` when omitted. |
 | `private_key` | string | — | Path to SSH private key file. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
@@ -285,12 +259,8 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username), Logins (per-entry comma-separated list of GitHub usernames for that commit), AllLogins (comma-separated list of all GitHub usernames across the entire release), AuthorUsername (renders `@login` when the login is known, the plain author name otherwise).<br><br>Logins come from the SCM API backends (`use: github`/`gitea`) and — when the release targets GitHub and a token is available — from GitHub-API enrichment of the default `git` backend, so `use: git` changelogs render `@login` mentions too. Release bodies carry bare `@login` (GitHub autolinks them); on-disk `CHANGELOG.md` files get explicit `[@login](https://github.com/login)` links. Without a token (or offline, or with a non-GitHub remote) rendering keeps the plain author name.<br><br>Default depends on backend (the full SHA is used):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix). |
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
 | `header` | ContentSource | — | Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (the upstream uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`). |
-| `paths` | list of string | — | Optional path filter that NARROWS the per-crate scope by intersection — it never replaces it. Each changelog track already scopes to its own commits (a per-crate track to its crate directory; the aggregate to the union of every crate directory plus the workspace manifests). When set, `paths` further restricts that derived scope to commits whose touched files match these globs; it can only ever drop commits, never widen to another track's directory. A `paths` value that is a superset of the derived scope (e.g. `["crates/**", "Cargo.toml", "Cargo.lock"]` over a workspace) is therefore a no-op — and so is the recommended default of leaving `paths` unset, where scoping is fully derived. The same derived scope and intersect drive all three changelog formats (`keep-a-changelog`, `json`, and `release-notes`), so they cannot drift.
-
-With `use: git` the intersect is precise (commits are filtered by their touched files). With `use: github` only the first path is used for API queries; with `use: gitlab` / `gitea` path filtering is unsupported, so a narrowing `paths` there is coarse and a warning is emitted. Supports template rendering. |
-| `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
-
-Accepts `disable:` as an alias so imported configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`. |
+| `paths` | list of string | — | Optional path filter that NARROWS the per-crate scope by intersection — it never replaces it. Each changelog track already scopes to its own commits (a per-crate track to its crate directory; the aggregate to the union of every crate directory plus the workspace manifests). When set, `paths` further restricts that derived scope to commits whose touched files match these globs; it can only ever drop commits, never widen to another track's directory. A `paths` value that is a superset of the derived scope (e.g. `["crates/**", "Cargo.toml", "Cargo.lock"]` over a workspace) is therefore a no-op — and so is the recommended default of leaving `paths` unset, where scoping is fully derived. The same derived scope and intersect drive all three changelog formats (`keep-a-changelog`, `json`, and `release-notes`), so they cannot drift.<br><br>With `use: git` the intersect is precise (commits are filtered by their touched files). With `use: github` only the first path is used for API queries; with `use: gitlab` / `gitea` path filtering is unsupported, so a narrowing `paths` there is coarse and a warning is emitted. Supports template rendering. |
+| `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).<br><br>Accepts `disable:` as an alias so imported configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`. |
 | `snapshot` | bool | — | When `true`, render the changelog even in snapshot mode. Anodizer matches the default (skip changelog on snapshot) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`. |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |
@@ -302,29 +272,15 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 |-------|------|---------|-------------|
 | `component` | string | — | Debian component name (e.g. "main"). |
 | `distributions` | map | — | Distribution mapping per format. Each entry accepts either a single slug (`deb: "ubuntu/focal"`) or an array of slugs (`deb: ["ubuntu/focal", "ubuntu/jammy"]`); the array form issues one upload per entry. |
-| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.
-
-```yaml cloudsmiths: - organization: my-org repository: my-repo exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.<br><br>```yaml cloudsmiths: - organization: my-org repository: my-repo exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. |
-| `keep_versions` | integer | — | Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.
-
-This is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.
-
-All package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.
-
-Pruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.
-
-Primarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).
-
-```yaml cloudsmiths: - organization: acme repository: tools keep_versions: 3   # keep the 3 newest releases, prune older ones ``` |
+| `keep_versions` | integer | — | Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.<br><br>This is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.<br><br>All package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.<br><br>Pruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.<br><br>Primarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).<br><br>```yaml cloudsmiths: - organization: acme repository: tools keep_versions: 3   # keep the 3 newest releases, prune older ones ``` |
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
 | `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name containing the CloudSmith API key. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
@@ -335,9 +291,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `after` | HooksConfig | — | Hooks that run inside THIS crate's scope at the end of the release, after the crate's publish dispatch (and post-publish verification) completes. Per-crate counterpart of the top-level `after:` (which fires once around the whole release). Same per-crate firing semantics across all modes, template surface, and abort semantics as the per-crate `before:`. |
 | `app_bundles` | list of AppBundleConfig | — | macOS app bundle configurations for this crate. |
 | `archives` | list of ArchiveConfig | `[]` | Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs. |
-| `before` | HooksConfig | — | Hooks that run inside THIS crate's scope at the start of the release, before the build. Distinct from the top-level `before:`, which fires ONCE around the whole release; these fire once per crate with that crate's version/tag template vars anchored, so `cmd` / `dir` / `env` / `if` render against the crate's own `Version` / `Tag` / `ProjectName`. A non-zero exit aborts the release.
-
-Fires once per crate in EVERY multi-crate mode — workspace per-crate AND workspace lockstep with multiple publisher crates — in both a full `anodizer release` and `anodizer release --publish-only`, matching the per-crate iteration of `before_publish:` and the publishers. With an explicit `--crate` subset only the selected crates' hooks fire. No-op in a single-crate config with no `crates:` block (use the top-level `before:` there). |
+| `before` | HooksConfig | — | Hooks that run inside THIS crate's scope at the start of the release, before the build. Distinct from the top-level `before:`, which fires ONCE around the whole release; these fire once per crate with that crate's version/tag template vars anchored, so `cmd` / `dir` / `env` / `if` render against the crate's own `Version` / `Tag` / `ProjectName`. A non-zero exit aborts the release.<br><br>Fires once per crate in EVERY multi-crate mode — workspace per-crate AND workspace lockstep with multiple publisher crates — in both a full `anodizer release` and `anodizer release --publish-only`, matching the per-crate iteration of `before_publish:` and the publishers. With an explicit `--crate` subset only the selected crates' hooks fire. No-op in a single-crate config with no `crates:` block (use the top-level `before:` there). |
 | `before_publish` | HooksConfig | — | Hooks that run immediately before THIS crate's publishers dispatch, once per matching artifact (the same per-artifact semantics as the top-level `before_publish:`), scoped to the crate's own artifacts and template vars. Honors the per-entry `ids:` / `artifacts:` filters. A non-zero exit aborts the release before that crate publishes to any registry. The top-level `before_publish:` still fires once over the full artifact set; this one targets a single crate's artifacts. |
 | `binstall` | BinstallConfig | — | cargo-binstall metadata configuration for this crate. |
 | `blobs` | list of BlobConfig | — | Cloud storage (S3/GCS/Azure) upload configurations for this crate. |
@@ -426,9 +380,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
@@ -443,16 +395,12 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works. |
 | `api_secret_name` | string | — | Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`. |
 | `api_token` | string | — | Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn. |
-| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.
-
-```yaml gemfury: - account: my-account exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.<br><br>```yaml gemfury: - account: my-account exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]`. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_PUSH_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs. |
@@ -467,9 +415,7 @@ Controls how anodizer discovers and orders tags when determining the current and
 | `ignore_tag_prefixes` | list of string | — | Tag prefixes to ignore during version detection (supports templates). Tags starting with any prefix in this list are excluded. The ignore-tag-prefixes feature. |
 | `ignore_tags` | list of string | — | Tag patterns to ignore during version detection (supports templates). Tags matching any pattern in this list are excluded from version detection entirely. |
 | `prerelease_suffix` | string | — | Suffix that identifies pre-release tags for sorting purposes. When set, tags ending with this suffix are treated as pre-releases and sorted accordingly during tag discovery. |
-| `tag_sort` | string | — | How to sort git tags when determining the latest version.
-
-Accepted values: - `"-version:refname"` (default) — lexicographic version sort on the tag name. - `"-version:creatordate"` — sort by the tag's creation date (newest first). - `"semver"` — strict SemVer 2.0.0 ordering computed in Rust; prereleases sort below their release per spec section 11. Bypasses git's native sort. - `"smartsemver"` — same ordering as `"semver"`, but when the current version (resolved from the template `Version` variable) is non-prerelease, prerelease tags are filtered out before previous-tag selection. Prevents `v0.2.0-beta.3` from being picked as the predecessor of `v0.2.0` (which would otherwise produce an empty changelog). |
+| `tag_sort` | string | — | How to sort git tags when determining the latest version.<br><br>Accepted values: - `"-version:refname"` (default) — lexicographic version sort on the tag name. - `"-version:creatordate"` — sort by the tag's creation date (newest first). - `"semver"` — strict SemVer 2.0.0 ordering computed in Rust; prereleases sort below their release per spec section 11. Bypasses git's native sort. - `"smartsemver"` — same ordering as `"semver"`, but when the current version (resolved from the template `Version` variable) is non-prerelease, prerelease tags are filtered out before previous-tag selection. Prevents `v0.2.0-beta.3` from being picked as the predecessor of `v0.2.0` (which would otherwise produce an empty changelog). |
 
 ## `gitea_urls`
 Custom Gitea API/download URLs for self-hosted Gitea installations. Gitea API/download URL overrides.
@@ -508,9 +454,7 @@ Fields from both original types are present; any field may be `None` at either c
 |-------|------|---------|-------------|
 | `alternative_names` | list of string | — | Alternative cask names (aliases). |
 | `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
-| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
-
-Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
+| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.<br><br>Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
 | `binary` | string | — | Deprecated singular spelling of `binaries`. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `binaries` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -532,18 +476,14 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
 | `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
-| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).
-
-Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
+| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).<br><br>Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
 | `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
 
 ## `makeselfs`
@@ -580,9 +520,7 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 | `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb). |
 | `registry` | string | — | Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset. |
 | `repository` | McpRepository | `{"url":"","source":"","id":"","subfolder":""}` | Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `"true"`/`"false"` (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported imported configs (the MCP config field `MCP.Disable string`). |
 | `title` | string | — | Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ ProjectName \| title }}`, `{{ Version }}`, etc. |
@@ -619,30 +557,20 @@ This is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: ta
 When `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `dir` | string | — | Working directory for this subproject.
-
-Used for changelog path filtering (when no explicit `changelog.paths` or `crate.path` is configured) and as the default build `dir`. |
-| `tag_prefix` | string | — | Tag prefix for this subproject (e.g. `"subproject1/"`).
-
-Tags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag. |
+| `dir` | string | — | Working directory for this subproject.<br><br>Used for changelog path filtering (when no explicit `changelog.paths` or `crate.path` is configured) and as the default build `dir`. |
+| `tag_prefix` | string | — | Tag prefix for this subproject (e.g. `"subproject1/"`).<br><br>Tags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag. |
 
 ## `nightly`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `draft` | bool | — | Override `release.draft` for nightly runs only. `None` falls through to `release.draft`; `Some(v)` overrides it. |
-| `keep_single_release` | bool | — | Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.
-
-Back-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only. |
+| `keep_single_release` | bool | — | Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.<br><br>Back-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only. |
 | `name_template` | string | — | Template for the release name. Default: `"{{ ProjectName }}-nightly"`. |
 | `publish_release` | bool | — | Whether to publish a GitHub Release at all. Default: `true`. Set `false` for nightly-only docker pushes / blob uploads. |
-| `publish_repo` | string | — | Publish the nightly release to a DIFFERENT repository than the source repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default (`None`) publishes to the configured `release.github` repo, unchanged.
-
-When set, the nightly release create, asset upload, AND retention (`keep_single_release` / `retention.keep_last`) delete calls all target this repo. The active SCM token is assumed to have write access to `publish_repo`. GitHub-only (the nushell adoption target). |
+| `publish_repo` | string | — | Publish the nightly release to a DIFFERENT repository than the source repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default (`None`) publishes to the configured `release.github` repo, unchanged.<br><br>When set, the nightly release create, asset upload, AND retention (`keep_single_release` / `retention.keep_last`) delete calls all target this repo. The active SCM token is assumed to have write access to `publish_repo`. GitHub-only (the nushell adoption target). |
 | `retention` | RetentionConfig | — | Retention policy for nightly releases on GitHub. Generalizes `keep_single_release` (which is `keep_last: 1`): keeps the N newest nightly releases matching the nightly tag/name and deletes the rest (releases + the tags anodizer created for them). Operates on `publish_repo` when set. Default (`None`): no retention sweep. |
 | `tag_name` | string | — | Tag name used for the nightly release. Default: `"nightly"`. Templates allowed. |
-| `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).
-
-The `{{ NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `"{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"`. |
+| `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).<br><br>The `{{ NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `"{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"`. |
 
 ## `notarize`
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
@@ -679,15 +607,11 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `metapackage` | string | — | Metapackage name for `optional-deps` mode (e.g. `biome`). This is the package users `npm install`; it lists every per-platform package under `optionalDependencies` and ships the `bin` shim. Falls back to `name` (or the crate name) when unset. |
 | `mode` | NpmMode | `optional-deps` | Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim. |
 | `name` | string | — | NPM package name (the metapackage / postinstall package). May be scoped (`@org/foo`) or unscoped (`foo`). Falls back to the crate name when unset. |
-| `platform_name_template` | string | — | Override the per-platform package naming in `optional-deps` mode.
-
-The rendered template is the FULL package name for each platform, replacing the default `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Beyond the standard release context, four platform vars are available per package: `NpmOs` (npm's os selector: `linux`/`darwin`/`win32`), `NpmCpu` (`x64`/`arm64`/`ia32`/...), `NpmLibc` (`glibc`/`musl`, empty off-linux), plus anodizer's own `Os`/`Arch` target mapping (os `windows`, not `win32`). Example: `"git-cliff-{{ Os }}-{{ NpmCpu }}"` yields `git-cliff-linux-x64`, `git-cliff-darwin-arm64`, `git-cliff-windows-x64`. A rendered name without a leading `@` is prefixed with `scope` when one is set; with this template set, `scope` is optional and unscoped names are allowed. If the template renders the same name for two platforms (e.g. it omits `NpmLibc` while `libc_aware` is `true`), the publisher fails with a config error naming the colliding packages. The npm `os`/`cpu`/`libc` selector fields inside each `package.json` always use the npm tokens regardless of this template. Ignored (hard error) in `postinstall` mode. |
+| `platform_name_template` | string | — | Override the per-platform package naming in `optional-deps` mode.<br><br>The rendered template is the FULL package name for each platform, replacing the default `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Beyond the standard release context, four platform vars are available per package: `NpmOs` (npm's os selector: `linux`/`darwin`/`win32`), `NpmCpu` (`x64`/`arm64`/`ia32`/...), `NpmLibc` (`glibc`/`musl`, empty off-linux), plus anodizer's own `Os`/`Arch` target mapping (os `windows`, not `win32`). Example: `"git-cliff-{{ Os }}-{{ NpmCpu }}"` yields `git-cliff-linux-x64`, `git-cliff-darwin-arm64`, `git-cliff-windows-x64`. A rendered name without a leading `@` is prefixed with `scope` when one is set; with this template set, `scope` is optional and unscoped names are allowed. If the template renders the same name for two platforms (e.g. it omits `NpmLibc` while `libc_aware` is `true`), the publisher fails with a config error naming the colliding packages. The npm `os`/`cpu`/`libc` selector fields inside each `package.json` always use the npm tokens regardless of this template. Ignored (hard error) in `postinstall` mode. |
 | `provenance` | bool | — | npm `publishConfig.provenance` flag. When unset, anodizer emits `true` — the npm supply-chain norm that biome and swc both set, pairing with anodizer's signing story. Set to `false` to disable. |
 | `registry` | string | — | Override the registry endpoint (default `https://registry.npmjs.org`). |
 | `repository` | string | — | Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `scope` | string | — | npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode unless `platform_name_template` is set (a template can produce unscoped names); ignored in `postinstall` mode. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
@@ -709,9 +633,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 ## `partial`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job.
-
-The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded at parse time, with a deprecation warning); imported configs keep loading. |
+| `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job.<br><br>The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded at parse time, with a deprecation warning); imported configs keep loading. |
 
 ## `preflight`
 Top-level `preflight:` block.
@@ -742,12 +664,8 @@ Top-level `preflight:` block.
 |-------|------|---------|-------------|
 | `discussion_category_name` | string | — | GitHub Discussion category name for the release. |
 | `draft` | bool | — | When true, create the release as a draft (unpublished). |
-| `exclude` | list of string | — | Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.
-
-```yaml release: github: { owner: my-org, name: my-repo } exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
-| `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts.
-
-Paths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline. |
+| `exclude` | list of string | — | Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.<br><br>```yaml release: github: { owner: my-org, name: my-repo } exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts.<br><br>Paths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline. |
 | `footer` | ContentSource | — | Text appended to the release body (inline string, from_file, or from_url). |
 | `gitea` | ScmRepoConfig | — | Gitea repository to release to (owner and name). |
 | `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name). |
@@ -760,32 +678,18 @@ Paths / globs are resolved relative to the project root. `..` segments are accep
 | `name_template` | string | — | Release title template (supports templates). |
 | `on_failure` | OnFailureConfig | — | In-process failure policy: what `anodizer release` does after a release-pipeline failure. `rollback` (default) deletes the run's release tag(s) and reverts the version-bump commit so the same version can be re-cut; `hold` leaves everything in place for forensics and manual recovery (`release --rollback-only --from-run=<id>`). `rollback` automatically degrades to `hold` the moment any one-way-door (Submitter) publisher has landed: the version is burned at a registry that never accepts it twice, so destructive rollback is refused and fix-forward is the only path. Root-level policy — in workspace configs (lockstep or per-crate) the top-level `release.on_failure` governs the whole run; setting it in a crate-level `release:` block is rejected at config load (`validate_on_failure_root_only`). |
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
-| `provider` | ForceTokenKind | — | Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in `crate::scm::resolve_token_type`.
-
-Use this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.
-
-```yaml release: provider: github github: owner: my-org name: my-app ``` |
+| `provider` | ForceTokenKind | — | Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in `crate::scm::resolve_token_type`.<br><br>Use this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.<br><br>```yaml release: provider: github github: owner: my-org name: my-app ``` |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). Template strings are supported here. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string. |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-
-Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
-| `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously. Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).
-
-GitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`. |
-| `upload_pace` | HumanDuration | — | Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `"200ms"`, `"1s"`, `"0s"`). Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).
-
-This is a *proactive* pace that smooths the initial burst of upload requests, layered on top of `upload_concurrency` (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.
-
-Default: `"200ms"` — at the default concurrency of 4 this caps the initial start rate at ~5/s, which is below the burst threshold yet adds negligible wall-clock to a normal release (upload time is dominated by transfer, not start-spacing). Set to `"0s"` to disable pacing entirely (rely on the concurrency cap + reactive backoff). Override at runtime with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0` disables). |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.<br><br>Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
+| `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously. Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).<br><br>GitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`. |
+| `upload_pace` | HumanDuration | — | Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `"200ms"`, `"1s"`, `"0s"`). Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).<br><br>This is a *proactive* pace that smooths the initial burst of upload requests, layered on top of `upload_concurrency` (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.<br><br>Default: `"200ms"` — at the default concurrency of 4 this caps the initial start rate at ~5/s, which is below the burst threshold yet adds negligible wall-clock to a normal release (upload time is dominated by transfer, not start-spacing). Set to `"0s"` to disable pacing entirely (rely on the concurrency cap + reactive backoff). Override at runtime with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0` disables). |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
 ## `retry`
@@ -906,9 +810,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `prerelease_suffix` | string | — | Suffix appended to pre-release versions (e.g., "beta"). |
 | `push` | bool | — | When true, `anodizer tag` also pushes the version-sync bump commit to the release branch (atomically with the tag), not just the tag. CLI `--push` / `--no-push` override this. Default false preserves the "push the tag, inspect the branch locally before pushing" workflow. |
 | `release_branches` | list of string | — | Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]). |
-| `skip_ci_on_bump` | bool | — | Append `[skip ci]` to the version-sync bump commit subject.
-
-Off by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run. |
+| `skip_ci_on_bump` | bool | — | Append `[skip ci]` to the version-sync bump commit subject.<br><br>Off by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run. |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
 | `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates the tag (and, when a push was requested, pushes it). Env and template vars same as `tag_pre_hooks`. |
 | `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`, `{{ PrefixedTag }}` are available. |
@@ -936,9 +838,7 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `client_x509_key` | string | — | Path to PEM-encoded client X.509 key for mTLS. |
 | `custom_artifact_name` | bool | — | When true, use the artifact name as-is (don't append to target URL). |
 | `custom_headers` | map | — | Custom HTTP headers (each value is template-expanded). |
-| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
-
-```yaml uploads: - name: mirror target: "https://mirror.example.com/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.<br><br>```yaml uploads: - name: mirror target: "https://mirror.example.com/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in uploading. |
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
@@ -948,15 +848,9 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
 | `name` | string | — | Human-readable name for this upload config. |
-| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).
-
-With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally. |
-| `password` | string | — | Password for HTTP basic auth.
-
-Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade. |
-| `required` | bool | — | Override whether this upload failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).<br><br>With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally. |
+| `password` | string | — | Password for HTTP basic auth.<br><br>Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade. |
+| `required` | bool | — | Override whether this upload failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this upload's artifacts in place rather than issuing a server-side DELETE. Default `false`. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
@@ -999,9 +893,7 @@ A workspace represents an independent project root within a monorepo. Each works
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`. |
 | `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
-| `env` | list of string | — | Environment variables scoped to this workspace.
-
-List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at pipeline startup. |
+| `env` | list of string | — | Environment variables scoped to this workspace.<br><br>List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at pipeline startup. |
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |
@@ -1013,15 +905,11 @@ Notable surface: - `images` + `tags` (cleaner separation than a single `image_te
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `annotations` | map | — | OCI annotations to apply via `--annotation key=value` flags. |
-| `build_args` | map | — | Build arguments passed as `--build-arg KEY=VALUE`.
-
-Each value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata. |
+| `build_args` | map | — | Build arguments passed as `--build-arg KEY=VALUE`.<br><br>Each value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata. |
 | `dockerfile` | string | — | Path to the Dockerfile relative to the project root. |
 | `extra_files` | list of string | — | Extra files to copy into the Docker build context. |
 | `flags` | list of string | — | Arbitrary extra flags passed to the docker build command. |
-| `hooks` | BuildHooksConfig | — | Pre/post hooks for this dockers_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:
-
-- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay) |
+| `hooks` | BuildHooksConfig | — | Pre/post hooks for this dockers_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:<br><br>- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay) |
 | `id` | string | — | Unique identifier for this Docker V2 config. |
 | `ids` | list of string | — | Build IDs filter: only include binary artifacts whose metadata `id` is in this list. |
 | `images` | list of string | `[]` | Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references. |
@@ -1032,11 +920,7 @@ Each value is template-expanded and forwarded verbatim to buildx (one argv token
 | `sbom` | StringOrBool | — | When truthy, adds `--sbom=true` to buildx. Supports templates. |
 | `skip` | StringOrBool | — | When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `tags` | list of string | `[]` | Tag suffixes (e.g., ["latest", "{{ Version }}"]). Each image is tagged with each tag. |
-| `use` | string | — | Docker backend for build commands: `"buildx"` (default) or `"podman"`.
-
-The default `"buildx"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.
-
-**Linux-only.** The podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`. |
+| `use` | string | — | Docker backend for build commands: `"buildx"` (default) or `"podman"`.<br><br>The default `"buildx"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.<br><br>**Linux-only.** The podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`. |
 
 ## `crates[].docker_manifests`
 Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `dockers_v2` in the same run.
@@ -1068,9 +952,7 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 | `amd64_variant` | list of Amd64Variant | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Each entry is typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `apk` | NfpmApkConfig | — | APK-specific configuration. |
 | `archlinux` | NfpmArchlinuxConfig | — | Archlinux-specific configuration. |
-| `bin_alias` | string | — | Rename the installed binary inside the package only.
-
-When set, the auto-emitted binary content entry is installed under this name (in `bindir`) instead of the built file's name; the archive/build output is untouched. Use this to resolve Debian/RPM name clashes — e.g. `fd` ships its binary as `fdfind` in the Debian package while the tarball keeps `fd`. Templated. |
+| `bin_alias` | string | — | Rename the installed binary inside the package only.<br><br>When set, the auto-emitted binary content entry is installed under this name (in `bindir`) instead of the built file's name; the archive/build output is untouched. Use this to resolve Debian/RPM name clashes — e.g. `fd` ships its binary as `fdfind` in the Debian package while the tarball keeps `fd`. Templated. |
 | `bindir` | string | — | Installation directory for binaries (default: /usr/bin). |
 | `changelog` | string | — | Path to a YAML-format changelog file for deb/rpm packages. |
 | `conflicts` | list of string | — | Packages this package conflicts with. |
@@ -1090,11 +972,7 @@ When set, the auto-emitted binary content entry is installed under this name (in
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `maintainer` | string | — | Package maintainer in "Name <email>" format. |
 | `meta` | bool | — | Whether this is a meta-package (no files, only dependencies). |
-| `msix` | NfpmMsixConfig | — | MSIX-specific configuration (Windows app packages).
-
-Only consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.
-
-```yaml msix: publisher: "CN=My Company, O=My Company, C=US" properties: logo: assets/logo.png applications: - id: MyApp executable: myapp.exe ``` |
+| `msix` | NfpmMsixConfig | — | MSIX-specific configuration (Windows app packages).<br><br>Only consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.<br><br>```yaml msix: publisher: "CN=My Company, O=My Company, C=US" properties: logo: assets/logo.png applications: - id: MyApp executable: myapp.exe ``` |
 | `mtime` | string | — | Default modification time for files in the package. |
 | `overrides` | map | — | Per-format setting overrides (e.g., {"deb": {compression: "xz"}}). |
 | `package_name` | string | — | Package name (defaults to crate name). |
@@ -1122,19 +1000,11 @@ Only consumed when `formats` includes `msix`. nfpm requires `publisher`, `proper
 | `cargo` | CargoPublishConfig | — | Publish to crates.io. Presence opts in; use `cargo: { skip: true }` to opt out. |
 | `chocolatey` | ChocolateyConfig | — | Chocolatey package publishing configuration. |
 | `homebrew` | HomebrewConfig | — | Homebrew formula publishing configuration. |
-| `homebrew_cask` | HomebrewCaskConfig | — | Homebrew Cask publishing configuration (macOS .app bundles).
-
-Uses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config. |
+| `homebrew_cask` | HomebrewCaskConfig | — | Homebrew Cask publishing configuration (macOS .app bundles).<br><br>Uses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config. |
 | `krew` | KrewConfig | — | Krew (kubectl plugin manager) manifest publishing configuration. |
 | `nix` | NixConfig | — | Nix derivation publishing configuration. |
-| `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, after rollback has been attempted. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RolledBack }}` — true if any publisher was rolled back (or rollback was attempted and failed) during this run — and `{{ .RunReport }}`, the path of this run's already-written `dist/run-<id>/report.json` (per-publisher outcomes including rollback results; empty in snapshot/dry-run or when the report could not be persisted). The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`, `ANODIZER_RUN_REPORT`. A hook's own failure is logged as a warning and never changes the release outcome.
-
-Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the text is sent literally rather than Tera-rendered. The outbound notification body is secret-redacted by default, so a secret reference smuggled into the error body is masked (sent as `$NAME`) even without `--raw`; `--raw` stays recommended because it avoids re-rendering already-final text and keeps untrusted content out of the shell-parsed `cmd` string:
-
-```yaml publish: on_error: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"' ``` |
-| `on_rollback` | list of HookEntry | — | Hooks that fire once per publisher that a triggered rollback REVERTED — including a publisher that itself `Succeeded` and was only reverted because a sibling required publisher failed (the case `on_error`, which fires solely for the failed publisher, never reaches). A publisher whose rollback was attempted but could not complete fires this too, with `{{ .RollbackFailed }}` set to `true` so the hook can escalate the orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}` (`true` when the revert itself failed), `{{ .Error }}` (the rollback failure message, empty on a clean revert), and `{{ .Reason }}` (the run-wide sibling failure(s) that triggered the unwind — distinct from `{{ .Error }}`; empty on a `--rollback-only` replay). The same values are exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and `ANODIZER_ROLLBACK_REASON`. A hook's own failure is logged as a warning and never changes the release outcome or aborts the remaining rollbacks. It is independent of `on_error`: a publisher that both failed and was rolled back fires both.
-
-```yaml publish: on_rollback: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)"' ``` |
+| `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, after rollback has been attempted. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RolledBack }}` — true if any publisher was rolled back (or rollback was attempted and failed) during this run — and `{{ .RunReport }}`, the path of this run's already-written `dist/run-<id>/report.json` (per-publisher outcomes including rollback results; empty in snapshot/dry-run or when the report could not be persisted). The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`, `ANODIZER_RUN_REPORT`. A hook's own failure is logged as a warning and never changes the release outcome.<br><br>Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the text is sent literally rather than Tera-rendered. The outbound notification body is secret-redacted by default, so a secret reference smuggled into the error body is masked (sent as `$NAME`) even without `--raw`; `--raw` stays recommended because it avoids re-rendering already-final text and keeps untrusted content out of the shell-parsed `cmd` string:<br><br>```yaml publish: on_error: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"' ``` |
+| `on_rollback` | list of HookEntry | — | Hooks that fire once per publisher that a triggered rollback REVERTED — including a publisher that itself `Succeeded` and was only reverted because a sibling required publisher failed (the case `on_error`, which fires solely for the failed publisher, never reaches). A publisher whose rollback was attempted but could not complete fires this too, with `{{ .RollbackFailed }}` set to `true` so the hook can escalate the orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}` (`true` when the revert itself failed), `{{ .Error }}` (the rollback failure message, empty on a clean revert), and `{{ .Reason }}` (the run-wide sibling failure(s) that triggered the unwind — distinct from `{{ .Error }}`; empty on a `--rollback-only` replay). The same values are exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and `ANODIZER_ROLLBACK_REASON`. A hook's own failure is logged as a warning and never changes the release outcome or aborts the remaining rollbacks. It is independent of `on_error`: a publisher that both failed and was rolled back fires both.<br><br>```yaml publish: on_rollback: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)"' ``` |
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
 | `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
 
@@ -1161,16 +1031,12 @@ Fields intentionally omitted because anodizer owns them: - `--package` / `--work
 | `no_verify` | bool | — | Skip the local `cargo build --release` verification step (`--no-verify`). |
 | `offline` | bool | — | Require offline resolution; never hit the network (`--offline`). |
 | `registry` | string | — | Alternate registry name from `~/.cargo/config.toml` (`--registry`). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block. |
 | `target` | string | — | Build target triple for the verification step (`--target`). |
 | `target_dir` | string | — | Override the cargo target directory (`--target-dir`). |
-| `wait_for_workspace_deps` | WaitForWorkspaceDepsConfig | — | Pre-publish gate that polls crates.io for every workspace-internal dep of the crate being published, blocking until each is queryable at its expected version. Required for multi-tag-multi-crate workspaces (e.g. cfgd) where per-crate tags fire independent `Release.yml` runs that would otherwise race the sparse-index propagation.
-
-Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave this off — there is no inter-tag race to gate on. |
+| `wait_for_workspace_deps` | WaitForWorkspaceDepsConfig | — | Pre-publish gate that polls crates.io for every workspace-internal dep of the crate being published, blocking until each is queryable at its expected version. Required for multi-tag-multi-crate workspaces (e.g. cfgd) where per-crate tags fire independent `Release.yml` runs that would otherwise race the sparse-index propagation.<br><br>Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave this off — there is no inter-tag race to gate on. |
 
 ## `crates[].publish.homebrew`
 | Field | Type | Default | Description |
@@ -1202,9 +1068,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `plist` | string | — | Launchd plist content for `brew services`. |
 | `post_install` | string | — | Post-install commands (separate `def post_install` block in formula). |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `tap: TapConfig` owner/name-only form.) |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service block content (alternative to plist). |
 | `skip_upload` | StringOrBool | — | Skip publishing the formula.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
@@ -1222,9 +1086,7 @@ Fields from both original types are present; any field may be `None` at either c
 |-------|------|---------|-------------|
 | `alternative_names` | list of string | — | Alternative cask names (aliases). |
 | `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
-| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
-
-Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
+| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.<br><br>Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
 | `binary` | string | — | Deprecated singular spelling of `binaries`. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `binaries` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -1246,27 +1108,21 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
 | `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
-| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).
-
-Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
+| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).<br><br>Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
 | `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
 
 ## `crates[].publish.scoop`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
-| `checkver` | string | — | Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `"github"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.
-
-Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
+| `checkver` | string | — | Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `"github"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.<br><br>Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `depends` | list of string | — | Application dependencies (other Scoop packages). |
@@ -1281,9 +1137,7 @@ Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
 | `post_install` | list of string | — | Commands to run after installation. |
 | `pre_install` | list of string | — | Commands to run before installation. |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `bucket: BucketConfig` owner/name-only form.) |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `shortcuts` | list of list of string | — | Start menu shortcuts as `[executable, label]` pairs. |
 | `skip_upload` | StringOrBool | — | Skip publishing the manifest.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
@@ -1316,9 +1170,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `repository` | RepositoryConfig | — | Unified project repo config (owner/name). Used to derive `<projectUrl>` (the Chocolatey gallery link) and download URLs. `<projectUrl>` resolves through `project_url:` (if set) → derived `https://github.com/{repository.owner}/{repository.name}`. |
 | `republish_in_moderation` | StringOrBool | — | When true, re-push the nupkg even when a version is already in the community moderation queue (PackageStatus=Submitted). Chocolatey's API accepts re-pushes of in-moderation versions; the new nupkg replaces the queued one. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not push. |
 | `require_license_acceptance` | bool | — | Require license acceptance before install. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `"{{ IsSnapshot }}"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher. |
 | `source_repo` | string | — | Push source URL (default: "https://push.chocolatey.org/"). |
@@ -1337,23 +1189,17 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `copyright` | string | — | Copyright notice. |
 | `copyright_url` | string | — | Copyright URL. |
-| `default_locale` | string | — | Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.
-
-```yaml winget: default_locale: "pt-BR" ``` |
+| `default_locale` | string | — | Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.<br><br>```yaml winget: default_locale: "pt-BR" ``` |
 | `dependencies` | list of WingetDependency | — | Package dependencies. |
 | `description` | string | — | Full package description displayed in the WinGet gallery. |
-| `documentations` | list of WingetDocumentation | — | Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.
-
-Example: ```yaml documentations: - label: "User Guide" url: "https://github.com/owner/repo/blob/master/GUIDE.md" ``` |
+| `documentations` | list of WingetDocumentation | — | Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.<br><br>Example: ```yaml documentations: - label: "User Guide" url: "https://github.com/owner/repo/blob/master/GUIDE.md" ``` |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. |
 | `installation_notes` | string | — | Post-install notes shown to the user. |
 | `license` | string | — | License identifier (required, e.g. "MIT"). |
 | `license_url` | string | — | License URL. |
-| `moniker` | string | — | Short invoke alias shown as the package `Moniker` (e.g. `rg` for ripgrep, `fd` for fd). This is the command users type, NOT the package/crate name. When unset, anodizer derives it from the single published binary name; with multiple binaries and no override the Moniker is omitted (winget treats it as optional).
-
-Example: `moniker: "rg"`. |
+| `moniker` | string | — | Short invoke alias shown as the package `Moniker` (e.g. `rg` for ripgrep, `fd` for fd). This is the command users type, NOT the package/crate name. When unset, anodizer derives it from the single published binary name; with multiple binaries and no override the Moniker is omitted (winget treats it as optional).<br><br>Example: `moniker: "rg"`. |
 | `name` | string | — | Override the package name (default: crate name). |
 | `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty. |
 | `package_name` | string | — | Package name as displayed (default: same as name). |
@@ -1367,20 +1213,14 @@ Example: `moniker: "rg"`. |
 | `release_notes` | string | — | Release notes for this version. |
 | `release_notes_url` | string | — | URL to full release notes. |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.) |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `short_description` | string | — | Short description (required, max 256 chars). |
-| `silent_switch` | string | — | Silent-install switch string emitted as `InstallerSwitches.Silent` for actual installers (`wix`/`msi`/`exe`/`nsis`). When unset, anodizer derives the switch from the installer type (`/quiet` for msi, `/S` for exe/nsis). Never emitted for `zip`/`portable` artifacts.
-
-Example: `silent_switch: "/qn"`. |
+| `silent_switch` | string | — | Silent-install switch string emitted as `InstallerSwitches.Silent` for actual installers (`wix`/`msi`/`exe`/`nsis`). When unset, anodizer derives the switch from the installer type (`/quiet` for msi, `/S` for exe/nsis). Never emitted for `zip`/`portable` artifacts.<br><br>Example: `silent_switch: "/qn"`. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `tags` | list of string | — | Tags for package discovery (lowercased, spaces→hyphens). |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
-| `upgrade_behavior` | string | — | Installer `UpgradeBehavior` for every installer entry. winget accepts `install`, `uninstallPrevious`, and `deny`. Defaults to `install` — the correct behavior for portable-zip CLI tools (`uninstallPrevious` forces a clobbering reinstall).
-
-Example: `upgrade_behavior: "uninstallPrevious"`. |
+| `upgrade_behavior` | string | — | Installer `UpgradeBehavior` for every installer entry. winget accepts `install`, `uninstallPrevious`, and `deny`. Defaults to `install` — the correct behavior for portable-zip CLI tools (`uninstallPrevious` forces a clobbering reinstall).<br><br>Example: `upgrade_behavior: "uninstallPrevious"`. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 | `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
 
@@ -1411,9 +1251,7 @@ Example: `upgrade_behavior: "uninstallPrevious"`. |
 | `provides` | list of string | — | Packages this PKGBUILD provides (virtual package names). |
 | `rel` | string | — | Package release number (default: "1"). |
 | `replaces` | list of string | — | Packages this PKGBUILD replaces (for upgrade paths from old package names). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this AUR config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
@@ -1449,9 +1287,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `private_key` | string | — | Path to SSH private key file. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
@@ -1469,14 +1305,10 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `homepage` | string | — | Project homepage URL for the plugin. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`. |
-| `mode` | KrewMode | — | Which krew-index submission path to take.
-
-- `auto` (default): probe whether the plugin already exists in `kubernetes-sigs/krew-index`. Already present → `bot` (the hosted krew-release-bot opens the version-bump PR server-side); definitively absent → `pr-direct` (anodizer opens the initial fork PR). A probe that can't reach a definitive answer (rate-limit, network error) hard-errors rather than guessing, so a transient blip never routes an existing plugin into a maintainer-hostile fork PR. - `bot`: always POST to the krew-release-bot webhook. Use when the plugin is known to be in krew-index and you want to skip the membership probe entirely. - `pr-direct`: always open a fork PR against krew-index. Use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
+| `mode` | KrewMode | — | Which krew-index submission path to take.<br><br>- `auto` (default): probe whether the plugin already exists in `kubernetes-sigs/krew-index`. Already present → `bot` (the hosted krew-release-bot opens the version-bump PR server-side); definitively absent → `pr-direct` (anodizer opens the initial fork PR). A probe that can't reach a definitive answer (rate-limit, network error) hard-errors rather than guessing, so a transient blip never routes an existing plugin into a maintainer-hostile fork PR. - `bot`: always POST to the krew-release-bot webhook. Use when the plugin is known to be in krew-index and you want to skip the membership probe entirely. - `pr-direct`: always open a fork PR against krew-index. Use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
 | `name` | string | — | Override the plugin name (default: crate name). |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The upstream PR target is derived from `repository.pull_request.base` when set, falling back to the canonical kubernetes-sigs/krew-index. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `short_description` | string | — | One-line summary of the kubectl plugin (max 255 chars). |
 | `skip` | StringOrBool | — | Skip this Krew config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can opt out of generating the manifest entirely (common when a project is not a kubectl plugin and has no krew channel). |
@@ -1507,9 +1339,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `path` | string | — | Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`). |
 | `post_install` | string | — | Post-install commands (postInstall phase). |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. |
-| `required` | bool | — | Override whether this publisher failing should fail the overall release.
-
-Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this Nix config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means "don't generate at all", skip_upload means "generate but don't push". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |

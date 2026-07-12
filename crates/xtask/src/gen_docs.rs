@@ -634,8 +634,10 @@ fn is_rust_path_target(target: &str) -> bool {
 }
 
 /// The `description` keyword on a schema, normalized via [`collapse_description`]
-/// and with `|` escaped so a description containing a pipe does not break the
-/// markdown table column.
+/// and flattened for a markdown-table cell: paragraph breaks become
+/// `<br><br>` and any residual newline a space (a bare newline inside a cell
+/// terminates the table row), with `|` escaped so a description containing a
+/// pipe does not break the markdown table column.
 fn schema_description(schema: &Value) -> String {
     schema
         .as_object()
@@ -643,6 +645,8 @@ fn schema_description(schema: &Value) -> String {
         .and_then(Value::as_str)
         .map(collapse_description)
         .unwrap_or_default()
+        .replace("\n\n", "<br><br>")
+        .replace('\n', " ")
         .replace('|', "\\|")
 }
 
@@ -872,6 +876,21 @@ mod tests {
             collapse_description("layered on top of [`Self::upload_concurrency`]\n(the cap)"),
             "layered on top of `upload_concurrency` (the cap)"
         );
+    }
+
+    #[test]
+    fn schema_description_flattens_paragraphs_for_table_cells() {
+        // A two-paragraph rustdoc description must render as ONE table-cell
+        // line: paragraph break -> <br><br>, no bare newline survives.
+        let schema = serde_json::json!({
+            "description": "First paragraph\nhard-wrapped here.\n\nSecond paragraph with a | pipe."
+        });
+        let cell = schema_description(&schema);
+        assert_eq!(
+            cell,
+            "First paragraph hard-wrapped here.<br><br>Second paragraph with a \\| pipe."
+        );
+        assert!(!cell.contains('\n'));
     }
 
     #[test]
