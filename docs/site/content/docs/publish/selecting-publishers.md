@@ -57,6 +57,7 @@ never drifts):
 |----------------|--------------------|
 | `cargo` | yes |
 | `homebrew` | yes |
+| `homebrew-core` | publisher only |
 | `scoop` | yes |
 | `nix` | yes |
 | `aur` | yes |

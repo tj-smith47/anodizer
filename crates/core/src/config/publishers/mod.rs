@@ -461,4 +461,5 @@ impl_publisher_gate_overrides!(
     super::NpmConfig,
     super::GemFuryConfig,
     super::PypiConfig,
+    super::HomebrewCoreConfig,
 );

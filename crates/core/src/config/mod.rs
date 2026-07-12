@@ -300,6 +300,11 @@ pub struct Config {
     /// binaries (plus an optional `maturin sdist`) and uploads them via
     /// PyPI's legacy (twine-protocol) upload API. The `pypis:` block.
     pub pypis: Option<Vec<PypiConfig>>,
+    /// homebrew-core formula-bump configurations. One entry per formula.
+    /// Bumps an existing formula in `Homebrew/homebrew-core` (or a formula
+    /// repository override) via the GitHub API and opens a pull request.
+    /// The `homebrew_cores:` block.
+    pub homebrew_cores: Option<Vec<HomebrewCoreConfig>>,
     /// Per-crate metadata derived from each crate's `Cargo.toml [package]`
     /// table (description / license / homepage / authors). Populated at
     /// config-load time by [`Config::populate_derived_metadata`], keyed by
@@ -409,6 +414,7 @@ impl Default for Config {
             npms: None,
             gemfury: None,
             pypis: None,
+            homebrew_cores: None,
             derived_metadata: BTreeMap::new(),
         }
     }
@@ -2350,6 +2356,7 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "gemfury",
         "furies",
         "pypis",
+        "homebrew_cores",
         "publishers",
         "sboms",
         "aur",
@@ -2931,6 +2938,13 @@ pub use gemfury::*;
 
 mod pypi;
 pub use pypi::*;
+
+// ---------------------------------------------------------------------------
+// HomebrewCoreConfig (homebrew-core formula-bump publisher)
+// ---------------------------------------------------------------------------
+
+mod homebrew_core;
+pub use homebrew_core::*;
 
 // ---------------------------------------------------------------------------
 // Well-known config file discovery

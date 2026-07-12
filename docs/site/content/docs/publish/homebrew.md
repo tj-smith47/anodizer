@@ -22,6 +22,12 @@ template = "docs.html"
 
 Anodizer generates Ruby Homebrew formulae with multi-platform support and pushes them to your tap repository.
 
+> **Tap vs. homebrew-core:** this publisher pushes a formula to **your own tap**
+> (`youruser/homebrew-tap`). To bump a formula that has already been accepted into
+> `Homebrew/homebrew-core`, use the [Homebrew Core](./homebrew-core.md) publisher
+> (`homebrew_cores`), which opens a fork-based pull request against the core repo
+> instead of pushing to a tap you control.
+
 ## Classification
 
 | Group | Required (default) | Rollback | Token scope |

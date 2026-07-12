@@ -42,7 +42,8 @@ Each per-publisher page lists its default in the Classification table and includ
 `required:` snippet in the config reference.
 
 Other publishers — [Homebrew Casks](./homebrew-casks.md) (the canonical Homebrew
-surface; [deprecated Formula](./homebrew.md) is documented separately), [Scoop](./scoop.md),
+surface; [deprecated Formula](./homebrew.md) is documented separately),
+[Homebrew Core](./homebrew-core.md) (bump an existing `homebrew-core` formula), [Scoop](./scoop.md),
 [Chocolatey](./chocolatey.md), [Winget](./winget.md), [AUR](./aur.md), [Krew](./krew.md),
 [MCP registry](./mcp-registry.md), [SchemaStore](./schemastore.md), [crates.io](./crates-io.md),
 [NPM](./npm.md), [PyPI](./pypi.md), [Docker Hub](./dockerhub.md), and others — are documented in their own pages.

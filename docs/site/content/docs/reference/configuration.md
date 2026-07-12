@@ -38,6 +38,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
 | `gitlab_urls` | GitLabUrlsConfig | — | Custom GitLab API/download URLs for self-hosted GitLab installations. |
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
+| `homebrew_cores` | list of HomebrewCoreConfig | — | homebrew-core formula-bump configurations. One entry per formula. Bumps an existing formula in `Homebrew/homebrew-core` (or a formula repository override) via the GitHub API and opens a pull request. The `homebrew_cores:` block. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
 | `mcp` | McpConfig | `{"name":null,"title":null,"description":null,"homepage":null,"packages":[],"transports":[],"skip":null,"repository":{"url":"","source":"","id":"","subfolder":""},"auth":{"type":"none"},"registry":null,"if":null,"retain_on_rollback":null}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
@@ -486,6 +487,30 @@ Fields from both original types are present; any field may be `None` at either c
 | `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
 | `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).<br><br>Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
 | `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
+
+## `homebrew_cores`
+homebrew-core formula-bump publisher configuration.
+
+Bumps an EXISTING formula in `Homebrew/homebrew-core` (or any formula repository override) purely through the GitHub API — no clone, no `brew` invocation. The formula file's `url` (or `tag:`/`revision:` pair), `sha256`, and `version` stanzas are rewritten to the new release, the change is committed to a branch, and a pull request is opened against the formula repository. Each `homebrew_cores[]` entry bumps one formula.
+
+Every field is optional: the formula name defaults to the crate name, the target repository defaults to `Homebrew/homebrew-core`, the formula path defaults to the sharded core layout (`Formula/<letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb`), and the download URL defaults to the GitHub source tarball for the release tag.
+
+```yaml homebrew_cores: - name: my-tool ```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `commit_msg_template` | string | — | Templated commit message (also the PR title). Default: `"<formula> <version>"` — the message form homebrew-core's CI expects for version bumps. |
+| `direct_commit` | StringOrBool | — | Commit straight to the base branch instead of opening a pull request. Accepts bool or template string. Only honored for formula repositories you can push to — bumps targeting `Homebrew/homebrew-core` always go through a fork + PR, because homebrew-core never accepts direct pushes. |
+| `download_url` | string | — | Templated download URL written into the formula's `url` stanza. Defaults to the GitHub source tarball for the release tag: `https://github.com/<owner>/<repo>/archive/refs/tags/<tag>.tar.gz` (owner/repo derived from the crate's release repository, then the git remote). |
+| `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
+| `ids` | list of string | — | Crate scoping: when set, the formula `name` default is derived from the first crate named here instead of the workspace's primary crate. The workspace per-crate pattern — one `homebrew_cores[]` entry per crate, each scoped by `ids:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), this entry is skipped. Render failure hard-errors. |
+| `name` | string | — | Formula name (templated). Defaults to the scoped crate name (see `ids:`), then the workspace's primary crate name, then the project name. |
+| `path` | string | — | Formula file path inside the repository (templated). Defaults to the homebrew-core sharded layout `Formula/<first-letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb` used by most personal taps when the sharded path does not exist. |
+| `repository` | RepositoryConfig | — | Target formula repository. Defaults to `Homebrew/homebrew-core`. Carries the auth token override (`repository.token`), the base branch (`repository.branch`, default: the repo's default branch), and PR settings (`repository.pull_request.draft` / `.body`).<br><br>```yaml homebrew_cores: - repository: { owner: my-org, name: my-formulas } ``` |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — the bump is a PR that can be re-opened by hand, so a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves the opened pull request in place rather than closing it. Default `false`. |
+| `sha256` | string | — | Hex SHA-256 of the new download (templated). When unset, anodizer downloads `download_url` and hashes it — the same behavior as `brew bump-formula-pr` without `--sha256`. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 
 ## `makeselfs`
 | Field | Type | Default | Description |

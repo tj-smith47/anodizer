@@ -465,6 +465,48 @@ pub struct SchemastoreExtra {
     pub schemastore_targets: Vec<SchemastoreTargetSnapshot>,
 }
 
+/// Operator-public snapshot of a single homebrew-core formula bump — the
+/// branch anodizer committed the rewritten formula to and the upstream the
+/// PR targets. Stored in [`HomebrewCoreExtra::homebrew_core_targets`] so a
+/// later `--rollback-only --from-run` can find and close the open PR.
+///
+/// **CREDENTIAL CONTRACT**: no token field — the rollback token is
+/// resolved at rollback time from the env var named by `token_env_var`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HomebrewCoreTargetSnapshot {
+    /// Formula name that was bumped (e.g. `my-tool`).
+    pub formula: String,
+    /// Version the formula was bumped to.
+    pub version: String,
+    /// Owner of the formula repository the PR targets (`Homebrew` for core).
+    pub upstream_owner: String,
+    /// Name of the formula repository (`homebrew-core` for core).
+    pub upstream_repo: String,
+    /// Login of the repo the bump branch was pushed to — the fork owner on
+    /// the fork+PR path, the upstream owner on the same-repo-branch path.
+    pub head_owner: String,
+    /// Branch carrying the bump commit (the PR head branch). Empty on the
+    /// `direct_commit` path, where the bump landed on the base branch.
+    pub branch: String,
+    /// `true` when the bump was committed straight to the base branch
+    /// (`direct_commit: true`) — nothing to close on rollback.
+    pub direct_commit: bool,
+    /// URL of the opened pull request, when one was opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// Env var NAME the rollback path consults for the close-PR token.
+    /// NEVER the token VALUE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env_var: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HomebrewCoreExtra {
+    pub homebrew_core_targets: Vec<HomebrewCoreTargetSnapshot>,
+}
+
 /// Typed `extra` payload for [`PublishEvidence`]. Untagged on the wire —
 /// each variant's JSON shape matches the prior free-form
 /// `serde_json::json!({"<publisher>_targets": [...]})` form so existing
@@ -507,6 +549,7 @@ pub enum PublishEvidenceExtra {
     GemFury(GemFuryExtra),
     Pypi(PypiExtra),
     Schemastore(SchemastoreExtra),
+    HomebrewCore(HomebrewCoreExtra),
     /// Default for publishers with no per-evidence operator-public fields,
     /// or for runs that no-op'd. Serializes as JSON `null`.
     #[default]

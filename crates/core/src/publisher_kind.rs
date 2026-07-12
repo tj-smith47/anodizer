@@ -32,8 +32,8 @@ use strum::EnumIter;
 
 /// Every publisher anodizer can run, as an exhaustive enum.
 ///
-/// Variant order matches the historical `all_publishers()` ordering (the 18
-/// trait-dispatched publishers first, in registry order) followed by the five
+/// Variant order matches the historical `all_publishers()` ordering (the trait-dispatched
+/// publishers first, in registry order) followed by the five
 /// out-of-dispatch publish stages, so [`Self::iter`]-derived lists preserve
 /// the prior error-message ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
@@ -71,6 +71,8 @@ pub enum PublisherKind {
     Gemfury,
     /// PyPI binary-wheel (+ optional sdist) upload.
     Pypi,
+    /// homebrew-core formula-bump PR.
+    HomebrewCore,
     /// Chocolatey community-repository push (moderated).
     Chocolatey,
     /// winget-pkgs manifest PR (moderated).
@@ -116,6 +118,7 @@ impl PublisherKind {
             Self::Npm => "npm",
             Self::Gemfury => "gemfury",
             Self::Pypi => "pypi",
+            Self::HomebrewCore => "homebrew-core",
             Self::Chocolatey => "chocolatey",
             Self::Winget => "winget",
             Self::UpstreamAur => "upstream-aur",
@@ -165,6 +168,7 @@ impl PublisherKind {
             | Self::Schemastore
             | Self::Npm
             | Self::Pypi
+            | Self::HomebrewCore
             | Self::Chocolatey
             | Self::Winget
             | Self::UpstreamAur
@@ -185,7 +189,7 @@ impl PublisherKind {
     /// registration would double-publish). They are still part of the
     /// `--skip` / `--publishers` vocabulary.
     ///
-    /// `false` for the 18 trait-dispatched publishers that `stage-publish`'s
+    /// `false` for the trait-dispatched publishers that `stage-publish`'s
     /// registry instantiates and `dispatch` iterates. Exhaustive `match` so a
     /// new variant must declare which side it is on.
     pub const fn is_publish_stage(self) -> bool {
@@ -206,6 +210,7 @@ impl PublisherKind {
             | Self::Npm
             | Self::Gemfury
             | Self::Pypi
+            | Self::HomebrewCore
             | Self::Chocolatey
             | Self::Winget
             | Self::UpstreamAur => false,
@@ -279,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn trait_publishers_count_is_eighteen() {
+    fn trait_publishers_count_matches_registry() {
         let trait_count = PublisherKind::iter()
             .filter(|k| !k.is_publish_stage())
             .count();
-        assert_eq!(trait_count, 19, "expected 19 trait-dispatched publishers");
+        assert_eq!(trait_count, 20, "expected 20 trait-dispatched publishers");
     }
 }

@@ -17,6 +17,7 @@ pub mod dockerhub;
 pub(crate) mod failure_hooks;
 pub mod gemfury;
 pub mod homebrew;
+pub mod homebrew_core;
 pub(crate) mod http_upload;
 pub mod krew;
 pub mod mcp;

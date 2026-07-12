@@ -67,6 +67,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - GitHub/GitLab/Gitea Releases with asset uploads, draft/prerelease detection, header/footer templates
 - crates.io with dependency-aware ordering and index polling
 - Homebrew formula and cask generation
+- Homebrew-core formula bump PRs (bump an existing `homebrew-core` formula)
 - Scoop manifest generation
 - Chocolatey package generation
 - Winget manifest generation

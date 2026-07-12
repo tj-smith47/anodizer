@@ -242,7 +242,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             crate::pypi::publisher::PypiPublisher::with_overrides(req, retain),
         ));
     }
-    // Submitter group (no programmatic rollback — warn-only).
+    // Submitter group (rollback closes the submission PR where one exists;
+    // warn-only otherwise).
+    if is_homebrew_core_configured(ctx) {
+        let (req, retain) = collapse_entry_overrides(ctx.config.homebrew_cores.as_ref());
+        v.push(Box::new(
+            crate::homebrew_core::publisher::HomebrewCorePublisher::with_overrides(req, retain),
+        ));
+    }
     if is_chocolatey_configured(ctx) {
         let (req, retain) = collapse_per_crate_overrides(ctx, crate::chocolatey::publisher::block);
         v.push(Box::new(
@@ -359,6 +366,9 @@ fn new_trait_publisher(kind: PublisherKind) -> Option<Box<dyn Publisher>> {
         PublisherKind::Npm => Box::new(crate::npm::NpmPublisher::new()),
         PublisherKind::Gemfury => Box::new(crate::gemfury::GemFuryPublisher::new()),
         PublisherKind::Pypi => Box::new(crate::pypi::publisher::PypiPublisher::new()),
+        PublisherKind::HomebrewCore => {
+            Box::new(crate::homebrew_core::publisher::HomebrewCorePublisher::new())
+        }
         PublisherKind::Chocolatey => Box::new(crate::chocolatey::ChocolateyPublisher::new()),
         PublisherKind::Winget => Box::new(crate::winget::WingetPublisher::new()),
         PublisherKind::UpstreamAur => Box::new(crate::aur_source::AurSourcePublisher::new()),
@@ -448,6 +458,11 @@ fn is_gemfury_configured(ctx: &Context) -> bool {
 /// True when the top-level `pypis:` block has at least one entry.
 fn is_pypi_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.pypis.as_ref())
+}
+
+/// True when the top-level `homebrew_cores:` block has at least one entry.
+fn is_homebrew_core_configured(ctx: &Context) -> bool {
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.homebrew_cores.as_ref())
 }
 
 /// True when the top-level `mcp.name` is set and non-empty. Mirrors
