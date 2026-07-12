@@ -70,6 +70,7 @@ never drifts):
 | `artifactory` | publisher only |
 | `cloudsmith` | publisher only |
 | `gemfury` | publisher only |
+| `pypi` | publisher only |
 | `schemastore` | publisher only |
 | `mcp` | publisher only |
 | `upstream-aur` | publisher only |

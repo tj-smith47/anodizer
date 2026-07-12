@@ -48,16 +48,16 @@
 
 mod asset_check;
 mod landing;
-mod libc_check;
+use anodizer_core::libc_check;
 mod smoke;
 mod snap_store;
 
-pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
-pub use landing::LandingProbes;
-pub use libc_check::{
+pub use anodizer_core::libc_check::{
     GlibcVersion, LibcCheckOutcome, check_glibc_ceiling, check_glibc_requirements,
     max_glibc_requirement,
 };
+pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
+pub use landing::LandingProbes;
 pub use smoke::{
     PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, docker_platform,
     run_smoke,

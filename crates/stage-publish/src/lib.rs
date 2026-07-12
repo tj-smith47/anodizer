@@ -24,6 +24,7 @@ pub mod nix;
 pub mod npm;
 pub mod post_publish;
 pub mod preflight;
+pub mod pypi;
 pub mod registry;
 pub mod rollback;
 pub mod rollback_only;

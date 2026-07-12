@@ -402,6 +402,39 @@ pub struct GemFuryExtra {
     pub gemfury_targets: Vec<GemFuryTargetSnapshot>,
 }
 
+/// Operator-public snapshot of a single file uploaded to a PyPI-compatible
+/// index (one wheel or one sdist). Stored in [`PypiExtra::pypi_files`].
+/// PyPI uploads are one-way — a published filename can NEVER be re-uploaded,
+/// even after deletion — so these snapshots exist for the audit trail and
+/// the run report, not for a programmatic rollback.
+///
+/// **CREDENTIAL CONTRACT**: no token field — the upload token is resolved
+/// at publish time from config / `PYPI_TOKEN` / `MATURIN_PYPI_TOKEN` and is
+/// never persisted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PypiFileSnapshot {
+    /// Uploaded filename (e.g. `my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl`).
+    pub filename: String,
+    /// Wheel platform tag (e.g. `manylinux_2_28_x86_64`), or `source` for an
+    /// sdist.
+    pub platform_tag: String,
+    /// Hex SHA-256 of the uploaded file.
+    pub sha256: String,
+    /// Upload endpoint URL the file was sent to.
+    pub repository: String,
+    /// `true` when the index rejected the file as already existing and the
+    /// entry's `skip_existing` treated that as an idempotent skip — the file
+    /// was already live from an earlier run, not placed by this one.
+    pub skipped_existing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PypiExtra {
+    pub pypi_files: Vec<PypiFileSnapshot>,
+}
+
 /// Operator-public snapshot of a single SchemaStore registration PR — the
 /// fork branch anodizer pushed and the upstream it opened the PR against.
 /// Stored in [`SchemastoreExtra::schemastore_targets`] so a later
@@ -472,6 +505,7 @@ pub enum PublishEvidenceExtra {
     GithubRelease(GithubReleaseExtra),
     Npm(NpmExtra),
     GemFury(GemFuryExtra),
+    Pypi(PypiExtra),
     Schemastore(SchemastoreExtra),
     /// Default for publishers with no per-evidence operator-public fields,
     /// or for runs that no-op'd. Serializes as JSON `null`.

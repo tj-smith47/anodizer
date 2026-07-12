@@ -45,7 +45,7 @@ Other publishers — [Homebrew Casks](./homebrew-casks.md) (the canonical Homebr
 surface; [deprecated Formula](./homebrew.md) is documented separately), [Scoop](./scoop.md),
 [Chocolatey](./chocolatey.md), [Winget](./winget.md), [AUR](./aur.md), [Krew](./krew.md),
 [MCP registry](./mcp-registry.md), [SchemaStore](./schemastore.md), [crates.io](./crates-io.md),
-[NPM](./npm.md), [Docker Hub](./dockerhub.md), and others — are documented in their own pages.
+[NPM](./npm.md), [PyPI](./pypi.md), [Docker Hub](./dockerhub.md), and others — are documented in their own pages.
 
 ### Submitter publishers
 

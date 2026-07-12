@@ -1,7 +1,7 @@
 +++
 title = "Artifact validation"
 description = "Offline schema validation of every publisher's rendered artifact before a release"
-weight = 90
+weight = 91
 template = "docs.html"
 +++
 

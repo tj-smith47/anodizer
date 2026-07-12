@@ -228,7 +228,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # 0.40.x line because 0.14 pins `^0.40.1`; the resulting advisory is a
 # tracked ignore in `.cargo/audit.toml`, not a blocker here.
 object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
-object = { version = "0.39", default-features = false, features = ["read", "elf", "std"] }
+object = { version = "0.39", default-features = false, features = ["read", "elf", "macho", "std"] }
 serial_test = "3"
 schemars = "1.2"
 # 2.0 adopted. GoReleaser template parity is preserved by keeping every custom

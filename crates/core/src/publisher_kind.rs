@@ -69,6 +69,8 @@ pub enum PublisherKind {
     Npm,
     /// Gemfury package push.
     Gemfury,
+    /// PyPI binary-wheel (+ optional sdist) upload.
+    Pypi,
     /// Chocolatey community-repository push (moderated).
     Chocolatey,
     /// winget-pkgs manifest PR (moderated).
@@ -113,6 +115,7 @@ impl PublisherKind {
             Self::Schemastore => "schemastore",
             Self::Npm => "npm",
             Self::Gemfury => "gemfury",
+            Self::Pypi => "pypi",
             Self::Chocolatey => "chocolatey",
             Self::Winget => "winget",
             Self::UpstreamAur => "upstream-aur",
@@ -161,6 +164,7 @@ impl PublisherKind {
             | Self::Krew
             | Self::Schemastore
             | Self::Npm
+            | Self::Pypi
             | Self::Chocolatey
             | Self::Winget
             | Self::UpstreamAur
@@ -201,6 +205,7 @@ impl PublisherKind {
             | Self::Schemastore
             | Self::Npm
             | Self::Gemfury
+            | Self::Pypi
             | Self::Chocolatey
             | Self::Winget
             | Self::UpstreamAur => false,
@@ -278,6 +283,6 @@ mod tests {
         let trait_count = PublisherKind::iter()
             .filter(|k| !k.is_publish_stage())
             .count();
-        assert_eq!(trait_count, 18, "expected 18 trait-dispatched publishers");
+        assert_eq!(trait_count, 19, "expected 19 trait-dispatched publishers");
     }
 }

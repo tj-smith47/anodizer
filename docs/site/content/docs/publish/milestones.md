@@ -1,7 +1,7 @@
 +++
 title = "Milestones"
 description = "Automatically close milestones after a release"
-weight = 88
+weight = 89
 template = "docs.html"
 +++
 

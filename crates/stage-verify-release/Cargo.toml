@@ -22,7 +22,6 @@ anodizer-stage-sbom.workspace = true
 anodizer-stage-sign.workspace = true
 anyhow.workspace = true
 flate2.workspace = true
-object.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

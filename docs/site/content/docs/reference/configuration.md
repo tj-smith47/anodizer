@@ -52,6 +52,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `preflight` | PreflightConfig | `{"strict":false}` | Pre-publish preflight tuning. `preflight.strict: true` promotes indeterminate probe outcomes (5xx / rate-limit / network failure / undeterminable permissions) from warnings to hard blockers. The probes themselves always run read-only before any publisher mutates a registry; the default (lenient) behavior needs no config. |
 | `project_name` | string | — | Human-readable project name used in templates and release titles. |
 | `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
+| `pypis` | list of PypiConfig | — | PyPI publishing configurations. One entry per published project. Emits native `py3-none-<platform>` binary wheels from the built binaries (plus an optional `maturin sdist`) and uploads them via PyPI's legacy (twine-protocol) upload API. The `pypis:` block. |
 | `release` | ReleaseConfig | — | GitHub release configuration shared by all crates. |
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
 | `retry` | RetryConfig | — | Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — the project-level retry policy). |
@@ -658,6 +659,34 @@ Top-level `preflight:` block.
 | `signature` | bool | — | Include signatures in published artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. |
+
+## `pypis`
+PyPI publisher configuration.
+
+Publishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (glibc floor for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.
+
+```yaml pypis: - name: my-tool requires_python: ">=3.7" sdist: true sdist_manifest: "pypi/" ```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `classifiers` | list of string | — | Trove classifier lines (e.g. `"Programming Language :: Rust"`), one `Classifier:` METADATA header each. |
+| `description` | string | — | Templated long description written as the METADATA body (rendered on the PyPI project page). Falls back to the summary when unset. |
+| `homepage` | string | — | Templated homepage URL, emitted as `Project-URL: Homepage`. Falls back to `metadata.homepage` (then `Cargo.toml [package].homepage`) when unset. |
+| `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
+| `ids` | list of string | — | Build IDs filter: only include binaries whose crate is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the PyPI publisher entry is skipped. Render failure hard-errors. |
+| `keywords` | list of string | — | Keywords list, emitted comma-separated in METADATA. |
+| `license` | string | — | Templated license expression (e.g. `MIT`, `Apache-2.0`), emitted as the METADATA `License` field. Falls back to `metadata.license` (then `Cargo.toml [package].license`) when unset. |
+| `name` | string | — | PyPI project name. May use any PEP 508 name form (`My.Tool`, `my_tool`); PyPI normalizes it per PEP 503 for index lookups and the wheel filename escapes it per PEP 427. Falls back to the crate name when unset. |
+| `repository` | string | — | Templated upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:<br><br>```yaml pypis: - repository: "https://test.pypi.org/legacy/" ``` |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — PyPI is a Manager-group publisher whose uploads are one-way (a published filename can never be re-uploaded, even after deletion), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `requires_python` | string | — | `Requires-Python` version specifier written into each wheel's METADATA (e.g. `">=3.7"`). Purely declarative for a binary wheel — the shipped executable does not import Python — but pip honors it during resolution. Omitted when unset. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. (PyPI has no programmatic delete path anyway — rollback is warn-only — but the flag suppresses even that warning.) |
+| `sdist` | bool | `false` | Also build and upload a source distribution via `maturin sdist`. Default `false`. Requires `sdist_manifest` to point at the directory containing the project's `pyproject.toml`, and `maturin` on `PATH`.<br><br>```yaml pypis: - sdist: true sdist_manifest: "pypi/" ``` |
+| `sdist_manifest` | string | — | Directory containing the `pyproject.toml` that `maturin sdist` builds from, relative to the project root (e.g. `"pypi/"`). Required when `sdist: true`; unused otherwise. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
+| `skip_existing` | bool | `true` | Tolerate the index rejecting a file that already exists (the twine `--skip-existing` semantics). Default `true` so a re-run of an already-published tag skips previously-uploaded files instead of failing the release. Set to `false` to make a duplicate upload a hard error. |
+| `summary` | string | — | Templated one-line `Summary` for the package METADATA. Falls back to the project-level `metadata.description` (and then the crate's `Cargo.toml [package].description`) when unset. |
+| `token` | string | — | API token for the upload (templated). Falls back to the `PYPI_TOKEN` env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic auth with the literal username `__token__` and NEVER logged. |
 
 ## `release`
 | Field | Type | Default | Description |

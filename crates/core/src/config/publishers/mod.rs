@@ -460,4 +460,5 @@ impl_publisher_gate_overrides!(
     super::CloudSmithConfig,
     super::NpmConfig,
     super::GemFuryConfig,
+    super::PypiConfig,
 );

@@ -79,6 +79,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - MCP registry server-manifest publishing (Model Context Protocol)
 - Docker multi-arch images via `docker buildx`
 - Blob storage uploads (S3, GCS, Azure)
+- NPM per-platform binary packages and PyPI native binary wheels
 - Artifactory, Cloudsmith, Fury, Docker Hub
 - Custom publisher commands
 

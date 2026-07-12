@@ -295,6 +295,11 @@ pub struct Config {
     /// warning is emitted by [`warn_on_legacy_furies_alias`].
     #[serde(alias = "furies")]
     pub gemfury: Option<Vec<GemFuryConfig>>,
+    /// PyPI publishing configurations. One entry per published project.
+    /// Emits native `py3-none-<platform>` binary wheels from the built
+    /// binaries (plus an optional `maturin sdist`) and uploads them via
+    /// PyPI's legacy (twine-protocol) upload API. The `pypis:` block.
+    pub pypis: Option<Vec<PypiConfig>>,
     /// Per-crate metadata derived from each crate's `Cargo.toml [package]`
     /// table (description / license / homepage / authors). Populated at
     /// config-load time by [`Config::populate_derived_metadata`], keyed by
@@ -403,6 +408,7 @@ impl Default for Config {
             schemastore: crate::config::publishers::SchemastoreConfig::default(),
             npms: None,
             gemfury: None,
+            pypis: None,
             derived_metadata: BTreeMap::new(),
         }
     }
@@ -2343,6 +2349,7 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "npms",
         "gemfury",
         "furies",
+        "pypis",
         "publishers",
         "sboms",
         "aur",
@@ -2917,6 +2924,13 @@ pub use npm::*;
 
 mod gemfury;
 pub use gemfury::*;
+
+// ---------------------------------------------------------------------------
+// PypiConfig (PyPI binary-wheel publisher)
+// ---------------------------------------------------------------------------
+
+mod pypi;
+pub use pypi::*;
 
 // ---------------------------------------------------------------------------
 // Well-known config file discovery

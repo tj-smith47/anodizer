@@ -236,6 +236,12 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             req, retain,
         )));
     }
+    if is_pypi_configured(ctx) {
+        let (req, retain) = collapse_entry_overrides(ctx.config.pypis.as_ref());
+        v.push(Box::new(
+            crate::pypi::publisher::PypiPublisher::with_overrides(req, retain),
+        ));
+    }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
         let (req, retain) = collapse_per_crate_overrides(ctx, crate::chocolatey::publisher::block);
@@ -352,6 +358,7 @@ fn new_trait_publisher(kind: PublisherKind) -> Option<Box<dyn Publisher>> {
         PublisherKind::Schemastore => Box::new(crate::schemastore::SchemastorePublisher::new()),
         PublisherKind::Npm => Box::new(crate::npm::NpmPublisher::new()),
         PublisherKind::Gemfury => Box::new(crate::gemfury::GemFuryPublisher::new()),
+        PublisherKind::Pypi => Box::new(crate::pypi::publisher::PypiPublisher::new()),
         PublisherKind::Chocolatey => Box::new(crate::chocolatey::ChocolateyPublisher::new()),
         PublisherKind::Winget => Box::new(crate::winget::WingetPublisher::new()),
         PublisherKind::UpstreamAur => Box::new(crate::aur_source::AurSourcePublisher::new()),
@@ -436,6 +443,11 @@ fn is_npm_configured(ctx: &Context) -> bool {
 /// reach this predicate the field is normalized to `gemfury:`.
 fn is_gemfury_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.gemfury.as_ref())
+}
+
+/// True when the top-level `pypis:` block has at least one entry.
+fn is_pypi_configured(ctx: &Context) -> bool {
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.pypis.as_ref())
 }
 
 /// True when the top-level `mcp.name` is set and non-empty. Mirrors

@@ -1,7 +1,7 @@
 +++
 title = "Upload"
 description = "Upload artifacts to any HTTP server"
-weight = 87
+weight = 88
 template = "docs.html"
 +++
 

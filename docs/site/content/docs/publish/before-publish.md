@@ -1,7 +1,7 @@
 +++
 title = "Before-Publish Hooks"
 description = "Run validators against the staged dist tree immediately before publishers fire"
-weight = 89
+weight = 90
 template = "docs.html"
 +++
 
