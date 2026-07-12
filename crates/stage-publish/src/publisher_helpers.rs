@@ -506,22 +506,37 @@ pub(crate) fn resolve_token_with_ladder(
     render_label: &str,
     env_ladder: &[&str],
 ) -> anyhow::Result<String> {
+    Ok(resolve_token_with_ladder_tracked(ctx, configured, render_label, env_ladder)?.0)
+}
+
+/// As [`resolve_token_with_ladder`], but also reports WHICH env var supplied
+/// the token: `(value, Some(var))` for an env-ladder hit, `(value, None)` for
+/// a rendered `configured` value (no single env var), `("", None)` when
+/// nothing resolves. Publishers that persist the resolving env var into
+/// rollback evidence (homebrew-core) need the second element; those that only
+/// need the value call the wrapper above.
+pub(crate) fn resolve_token_with_ladder_tracked(
+    ctx: &anodizer_core::context::Context,
+    configured: Option<&str>,
+    render_label: &str,
+    env_ladder: &[&str],
+) -> anyhow::Result<(String, Option<String>)> {
     use anyhow::Context as _;
     if let Some(raw) = configured.filter(|r| !r.is_empty()) {
         let rendered = ctx
             .render_template(raw)
             .with_context(|| render_label.to_string())?;
         if !rendered.is_empty() {
-            return Ok(rendered);
+            return Ok((rendered, None));
         }
     }
     let env = ctx.env_source();
     for var in env_ladder {
         if let Some(v) = env.var(var).filter(|v| !v.is_empty()) {
-            return Ok(v);
+            return Ok((v, Some((*var).to_string())));
         }
     }
-    Ok(String::new())
+    Ok((String::new(), None))
 }
 
 /// True when a publisher entry is statically inactive for this run: its

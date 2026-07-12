@@ -48,27 +48,50 @@ pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["HOMEBREW_CORE_GITHUB_TOKEN", "COM
 const CORE_OWNER: &str = "Homebrew";
 const CORE_REPO: &str = "homebrew-core";
 
-/// Resolve the bump token: `repository.token` (templated) wins, then the
-/// [`TOKEN_ENV_VARS`] ladder, then the standard GitHub token ladder.
-pub(crate) fn resolve_token(ctx: &Context, cfg: &HomebrewCoreConfig) -> Option<String> {
-    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-    if let Some(tok) = cfg
-        .repository
-        .as_ref()
-        .and_then(|r| r.token.as_deref())
-        .filter(|t| !t.is_empty())
-    {
-        let rendered = ctx.render_template(tok).unwrap_or_else(|_| tok.to_string());
-        if !rendered.is_empty() {
-            return Some(rendered);
-        }
-    }
+/// A resolved bump token plus the env var that supplied it.
+pub(crate) struct ResolvedToken {
+    /// The token value used to authenticate the bump.
+    pub token: String,
+    /// The env var the token came from, threaded into the target snapshot so
+    /// `rollback` re-resolves through the SAME var (the H15 fix — a
+    /// `COMMITTER_TOKEN`-sourced token must not record `HOMEBREW_CORE_GITHUB_TOKEN`).
+    /// `None` when the token came from a templated `repository.token` (no
+    /// single env var to record; rollback falls back to the GitHub ladder).
+    pub env_var: Option<String>,
+}
+
+/// The full bump-token ladder: the dedicated `HOMEBREW_CORE_GITHUB_TOKEN` /
+/// `COMMITTER_TOKEN`, then the standard GitHub ladder (`ANODIZER_GITHUB_TOKEN`
+/// / `GITHUB_TOKEN` / `GH_TOKEN`). A `repository.token` template still wins
+/// ahead of it.
+fn token_env_ladder() -> Vec<&'static str> {
     TOKEN_ENV_VARS
         .iter()
-        .find_map(|v| ctx.env_var(v).and_then(non_empty))
-        .or_else(|| {
-            anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
-        })
+        .copied()
+        .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter().copied())
+        .collect()
+}
+
+/// Resolve the bump token: `repository.token` (templated) wins, then the
+/// [`token_env_ladder`]. `Ok(None)` when nothing resolves; `Err` only when a
+/// configured `repository.token` template fails to render. Empty values are
+/// filtered at every rung by the shared helper.
+pub(crate) fn resolve_token(
+    ctx: &Context,
+    cfg: &HomebrewCoreConfig,
+) -> Result<Option<ResolvedToken>> {
+    let configured = cfg.repository.as_ref().and_then(|r| r.token.as_deref());
+    let (token, env_var) = crate::publisher_helpers::resolve_token_with_ladder_tracked(
+        ctx,
+        configured,
+        "homebrew-core: render token template",
+        &token_env_ladder(),
+    )?;
+    if token.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ResolvedToken { token, env_var }))
+    }
 }
 
 /// Resolve the formula name: `cfg.name` (templated), else the first
@@ -259,7 +282,7 @@ pub(crate) fn publish_to_homebrew_core(
             continue;
         }
 
-        let Some(token) = resolve_token(ctx, cfg) else {
+        let Some(ResolvedToken { token, env_var }) = resolve_token(ctx, cfg)? else {
             bail!(
                 "homebrew-core: a GitHub token is required to bump {}/{} (entry '{}'). \
                  Set ${} (or ${}, or {}), or `homebrew_cores[].repository.token`.",
@@ -271,17 +294,34 @@ pub(crate) fn publish_to_homebrew_core(
                 anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
             );
         };
+        let token_env_var = env_var;
         let api = GithubApi::new(ctx.env_source(), &token)?;
 
         // ---- Resolve base branch + commit path ----
         let core = is_homebrew_core(&up_owner, &up_repo);
-        let repo_info = api.repo_info(&up_owner, &up_repo)?;
-        let base_branch = cfg
+        let cfg_branch = cfg
             .repository
             .as_ref()
             .and_then(|r| r.branch.clone())
-            .filter(|b| !b.is_empty())
-            .unwrap_or(repo_info.default_branch);
+            .filter(|b| !b.is_empty());
+        // `repo_info` is fetched lazily: its `default_branch` is only needed
+        // when no base branch is configured, and its `can_push` only off the
+        // core path (core always forks + PRs). The dominant
+        // Homebrew/homebrew-core bump with an explicit base branch therefore
+        // skips the GET /repos entirely — one fewer call, and no spurious
+        // failure from a repo read the bump never needed.
+        let repo_info = if cfg_branch.is_none() || !core {
+            Some(api.repo_info(&up_owner, &up_repo)?)
+        } else {
+            None
+        };
+        let can_push = repo_info.as_ref().is_some_and(|r| r.can_push);
+        // cfg branch wins; else the fetched default branch (always present
+        // when cfg_branch is None, since repo_info was fetched for exactly
+        // that case); the literal is an unreachable-in-practice safe default.
+        let base_branch = cfg_branch
+            .or_else(|| repo_info.as_ref().map(|r| r.default_branch.clone()))
+            .unwrap_or_else(|| "main".to_string());
 
         // ---- Locate + rewrite the formula ----
         let Some(file) =
@@ -306,10 +346,17 @@ pub(crate) fn publish_to_homebrew_core(
             continue;
         }
 
-        // Git-based formulae (`url ..., tag:, revision:`) carry no source
-        // sha256; only compute the digest for the archive form.
-        let uses_tag_form = file.content.contains("tag:");
-        let sha256 = if uses_tag_form {
+        // Detect the formula form STRUCTURALLY: a git-based formula's own
+        // `url` stanza carries `tag:`/`revision:` (a substring scan for
+        // "tag:" false-positives on a comment or resource block). Git
+        // formulae carry no source sha256; only the archive form needs one.
+        let git_form = super::formula::detect_git_form(&file.content);
+        // A git-form url is a `.git` clone URL — a tarball url would corrupt
+        // it, so the url stanza is rewritten ONLY when the user explicitly
+        // set `download_url`. The archive form always rewrites the url.
+        let user_set_download_url = cfg.download_url.as_deref().is_some_and(|u| !u.is_empty());
+        let rewrite_url = !git_form || user_set_download_url;
+        let sha256 = if git_form {
             None
         } else if let Some(raw) = cfg.sha256.as_deref().filter(|s| !s.is_empty()) {
             Some(
@@ -326,11 +373,13 @@ pub(crate) fn publish_to_homebrew_core(
         let (new_text, summary) = rewrite_formula(
             &file.content,
             &FormulaRewrite {
-                url: download_url.clone(),
+                url: rewrite_url.then(|| download_url.clone()),
                 sha256,
                 version: version.clone(),
-                tag: new_tag.clone(),
-                revision: new_revision.clone(),
+                // tag:/revision: apply to the git form only; the structural
+                // stanza scoping in rewrite_formula ignores them otherwise.
+                tag: if git_form { new_tag.clone() } else { None },
+                revision: if git_form { new_revision.clone() } else { None },
             },
         )?;
         log.verbose(&format!(
@@ -353,7 +402,7 @@ pub(crate) fn publish_to_homebrew_core(
             .unwrap_or(false);
 
         if direct && !core {
-            if !repo_info.can_push {
+            if !can_push {
                 bail!(
                     "homebrew-core: `direct_commit: true` but the token cannot push \
                      to {}/{} — grant push access or drop direct_commit",
@@ -372,25 +421,26 @@ pub(crate) fn publish_to_homebrew_core(
             )?;
             log.status(&format!(
                 "bumped formula {} to {} — committed to {}/{}@{}",
-                formula, up_owner, version, up_repo, base_branch
+                formula, version, up_owner, up_repo, base_branch
             ));
-            targets.push(HomebrewCoreTargetSnapshot {
-                formula,
-                version,
-                upstream_owner: up_owner,
-                upstream_repo: up_repo,
-                head_owner: String::new(),
-                branch: String::new(),
-                direct_commit: true,
-                pr_url: None,
-                token_env_var: Some(TOKEN_ENV_VARS[0].to_string()),
-            });
+            push_target(
+                targets,
+                &formula,
+                &version,
+                &up_owner,
+                &up_repo,
+                "",
+                "",
+                true,
+                None,
+                token_env_var.clone(),
+            );
             continue;
         }
 
         // Same-repo branch when the token can push (never for core itself,
         // which only takes fork PRs from automation); fork otherwise.
-        let head_owner = if !core && repo_info.can_push {
+        let head_owner = if !core && can_push {
             up_owner.clone()
         } else {
             api.ensure_fork(&up_owner, &up_repo)?
@@ -402,7 +452,7 @@ pub(crate) fn publish_to_homebrew_core(
             &head_owner,
             &branch,
             Some(&token),
-            TOKEN_ENV_VARS[0],
+            token_env_var.as_deref().unwrap_or(TOKEN_ENV_VARS[0]),
             ctx.env_source(),
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -471,22 +521,67 @@ pub(crate) fn publish_to_homebrew_core(
                     "open PR already bumps {} to {} in {}/{} — skipping (idempotent)",
                     formula, version, up_owner, up_repo
                 ));
+                // Record the target anyway: a concurrent run opened the PR
+                // between the idempotency probe and this create, and rollback
+                // finds+closes it by head+branch — so it MUST be in evidence.
+                push_target(
+                    targets,
+                    &formula,
+                    &version,
+                    &up_owner,
+                    &up_repo,
+                    &head_owner,
+                    &branch,
+                    false,
+                    None,
+                    token_env_var.clone(),
+                );
                 continue;
             }
         };
-        targets.push(HomebrewCoreTargetSnapshot {
-            formula,
-            version,
-            upstream_owner: up_owner,
-            upstream_repo: up_repo,
-            head_owner,
-            branch,
-            direct_commit: false,
+        push_target(
+            targets,
+            &formula,
+            &version,
+            &up_owner,
+            &up_repo,
+            &head_owner,
+            &branch,
+            false,
             pr_url,
-            token_env_var: Some(TOKEN_ENV_VARS[0].to_string()),
-        });
+            token_env_var.clone(),
+        );
     }
     Ok(())
+}
+
+/// Push one bumped-formula target into the rollback-evidence accumulator.
+/// A single constructor for both the direct-commit and fork+PR arms so a
+/// field addition can never skew one arm's snapshot from the other's.
+#[allow(clippy::too_many_arguments)]
+fn push_target(
+    targets: &mut Vec<HomebrewCoreTargetSnapshot>,
+    formula: &str,
+    version: &str,
+    up_owner: &str,
+    up_repo: &str,
+    head_owner: &str,
+    branch: &str,
+    direct_commit: bool,
+    pr_url: Option<String>,
+    token_env_var: Option<String>,
+) {
+    targets.push(HomebrewCoreTargetSnapshot {
+        formula: formula.to_string(),
+        version: version.to_string(),
+        upstream_owner: up_owner.to_string(),
+        upstream_repo: up_repo.to_string(),
+        head_owner: head_owner.to_string(),
+        branch: branch.to_string(),
+        direct_commit,
+        pr_url,
+        token_env_var,
+    });
 }
 
 /// Decode this publisher's targets back out of persisted evidence.
@@ -714,7 +809,16 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 }
             };
             let (up_owner, up_repo) = resolve_upstream(cfg);
-            let token = resolve_token(ctx, cfg);
+            // A configured `repository.token` template that fails to render is
+            // a real misconfiguration; surface it rather than treating it as
+            // an absent token.
+            let token = match resolve_token(ctx, cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    acc = merge(acc, PreflightCheck::Warning(format!("{e:#}")));
+                    continue;
+                }
+            };
             if token.is_none() {
                 acc = merge(
                     acc,
@@ -728,7 +832,8 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                     )),
                 );
             }
-            let Ok(api) = GithubApi::new(ctx.env_source(), token.as_deref().unwrap_or("")) else {
+            let token_value = token.as_ref().map(|t| t.token.as_str()).unwrap_or("");
+            let Ok(api) = GithubApi::new(ctx.env_source(), token_value) else {
                 continue;
             };
             let base_branch = match cfg

@@ -521,18 +521,15 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> R
 /// `NPM_TOKEN` env var. Empty when both are unset — the caller surfaces a
 /// clear "missing token" error.
 pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
-    if let Some(raw) = cfg.token.as_deref()
-        && !raw.is_empty()
-    {
-        let rendered = ctx
-            .render_template(raw)
-            .context("npm: render token template")?;
-        if !rendered.is_empty() {
-            return Ok(rendered);
-        }
-    }
-    let env = ctx.env_source();
-    Ok(env.var(token_env_var(cfg)).unwrap_or_default().to_string())
+    // The shared ladder filters empties at every rung: an exported-but-blank
+    // `NPM_TOKEN` (GitHub Actions' shape for a missing secret) resolves to
+    // absent rather than `""`, closing the gap `unwrap_or_default()` left.
+    crate::publisher_helpers::resolve_token_with_ladder(
+        ctx,
+        cfg.token.as_deref(),
+        "npm: render token template",
+        &[token_env_var(cfg)],
+    )
 }
 
 /// The two GitHub Actions OIDC request variables npm's Trusted Publishing

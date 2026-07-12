@@ -1163,6 +1163,77 @@ fn npm_publisher_preflight_passes() {
 }
 
 #[test]
+fn resolve_token_filters_empty_env_and_reads_set_value() {
+    // An exported-but-blank NPM_TOKEN resolves to absent (empty), not `""`
+    // masquerading as a token — the gap the shared ladder closes.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "")
+        .build();
+    assert_eq!(
+        super::publish::resolve_token(&ctx, &npm_cfg()).unwrap(),
+        "",
+        "blank NPM_TOKEN is filtered"
+    );
+    // A populated NPM_TOKEN is read.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm-tok")
+        .build();
+    assert_eq!(
+        super::publish::resolve_token(&ctx, &npm_cfg()).unwrap(),
+        "npm-tok"
+    );
+}
+
+#[test]
+fn preflight_skip_metapackage_without_artifacts_does_not_block() {
+    // No binary artifacts yet (preflight runs before the build): the
+    // per-platform name probe is skipped, NOT folded into a false-clean pass
+    // that hides real errors — and it must not itself Blocker.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        scope: Some("@anodize".into()),
+        metapackage: Some("demo".into()),
+        bin: Some("demo".into()),
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    ctx.config.npms = Some(vec![cfg]);
+    let got = NpmPublisher::new().preflight(&ctx).expect("preflight");
+    assert!(
+        !matches!(got, PreflightCheck::Blocker(_)),
+        "no-artifacts skip must not Blocker: {got:?}"
+    );
+}
+
+#[test]
+fn preflight_skip_metapackage_layout_error_blocks() {
+    // Artifacts ARE present but the config is invalid (optional-deps mode with
+    // no scope and no platform_name_template): generate_layout errors, and
+    // preflight must surface it as a Blocker rather than swallow it.
+    let (_tmp, mut ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        scope: None,
+        metapackage: Some("demo".into()),
+        bin: Some("demo".into()),
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    ctx.config.npms = Some(vec![cfg]);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Blocker(m) => assert!(m.contains("layout is invalid"), "{m}"),
+        other => panic!("expected Blocker for an invalid layout, got {other:?}"),
+    }
+}
+
+#[test]
 fn npm_publisher_run_with_no_npms_configured_is_noop() {
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")

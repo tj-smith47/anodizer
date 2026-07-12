@@ -70,22 +70,35 @@ impl GithubApi {
         req
     }
 
-    /// `GET /repos/{owner}/{repo}` — default branch + push permission.
-    pub(crate) fn repo_info(&self, owner: &str, repo: &str) -> Result<RepoInfo> {
-        let path = format!("/repos/{}/{}", owner, repo);
-        let resp = self
-            .get(&path)
+    /// Send `req` and return the response, bailing with the canonical
+    /// `homebrew-core: {label} returned HTTP {status}: {body}` error on any
+    /// non-2xx status. `label` is the `"{METHOD} {path}"` describing the
+    /// call. Factors the send + status-check + body-decode idiom that every
+    /// bail-on-failure request otherwise re-pastes. Requests with bespoke
+    /// status handling (404 → None, 422 already-exists) keep their own match.
+    fn send_ok(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+        label: &str,
+    ) -> Result<reqwest::blocking::Response> {
+        let resp = req
             .send()
-            .with_context(|| format!("homebrew-core: GET {}", path))?;
+            .with_context(|| format!("homebrew-core: {label}"))?;
         let status = resp.status();
         if !status.is_success() {
             bail!(
-                "homebrew-core: GET {} returned HTTP {}: {}",
-                path,
+                "homebrew-core: {label} returned HTTP {}: {}",
                 status,
                 anodizer_core::http::body_of_blocking(resp)
             );
         }
+        Ok(resp)
+    }
+
+    /// `GET /repos/{owner}/{repo}` — default branch + push permission.
+    pub(crate) fn repo_info(&self, owner: &str, repo: &str) -> Result<RepoInfo> {
+        let path = format!("/repos/{}/{}", owner, repo);
+        let resp = self.send_ok(self.get(&path), &format!("GET {path}"))?;
         let body: serde_json::Value = resp.json().context("homebrew-core: parse repo JSON")?;
         Ok(RepoInfo {
             default_branch: body
@@ -159,19 +172,7 @@ impl GithubApi {
     /// branch points at.
     pub(crate) fn branch_sha(&self, owner: &str, repo: &str, branch: &str) -> Result<String> {
         let path = format!("/repos/{}/{}/git/ref/heads/{}", owner, repo, branch);
-        let resp = self
-            .get(&path)
-            .send()
-            .with_context(|| format!("homebrew-core: GET {}", path))?;
-        let status = resp.status();
-        if !status.is_success() {
-            bail!(
-                "homebrew-core: GET {} returned HTTP {}: {}",
-                path,
-                status,
-                anodizer_core::http::body_of_blocking(resp)
-            );
-        }
+        let resp = self.send_ok(self.get(&path), &format!("GET {path}"))?;
         let body: serde_json::Value = resp.json().context("homebrew-core: parse ref JSON")?;
         body.pointer("/object/sha")
             .and_then(|v| v.as_str())
@@ -245,25 +246,15 @@ impl GithubApi {
         prev_sha: &str,
     ) -> Result<()> {
         let path = format!("/repos/{}/{}/contents/{}", owner, repo, file_path);
-        let resp = self
+        let req = self
             .request(reqwest::Method::PUT, &path)
             .json(&serde_json::json!({
                 "message": message,
                 "content": base64::engine::general_purpose::STANDARD.encode(content),
                 "sha": prev_sha,
                 "branch": branch,
-            }))
-            .send()
-            .with_context(|| format!("homebrew-core: PUT {}", path))?;
-        let status = resp.status();
-        if !status.is_success() {
-            bail!(
-                "homebrew-core: PUT {} returned HTTP {}: {}",
-                path,
-                status,
-                anodizer_core::http::body_of_blocking(resp)
-            );
-        }
+            }));
+        self.send_ok(req, &format!("PUT {path}"))?;
         Ok(())
     }
 
@@ -275,20 +266,10 @@ impl GithubApi {
     /// object store, so the upstream base SHA is immediately usable.
     pub(crate) fn ensure_fork(&self, owner: &str, repo: &str) -> Result<String> {
         let path = format!("/repos/{}/{}/forks", owner, repo);
-        let resp = self
+        let req = self
             .request(reqwest::Method::POST, &path)
-            .json(&serde_json::json!({}))
-            .send()
-            .with_context(|| format!("homebrew-core: POST {}", path))?;
-        let status = resp.status();
-        if !status.is_success() {
-            bail!(
-                "homebrew-core: POST {} returned HTTP {}: {}",
-                path,
-                status,
-                anodizer_core::http::body_of_blocking(resp)
-            );
-        }
+            .json(&serde_json::json!({}));
+        let resp = self.send_ok(req, &format!("POST {path}"))?;
         let body: serde_json::Value = resp.json().context("homebrew-core: parse fork JSON")?;
         body.pointer("/owner/login")
             .and_then(|v| v.as_str())
@@ -351,26 +332,5 @@ impl GithubApi {
 /// release tarball must already be live (the release/publish ordering
 /// guarantees the GitHub tag exists by the time publishers run).
 pub(crate) fn download_sha256(url: &str) -> Result<String> {
-    use sha2::Digest as _;
-    let client = anodizer_core::http::blocking_client(Duration::from_secs(300))
-        .context("homebrew-core: build download client")?;
-    let resp = client
-        .get(url)
-        .send()
-        .with_context(|| format!("homebrew-core: download {}", url))?;
-    let status = resp.status();
-    if !status.is_success() {
-        bail!(
-            "homebrew-core: download {} returned HTTP {}: {}",
-            url,
-            status,
-            anodizer_core::http::body_of_blocking(resp)
-        );
-    }
-    let bytes = resp
-        .bytes()
-        .with_context(|| format!("homebrew-core: read download body from {}", url))?;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    anodizer_core::http::sha256_url(url).context("homebrew-core: compute formula source sha256")
 }

@@ -439,20 +439,49 @@ impl anodizer_core::Publisher for NpmPublisher {
                         None => false,
                     };
                     if skip_meta {
-                        // Per-platform names derive from the built artifacts;
-                        // when preflight runs before a build (no artifacts
-                        // yet), skip this best-effort probe rather than
-                        // false-blocking on the layout error.
-                        match super::optional_deps::generate_layout(
-                            ctx,
-                            cfg,
-                            &crate_name,
-                            &version,
-                            None,
-                            &ctx.logger("preflight"),
-                        ) {
-                            Ok(layout) => layout.platforms.into_iter().map(|p| p.name).collect(),
-                            Err(_) => Vec::new(),
+                        // Per-platform names derive from the built artifacts.
+                        // Distinguish the two failure classes generate_layout
+                        // folds together: "no artifacts yet" (preflight ran
+                        // before the build) is a benign skip with a verbose
+                        // note; a real layout/config error (unset scope,
+                        // colliding template names) is a Blocker that must not
+                        // be swallowed into a false-clean preflight.
+                        let has_binaries = !ctx
+                            .artifacts
+                            .by_kind(anodizer_core::artifact::ArtifactKind::UploadableBinary)
+                            .is_empty()
+                            || !ctx
+                                .artifacts
+                                .by_kind(anodizer_core::artifact::ArtifactKind::Binary)
+                                .is_empty();
+                        if !has_binaries {
+                            ctx.logger("preflight").verbose(
+                                "npm: no binary artifacts yet — skipping the skip_metapackage \
+                                 per-platform name probe (names derive from built binaries)",
+                            );
+                            Vec::new()
+                        } else {
+                            match super::optional_deps::generate_layout(
+                                ctx,
+                                cfg,
+                                &crate_name,
+                                &version,
+                                None,
+                                &ctx.logger("preflight"),
+                            ) {
+                                Ok(layout) => {
+                                    layout.platforms.into_iter().map(|p| p.name).collect()
+                                }
+                                Err(e) => {
+                                    acc = merge(
+                                        acc,
+                                        PreflightCheck::Blocker(format!(
+                                            "npm optional-deps layout is invalid: {e:#}"
+                                        )),
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     } else {
                         vec![

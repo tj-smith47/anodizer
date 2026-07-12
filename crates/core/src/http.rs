@@ -132,6 +132,38 @@ pub fn body_of_blocking(resp: reqwest::blocking::Response) -> String {
     }
 }
 
+/// Download `url` (blocking, 5-minute timeout) and return the lowercase-hex
+/// SHA-256 of its body — the canonical "fetch a release artifact, hash it"
+/// helper for publishers that must fill a digest they were not handed (e.g.
+/// the homebrew-core formula bump when no `sha256:` override is configured).
+///
+/// The 5-minute timeout accommodates multi-MB release tarballs; a non-2xx
+/// response is a hard error carrying the status and body so the caller need
+/// not re-classify.
+pub fn sha256_url(url: &str) -> Result<String> {
+    use sha2::Digest as _;
+    let client = blocking_client(Duration::from_secs(300)).context("build download client")?;
+    let resp = client
+        .get(url)
+        .send()
+        .with_context(|| format!("download {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!(
+            "download {} returned HTTP {}: {}",
+            url,
+            status,
+            body_of_blocking(resp)
+        );
+    }
+    let bytes = resp
+        .bytes()
+        .with_context(|| format!("read download body from {url}"))?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&bytes);
+    Ok(crate::hashing::hex_lower(&hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

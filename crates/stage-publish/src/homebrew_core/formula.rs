@@ -14,8 +14,11 @@ use anyhow::{Result, bail};
 /// The replacement values one bump writes into the formula text.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FormulaRewrite {
-    /// New value for the `url "..."` stanza.
-    pub url: String,
+    /// New value for the `url "..."` stanza. `None` leaves the url stanza
+    /// untouched — the git-form bump where the caller did not explicitly set
+    /// `download_url` (a git formula's url is a `.git` clone URL that a
+    /// tarball url would corrupt; only `tag:`/`revision:` move).
+    pub url: Option<String>,
     /// New source-archive digest for the standalone `sha256 "..."` stanza.
     /// Ignored when the formula uses the `tag:`/`revision:` form (git-based
     /// formulae carry no source sha256).
@@ -99,6 +102,49 @@ fn is_version_line(line: &str) -> bool {
     rest.trim_start().starts_with('"')
 }
 
+/// Extract the value of a `key: "..."` field on a line, if present.
+fn keyed_quoted_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let key_pat = format!("{}:", key);
+    let key_pos = line.find(&key_pat)?;
+    let after = &line[key_pos + key_pat.len()..];
+    let open_rel = after.find('"')?;
+    let rest = &after[open_rel + 1..];
+    let close_rel = rest.find('"')?;
+    Some(&rest[..close_rel])
+}
+
+/// Structurally detect the git-based formula form: does the FIRST `url`
+/// stanza (its opening line plus any comma-continued lines) itself carry a
+/// `tag:` or `revision:` field? A git formula reads
+/// `url "…git", tag: "…", revision: "…"`; the archive form is a bare
+/// `url "…tar.gz"`. Only the url stanza is inspected, so a `tag:` sitting in
+/// a `resource` block or a comment elsewhere in the file cannot flip the
+/// verdict (the substring `content.contains("tag:")` false-positive this
+/// replaces).
+pub(crate) fn detect_git_form(text: &str) -> bool {
+    let mut in_url = false;
+    for line in text.lines() {
+        if !in_url {
+            if is_url_line(line) {
+                in_url = true;
+            } else {
+                continue;
+            }
+        }
+        if keyed_quoted_value(line, "tag").is_some()
+            || keyed_quoted_value(line, "revision").is_some()
+        {
+            return true;
+        }
+        // The stanza ends at the first line that does not continue with a
+        // trailing comma; the archive form's single `url "…"` line stops here.
+        if !line.trim_end().ends_with(',') {
+            return false;
+        }
+    }
+    false
+}
+
 /// Rewrite the value of a `key: "..."` field on a line, if present.
 fn replace_keyed_quoted(line: &str, key: &str, new_value: &str) -> Option<String> {
     let key_pat = format!("{}:", key);
@@ -116,39 +162,53 @@ fn replace_keyed_quoted(line: &str, key: &str, new_value: &str) -> Option<String
 
 /// Rewrite the formula text for the new release.
 ///
-/// * The first `url "..."` stanza is rewritten to `rw.url`.
-/// * When the url stanza (or its continuation lines) carries `tag:` /
-///   `revision:` fields, those are rewritten to `rw.tag` / `rw.revision`
-///   (git-based formula form) and the sha256 rewrite is skipped.
-/// * Otherwise the first standalone `sha256 "..."` stanza is rewritten to
-///   `rw.sha256` — required for the archive form.
-/// * The first `version "..."` stanza, when present, becomes `rw.version`.
+/// The formula form is detected STRUCTURALLY (see [`detect_git_form`]):
+///
+/// * **Git form** (the first `url` stanza carries `tag:`/`revision:`): the
+///   `tag:` and `revision:` fields — confined to the url stanza's own line
+///   and its comma-continued lines — are rewritten to `rw.tag` / `rw.revision`
+///   and the source `sha256` is left alone (git formulae carry no source
+///   digest). The `url` stanza's quoted value is rewritten ONLY when `rw.url`
+///   is `Some` (the caller passes it only when the user explicitly set
+///   `download_url`); otherwise the `.git` clone URL is preserved verbatim.
+/// * **Archive form**: the first `url "..."` and the first standalone
+///   `sha256 "..."` stanzas are rewritten (`rw.url` is `Some` here); the
+///   sha256 is required and its absence is a hard error.
+/// * The first explicit `version "..."` stanza, when present, becomes
+///   `rw.version` in either form.
 ///
 /// Errors when the text has no `url` stanza (not a formula) or when the
 /// archive form needs a sha256 the caller did not supply.
 pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String, RewriteSummary)> {
+    let git_form = detect_git_form(text);
     let mut summary = RewriteSummary::default();
-    // Track the url stanza's continuation lines: a git-based url spreads
-    // `tag:`/`revision:` over the lines following `url "...",`.
-    let mut in_url_continuation = false;
+    // `url_seen` latches once the first url stanza is entered (for the
+    // not-a-formula error); `in_url_stanza` is live only WHILE inside that
+    // first stanza — it gates tag/revision rewriting so a later unrelated
+    // `revision:` (e.g. a git `resource` block) can never be clobbered.
+    let mut url_seen = false;
+    let mut url_stanza_done = false;
+    let mut in_url_stanza = false;
     let mut lines: Vec<String> = Vec::new();
     for line in text.lines() {
         let mut line = line.to_string();
-        if !summary.url_rewritten && is_url_line(&line) {
-            match replace_quoted(&line, &rw.url) {
-                Some(new_line) => {
-                    line = new_line;
-                    summary.url_rewritten = true;
-                    // A trailing comma means the stanza continues (git form).
-                    in_url_continuation = line.trim_end().ends_with(',');
+        if !url_stanza_done && !in_url_stanza && is_url_line(&line) {
+            url_seen = true;
+            in_url_stanza = true;
+            // Rewrite the url's quoted value only when a new url is supplied;
+            // a git-form bump without an explicit download_url leaves it.
+            if let Some(new_url) = rw.url.as_deref() {
+                match replace_quoted(&line, new_url) {
+                    Some(new_line) => {
+                        line = new_line;
+                        summary.url_rewritten = true;
+                    }
+                    None => bail!("formula url stanza has no quoted value: {line}"),
                 }
-                None => bail!("formula url stanza has no quoted value: {line}"),
             }
         }
-        // tag:/revision: may sit on the url line itself or a continuation.
-        if summary.url_rewritten
-            && (in_url_continuation || summary.tag_rewritten || is_url_line(&line))
-        {
+        // tag:/revision: are rewritten ONLY within the first url stanza.
+        if in_url_stanza {
             if let Some(tag) = rw.tag.as_deref()
                 && !summary.tag_rewritten
                 && let Some(new_line) = replace_keyed_quoted(&line, "tag", tag)
@@ -163,11 +223,14 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
                 line = new_line;
                 summary.revision_rewritten = true;
             }
-            if in_url_continuation && !line.trim_end().ends_with(',') {
-                in_url_continuation = false;
+            // The stanza ends at the first line without a trailing comma.
+            if !line.trim_end().ends_with(',') {
+                in_url_stanza = false;
+                url_stanza_done = true;
             }
         }
-        if !summary.sha256_rewritten && !summary.tag_rewritten && is_source_sha256_line(&line) {
+        // The source sha256 is rewritten only for the archive form.
+        if !git_form && !summary.sha256_rewritten && is_source_sha256_line(&line) {
             let Some(sha) = rw.sha256.as_deref() else {
                 bail!(
                     "formula has an archive `sha256` stanza but no new digest was \
@@ -190,7 +253,7 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
         }
         lines.push(line);
     }
-    if !summary.url_rewritten {
+    if !url_seen {
         bail!("no `url \"...\"` stanza found — is this a Homebrew formula?");
     }
     let mut out = lines.join("\n");
@@ -208,8 +271,12 @@ pub(crate) fn formula_is_current(text: &str, url: &str, tag: Option<&str>, versi
     if text.contains(&format!("\"{}\"", url)) {
         return true;
     }
+    // Whitespace-tolerant: aligned git formulae write `tag:      "vX"` with
+    // several spaces, which a fixed `tag: "vX"` substring would miss.
     if let Some(tag) = tag
-        && text.contains(&format!("tag: \"{}\"", tag))
+        && text
+            .lines()
+            .any(|l| keyed_quoted_value(l, "tag") == Some(tag))
     {
         return true;
     }

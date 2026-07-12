@@ -24,7 +24,7 @@ Most projects use a tap. Reach for `homebrew_cores` only once your tool is popul
 
 | Group | Required (default) | Rollback | One-way door | Token |
 |-------|--------------------|----------|--------------|-------|
-| Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `GITHUB_TOKEN` |
+| Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` |
 
 The bump is **fully reversible** — it opens a pull request, which a triggered rollback closes (`--rollback-only --from-run`). Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release.
 
@@ -84,7 +84,7 @@ homebrew_cores:
 | `sha256` | **yes** | download + hash `download_url` | Source-archive digest |
 | `commit_msg_template` | **yes** | `"<formula> <version>"` | Commit message / PR title |
 | `direct_commit` | **yes** (bool/template) | `false` | Commit straight to the base branch (personal repos only) |
-| `skip` / `if` | **`if` yes** | — | Entry gating (bool/template; falsy `if` skips) |
+| `skip` / `if` | **`if` yes** | — | Entry gating (bool/template; falsy `if` skips). `skip` also accepts the legacy `disable:` spelling via serde alias |
 | `required` | — | `false` | Whether failure fails the release |
 | `retain_on_rollback` | — | `false` | Leave the opened PR in place on rollback |
 

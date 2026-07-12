@@ -110,7 +110,7 @@ end
 
 fn rw(sha256: Option<String>, tag: Option<&str>, revision: Option<&str>) -> FormulaRewrite {
     FormulaRewrite {
-        url: NEW_URL.to_string(),
+        url: Some(NEW_URL.to_string()),
         sha256,
         version: "1.2.3".to_string(),
         tag: tag.map(str::to_string),
@@ -154,14 +154,15 @@ fn rewrite_archive_form_leaves_bottle_sha256_lines_untouched() {
 }
 
 #[test]
-fn rewrite_git_form_bumps_tag_and_revision_and_leaves_sha256_alone() {
+fn rewrite_git_form_bumps_tag_and_revision_and_leaves_url_and_sha256_alone() {
     let new_rev = "f".repeat(40);
-    // sha256 is supplied but must be ignored: once the tag form is detected
-    // the source-digest rewrite is skipped (git formulae have no source sha).
+    // url is None (the default git-form bump: no explicit download_url), sha256
+    // is supplied but must be ignored — git formulae have no source sha, and
+    // the `.git` clone url must survive untouched.
     let (out, summary) = rewrite_formula(
         &git_formula(),
         &FormulaRewrite {
-            url: "https://github.com/acme/my-tool.git".to_string(),
+            url: None,
             sha256: Some(new_sha()),
             version: "1.2.3".to_string(),
             tag: Some("v1.2.3".to_string()),
@@ -176,13 +177,71 @@ fn rewrite_git_form_bumps_tag_and_revision_and_leaves_sha256_alone() {
     );
     assert!(summary.tag_rewritten);
     assert!(summary.revision_rewritten);
+    assert!(!summary.url_rewritten, "git form leaves the .git url alone");
     assert!(!summary.sha256_rewritten, "git form must not touch sha256");
+    // The `.git` clone url is preserved verbatim.
+    assert!(
+        out.contains("url \"https://github.com/acme/my-tool.git\""),
+        "git clone url must be left alone: {out}"
+    );
     // The original source sha256 stanza is preserved verbatim.
     assert!(
         out.contains(&format!("sha256 \"{}\"", old_sha())),
         "source sha256 must be left alone in git form: {out}"
     );
     assert!(!out.contains(&new_sha()), "{out}");
+}
+
+#[test]
+fn rewrite_git_form_rewrites_url_only_when_explicitly_supplied() {
+    // When the caller supplies a url (user set download_url), the git-form
+    // rewrite DOES move the url stanza in addition to tag/revision.
+    let new_rev = "f".repeat(40);
+    let (out, summary) = rewrite_formula(
+        &git_formula(),
+        &FormulaRewrite {
+            url: Some("https://github.com/acme/my-tool-moved.git".to_string()),
+            sha256: None,
+            version: "1.2.3".to_string(),
+            tag: Some("v1.2.3".to_string()),
+            revision: Some(new_rev.clone()),
+        },
+    )
+    .expect("rewrite");
+    assert!(summary.url_rewritten, "explicit url is rewritten: {out}");
+    assert!(
+        out.contains("url \"https://github.com/acme/my-tool-moved.git\""),
+        "{out}"
+    );
+    assert!(out.contains("tag: \"v1.2.3\""), "{out}");
+}
+
+#[test]
+fn detect_git_form_ignores_tag_outside_the_url_stanza() {
+    use super::formula::detect_git_form;
+    // Archive formula whose `desc`/`resource` region mentions "tag:" — the
+    // substring scan this replaces would false-positive, wrongly skipping the
+    // sha256 rewrite for an archive bump.
+    let text = format!(
+        r#"class MyTool < Formula
+  desc "A tool with tag: support"
+  url "{OLD_URL}"
+  sha256 "{old}"
+
+  resource "docs" do
+    url "https://example.com/docs.git",
+        tag: "v9"
+  end
+end
+"#,
+        old = old_sha(),
+    );
+    assert!(
+        !detect_git_form(&text),
+        "the main formula url is archive-form; a resource's tag: must not flip it"
+    );
+    assert!(detect_git_form(&git_formula()), "real git form detected");
+    assert!(!detect_git_form(&archive_formula()), "archive form");
 }
 
 #[test]
@@ -398,7 +457,7 @@ fn bump_branch_names_formula_and_version() {
 
 #[test]
 fn resolve_token_ladder() {
-    // repository.token wins over the env ladder.
+    // repository.token wins over the env ladder — no env var recorded.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
@@ -411,23 +470,32 @@ fn resolve_token_ladder() {
         }),
         ..Default::default()
     };
-    assert_eq!(resolve_token(&ctx, &cfg).as_deref(), Some("cfg-tok"));
+    let got = resolve_token(&ctx, &cfg).unwrap().unwrap();
+    assert_eq!(got.token, "cfg-tok");
+    assert_eq!(got.env_var, None, "config token records no env var");
 
     // HOMEBREW_CORE_GITHUB_TOKEN precedes COMMITTER_TOKEN + GITHUB ladder.
-    assert_eq!(
-        resolve_token(&ctx, &HomebrewCoreConfig::default()).as_deref(),
-        Some("hc-tok")
-    );
+    let got = resolve_token(&ctx, &HomebrewCoreConfig::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.token, "hc-tok");
+    assert_eq!(got.env_var.as_deref(), Some("HOMEBREW_CORE_GITHUB_TOKEN"));
 
-    // COMMITTER_TOKEN (mislav/bump-homebrew-formula-action's name) is next.
+    // COMMITTER_TOKEN (mislav/bump-homebrew-formula-action's name) is next, and
+    // the ACTUAL var is recorded (H15: not hardcoded to TOKEN_ENV_VARS[0]).
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
         .env("COMMITTER_TOKEN", "committer-tok")
         .build();
+    let got = resolve_token(&ctx, &HomebrewCoreConfig::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.token, "committer-tok");
     assert_eq!(
-        resolve_token(&ctx, &HomebrewCoreConfig::default()).as_deref(),
-        Some("committer-tok")
+        got.env_var.as_deref(),
+        Some("COMMITTER_TOKEN"),
+        "the real matched env var is recorded for rollback"
     );
 
     // Standard GitHub ladder is the final fallback.
@@ -436,10 +504,11 @@ fn resolve_token_ladder() {
         .tag("v1.2.3")
         .env("GITHUB_TOKEN", "gh-tok")
         .build();
-    assert_eq!(
-        resolve_token(&ctx, &HomebrewCoreConfig::default()).as_deref(),
-        Some("gh-tok")
-    );
+    let got = resolve_token(&ctx, &HomebrewCoreConfig::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.token, "gh-tok");
+    assert_eq!(got.env_var.as_deref(), Some("GITHUB_TOKEN"));
 
     // Empty env values are filtered (a blank secret is not a token).
     let ctx = TestContextBuilder::new()
@@ -448,7 +517,11 @@ fn resolve_token_ladder() {
         .env("HOMEBREW_CORE_GITHUB_TOKEN", "")
         .env("GITHUB_TOKEN", "")
         .build();
-    assert!(resolve_token(&ctx, &HomebrewCoreConfig::default()).is_none());
+    assert!(
+        resolve_token(&ctx, &HomebrewCoreConfig::default())
+            .unwrap()
+            .is_none()
+    );
 }
 
 // =============================================================================
@@ -647,6 +720,70 @@ fn run_fork_pr_happy_path_bumps_core_formula() {
 }
 
 #[test]
+fn run_git_form_bumps_tag_and_revision_not_url_and_does_not_fail() {
+    // End-to-end git-form bump: the committed formula moves tag:/revision:
+    // and leaves the `.git` url untouched — the H1 regression (a tarball url
+    // clobbering the git url) must not recur, and the bump must not hard-fail.
+    let mut routes = core_fork_pr_routes();
+    // Serve a git-form formula instead of the archive one.
+    routes[1].response = contents_resp(&git_formula());
+    let (addr, log) = spawn_scripted_responder(routes);
+
+    // No download_url / sha256 configured: the git form must neither rewrite
+    // the url nor download anything to hash. crate_with_github supplies coords
+    // so the (unused) default download_url still resolves.
+    let cfg = HomebrewCoreConfig {
+        name: Some("my-tool".into()),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .commit(&"f".repeat(40))
+        .crates(vec![crate_with_github("my-tool", "acme", "my-tool")])
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+        .env("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_test")
+        .build();
+    ctx.config.homebrew_cores = Some(vec![cfg]);
+
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("git-form publish");
+    assert_eq!(targets.len(), 1, "git-form bump opened a PR");
+
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/forkuser/homebrew-core/contents/Formula/m/my-tool.rb",
+    )
+    .expect("PUT contents");
+    let v: serde_json::Value = serde_json::from_str(&put.body).expect("put json");
+    let committed = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(v["content"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        committed.contains("tag: \"v1.2.3\""),
+        "tag bumped: {committed}"
+    );
+    assert!(
+        committed.contains(&format!("revision: \"{}\"", "f".repeat(40))),
+        "revision bumped: {committed}"
+    );
+    // The `.git` clone url survives; the default tarball url was never written.
+    assert!(
+        committed.contains("url \"https://github.com/acme/my-tool.git\""),
+        "git url must be left alone: {committed}"
+    );
+    assert!(
+        !committed.contains("archive/refs/tags"),
+        "no tarball url clobbered the git url: {committed}"
+    );
+}
+
+#[test]
 fn run_locates_flat_path_when_sharded_absent_and_can_push_uses_same_repo_branch() {
     // Personal formula repo the token can push to: no fork, a same-repo bump
     // branch, and the formula lives at the flat `Formula/<name>.rb` layout.
@@ -804,6 +941,61 @@ fn run_skips_when_open_pr_already_exists() {
     assert!(
         find(&reqs, "POST", "/repos/forkuser/homebrew-core/git/refs").is_none(),
         "no branch is created when a PR already exists"
+    );
+}
+
+#[test]
+fn run_records_snapshot_when_create_pr_returns_already_exists() {
+    // A concurrent run opened the PR between the idempotency probe (empty) and
+    // this create → 422 already-exists. The target MUST still be recorded so
+    // rollback can find+close the PR by head+branch (H6).
+    let mut routes = core_fork_pr_routes();
+    // Idempotency probe stays empty; the create returns 422 already-exists.
+    routes[7].response = leak_resp(
+        "422 Unprocessable Entity",
+        "{\"message\":\"A pull request already exists for forkuser:bump-my-tool-1.2.3.\"}",
+    );
+    let (addr, _log) = spawn_scripted_responder(routes);
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], pinned_cfg());
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(
+        targets.len(),
+        1,
+        "already-exists still yields rollback evidence"
+    );
+    let t = &targets[0];
+    assert_eq!(t.head_owner, "forkuser");
+    assert_eq!(t.branch, "bump-my-tool-1.2.3");
+    assert!(!t.direct_commit);
+    assert!(t.pr_url.is_none(), "no PR url from the 422 outcome");
+    assert_eq!(t.token_env_var.as_deref(), Some(TOKEN_ENV_VARS[0]));
+}
+
+#[test]
+fn run_skips_repo_get_when_base_branch_explicit_on_core_path() {
+    // H12: with an explicit base branch, a Homebrew/homebrew-core bump never
+    // needs GET /repos (default_branch derived, can_push never consulted on the
+    // fork path). Routes omit it entirely — a lazy fetch means it is not called.
+    let routes: Vec<ScriptedRoute> = core_fork_pr_routes().into_iter().skip(1).collect();
+    let (addr, log) = spawn_scripted_responder(routes);
+    let mut cfg = pinned_cfg();
+    cfg.repository = Some(RepositoryConfig {
+        owner: Some("Homebrew".into()),
+        name: Some("homebrew-core".into()),
+        branch: Some("master".into()),
+        ..Default::default()
+    });
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(targets.len(), 1);
+    let reqs = logged(&log);
+    assert!(
+        find(&reqs, "GET", "/repos/Homebrew/homebrew-core").is_none(),
+        "GET /repos must be skipped on the explicit-branch core path: {reqs:?}"
     );
 }
 
