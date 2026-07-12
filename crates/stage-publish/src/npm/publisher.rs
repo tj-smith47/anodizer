@@ -1,14 +1,22 @@
-//! `NpmPublisher` — Manager-group `Publisher` impl wrapping
+//! `NpmPublisher` — Submitter-group `Publisher` impl wrapping
 //! [`publish_to_npm`](super::publish::publish_to_npm).
 //!
 //! Classification:
-//! * **Group**: Manager — like Homebrew, the npm registry is mutable state in
-//!   a third-party system (npmjs.org) but is structurally reversible via
-//!   `npm unpublish` (within a 72-hour window).
+//! * **Group**: Submitter — a published npm version number is a burned slot:
+//!   npm rejects re-publishing a version that has ever been used (a 24h lock
+//!   survives even an `npm unpublish`, and unpublish itself is refused after
+//!   72h or once a package has dependents). So a landed npm publish cannot be
+//!   cleanly re-cut at the same version, which is exactly what the rollback
+//!   guard must see — it counts toward `irreversibly_published` and refuses a
+//!   same-version tag re-cut. (It is NOT Manager: Manager is
+//!   server-side-deletable package-manager state — homebrew/scoop/nix — that
+//!   a same-version re-cut can cleanly overwrite; npm cannot.)
 //! * **Required default**: `true` — a failed npm publish is load-bearing for
 //!   users who install via `npm i -g`; the operator should know the release is
 //!   half-shipped.
-//! * **Rollback scope**: `NPM_TOKEN unpublish`.
+//! * **Rollback scope**: `NPM_TOKEN unpublish` — the 72h-window `npm
+//!   unpublish` is a best-effort rollback capability (like cargo's `yank`),
+//!   not a reason to treat the slot as reclaimable for a re-cut.
 //!
 //! Evidence: one [`NpmTargetSnapshot`] per published package (per-platform
 //! packages + the metapackage in optional-deps mode). Skip / dry-run /
@@ -21,7 +29,7 @@ use super::publish::publish_to_npm;
 simple_publisher!(
     NpmPublisher,
     "npm",
-    anodizer_core::PublisherGroup::Manager,
+    anodizer_core::PublisherGroup::Submitter,
     true,
     Some("NPM_TOKEN unpublish"),
 );

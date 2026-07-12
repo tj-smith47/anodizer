@@ -1,15 +1,22 @@
-//! `PypiPublisher` — Manager-group `Publisher` impl that assembles native
+//! `PypiPublisher` — Submitter-group `Publisher` impl that assembles native
 //! binary wheels (plus an optional maturin sdist) and uploads them via the
 //! legacy (twine-protocol) API.
 //!
 //! Classification:
-//! * **Group**: Manager — PyPI is mutable third-party registry state.
+//! * **Group**: Submitter — a PyPI filename is an immutable registry slot
+//!   that can NEVER be re-uploaded (even after deletion), so pypi belongs
+//!   with the other one-way doors (cargo, chocolatey, winget) whose landed
+//!   publish burns the version. This is what arms the rollback guard: a
+//!   landed pypi upload counts toward `irreversibly_published`, refusing a
+//!   same-version re-cut that would silently `skip_existing` the stale
+//!   wheels. (It is NOT Manager: Manager is server-side-deletable
+//!   package-manager state — homebrew/scoop/nix — which pypi is not.)
 //! * **Required default**: `true` — a failed PyPI publish is load-bearing
 //!   for users who install via `pip install`; the operator should know the
 //!   release is half-shipped.
 //! * **Rollback scope**: none. A published filename can NEVER be
 //!   re-uploaded, even after deletion — PyPI uploads are a one-way door
-//!   (like cargo and npm-after-72h). Rollback is warn-only.
+//!   (like cargo and npm). Rollback is warn-only.
 //!
 //! Evidence: one [`PypiFileSnapshot`] per file offered to the index —
 //! uploaded files and `skip_existing` idempotent skips both appear (the
@@ -30,7 +37,7 @@ use super::wheel::{WheelSpec, build_wheel, inspect_binary, platform_tag};
 simple_publisher!(
     PypiPublisher,
     "pypi",
-    anodizer_core::PublisherGroup::Manager,
+    anodizer_core::PublisherGroup::Submitter,
     true,
     None,
 );

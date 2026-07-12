@@ -1139,7 +1139,7 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
 fn npm_publisher_classification() {
     let p = NpmPublisher::new();
     assert_eq!(p.name(), "npm");
-    assert_eq!(p.group(), PublisherGroup::Manager);
+    assert_eq!(p.group(), PublisherGroup::Submitter);
     assert!(p.required(), "npm publisher defaults to required=true");
     assert_eq!(p.rollback_scope_needed(), Some("NPM_TOKEN unpublish"));
 }

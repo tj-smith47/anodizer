@@ -17,15 +17,20 @@ pub enum PublisherGroup {
     /// are reversible via API delete (github-release, dockerhub,
     /// artifactory, cloudsmith, blob).
     Assets,
-    /// Writes to package-manager state. Server-side deletable, but
-    /// consumer machines may have already pulled the artifact
-    /// (homebrew, scoop, nix, krew, mcp, our-AUR repos, custom).
+    /// Writes to package-manager state. Server-side deletable AND cleanly
+    /// re-cuttable at the same version, so a botched write can be overwritten
+    /// (homebrew, scoop, nix, krew, mcp, our-AUR repos, custom). Immutable
+    /// registries whose SAME-version slot can never be reclaimed do NOT
+    /// belong here — they are Submitter, so the rollback guard sees them.
     Manager,
     /// Writes to a third-party submission queue, an immutable registry
     /// slot, or a channel position we cannot reclaim. Gated behind the
     /// Submitter gate. Rollback is informational-only for most members
-    /// (chocolatey, winget, snapcraft, upstream-AUR force-push), with one
-    /// exception: **cargo** has a real programmatic rollback. A multi-crate
+    /// (chocolatey, winget, snapcraft, upstream-AUR force-push); **cargo**,
+    /// **npm**, and **pypi** are immutable registries whose landed publish
+    /// burns the version (npm/pypi rollback is warn-only; cargo has a real
+    /// programmatic `yank`). The one exception with a programmatic rollback
+    /// is **cargo**. A multi-crate
     /// `cargo publish` that succeeds on crate A then fails on crate B
     /// records A and opts in via
     /// [`Publisher::programmatic_rollback_on_failure`](crate::Publisher::programmatic_rollback_on_failure),

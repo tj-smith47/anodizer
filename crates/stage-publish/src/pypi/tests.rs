@@ -721,7 +721,7 @@ pypis:
 fn pypi_publisher_classification() {
     let p = PypiPublisher::new();
     assert_eq!(p.name(), "pypi");
-    assert_eq!(p.group(), anodizer_core::PublisherGroup::Manager);
+    assert_eq!(p.group(), anodizer_core::PublisherGroup::Submitter);
     assert!(p.required());
     assert!(p.skips_on_nightly());
     assert_eq!(p.rollback_scope_needed(), None);
