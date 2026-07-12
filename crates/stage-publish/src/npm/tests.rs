@@ -992,6 +992,64 @@ fn skip_metapackage_templated_string_is_rendered() {
 }
 
 #[test]
+fn static_published_name_fails_closed_under_skip_metapackage() {
+    use super::optional_deps::resolve_metapackage;
+    use super::static_published_name;
+
+    // Baseline: optional-deps WITHOUT skip_metapackage names the metapackage —
+    // the unit the rollback burn probe queries.
+    let published = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        ..opt_cfg()
+    };
+    assert_eq!(
+        static_published_name("demo", &published).as_deref(),
+        Some(resolve_metapackage(&published, "demo")),
+        "no skip_metapackage → probe the metapackage"
+    );
+
+    // skip_metapackage: true → the metapackage is NEVER published; the probe
+    // cannot name the per-platform packages context-free, so it must fail
+    // closed (None → the rollback guard refuses) rather than probe a
+    // never-published metapackage and read a false 'clean'.
+    let skipped_bool = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        skip_metapackage: Some(StringOrBool::Bool(true)),
+        ..opt_cfg()
+    };
+    assert_eq!(static_published_name("demo", &skipped_bool), None);
+
+    // A truthy skip_metapackage *string* is likewise a skip.
+    let skipped_str = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        skip_metapackage: Some(StringOrBool::String("true".into())),
+        ..opt_cfg()
+    };
+    assert_eq!(static_published_name("demo", &skipped_str), None);
+
+    // A *templated* skip_metapackage cannot be evaluated statically → also
+    // fail closed (its truthiness is unknown outside a release run).
+    let templated = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        skip_metapackage: Some(StringOrBool::String("{{ .IsSnapshot }}".into())),
+        ..opt_cfg()
+    };
+    assert_eq!(static_published_name("demo", &templated), None);
+
+    // Falsey skip_metapackage keeps the metapackage as the published unit.
+    let not_skipped = NpmConfig {
+        mode: NpmMode::OptionalDeps,
+        skip_metapackage: Some(StringOrBool::Bool(false)),
+        ..opt_cfg()
+    };
+    assert_eq!(
+        static_published_name("demo", &not_skipped).as_deref(),
+        Some(resolve_metapackage(&not_skipped, "demo")),
+        "skip_metapackage:false → still probe the metapackage"
+    );
+}
+
+#[test]
 fn skip_metapackage_rejected_in_postinstall_mode() {
     let ctx = TestContextBuilder::new()
         .project_name("demo")

@@ -530,14 +530,22 @@ pub fn pypi_version_live(
     log: &StageLogger,
 ) -> Result<bool> {
     let normalized = normalize_project_name(project_name);
-    let Some((url, expect_filename)) = version_probe(repository, &normalized, version) else {
+    // The publisher uploads under the PEP 440 form (`semver_to_pep440`, mirrored
+    // from the publish path); probe the SAME string so a pre-release or
+    // build-metadata version (`v1.2.3-rc.1` → `1.2.3rc1`) is not read as
+    // un-published and mistaken for a free slot. A version that cannot be
+    // normalized fails closed (`Err`) — a destructive rollback must never
+    // proceed on a version it cannot verify.
+    let pep440 = semver_to_pep440(version)
+        .with_context(|| format!("pypi: normalize version {version:?} for rollback burn probe"))?;
+    let Some((url, expect_filename)) = version_probe(repository, &normalized, &pep440) else {
         bail!(
             "pypi: could not derive an index-probe URL for repository {repository:?} \
-             (project '{normalized}' at {version})"
+             (project '{normalized}' at {pep440})"
         );
     };
     if expect_filename {
-        simple_index_lists_version_checked(&url, &normalized, version, policy, log)
+        simple_index_lists_version_checked(&url, &normalized, &pep440, policy, log)
     } else {
         crate::publisher_preflight::probe_version_landing(
             &url,

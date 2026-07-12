@@ -1098,7 +1098,7 @@ fn check_not_irreversibly_published(
         .into());
     }
     check_not_burned_on_crates_io(tags, &unsummarized, repo_config, probes.crates_io, log)?;
-    check_not_burned_on_npm_pypi(tags, &unsummarized, repo_config, probes, log)?;
+    check_not_burned_on_npm_pypi(tags, repo_config, probes, log)?;
     check_not_burned_on_moderated_registries(tags, repo_config, probes, log)?;
     if unsummarized.is_empty() {
         return Ok(unsummarized);
@@ -1382,8 +1382,12 @@ enum ImmutableProbe {
 /// version can never be cleanly re-cut; a PyPI filename is a permanent index
 /// slot), so the same GLOBAL-state, fail-closed treatment crates.io gets
 /// applies: a prior run on another runner may have burned the version, leaving
-/// no local summary. Probed ONLY for the `unsummarized` tags — a summarized
-/// tag's burn is already covered by layer 1 (npm/pypi are Submitter-group).
+/// no local summary. Every tag is probed live — matching the crates.io
+/// sibling. A summarized tag is NOT skipped: layer 1 only refuses when the
+/// summary *records* the Submitter publish as landed, so it misses the
+/// immutable-door verification race (the version landed at the registry but was
+/// recorded as failed — a read timeout after the 201). The live probe is
+/// exactly what closes that race, so it must run for summarized tags too.
 ///
 /// - version live on the registry → REFUSE (burned; fix forward).
 /// - registry unreachable → REFUSE (fail closed: publication state
@@ -1402,7 +1406,6 @@ enum ImmutableProbe {
 ///   burned.
 fn check_not_burned_on_npm_pypi(
     tags: &[String],
-    unsummarized: &[String],
     config: &anodizer_core::config::Config,
     probes: &BurnProbes<'_>,
     log: &StageLogger,
@@ -1414,17 +1417,14 @@ fn check_not_burned_on_npm_pypi(
         return Ok(());
     }
     // Pass 1 — resolve every deduplicated probe up front so the network
-    // round-trips run concurrently. The immutable-door guard only consults
-    // tags with no run summary (a summarized burn is already caught by layer
-    // 1); a summarized tag's version stays covered without a live probe.
+    // round-trips run concurrently. Every tag is probed (like crates.io): the
+    // live index is the only evidence that catches an immutable-door landing
+    // the run summary recorded as a failure.
     let mut pending: Vec<ImmutableProbe> = Vec::new();
     let mut unresolvable: Vec<String> = Vec::new();
     let mut probed: std::collections::HashSet<(&'static str, String, String)> =
         std::collections::HashSet::new();
     for tag in tags {
-        if !unsummarized.contains(tag) {
-            continue;
-        }
         let versioned: std::collections::HashMap<&str, String> =
             crates_versioned_by_tag(config, tag)
                 .into_iter()
@@ -3610,6 +3610,64 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn npm_pypi_probes_summarized_tag_catching_recorded_failed_landing() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // The immutable-door verification race: this run's summary for v1.0.0
+        // records only a reversible publisher — npm is ABSENT because the
+        // publish landed at the registry but a read-timeout after the 201 made
+        // anodizer record it as failed. Layer 1 sees no burned Submitter and
+        // would permit the rollback; only the live npm probe proves the version
+        // is burned. A summarized tag must therefore STILL be probed (parity
+        // with the crates.io sibling, which probes every tag) — the regression
+        // this guards is the old `unsummarized`-only skip that let this class of
+        // burn through into a poisoning same-version re-cut.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+        let config = config_with_npm(
+            "mytool",
+            "v{{ Version }}",
+            anodizer_core::config::NpmConfig::default(),
+        );
+        let npm = |_: &str, _: &str, _: &str| -> Result<bool> { Ok(true) };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &config,
+            &probes_with_npm_pypi(&npm, &immutable_probe_untouched),
+            &quiet_log(),
+        )
+        .expect_err("a summarized tag whose npm version is live must still refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("live on an immutable registry"),
+            "the live probe must fire even for a summarized tag: {msg}"
+        );
+        assert!(
+            msg.contains("mytool@1.0.0"),
+            "must name the burned package@version: {msg}"
+        );
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "an immutable-registry burn must be typed for the failure policy"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn npm_pypi_unreachable_registry_fails_closed() {
         // The registry cannot be consulted: publication state is unverifiable,
         // so the guard fails closed (a mechanical bail, NOT a typed refusal).
@@ -3735,10 +3793,15 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn npm_pypi_summarized_tag_skips_live_probe() {
+    fn npm_pypi_summarized_clean_tag_probed_and_permitted() {
         use anodizer_core::publish_report::PublisherGroup;
-        // A tag WITH a clean run summary is Tier-1 covered; the cross-runner
-        // live probe (Tier-2) must not fire for it.
+        // A tag WITH a clean run summary is STILL probed live (parity with the
+        // crates.io sibling — the summary alone cannot rule out the
+        // recorded-failed-but-actually-landed immutable-door race). When the
+        // live probe confirms the version is NOT on the registry, rollback is
+        // permitted. The probe returning Ok(false) here (rather than being
+        // untouched) is the point: it fires, and its negative answer is what
+        // clears the tag.
         let tmp = tempfile::tempdir().unwrap();
         init_github_origin_repo(tmp.path());
         let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
@@ -3758,16 +3821,17 @@ mod tests {
             "v{{ Version }}",
             anodizer_core::config::NpmConfig::default(),
         );
+        let not_live = |_: &str, _: &str, _: &str| -> Result<bool> { Ok(false) };
 
         check_not_irreversibly_published(
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
             &config,
-            &probes_with_npm_pypi(&immutable_probe_untouched, &immutable_probe_untouched),
+            &probes_with_npm_pypi(&not_live, &not_live),
             &quiet_log(),
         )
-        .expect("a summarized clean tag must permit rollback without a live npm/pypi probe");
+        .expect("a summarized tag the live probe confirms un-burned permits rollback");
     }
 
     /// Moderated-registry probe stub that must never be consulted — for

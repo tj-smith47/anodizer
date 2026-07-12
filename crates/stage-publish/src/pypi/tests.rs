@@ -1406,6 +1406,32 @@ fn pypi_version_live_reports_true_on_simple_index_hit() {
 }
 
 #[test]
+fn pypi_version_live_normalizes_prerelease_to_pep440() {
+    use super::publisher::pypi_version_live;
+    // The publisher uploads a pre-release under its PEP 440 form
+    // (`v1.2.3-rc.1` → `1.2.3rc1`), so the rollback probe must query the SAME
+    // string. The index lists only the PEP 440 filename; a probe passing the
+    // raw semver `1.2.3-rc.1` would miss it and read the burned slot as free.
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/simple/my-tool/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 67\r\n\r\n\
+                   <a href=\"/x/my_tool-1.2.3rc1-py3-none-any.whl\">my_tool-1.2.3rc1</a>",
+        times: None,
+    }]);
+    assert!(
+        pypi_version_live(
+            &format!("http://{addr}/legacy/"),
+            "my-tool",
+            "1.2.3-rc.1",
+            &probe_policy(),
+            &probe_logger(),
+        )
+        .expect("reachable index resolves")
+    );
+}
+
+#[test]
 fn pypi_version_live_reports_false_when_absent_from_simple_index() {
     use super::publisher::pypi_version_live;
     // Page exists but lists only a different version → positively absent.

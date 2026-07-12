@@ -66,13 +66,24 @@ pub fn static_entry_crate_name(config: &anodizer_core::config::Config) -> String
 }
 
 /// Static (context-free) published package name for the rollback burn probe:
-/// the metapackage name in optional-deps mode, else the postinstall package
-/// name — resolved without a render context ([`manifest::resolve_name`] /
+/// the postinstall package name, or the optional-deps metapackage name —
+/// resolved without a render context ([`manifest::resolve_name`] /
 /// [`optional_deps::resolve_metapackage`]). Returns `None` when that name is a
 /// template expression: outside a release run there is nothing to render it
 /// with, and a destructive rollback that cannot name the immutable package it
 /// would orphan must fail closed rather than probe a guessed name (same
 /// posture as chocolatey's `static_package_id`).
+///
+/// Also returns `None` in `skip_metapackage` optional-deps mode: there the
+/// metapackage is NEVER published — only the per-platform
+/// `<name>-<os>-<arch>` packages are, and their names derive from a render
+/// context plus the built artifacts this context-free probe deliberately
+/// lacks (`render_platform_name` needs a render context and a per-target
+/// triple). Naming the never-published metapackage here would probe
+/// a package that returns 404 and read a false "clean", letting a same-version
+/// re-cut poison the burned per-platform slots. Failing closed (`None` → the
+/// rollback guard's unresolvable branch refuses) is the only safe verdict. A
+/// templated `skip_metapackage` is likewise unresolvable statically → `None`.
 ///
 /// Public for the same reason as [`version_visible_on_registry`]: `tag
 /// rollback`'s published-state guard must name the same package the publisher
@@ -83,9 +94,12 @@ pub fn static_published_name(
 ) -> Option<String> {
     let name = match cfg.mode {
         anodizer_core::config::NpmMode::Postinstall => manifest::resolve_name(cfg, crate_name),
-        anodizer_core::config::NpmMode::OptionalDeps => {
-            optional_deps::resolve_metapackage(cfg, crate_name)
-        }
+        anodizer_core::config::NpmMode::OptionalDeps => match cfg.skip_metapackage.as_ref() {
+            // Templated or truthy skip_metapackage → the metapackage isn't the
+            // published unit; fail closed (see the doc above).
+            Some(s) if s.is_template() || s.as_bool() => return None,
+            _ => optional_deps::resolve_metapackage(cfg, crate_name),
+        },
     };
     (!name.contains("{{")).then(|| name.to_string())
 }
