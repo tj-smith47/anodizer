@@ -12,11 +12,65 @@ cold without re-investigating.
 
 ## Open
 
-_(empty)_
+_None._
+
+## Resolved (2026-07-12 pypi/npm/homebrew review drain)
+
+All items below were fixed and verified in committed code (targeted tests +
+full `task ci` green: fmt:check + clippy `-D warnings` + 10,845 nextest tests +
+docs:check). Commit refs map each finding to its fix.
+
+  the one-way-door burn guard.** Both were `PublisherGroup::Manager` while being
+  immutable registries; `irreversibly_published`/`burned_submitter_names` and the
+  rollback `BurnProbes` counted only `Submitter`, so a same-version re-cut could
+  re-upload identical wheels/tarballs and poison the permanent index (v0.11.3
+  class). **RESOLVED** commit `682a3bf2` (regroup npm + pypi → `Submitter`, fixing
+  the summary path) + `c5b37719` (add npm/pypi live burn probes for the
+  unsummarized cross-runner path, fail-closed, mirroring the crates.io probe).
+  ("fix(pypi): drain review findings — tags, metadata, uploads, shared helpers"):
+  - C1 macosx minor clamped to 0 for major ≥ 11 (`platform_tag` in `wheel.rs`,
+    `if maj >= 11 { 0 }`).
+  - C2 manylinux glibc floor (`MANYLINUX_GLIBC_FLOOR`).
+  - C3 darwin non-Mach-O hard-errors (new `macho_check::is_macho`).
+  - C4 generic `fat_max_min_os<FatArch>` collapses the Fat32/Fat64 copies.
+  - C5 shared `core::sde::zip_datetime_fields` (year clamp) adopted in wheel +
+    stage-archive + stage-source.
+  - C6 `is_duplicate_rejection` matches "this filename has already been used".
+  - C7 sdist PKG-INFO parsed (`parse_pkg_info`, `WheelSpec.metadata_version`).
+  - C8 custom-index probe parses filenames + anchors on normalized name + exact
+    version (`body_lists_version`).
+  - C9 repository-render preflight Blocker formats `{e:#}`.
+  - C10 dry-run echo includes the real `--out <staging>` arg.
+  - C11 config/preflight-time platform-tag collision check + docs note.
+  - C12 (docs) pypi.md semver→PEP 440 table: short labels, `c` alias, bare-label
+    default-0, enumerated label set (pypi.md "Versions: semver → PEP 440").
+  - C13 (docs) `sdist_manifest` carries the "Templated" label in the pypi.md
+    field table.
+  - C15 crate_name derived from the entry's `ids` (per-entry metadata scoping).
+  - C16 SDE→CommitTimestamp ladder single-sourced (`ctx.resolve_reproducible_mtime`).
+  - C17 shared `resolve_token_with_ladder` (correct empty-value filtering; npm
+    adopted it, fixing the empty-env-token gap).
+  - C18 upload `Part::file` — no full-wheel clone per retry.
+  - C19 `build_spec_base` propagates template errors (returns `Result`).
+  layout errors → false-clean preflight — RESOLVED, commit `c64764e0`.** Preflight
+  now distinguishes "no artifacts yet" (verbose skip) from real layout/config
+  errors (propagated as Blocker).
+  the `.git` url on an inline-commented url line — RESOLVED, commit `74048bcb`.**
+  A trailing `# comment` after the url comma made the `ends_with(',')`
+  continuation check misread the git formula as archive form. Now a quote-aware
+  trailing Ruby comment is stripped before the continuation test and the
+  tag:/revision: field probes.
+  a burn → permits a poisoning re-cut) — RESOLVED, commit `eef38bbd`.**
+  (1) npm `skip_metapackage`: `static_published_name` named the never-published
+  metapackage; now fails closed (`None`) when skip_metapackage is truthy or
+  templated. (2) pypi `pypi_version_live` probed the raw semver while the
+  publisher uploads `semver_to_pep440(version)`; now normalizes identically so
+  pre-release/build-metadata versions are not missed. (3) the npm/pypi probe only
+  ran for unsummarized tags; now probes every tag like the crates.io sibling,
+  closing the recorded-failed-but-actually-landed immutable-door race.
 
 ## Resolved (2026-07-11)
 
-- [x] 2026-07-11 cross-repo review (cfgd deferred-branch migration adopted anodizer's
   advance-master topology and inherited this) — **release run cancelled or runner-lost after
   the tag job strands the bump commit off master, and the next release wedges with no surfaced
   cause.** `tag --changelog --push-tags-only` pushes only the tags; the bump commit becomes
@@ -41,7 +95,6 @@ _(empty)_
 
 ## Resolved (2026-07-10)
 
-- [x] **scoop publisher writes the manifest to the bucket repo ROOT, which scoop ignores
   when a `bucket/` dir exists — the published scoop channel is dead for consumers —
   RESOLVED 2026-07-10 (commit 3b3762c0).**
   Evidence (real winserver VM, 2026-07-10, cfgd-acceptance run `20260710T172345Z`):
@@ -54,7 +107,6 @@ _(empty)_
   convention) instead of the repo root; an explicit empty string `""` is the
   root escape hatch; a stale root manifest is migrated into `bucket/` on the
   next publish. Tests assert the manifest lands at `main:bucket/widget.json`.
-- [x] **chocolatey nuspec emits a `<license>` element choco CLI doesn't support →
   CHCU0002 warning on every install — RESOLVED 2026-07-10.** Evidence (winserver,
   2026-07-10): `choco install cfgd --version 0.5.0 -y` succeeds but ends with
   `Warnings: - cfgd - Issues found with nuspec elements / CHCU0002: <license>
@@ -66,7 +118,6 @@ _(empty)_
   `test_generate_nuspec_never_emits_license_element_chcu0002` pins that no
   `<license` substring survives in the rendered nuspec.
 
-- [x] **snapcraft publish logs a store review rejection as a Warning and the stage stays
   green — publisher failure is invisible to CI — RESOLVED 2026-07-10.** Evidence: cfgd v0.5.0 run 28853272910
   "Publish cfgd" job — `snapcraft upload` returned `(NEEDS REVIEW) confinement 'classic'
   not allowed` for both arches; `stage-snapcraft` emitted `Warning: snap upload pending
@@ -95,7 +146,6 @@ _(empty)_
 
 ## Resolved (2026-07-08 release-machinery audit session)
 
-- [x] **krew renderer emits a non-krew-accepted license name → krew validation
   fails — RESOLVED 2026-07-08.** Found from cfgd (acceptance S0, publisher
   audit): krew-index PR #6022 (cfgd v0.5.0) was approved then closed —
   `validate-krew-manifest` failed: *"LICENSE (or alike) file is not
@@ -121,7 +171,6 @@ _(empty)_
   `cargo test -p anodizer-stage-publish krew`: 100 passed, 0 failed.
   Evidence: krew job 85697155238 log.
 
-- [x] **dockers_v2 stages binaries into the docker build context non-executable
   (mode 0644) — RESOLVED 2026-07-08.** Found from cfgd (acceptance S0.5): the
   published cfgd v0.5.0 images ship `/usr/local/bin/<bin>` as `-rw-r--r--`
   because `fs::copy` preserves the source mode, CI artifact round-trips strip
@@ -134,7 +183,6 @@ _(empty)_
   the fix. **Note (user action, unchanged):** the already-published cfgd
   v0.5.0 images are broken and need a patch re-release regardless.
 
-- [x] **Release-machinery audit omnibus — 26 defects across
   tagging / rollback / retry / verification / hooks, all fixed — RESOLVED
   2026-07-08.** Full map: `.claude/audits/2026-07-07-release-machinery-audit.md`.
   Evidence: full workspace 10,419/10,419 tests green, clippy clean,
