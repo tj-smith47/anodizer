@@ -245,6 +245,70 @@ end
 }
 
 #[test]
+fn detect_git_form_survives_inline_comment_on_url_line() {
+    use super::formula::detect_git_form;
+    // A trailing `#` comment after the url line's comma must not terminate the
+    // stanza before the `tag:`/`revision:` continuation lines are reached — the
+    // naive `ends_with(',')` check (before comment-stripping) misread this as
+    // archive form and clobbered the `.git` url.
+    let text = format!(
+        r#"class MyTool < Formula
+  desc "A tool"
+  url "https://github.com/acme/my-tool.git", # upstream moved here
+      tag: "v1.0.0",
+      revision: "{rev}"
+  def install
+  end
+end
+"#,
+        rev = "0".repeat(40),
+    );
+    assert!(
+        detect_git_form(&text),
+        "an inline comment after the url comma must not hide the git form"
+    );
+}
+
+#[test]
+fn rewrite_git_form_with_inline_comment_moves_tag_not_url() {
+    // The regression this guards: a `#`-commented url line was misclassified as
+    // archive form, so the `.git` url got overwritten and tag/revision were
+    // never bumped. With comment-aware stanza detection the git-form path holds.
+    let new_rev = "f".repeat(40);
+    let text = format!(
+        r#"class MyTool < Formula
+  url "https://github.com/acme/my-tool.git", # note
+      tag: "v1.0.0",
+      revision: "{old_rev}"
+  def install
+  end
+end
+"#,
+        old_rev = "0".repeat(40),
+    );
+    let (out, summary) = rewrite_formula(
+        &text,
+        &FormulaRewrite {
+            url: None,
+            sha256: None,
+            version: "1.2.3".to_string(),
+            tag: Some("v1.2.3".to_string()),
+            revision: Some(new_rev.clone()),
+        },
+    )
+    .expect("rewrite");
+    assert!(summary.tag_rewritten, "tag must move: {out}");
+    assert!(summary.revision_rewritten, "revision must move: {out}");
+    assert!(!summary.url_rewritten, "the .git url must survive: {out}");
+    assert!(
+        out.contains("url \"https://github.com/acme/my-tool.git\", # note"),
+        "url line + its comment preserved verbatim: {out}"
+    );
+    assert!(out.contains("tag: \"v1.2.3\""), "{out}");
+    assert!(out.contains(&format!("revision: \"{new_rev}\"")), "{out}");
+}
+
+#[test]
 fn rewrite_archive_form_without_version_stanza_is_ok() {
     let (out, summary) = rewrite_formula(
         &archive_formula_no_version(),

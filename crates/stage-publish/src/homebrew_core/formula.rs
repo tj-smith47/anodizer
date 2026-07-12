@@ -113,6 +113,36 @@ fn keyed_quoted_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..close_rel])
 }
 
+/// Return `line` with any trailing Ruby line-comment removed. A `#` only
+/// starts a comment when it sits outside a quoted string, so `#`
+/// interpolation (`url "…/v#{version}.tar.gz"`) and a literal `#` inside a
+/// quoted value are preserved.
+fn strip_trailing_comment(line: &str) -> &str {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if in_double => escaped = true,
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '#' if !in_double && !in_single => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// True when `line` continues the `url` stanza — its code portion (ignoring a
+/// trailing comment) ends with a comma. `url "…git", # upstream` continues.
+fn stanza_line_continues(line: &str) -> bool {
+    strip_trailing_comment(line).trim_end().ends_with(',')
+}
+
 /// Structurally detect the git-based formula form: does the FIRST `url`
 /// stanza (its opening line plus any comma-continued lines) itself carry a
 /// `tag:` or `revision:` field? A git formula reads
@@ -131,14 +161,18 @@ pub(crate) fn detect_git_form(text: &str) -> bool {
                 continue;
             }
         }
-        if keyed_quoted_value(line, "tag").is_some()
-            || keyed_quoted_value(line, "revision").is_some()
+        // Probe the code portion so a `#`-commented `tag:` on the url line
+        // cannot flip the verdict, and rewrite/detect agree on where the
+        // stanza ends.
+        let code = strip_trailing_comment(line);
+        if keyed_quoted_value(code, "tag").is_some()
+            || keyed_quoted_value(code, "revision").is_some()
         {
             return true;
         }
         // The stanza ends at the first line that does not continue with a
         // trailing comma; the archive form's single `url "…"` line stops here.
-        if !line.trim_end().ends_with(',') {
+        if !code.trim_end().ends_with(',') {
             return false;
         }
     }
@@ -209,8 +243,12 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
         }
         // tag:/revision: are rewritten ONLY within the first url stanza.
         if in_url_stanza {
+            // Guard on the code portion so a `#`-commented `tag:`/`revision:`
+            // on the url line is never rewritten (and never latches the
+            // summary flag away from the real field).
             if let Some(tag) = rw.tag.as_deref()
                 && !summary.tag_rewritten
+                && keyed_quoted_value(strip_trailing_comment(&line), "tag").is_some()
                 && let Some(new_line) = replace_keyed_quoted(&line, "tag", tag)
             {
                 line = new_line;
@@ -218,13 +256,15 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
             }
             if let Some(rev) = rw.revision.as_deref()
                 && !summary.revision_rewritten
+                && keyed_quoted_value(strip_trailing_comment(&line), "revision").is_some()
                 && let Some(new_line) = replace_keyed_quoted(&line, "revision", rev)
             {
                 line = new_line;
                 summary.revision_rewritten = true;
             }
-            // The stanza ends at the first line without a trailing comma.
-            if !line.trim_end().ends_with(',') {
+            // The stanza ends at the first line whose code portion (ignoring a
+            // trailing comment) does not end with a comma.
+            if !stanza_line_continues(&line) {
                 in_url_stanza = false;
                 url_stanza_done = true;
             }
