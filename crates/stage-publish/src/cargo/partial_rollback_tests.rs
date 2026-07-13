@@ -11,7 +11,7 @@
 
 use super::*;
 use anodizer_core::Publisher;
-use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+use anodizer_core::config::{CargoAuthMode, CargoPublishConfig, CrateConfig, PublishConfig};
 use anodizer_core::test_helpers::TestContextBuilder;
 use serial_test::serial;
 use std::os::unix::fs::PermissionsExt;
@@ -874,20 +874,36 @@ fn run_failure_stashes_partial_evidence_on_context() {
     let path_b = write_crate_dir(tmp.path(), "crate-b", "2.0.0");
     let argv_log = tmp.path().join("argv.log");
 
+    // `CargoPublisher::run` performs TWO ambient-dependent steps before it
+    // publishes, and exposes no injection seam for either — so both must be
+    // pinned or the test passes only on a host that happens to carry a cargo
+    // token and can reach crates.io:
+    //   • auth: Token → the workspace credential resolver returns Ok(None)
+    //     without consulting the ambient CARGO_REGISTRY_TOKEN. The default
+    //     (Auto) bails on any host with neither a token nor an OIDC context.
+    //   • a custom index → targets_crates_io() is false, so the per-crate guard
+    //     short-circuits to Publish instead of GETting the live sparse index
+    //     (which fail-closes when unreachable).
+    // The partial-evidence behavior under test is registry- and auth-agnostic.
+    let hermetic = |cfg: CargoPublishConfig| CargoPublishConfig {
+        auth: Some(CargoAuthMode::Token),
+        index: Some("sparse+https://example.test/index/".to_string()),
+        ..cfg
+    };
     let crate_a = cargo_crate(
         "crate-a",
         &path_a,
         &[],
-        CargoPublishConfig {
+        hermetic(CargoPublishConfig {
             index_timeout: Some(0),
             ..Default::default()
-        },
+        }),
     );
     let crate_b = cargo_crate(
         "crate-b",
         &path_b,
         &["crate-a"],
-        CargoPublishConfig::default(),
+        hermetic(CargoPublishConfig::default()),
     );
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
