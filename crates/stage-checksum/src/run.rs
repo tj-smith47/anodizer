@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodizer_core::config::{ChecksumConfig, CrateConfig, ExtraFileSpec, TemplatedExtraFile};
+use anodizer_core::config::{
+    ChecksumConfig, ChecksumSplitFormat, CrateConfig, ExtraFileSpec, TemplatedExtraFile,
+};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
@@ -34,6 +36,7 @@ struct ResolvedChecksumConfig {
     templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     ids_filter: Option<Vec<String>>,
     split: bool,
+    split_format: ChecksumSplitFormat,
 }
 
 /// Global checksum defaults pulled from `defaults.checksum`.
@@ -44,6 +47,7 @@ struct GlobalChecksumDefaults {
     templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     ids: Option<Vec<String>>,
     split: Option<bool>,
+    split_format: Option<ChecksumSplitFormat>,
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +232,7 @@ fn load_global_defaults(
         templated_extra_files: global_cksum.and_then(|c| c.templated_extra_files.clone()),
         ids: global_cksum.and_then(|c| c.ids.clone()),
         split: global_cksum.and_then(|c| c.split),
+        split_format: global_cksum.and_then(|c| c.split_format),
     }))
 }
 
@@ -275,6 +280,10 @@ fn resolve_per_crate_config(
             .and_then(|c| c.split)
             .or(globals.split)
             .unwrap_or(false),
+        split_format: crate_cksum
+            .and_then(|c| c.split_format)
+            .or(globals.split_format)
+            .unwrap_or_default(),
     }
 }
 
@@ -554,15 +563,24 @@ fn hash_and_emit_sidecars(
                 dist,
             )?;
 
-            // ONLY the raw hex hash is written in sidecar files (no
-            // filename, no trailing newline).
+            // `bare` writes only the raw hex hash (no filename, no trailing
+            // newline) for GoReleaser parity; `coreutils` writes
+            // `<hash>  <filename>\n` so the sidecar verifies with `shasum -c`.
             if !dry_run {
                 let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
                     format!("checksum: create sidecar {}", sidecar_path.display())
                 })?;
-                write!(sidecar_file, "{}", hash).with_context(|| {
-                    format!("checksum: write sidecar {}", sidecar_path.display())
-                })?;
+                match resolved.split_format {
+                    ChecksumSplitFormat::Bare => write!(sidecar_file, "{}", hash),
+                    ChecksumSplitFormat::Coreutils => {
+                        writeln!(
+                            sidecar_file,
+                            "{}",
+                            format_checksum_line(&hash, &checksum_name)
+                        )
+                    }
+                }
+                .with_context(|| format!("checksum: write sidecar {}", sidecar_path.display()))?;
             }
 
             log.verbose(&format!(

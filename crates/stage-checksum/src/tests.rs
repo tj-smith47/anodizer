@@ -1661,6 +1661,77 @@ fn test_checksum_stage_split_true_no_combined_file() {
         !combined.exists(),
         "combined checksums file should NOT exist in split mode"
     );
+
+    // Default split_format is `bare`: raw hex hash only, no filename, no
+    // trailing newline (GoReleaser split-checksum parity).
+    let content = fs::read_to_string(&sidecar).unwrap();
+    assert_eq!(content.len(), 64, "sha256 bare sidecar is 64 hex chars");
+    assert!(
+        content.chars().all(|c| c.is_ascii_hexdigit()),
+        "bare sidecar is pure hex, got {content:?}"
+    );
+}
+
+#[test]
+fn test_checksum_stage_split_format_coreutils_writes_hash_and_filename() {
+    use anodizer_core::config::{ChecksumConfig, ChecksumSplitFormat, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let archive_path = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
+    fs::write(&archive_path, b"fake archive content").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            checksum: Some(ChecksumConfig {
+                split: Some(true),
+                split_format: Some(ChecksumSplitFormat::Coreutils),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: String::new(),
+        path: archive_path.clone(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    ChecksumStage.run(&mut ctx).unwrap();
+
+    let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
+    let content = fs::read_to_string(&sidecar).unwrap();
+
+    // `coreutils` format: `<hash>  <filename>` + trailing newline, so the
+    // sidecar verifies directly with `shasum -c` from the artifact directory.
+    assert!(
+        content.ends_with('\n'),
+        "coreutils sidecar ends with a newline, got {content:?}"
+    );
+    let line = content.trim_end_matches('\n');
+    let (hash, filename) = line
+        .split_once("  ")
+        .expect("coreutils line is `<hash>  <filename>`");
+    assert_eq!(hash.len(), 64, "sha256 hash is 64 hex chars");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(
+        filename, "myapp-1.0.0-linux-amd64.tar.gz",
+        "coreutils sidecar names the artifact so `shasum -c` finds it"
+    );
 }
 
 #[test]

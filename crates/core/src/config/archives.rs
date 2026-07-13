@@ -561,6 +561,20 @@ pub struct TemplatedExtraFile {
     pub mode: Option<String>,
 }
 
+/// Content format for per-artifact sidecars written in `split` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChecksumSplitFormat {
+    /// Only the raw hex hash, no filename, no trailing newline. Matches
+    /// GoReleaser's split-checksum output. Default.
+    #[default]
+    Bare,
+    /// `<hash>  <filename>` with a trailing newline — the coreutils / BSD
+    /// digest format, so the sidecar verifies directly with
+    /// `shasum -c` / `sha256sum -c` from the directory holding the artifact.
+    Coreutils,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChecksumConfig {
@@ -589,6 +603,11 @@ pub struct ChecksumConfig {
     pub ids: Option<Vec<String>>,
     /// When true, produce one checksum file per artifact instead of a combined file.
     pub split: Option<bool>,
+    /// Sidecar content format when `split: true` (default: `bare`). Set to
+    /// `coreutils` to write `<hash>  <filename>` so each sidecar verifies with
+    /// `shasum -c`. Ignored in combined mode (the combined file is always
+    /// coreutils-format).
+    pub split_format: Option<ChecksumSplitFormat>,
 }
 
 impl ChecksumConfig {

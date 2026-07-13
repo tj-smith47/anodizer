@@ -25,7 +25,22 @@ defaults:
     skip: false                         # optional; skip checksum generation
     extra_files: []                     # optional; additional files to checksum
     ids: []                             # optional; only checksum artifacts matching these IDs
+    split: false                        # optional; one sidecar per artifact instead of a combined file
+    split_format: bare                  # optional; bare | coreutils (only when split: true)
 ```
+
+When `split: true`, anodizer writes one sidecar per artifact (e.g.
+`app-1.0.0-linux-amd64.tar.gz.sha256`) instead of a combined
+`checksums.txt`. The sidecar content is controlled by `split_format`:
+
+- `bare` (default) — the raw hex hash only, no filename, no trailing newline
+  (matches GoReleaser's split-checksum output).
+- `coreutils` — `<hash>  <filename>` with a trailing newline, so each sidecar
+  verifies directly with `shasum -c` / `sha256sum -c` from the artifact
+  directory. Choose this when migrating from a hand-rolled
+  `shasum -a 256 file > file.sha256` step whose consumers run `shasum -c`.
+
+The combined (`split: false`) file is always coreutils-format.
 
 ## Authentication
 
@@ -49,6 +64,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `skip` | bool/template | `false` | Skip checksum generation. The legacy `disable` spelling is accepted as a deprecation-warned alias. |
 | `extra_files` | list | none | Additional files to checksum |
 | `ids` | list | none | Only checksum artifacts matching these IDs |
+| `split` | bool | `false` | Write one sidecar per artifact instead of a combined `checksums.txt` |
+| `split_format` | string | `bare` | Sidecar content when `split: true`: `bare` (hash only) or `coreutils` (`<hash>  <filename>`, `shasum -c`-verifiable) |
 
 ## Supported algorithms
 

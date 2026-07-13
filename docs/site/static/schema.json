@@ -3731,6 +3731,18 @@
             "null"
           ]
         },
+        "split_format": {
+          "description": "Sidecar content format when `split: true` (default: `bare`). Set to `coreutils` to write `<hash>  <filename>` so each sidecar verifies with `shasum -c`. Ignored in combined mode (the combined file is always coreutils-format).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChecksumSplitFormat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "templated_extra_files": {
           "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.",
           "default": null,
@@ -3744,6 +3756,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "ChecksumSplitFormat": {
+      "description": "Content format for per-artifact sidecars written in `split` mode.",
+      "oneOf": [
+        {
+          "description": "Only the raw hex hash, no filename, no trailing newline. Matches GoReleaser's split-checksum output. Default.",
+          "type": "string",
+          "const": "bare"
+        },
+        {
+          "description": "`<hash>  <filename>` with a trailing newline — the coreutils / BSD digest format, so the sidecar verifies directly with `shasum -c` / `sha256sum -c` from the directory holding the artifact.",
+          "type": "string",
+          "const": "coreutils"
+        }
+      ]
     },
     "ChocolateyConfig": {
       "type": "object",
