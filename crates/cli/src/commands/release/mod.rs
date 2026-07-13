@@ -1268,9 +1268,15 @@ fn run_before_hooks(
     opts: &ReleaseOpts,
     log: &StageLogger,
 ) -> Result<()> {
-    if !opts.merge
-        && !opts.split
-        && !opts.publish_only
+    // `before:` hooks produce INPUTS for later stages: the build stage (run
+    // under `--split`) and the archive / nfpm stages (run under `--merge`).
+    // Split and merge are SEPARATE process invocations (distinct CI jobs /
+    // shards with no shared filesystem), so each phase must regenerate the
+    // inputs it needs — running here in split AND merge is correct, not a
+    // double-run within one process. Only `--publish-only` / `--announce-only`
+    // legitimately skip: they operate on already-produced artifacts (no build,
+    // no archive), so hook-generated inputs no longer apply.
+    if !opts.publish_only
         && !opts.announce_only
         && !ctx.should_skip("before")
         && let Some(before) = &config.before
@@ -1655,8 +1661,11 @@ fn run_post_pipeline(
 /// time by `HooksConfig::merge_hook_aliases`, so this reader only
 /// needs the canonical field.
 ///
-/// Note on `--merge` interaction: `before:` hooks deliberately skip on
-/// merge (see `run_before_hooks`) because the shards already compiled.
+/// Note on `--merge` interaction: `before:` hooks DO run on merge (see
+/// `run_before_hooks`) because the merge phase runs the archive / nfpm
+/// stages, which consume hook-generated inputs (e.g. a generated man page
+/// the archive packages), and merge is a separate process invocation with
+/// no shared state from the split shards.
 /// `after:` hooks intentionally DO run on merge — the shard pipeline
 /// (`build_split_pipeline`) only executes the build stage and never
 /// reaches `run_post_pipeline`, so the merge step is the only point at
@@ -1895,6 +1904,122 @@ mod tests {
         let sel = select_custom_publishers(&ctx, &pubs, &log);
         assert_eq!(sel.len(), 1);
         assert!(sel[0].name.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // run_before_hooks — must fire in normal, --split, and --merge modes
+    // (before-hooks produce INPUTS for build (split) and archive/nfpm (merge)),
+    // and must skip in --publish-only / --announce-only (those operate on
+    // already-produced artifacts).
+    // -----------------------------------------------------------------------
+
+    /// Run `run_before_hooks` with a `before:` hook that `touch`es a unique
+    /// marker file, and report whether the marker was created (i.e. the hook
+    /// actually executed).
+    fn before_hook_fired(opts: &ReleaseOpts, skip: &[&str]) -> bool {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+
+        let dir = std::env::temp_dir().join(format!(
+            "anodizer-before-hook-{}-{:p}",
+            std::process::id(),
+            opts as *const _
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("fired.marker");
+        let _ = std::fs::remove_file(&marker);
+        // sh -c mangles backslashes; forward-slash path resolves on Windows too.
+        let marker_arg = marker.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            before: Some(HooksConfig {
+                hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                    cmd: format!("touch {marker_arg}"),
+                    ..Default::default()
+                })]),
+                post: None,
+            }),
+            ..Default::default()
+        };
+        let ctx = Context::new(
+            config.clone(),
+            ContextOptions {
+                skip_stages: skip.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+        );
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        run_before_hooks(&ctx, &config, opts, &log).expect("run_before_hooks must not error");
+
+        let fired = marker.exists();
+        let _ = std::fs::remove_file(&marker);
+        fired
+    }
+
+    #[test]
+    fn before_hooks_run_in_normal_split_and_merge_modes() {
+        // Normal end-to-end run: hooks fire (baseline).
+        assert!(
+            before_hook_fired(&base_release_opts(), &[]),
+            "before-hooks must run in a normal release"
+        );
+
+        // --split runs the build stage, which consumes hook-generated inputs
+        // (e.g. a generated source file). Hooks MUST fire. This previously
+        // FAILED — the old `!opts.split` clause codified the bug.
+        let split = ReleaseOpts {
+            split: true,
+            ..base_release_opts()
+        };
+        assert!(
+            before_hook_fired(&split, &[]),
+            "before-hooks must run in --split mode (build consumes their inputs)"
+        );
+
+        // --merge runs archive/nfpm, which consume hook-generated inputs (e.g.
+        // a generated man page the archive packages). Hooks MUST fire. This
+        // previously FAILED — the old `!opts.merge` clause codified the bug.
+        let merge = ReleaseOpts {
+            merge: true,
+            ..base_release_opts()
+        };
+        assert!(
+            before_hook_fired(&merge, &[]),
+            "before-hooks must run in --merge mode (archive/nfpm consume their inputs)"
+        );
+    }
+
+    #[test]
+    fn before_hooks_skip_in_publish_only_and_announce_only() {
+        // --publish-only operates on already-produced artifacts: no build, no
+        // archive, so hook-generated inputs no longer apply.
+        let publish_only = ReleaseOpts {
+            publish_only: true,
+            ..base_release_opts()
+        };
+        assert!(
+            !before_hook_fired(&publish_only, &[]),
+            "before-hooks must NOT run in --publish-only mode"
+        );
+
+        // --announce-only fires announcers against a finished release only.
+        let announce_only = ReleaseOpts {
+            announce_only: true,
+            ..base_release_opts()
+        };
+        assert!(
+            !before_hook_fired(&announce_only, &[]),
+            "before-hooks must NOT run in --announce-only mode"
+        );
+    }
+
+    #[test]
+    fn before_hooks_honor_skip_before() {
+        // `--skip before` suppresses the hooks even in a mode that would run
+        // them (here, a normal run).
+        assert!(
+            !before_hook_fired(&base_release_opts(), &["before"]),
+            "`--skip before` must suppress before-hooks"
+        );
     }
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
