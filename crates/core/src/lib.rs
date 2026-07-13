@@ -82,7 +82,7 @@ pub use env_preflight::{
     EnvCheckFailure, EnvPreflightReport, EnvProbes, EnvRequirement, FailureKind, KeyKind,
     SourcedRequirement,
 };
-pub use env_source::{EnvSource, MapEnvSource, ProcessEnvSource};
+pub use env_source::{EnvSource, LayeredEnvSource, MapEnvSource, ProcessEnvSource};
 pub use publish_evidence::{PublishEvidence, PublishEvidenceExtra};
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,

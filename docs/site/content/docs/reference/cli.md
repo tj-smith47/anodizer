@@ -260,6 +260,8 @@ Auto-tag based on commit message directives
 | `--push` | — | — | Push the version-sync bump commit to the release branch atomically with the tag |
 | `--no-push` | — | — | Do not push anything; the tag(s) and version-sync bump commit stay local |
 | `--push-tags-only` | — | — | Push the tag(s) but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately) |
+| `--sign` | — | — | Create a signed annotated tag (git tag -s), using the signing key/method from git config (user.signingkey, gpg.format) |
+| `--no-sign` | — | — | Create an unsigned annotated tag (git tag -a), overriding tag.sign = true in config |
 | `--push-remote` | — | — | Remote to push to (default: origin) |
 | `--push-dry-run` | — | — | Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging |
 | `--changelog` | — | — | Refresh CHANGELOG.md as part of this tag (requires a `changelog:` config block) |

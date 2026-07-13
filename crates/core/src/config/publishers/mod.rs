@@ -314,6 +314,33 @@ pub struct CargoPublishConfig {
     /// Both `--locked` and `--offline` (`--frozen`).
     pub frozen: Option<bool>,
 
+    // ----- Authentication -----
+    /// Whether the publish authenticates with a long-lived API token
+    /// (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io
+    /// Trusted Publishing). Default [`Auto`]: a token when one is present,
+    /// otherwise a Trusted-Publishing exchange when an OIDC context is
+    /// available.
+    ///
+    /// `oidc` mints a short-lived crates.io token from a GitHub Actions
+    /// id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it
+    /// after the publish loop. The mint is workspace-scoped: one token
+    /// authorizes every crate whose Trusted-Publisher config matches this
+    /// repository/workflow, so a lockstep workspace mints once and reuses it
+    /// for all crates.
+    ///
+    /// When omitted, resolves to [`Auto`]. Optional (rather than a bare enum
+    /// with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is
+    /// inherited by a per-crate `publish.cargo` block that omits `auth`: a
+    /// bare enum always serializes to a concrete value, and the defaults
+    /// deep-merge (fill-by-missing-key) never overwrites a present scalar, so
+    /// a strict `oidc` default would silently degrade to `auto`. Read through
+    /// [`CargoPublishConfig::resolved_auth`] so every call site agrees on the
+    /// `None` → `Auto` collapse.
+    ///
+    /// [`Auto`]: CargoAuthMode::Auto
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<CargoAuthMode>,
+
     // ----- Peer-publisher pattern -----
     /// Skip this publisher; supports template strings or bool.
     /// Truthy renders disable the publisher without removing the block.
@@ -333,6 +360,47 @@ pub struct CargoPublishConfig {
     /// When `true`, a triggered rollback leaves this publisher's work in
     /// place rather than attempting to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
+}
+
+impl CargoPublishConfig {
+    /// The effective authentication mode: the configured [`CargoAuthMode`] or
+    /// [`CargoAuthMode::Auto`] when `auth` was omitted. The single collapse
+    /// point every read site shares so a missing `auth` resolves identically
+    /// in credential resolution and preflight requirements.
+    pub fn resolved_auth(&self) -> CargoAuthMode {
+        self.auth.unwrap_or_default()
+    }
+}
+
+/// How a `publish.cargo` block authenticates its `cargo publish`: a
+/// long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted
+/// Publishing, which mints a short-lived token per run — no stored secret).
+///
+/// crates.io publishes through the `cargo` CLI, but the Trusted-Publishing
+/// exchange (Actions id-token → crates.io mint-token) is performed by
+/// anodizer itself: it mints one token before the dependency-order publish
+/// loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and
+/// revokes it (best-effort) after the loop. The minted token is
+/// workspace-scoped, so a single mint authorizes every crate whose
+/// Trusted-Publisher config matches this repository/workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoAuthMode {
+    /// Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise,
+    /// when an OIDC context is present, mint a Trusted-Publishing token.
+    /// Errors only when neither is available.
+    #[default]
+    Auto,
+    /// Always authenticate with the token; never attempt OIDC. Errors if
+    /// `CARGO_REGISTRY_TOKEN` is unset. This is anodizer's historical
+    /// behaviour.
+    Token,
+    /// Always authenticate with OIDC (Trusted Publishing); never fall back to
+    /// the token. Errors if the GitHub Actions OIDC request env
+    /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a
+    /// misconfigured Trusted Publisher fails the release loudly instead of
+    /// silently falling back to a token.
+    Oidc,
 }
 
 /// Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo

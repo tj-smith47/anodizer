@@ -132,6 +132,29 @@ mod tests {
     }
 
     #[test]
+    fn scope_available_true_when_layered_overlay_supplies_token() {
+        use anodizer_core::{EnvSource, LayeredEnvSource};
+        use std::sync::Arc;
+
+        // Base has NO ambient CARGO_REGISTRY_TOKEN (the OIDC case); the minted
+        // token is overlaid on top. The rollback gate must see it as available.
+        let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new());
+        let overlaid = LayeredEnvSource::new(base, [("CARGO_REGISTRY_TOKEN", "cio-minted-xyz")]);
+        assert!(scope_available_with_env(
+            "CARGO_REGISTRY_TOKEN yank",
+            &overlaid
+        ));
+
+        // Without the overlay entry, the same bare base is unavailable.
+        let bare_base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new());
+        let no_token = LayeredEnvSource::new(bare_base, [("SOMETHING_ELSE", "v")]);
+        assert!(!scope_available_with_env(
+            "CARGO_REGISTRY_TOKEN yank",
+            &no_token
+        ));
+    }
+
+    #[test]
     fn scope_available_honors_anodizer_github_token_fallback() {
         let env = MapEnvSource::new().with("ANODIZER_GITHUB_TOKEN", "yyy");
         assert!(scope_available_with_env(

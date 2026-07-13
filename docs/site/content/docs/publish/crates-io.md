@@ -74,12 +74,41 @@ publish:
 
 ## Authentication
 
+The `auth` field selects how anodizer authenticates the publish:
+
+| `auth` | Behaviour |
+|---|---|
+| `auto` (default) | Uses `CARGO_REGISTRY_TOKEN` when it is set; otherwise, under GitHub Actions with `id-token: write`, mints a short-lived token via Trusted Publishing. Errors only when neither is available. |
+| `token` | Always uses `CARGO_REGISTRY_TOKEN`. anodizer's historical behaviour. |
+| `oidc` | Always uses Trusted Publishing; never falls back to a stored token. Fails loudly if the GitHub Actions OIDC request env is absent. |
+
+### Token
+
 Set `CARGO_REGISTRY_TOKEN`:
 
 ```bash
 export CARGO_REGISTRY_TOKEN="cio_..."
 anodizer release
 ```
+
+### Trusted Publishing (OIDC)
+
+anodizer publishes to crates.io without a stored `CARGO_REGISTRY_TOKEN` by exchanging a GitHub Actions OIDC identity for a short-lived crates.io token — the same Trusted Publishing model anodizer offers for PyPI. Register a Trusted Publisher for each crate on crates.io (Settings → Trusted Publishing) with this repository and workflow, grant the job `id-token: write`, and set `auth: oidc`:
+
+```yaml
+publish:
+  cargo:
+    auth: oidc
+```
+
+```yaml
+# .github/workflows/release.yml
+permissions:
+  id-token: write   # required — lets the runner request the OIDC id-token
+  contents: write
+```
+
+anodizer mints **one** token before the dependency-order publish loop, injects it into every `cargo publish` via `CARGO_REGISTRY_TOKEN` (never on the command line), and revokes it after the loop — the token is workspace-scoped, so a single mint authorizes every crate whose Trusted-Publisher config matches this repository/workflow. A minted token also self-expires in ~30 minutes, so even a failed revoke leaves nothing long-lived behind. Trusted Publishing targets crates.io only; an `oidc` block against a custom `registry:`/`index:` is a config error — use a token there.
 
 ## Common gotchas
 
@@ -119,6 +148,9 @@ publish:
     locked: true
     offline: false
     frozen: false
+
+    # ----- authentication -----
+    auth: auto                # auto | token | oidc (Trusted Publishing)
 
     # ----- peer-publisher pattern -----
     skip: false               # template-aware: bool, "true"/"false", or "auto"

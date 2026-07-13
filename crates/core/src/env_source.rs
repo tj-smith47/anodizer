@@ -22,6 +22,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Read-only lookup for an environment variable name.
 ///
@@ -114,6 +115,79 @@ impl EnvSource for MapEnvSource {
     }
 }
 
+/// An [`EnvSource`] that overlays a small map of override entries on top of a
+/// base source.
+///
+/// A lookup returns the override value when the name is present **and
+/// non-empty**; otherwise it delegates to the base source. This lets a caller
+/// inject one or two synthetic variables (e.g. a short-lived credential minted
+/// at runtime) so that env-driven code paths — scope-availability probes,
+/// token resolvers — observe the injected value without mutating the process
+/// environment or discarding the base source's other variables.
+///
+/// An empty override string is treated as "not set" and falls through to the
+/// base, matching how the rest of the codebase treats an empty credential
+/// (`is_some_and(|t| !t.is_empty())`): overlaying `("X", "")` cannot mask a
+/// real base value.
+///
+/// ```
+/// use std::sync::Arc;
+/// use anodizer_core::{EnvSource, LayeredEnvSource, MapEnvSource};
+///
+/// let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new().with("A", "base-a"));
+/// let layered = LayeredEnvSource::new(base, [("A", "override-a"), ("B", "override-b")]);
+/// assert_eq!(layered.var("A"), Some("override-a".to_string())); // override wins
+/// assert_eq!(layered.var("B"), Some("override-b".to_string())); // override-only key
+/// assert_eq!(layered.var("MISSING"), None);                     // neither has it
+/// ```
+#[derive(Clone)]
+pub struct LayeredEnvSource {
+    base: Arc<dyn EnvSource>,
+    overrides: HashMap<String, String>,
+}
+
+impl LayeredEnvSource {
+    /// Wrap `base` with the given `(name, value)` overrides. Empty override
+    /// values are retained but treated as absent by [`LayeredEnvSource::var`]
+    /// (they fall through to the base).
+    pub fn new<I, K, V>(base: Arc<dyn EnvSource>, overrides: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            base,
+            overrides: overrides
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+}
+
+impl EnvSource for LayeredEnvSource {
+    fn var(&self, name: &str) -> Option<String> {
+        match self.overrides.get(name) {
+            Some(v) if !v.is_empty() => Some(v.clone()),
+            _ => self.base.var(name),
+        }
+    }
+
+    fn vars(&self) -> Vec<(String, String)> {
+        // Start from the base snapshot, then apply non-empty overrides so a
+        // whole-env scan (e.g. the determinism inherit-everything pass) sees
+        // the overlaid value in place of the base one.
+        let mut merged: HashMap<String, String> = self.base.vars().into_iter().collect();
+        for (k, v) in &self.overrides {
+            if !v.is_empty() {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        merged.into_iter().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +229,44 @@ mod tests {
     fn map_env_source_returns_none_for_missing_key() {
         let src = MapEnvSource::new().with("K", "V");
         assert_eq!(src.var("OTHER"), None);
+    }
+
+    #[test]
+    fn layered_env_source_override_wins_over_base() {
+        let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new().with("K", "base"));
+        let layered = LayeredEnvSource::new(base, [("K", "overridden")]);
+        assert_eq!(layered.var("K"), Some("overridden".to_string()));
+    }
+
+    #[test]
+    fn layered_env_source_empty_override_falls_through_to_base() {
+        let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new().with("K", "base"));
+        let layered = LayeredEnvSource::new(base, [("K", "")]);
+        // An empty override must not mask the real base value.
+        assert_eq!(layered.var("K"), Some("base".to_string()));
+    }
+
+    #[test]
+    fn layered_env_source_unset_falls_through_to_base() {
+        let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new().with("BASE_ONLY", "b"));
+        let layered = LayeredEnvSource::new(base, [("OTHER", "o")]);
+        // A name only the base knows resolves through the base.
+        assert_eq!(layered.var("BASE_ONLY"), Some("b".to_string()));
+        // A name neither knows is None.
+        assert_eq!(layered.var("NEITHER"), None);
+        // The override-only name still resolves.
+        assert_eq!(layered.var("OTHER"), Some("o".to_string()));
+    }
+
+    #[test]
+    fn layered_env_source_vars_merges_base_and_overrides() {
+        let base: Arc<dyn EnvSource> =
+            Arc::new(MapEnvSource::new().with("A", "base-a").with("B", "b"));
+        let layered = LayeredEnvSource::new(base, [("A", "over-a"), ("C", "c")]);
+        let map: HashMap<String, String> = layered.vars().into_iter().collect();
+        assert_eq!(map.get("A").map(String::as_str), Some("over-a"));
+        assert_eq!(map.get("B").map(String::as_str), Some("b"));
+        assert_eq!(map.get("C").map(String::as_str), Some("c"));
     }
 
     #[test]

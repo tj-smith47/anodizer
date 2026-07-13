@@ -666,6 +666,8 @@ fn run() {
             push,
             no_push,
             push_tags_only,
+            sign,
+            no_sign,
             push_remote,
             push_dry_run,
             changelog,
@@ -698,6 +700,11 @@ fn run() {
                 if changelog {
                     exit_usage_error("--changelog applies to `anodizer tag`, not `tag rollback`");
                 }
+                if sign || no_sign {
+                    exit_usage_error(
+                        "--sign / --no-sign apply to `anodizer tag`, not `tag rollback`",
+                    );
+                }
                 if version_override.is_some() {
                     exit_usage_error("--version applies to `anodizer tag`, not `tag rollback`");
                 }
@@ -729,6 +736,8 @@ fn run() {
                 push,
                 no_push,
                 push_tags_only,
+                sign,
+                no_sign,
                 push_remote,
                 push_dry_run,
                 changelog,

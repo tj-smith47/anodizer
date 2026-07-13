@@ -947,6 +947,82 @@ mod tests {
     }
 
     #[test]
+    fn cargo_defaults_auth_inherited_when_per_crate_omits_it() {
+        use crate::config::{CargoAuthMode, CargoPublishConfig};
+
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                cargo: Some(CargoPublishConfig {
+                    auth: Some(CargoAuthMode::Oidc),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate sets another field but omits `auth` entirely — the bug was
+        // that a bare `auth: CargoAuthMode` serialized to `auto` and blocked the
+        // strict `oidc` default from merging in.
+        let mut crate_cfg = make_crate("mycrate");
+        crate_cfg.publish = Some(PublishConfig {
+            cargo: Some(CargoPublishConfig {
+                index_timeout: Some(120),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let cargo = crate_cfg.publish.unwrap().cargo.unwrap();
+        assert_eq!(
+            cargo.resolved_auth(),
+            CargoAuthMode::Oidc,
+            "defaults.publish.cargo.auth=oidc must inherit into a per-crate cargo \
+             block that omits auth (must NOT degrade to auto)"
+        );
+        assert_eq!(
+            cargo.index_timeout,
+            Some(120),
+            "the per-crate field the block DID set must survive the merge"
+        );
+    }
+
+    #[test]
+    fn cargo_defaults_auth_per_crate_explicit_wins() {
+        use crate::config::{CargoAuthMode, CargoPublishConfig};
+
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                cargo: Some(CargoPublishConfig {
+                    auth: Some(CargoAuthMode::Oidc),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate explicitly picks `token`; it must win over the default.
+        let mut crate_cfg = make_crate("mycrate");
+        crate_cfg.publish = Some(PublishConfig {
+            cargo: Some(CargoPublishConfig {
+                auth: Some(CargoAuthMode::Token),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let cargo = crate_cfg.publish.unwrap().cargo.unwrap();
+        assert_eq!(
+            cargo.resolved_auth(),
+            CargoAuthMode::Token,
+            "an explicit per-crate auth must win over the defaults value"
+        );
+    }
+
+    #[test]
     fn cargo_defaults_fill_missing_fields_but_per_crate_wins_on_collision() {
         use crate::config::CargoPublishConfig;
 

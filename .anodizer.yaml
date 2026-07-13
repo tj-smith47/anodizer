@@ -125,6 +125,10 @@ defaults:
     cargo:
       required: true
       retain_on_rollback: true
+      # crates.io Trusted Publishing: exchange the Actions id-token for a
+      # short-lived crates.io token (no stored CARGO_REGISTRY_TOKEN). Ambient
+      # only on the github-hosted publish-oidc job, where cargo now runs.
+      auth: oidc
     on_error:
       # anodizer notify --raw: --raw skips Tera rendering so the
       # remote-controlled $ANODIZER_ERROR (HTTP bodies / git stderr) can never

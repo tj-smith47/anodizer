@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="200" alt="anodizer logo">
+<img src="https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.svg" width="200" alt="anodizer logo">
 
 # anodizer
 

@@ -590,6 +590,15 @@ pub struct Context {
     /// process env. Read through [`Context::env_var`]; replace via
     /// [`Context::set_env_source`].
     env_source: Arc<dyn EnvSource>,
+    /// Live crates.io Trusted-Publishing overlay state, set for the duration
+    /// of a cargo publish that minted a short-lived token via OIDC. Holds the
+    /// minted token (the revoke + yank-injection credential) and the base env
+    /// source captured before the overlay was installed (restored on
+    /// teardown). `None` on the ambient `auth: token` path and outside a
+    /// mint. Managed exclusively through
+    /// [`Context::begin_cargo_trusted_publishing`] /
+    /// [`Context::end_cargo_trusted_publishing`].
+    cargo_trusted_publishing: Option<CargoTrustedPublishing>,
     /// Optional in-memory log-capture handle. When `Some`, every logger
     /// produced by [`Context::logger`] attaches it so the test can read
     /// back aggregated counts of `status` / `warn` / etc. calls without
@@ -639,6 +648,14 @@ pub struct Context {
     process_env_cache: std::cell::OnceCell<std::collections::HashMap<String, String>>,
 }
 
+/// Live crates.io Trusted-Publishing overlay state (see the `Context`
+/// `cargo_trusted_publishing` field). The `base` is the env source captured
+/// before the token overlay was installed, restored verbatim on teardown.
+struct CargoTrustedPublishing {
+    token: String,
+    base: Arc<dyn EnvSource>,
+}
+
 impl Context {
     pub fn new(config: Config, options: ContextOptions) -> Self {
         let mut vars = TemplateVars::new();
@@ -661,6 +678,7 @@ impl Context {
             pending_evidence: None,
             built_crate_names: None,
             env_source: Arc::new(ProcessEnvSource),
+            cargo_trusted_publishing: None,
             #[cfg(feature = "test-helpers")]
             log_capture: None,
             render_strict: std::cell::Cell::new(false),
@@ -696,6 +714,57 @@ impl Context {
     /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env).
     pub fn set_env_source<S: EnvSource + 'static>(&mut self, src: S) {
         self.env_source = Arc::new(src);
+    }
+
+    /// Replace the injected environment-variable source with an already-boxed
+    /// `Arc<dyn EnvSource>`. Used to RESTORE a previously captured base source
+    /// after a temporary overlay (see
+    /// [`Context::begin_cargo_trusted_publishing`]) without re-wrapping it.
+    pub fn set_env_source_arc(&mut self, src: Arc<dyn EnvSource>) {
+        self.env_source = src;
+    }
+
+    /// Overlay a minted crates.io Trusted-Publishing token as
+    /// `CARGO_REGISTRY_TOKEN` for the cargo publish+rollback lifecycle.
+    ///
+    /// The current env source is captured as the base, then wrapped in a
+    /// [`LayeredEnvSource`](crate::LayeredEnvSource) that overrides
+    /// `CARGO_REGISTRY_TOKEN` with `token`. This makes the token visible to
+    /// env-driven paths that read through [`Context::env_source`] — notably
+    /// the rollback scope-availability gate — so a partial OIDC publish can
+    /// still yank, even though no ambient token exists. The token is also
+    /// retained as a marker so a later `rollback()` knows a minted token is
+    /// live and must be revoked after the yank.
+    ///
+    /// Paired with [`Context::end_cargo_trusted_publishing`], which restores
+    /// the base source and returns the token for best-effort revocation.
+    pub fn begin_cargo_trusted_publishing(&mut self, token: String) {
+        let base = self.env_source_arc();
+        self.env_source = Arc::new(crate::env_source::LayeredEnvSource::new(
+            Arc::clone(&base),
+            [("CARGO_REGISTRY_TOKEN".to_string(), token.clone())],
+        ));
+        self.cargo_trusted_publishing = Some(CargoTrustedPublishing { token, base });
+    }
+
+    /// The minted crates.io Trusted-Publishing token, if an overlay is active.
+    /// `rollback()` reads this to learn (i) that the yank must inject a minted
+    /// token, and (ii) that the token must be revoked once the yank completes.
+    pub fn cargo_trusted_publishing_token(&self) -> Option<&str> {
+        self.cargo_trusted_publishing
+            .as_ref()
+            .map(|s| s.token.as_str())
+    }
+
+    /// Tear down the Trusted-Publishing overlay: restore the captured base env
+    /// source, drop the marker, and return the minted token so the caller can
+    /// revoke it (best-effort). Returns `None` when no overlay is active (the
+    /// `auth: token` / ambient path never mints, so its long-lived token is
+    /// neither overlaid nor revoked).
+    pub fn end_cargo_trusted_publishing(&mut self) -> Option<String> {
+        let state = self.cargo_trusted_publishing.take()?;
+        self.env_source = state.base;
+        Some(state.token)
     }
 
     /// Borrow the injected environment-variable source as a trait

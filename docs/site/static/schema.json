@@ -3099,6 +3099,26 @@
         }
       ]
     },
+    "CargoAuthMode": {
+      "description": "How a `publish.cargo` block authenticates its `cargo publish`: a long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted Publishing, which mints a short-lived token per run — no stored secret).\n\ncrates.io publishes through the `cargo` CLI, but the Trusted-Publishing exchange (Actions id-token → crates.io mint-token) is performed by anodizer itself: it mints one token before the dependency-order publish loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and revokes it (best-effort) after the loop. The minted token is workspace-scoped, so a single mint authorizes every crate whose Trusted-Publisher config matches this repository/workflow.",
+      "oneOf": [
+        {
+          "description": "Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise, when an OIDC context is present, mint a Trusted-Publishing token. Errors only when neither is available.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Always authenticate with the token; never attempt OIDC. Errors if `CARGO_REGISTRY_TOKEN` is unset. This is anodizer's historical behaviour.",
+          "type": "string",
+          "const": "token"
+        },
+        {
+          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly instead of silently falling back to a token.",
+          "type": "string",
+          "const": "oidc"
+        }
+      ]
+    },
     "CargoPublishConfig": {
       "description": "`cargo publish` flag surface.\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch.\n\nFields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
       "type": "object",
@@ -3117,6 +3137,17 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "auth": {
+          "description": "Whether the publish authenticates with a long-lived API token (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io Trusted Publishing). Default [`Auto`]: a token when one is present, otherwise a Trusted-Publishing exchange when an OIDC context is available.\n\n`oidc` mints a short-lived crates.io token from a GitHub Actions id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it after the publish loop. The mint is workspace-scoped: one token authorizes every crate whose Trusted-Publisher config matches this repository/workflow, so a lockstep workspace mints once and reuses it for all crates.\n\nWhen omitted, resolves to [`Auto`]. Optional (rather than a bare enum with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is inherited by a per-crate `publish.cargo` block that omits `auth`: a bare enum always serializes to a concrete value, and the defaults deep-merge (fill-by-missing-key) never overwrites a present scalar, so a strict `oidc` default would silently degrade to `auto`. Read through [`CargoPublishConfig::resolved_auth`] so every call site agrees on the `None` → `Auto` collapse.\n\n[`Auto`]: CargoAuthMode::Auto",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CargoAuthMode"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "features": {
@@ -15538,7 +15569,7 @@
           ]
         },
         "git_api_tagging": {
-          "description": "When true, use the GitHub/GitLab API for tagging instead of git CLI.",
+          "description": "When true, use the GitHub/GitLab API for tagging instead of git CLI.\n\nMutually exclusive with `sign` on a pushed tag: the API mints the tag object server-side and cannot apply your local GPG/SSH signature, so anodizer errors rather than shipping a silently-unsigned tag. Use local tagging (drop `git_api_tagging`) to create signed tags.",
           "default": null,
           "type": [
             "boolean",
@@ -15619,6 +15650,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "sign": {
+          "description": "When true, anodizer creates the version tag with `git tag -s` (a cryptographically signed annotated tag) instead of the default `git tag -a` (unsigned annotated tag). The signing key and method are taken entirely from the user's git configuration (`user.signingkey`, and `gpg.format` to select GPG vs SSH signing) — anodizer adds no key field of its own, so both GPG and SSH signing work with no anodizer-specific setup. Applies in every workspace mode: single-crate, lockstep, and per-crate — every tag anodizer cuts is signed when this is enabled. The CLI `--sign` / `--no-sign` flags override this per invocation. Default (unset or false) leaves the existing unsigned annotated-tag behavior unchanged.\n\nMutually exclusive with `git_api_tagging` on a pushed tag: the GitHub API creates the tag object on the remote and cannot apply a local signature, so combining the two on a push is a hard error. Signing works with local tagging and with `--push-tags-only` (both cut the tag locally first).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "skip_ci_on_bump": {
           "description": "Append `[skip ci]` to the version-sync bump commit subject.\n\nOff by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run.",
