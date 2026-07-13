@@ -127,6 +127,28 @@ npms:
 
 `skip_metapackage` applies to `optional-deps` mode only; setting it in `postinstall` mode (which has no metapackage) is a hard error.
 
+### Publishing a subset of targets
+
+A project may build more targets than it publishes to npm. `targets:` restricts this publisher to a subset of the built target triples — only artifacts whose triple is listed become packages; the rest are silently skipped (a target left out of scope is *not* the same as a target with no npm `os`/`cpu` mapping, which is warned about). It is orthogonal to `ids:` — both filters apply.
+
+For example, git-cliff builds twelve targets but ships npm for six:
+
+```yaml
+npms:
+  - metapackage: git-cliff
+    platform_name_template: "git-cliff-{{ Os }}-{{ NpmCpu }}"
+    libc_aware: false
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-pc-windows-msvc
+      - aarch64-pc-windows-msvc
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+```
+
+A listed triple that no selected build produces is a config error naming the offending triple, so a typo fails preflight instead of silently narrowing the publisher to nothing.
+
 ## postinstall mode
 
 ```yaml
@@ -164,6 +186,7 @@ package/
 | `skip_metapackage` | string/bool | none | Publish only the per-platform packages; no metapackage (`optional-deps` only, templated like `skip`). See [Publishing platform packages only](#publishing-platform-packages-only) |
 | `id` | string | none | Unique identifier (for `--id=...` selection) |
 | `ids` | list | none | Filter artifacts by build ID (matches `crate_name`) |
+| `targets` | list | all built | Target-triple allowlist: publish only these triples (`optional-deps` + `postinstall`). See [Publishing a subset of targets](#publishing-a-subset-of-targets) |
 | `name` | string | crate name | Package name (postinstall package, or metapackage fallback) |
 | `description` | string | `metadata.description` | Package description |
 | `homepage` | string | `metadata.homepage` | Homepage URL |
@@ -263,26 +286,28 @@ current runner, it publishes **without** provenance and emits a warning rather t
 failing the release. The package still ships; only the provenance attestation is absent.
 
 To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
-exactly this — the main publish runs on a self-hosted runner with `--skip=npm`, and a
-small github-hosted job runs `release --publish-only --publishers npm` so the npm publish
-carries provenance:
+exactly this — and peels **every** publisher that authenticates from a GitHub Actions
+OIDC identity onto that one hosted job: npm (provenance) and pypi ([Trusted
+Publishing](./pypi.md#trusted-publishing-oidc)). The main publish runs on a self-hosted
+runner with `--skip=npm,pypi`, and a small github-hosted job runs the complementary
+`--publishers npm,pypi`:
 
 ```yaml
 jobs:
-  publish:                       # self-hosted: everything except npm
+  publish:                       # self-hosted: everything except the OIDC publishers
     runs-on: self-hosted
     steps:
-      - run: anodizer release --publish-only --skip=npm
+      - run: anodizer release --publish-only --skip=npm,pypi
 
-  publish-npm:                   # github-hosted: npm, with provenance
+  publish-oidc:                  # github-hosted: npm provenance + PyPI Trusted Publishing
     needs: publish
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      id-token: write            # mints the npm provenance + PyPI upload token
     env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi under auth: oidc needs no token
     steps:
-      - run: anodizer release --publish-only --publishers npm --skip=announce
+      - run: anodizer release --publish-only --publishers npm,pypi
 ```
 
 The `--publishers`/`--skip` selectors that make this split possible are described in

@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::{CommitAuthorConfig, StringOrBool, deserialize_string_or_bool_opt};
 
 /// homebrew-core formula-bump publisher configuration.
 ///
@@ -73,13 +73,48 @@ pub struct HomebrewCoreConfig {
     /// expects for version bumps.
     pub commit_msg_template: Option<String>,
 
+    /// Commit author for the formula-bump commit, with optional signing.
+    /// Its `use_github_app_token` is the canonical homebrew-core knob: when
+    /// set, the `author`/`committer` fields are omitted from the contents-API
+    /// commit so GitHub attributes it to the token's own account — the
+    /// `<app-slug>[bot]` identity a GitHub App workflow needs to satisfy
+    /// homebrew-core's DCO/CLA policy. Otherwise the resolved `name`/`email`
+    /// (config → local git identity → the anodizer default) author the commit.
+    ///
+    /// Note: `signing` has no effect here — formula bumps commit through the
+    /// GitHub contents API, which GitHub signs server-side; the git `-c
+    /// commit.gpgsign` path the tap/winget/krew publishers use does not apply.
+    ///
+    /// ```yaml
+    /// homebrew_cores:
+    ///   - commit_author:
+    ///       use_github_app_token: true
+    /// ```
+    pub commit_author: Option<CommitAuthorConfig>,
+
     /// Commit straight to the base branch instead of opening a pull
     /// request. Accepts bool or template string. Only honored for formula
     /// repositories you can push to — bumps targeting
     /// `Homebrew/homebrew-core` always go through a fork + PR, because
     /// homebrew-core never accepts direct pushes.
+    ///
+    /// A back-compat alias for `repository.pull_request.enabled: false`, the
+    /// preferred spelling shared with the tap/scoop/nix publishers — either
+    /// one selects the direct-commit path (both are still overridden by the
+    /// always-fork-and-PR rule for `Homebrew/homebrew-core`).
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub direct_commit: Option<StringOrBool>,
+
+    /// When truthy, refresh the existing bump PR in place instead of skipping
+    /// it: a same-version re-cut force-resets the bump branch to the current
+    /// base and re-commits the rewritten formula, so the open PR carries this
+    /// run's content rather than a stale earlier attempt (and no duplicate PR
+    /// is opened). When falsy (default), an already-open bump PR is left
+    /// untouched and a warning names this toggle. Accepts bool or template
+    /// string. Mirrors `winget` / `krew` / `homebrew_cask`'s
+    /// `update_existing_pr`.
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub update_existing_pr: Option<StringOrBool>,
 
     /// Skip this publisher. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.

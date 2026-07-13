@@ -182,6 +182,30 @@ pub(crate) fn resolve_download_url(ctx: &Context, cfg: &HomebrewCoreConfig) -> R
     ))
 }
 
+/// Resolve the contents-API commit identity from `commit_author`.
+///
+/// Returns `None` — omit `author`/`committer` from the PUT so GitHub
+/// attributes the commit to the token's own account — when no `commit_author`
+/// is configured, or when `use_github_app_token` is set (the App-token
+/// account, the canonical EasyCLA/DCO identity for homebrew-core, must author
+/// the commit). Otherwise returns the resolved `(name, email)` (config →
+/// local git identity → the anodizer default), reusing the same
+/// `resolve_commit_opts` resolution the tap/winget/krew publishers apply.
+pub(crate) fn resolve_commit_identity(
+    ctx: &Context,
+    cfg: &HomebrewCoreConfig,
+    log: &StageLogger,
+) -> Result<Option<(String, String)>> {
+    let Some(ca) = cfg.commit_author.as_ref() else {
+        return Ok(None);
+    };
+    let opts = crate::util::resolve_commit_opts(ctx, Some(ca), log)?;
+    if opts.use_github_app_token {
+        return Ok(None);
+    }
+    Ok(opts.author_name.zip(opts.author_email))
+}
+
 /// The bump branch name for one formula + version.
 pub(crate) fn bump_branch(formula: &str, version: &str) -> String {
     format!("bump-{}-{}", formula, version)
@@ -383,23 +407,48 @@ pub(crate) fn publish_to_homebrew_core(
             },
         )?;
         log.verbose(&format!(
-            "rewrote {} (url={} sha256={} version={} tag={} revision={})",
+            "rewrote {} (url={} sha256={} version={} tag={} revision={} revision_removed={})",
             file.path,
             summary.url_rewritten,
             summary.sha256_rewritten,
             summary.version_rewritten,
             summary.tag_rewritten,
             summary.revision_rewritten,
+            summary.revision_removed,
         ));
 
         // ---- Commit path ----
-        let direct = cfg
-            .direct_commit
+        let commit_identity = resolve_commit_identity(ctx, cfg, log)?;
+        let identity_ref = commit_identity
+            .as_ref()
+            .map(|(n, e)| (n.as_str(), e.as_str()));
+        let update_existing_pr = cfg
+            .update_existing_pr
             .as_ref()
             .map(|s| s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
             .transpose()
-            .context("homebrew-core: render direct_commit template")?
+            .context("homebrew-core: render update_existing_pr template")?
             .unwrap_or(false);
+        // `direct_commit` and `repository.pull_request.enabled: false` are
+        // equivalent spellings of "commit straight to the base branch" (the
+        // latter is the idiom shared with the tap/scoop/nix publishers). When
+        // both are present and disagree, the explicit `direct_commit` value wins
+        // — it is the specific knob on this axis; `pull_request.enabled` is
+        // consulted only when `direct_commit` is unset, so an explicit
+        // `direct_commit: false` can never be overridden into a silent direct
+        // commit by a stale `enabled: false`.
+        let pr_disabled = cfg
+            .repository
+            .as_ref()
+            .and_then(|r| r.pull_request.as_ref())
+            .and_then(|p| p.enabled)
+            == Some(false);
+        let direct = match cfg.direct_commit.as_ref() {
+            Some(s) => s
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .context("homebrew-core: render direct_commit template")?,
+            None => pr_disabled,
+        };
 
         if direct && !core {
             if !can_push {
@@ -418,6 +467,7 @@ pub(crate) fn publish_to_homebrew_core(
                 &message,
                 &new_text,
                 &file.sha,
+                identity_ref,
             )?;
             log.status(&format!(
                 "bumped formula {} to {} — committed to {}/{}@{}",
@@ -457,10 +507,49 @@ pub(crate) fn publish_to_homebrew_core(
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
         if !existing.is_empty() {
+            if !update_existing_pr {
+                log.warn(&format!(
+                    "open PR already bumps {} to {} in {}/{} (#{}) — skipping (set \
+                     `update_existing_pr: true` to force-refresh the PR branch in place)",
+                    formula, version, up_owner, up_repo, existing[0]
+                ));
+                continue;
+            }
+            // Force-reset the bump branch to the fresh base and re-commit the
+            // rewritten formula so the OPEN PR carries this run's content
+            // (a same-version re-cut) rather than a stale earlier attempt —
+            // never opening a duplicate PR.
+            let base_sha = api.branch_sha(&up_owner, &up_repo, &base_branch)?;
+            api.create_or_reset_branch(&head_owner, &up_repo, &branch, &base_sha)?;
+            api.put_file(
+                &head_owner,
+                &up_repo,
+                &file.path,
+                &branch,
+                &message,
+                &new_text,
+                &file.sha,
+                identity_ref,
+            )?;
             log.status(&format!(
-                "open PR already bumps {} to {} in {}/{} (#{}) — skipping (idempotent)",
-                formula, version, up_owner, up_repo, existing[0]
+                "refreshed existing PR bumping {} to {} in {}/{} (#{}) — branch {} updated in place",
+                formula, version, up_owner, up_repo, existing[0], branch
             ));
+            push_target(
+                targets,
+                &formula,
+                &version,
+                &up_owner,
+                &up_repo,
+                &head_owner,
+                &branch,
+                false,
+                Some(format!(
+                    "https://github.com/{}/{}/pull/{}",
+                    up_owner, up_repo, existing[0]
+                )),
+                token_env_var.clone(),
+            );
             continue;
         }
 
@@ -474,6 +563,7 @@ pub(crate) fn publish_to_homebrew_core(
             &message,
             &new_text,
             &file.sha,
+            identity_ref,
         )?;
         let head = if head_owner == up_owner {
             branch.clone()

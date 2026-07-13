@@ -193,8 +193,16 @@ pub(crate) struct WheelSpec {
     pub bin_name: String,
     pub summary: Option<String>,
     pub description: Option<String>,
+    /// `Description-Content-Type` header for the long-description body.
+    /// `None` (and thus no header) whenever `description` is `None`.
+    pub description_content_type: Option<String>,
+    pub author: Option<String>,
+    pub author_email: Option<String>,
     pub license: Option<String>,
     pub homepage: Option<String>,
+    /// Extra `Project-URL` links as `(label, url)` pairs, already in the order
+    /// they should render (the publisher supplies them sorted by label).
+    pub project_urls: Vec<(String, String)>,
     pub requires_python: Option<String>,
     pub keywords: Vec<String>,
     pub classifiers: Vec<String>,
@@ -228,8 +236,17 @@ pub(crate) fn render_metadata(spec: &WheelSpec) -> String {
     if let Some(s) = &spec.summary {
         out.push_str(&format!("Summary: {}\n", s));
     }
+    if let Some(a) = &spec.author {
+        out.push_str(&format!("Author: {}\n", a));
+    }
+    if let Some(a) = &spec.author_email {
+        out.push_str(&format!("Author-email: {}\n", a));
+    }
     if let Some(h) = &spec.homepage {
         out.push_str(&format!("Project-URL: Homepage, {}\n", h));
+    }
+    for (label, url) in &spec.project_urls {
+        out.push_str(&format!("Project-URL: {}, {}\n", label, url));
     }
     if let Some(l) = &spec.license {
         out.push_str(&format!("License: {}\n", l));
@@ -243,7 +260,13 @@ pub(crate) fn render_metadata(spec: &WheelSpec) -> String {
     if let Some(r) = &spec.requires_python {
         out.push_str(&format!("Requires-Python: {}\n", r));
     }
+    // `Description-Content-Type` is a header, so it must precede the body: pip
+    // and Warehouse read it to render the long description (Markdown vs RST vs
+    // plaintext). Only meaningful when a body follows.
     if let Some(d) = &spec.description {
+        if let Some(ct) = &spec.description_content_type {
+            out.push_str(&format!("Description-Content-Type: {}\n", ct));
+        }
         out.push('\n');
         out.push_str(d);
         if !d.ends_with('\n') {

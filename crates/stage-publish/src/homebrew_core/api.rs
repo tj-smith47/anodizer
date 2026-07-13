@@ -234,6 +234,12 @@ impl GithubApi {
     /// formula to `branch`. `prev_sha` is the blob SHA read by
     /// [`Self::get_file`]; the API rejects the update if the file changed
     /// underneath us (a concurrent bump), which is exactly the safe failure.
+    ///
+    /// `author` is the resolved commit identity `(name, email)`. When `None`,
+    /// the `author`/`committer` fields are omitted and GitHub attributes the
+    /// commit to the token's own account — the path a `use_github_app_token`
+    /// bump (or an unconfigured `commit_author`) takes so the App identity
+    /// authors the commit for DCO/CLA.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn put_file(
         &self,
@@ -244,16 +250,21 @@ impl GithubApi {
         message: &str,
         content: &str,
         prev_sha: &str,
+        author: Option<(&str, &str)>,
     ) -> Result<()> {
         let path = format!("/repos/{}/{}/contents/{}", owner, repo, file_path);
-        let req = self
-            .request(reqwest::Method::PUT, &path)
-            .json(&serde_json::json!({
-                "message": message,
-                "content": base64::engine::general_purpose::STANDARD.encode(content),
-                "sha": prev_sha,
-                "branch": branch,
-            }));
+        let mut payload = serde_json::json!({
+            "message": message,
+            "content": base64::engine::general_purpose::STANDARD.encode(content),
+            "sha": prev_sha,
+            "branch": branch,
+        });
+        if let Some((name, email)) = author {
+            let identity = serde_json::json!({ "name": name, "email": email });
+            payload["author"] = identity.clone();
+            payload["committer"] = identity;
+        }
+        let req = self.request(reqwest::Method::PUT, &path).json(&payload);
         self.send_ok(req, &format!("PUT {path}"))?;
         Ok(())
     }

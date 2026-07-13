@@ -125,18 +125,22 @@ pub fn assemble_postinstall_tarball(
     crate::util::guard_no_unrendered(ctx, log, "npm package.json", &pkg_json)?;
     write_deterministic(&pkg_dir.join("package.json"), pkg_json.as_bytes())?;
 
-    let postinstall = render_postinstall_js(&pkg_name);
+    // Resolve the command set once: the postinstall script extracts every
+    // target binary and each command gets its own `bin/<command>.js` launcher.
+    let commands = super::manifest::postinstall_commands(cfg, &pkg_name);
+    let targets: Vec<String> = commands.iter().map(|(_, t)| t.clone()).collect();
+
+    let postinstall = render_postinstall_js(&targets);
     write_deterministic(&pkg_dir.join("postinstall.js"), postinstall.as_bytes())?;
 
     fs::create_dir_all(pkg_dir.join("bin")).context("npm: create package/bin in staging dir")?;
-    let launcher = render_launcher_js(&pkg_name);
-    let launcher_basename = pkg_name.rsplit('/').next().unwrap_or(&pkg_name);
-    write_deterministic(
-        &pkg_dir
-            .join("bin")
-            .join(format!("{}.js", launcher_basename)),
-        launcher.as_bytes(),
-    )?;
+    for (command, target) in &commands {
+        let launcher = render_launcher_js(cfg, command, target);
+        write_deterministic(
+            &pkg_dir.join("bin").join(format!("{}.js", command)),
+            launcher.as_bytes(),
+        )?;
+    }
 
     copy_extra_files(cfg, &pkg_dir)?;
     render_templated_extra_files(ctx, cfg, &pkg_dir)?;
@@ -946,9 +950,14 @@ fn publish_optional_deps(
     // whose unpublish window closes after 72h.
     let mut staged_all: Vec<StagedTarball> = Vec::with_capacity(layout.platforms.len() + 1);
     for plat in &layout.platforms {
-        let binary = fs::read(&plat.binary_src)
-            .with_context(|| format!("npm: read binary {}", plat.binary_src.display()))?;
-        let embedded = vec![(plat.binary_name.clone(), binary, 0o755u32)];
+        // Embed every binary the package carries — one for a single-command
+        // tool, one per command for a multi-command `bins:` package.
+        let mut embedded: Vec<(String, Vec<u8>, u32)> = Vec::with_capacity(plat.binaries.len());
+        for b in &plat.binaries {
+            let binary = fs::read(&b.src)
+                .with_context(|| format!("npm: read binary {}", b.src.display()))?;
+            embedded.push((b.subpath.clone(), binary, 0o755u32));
+        }
         crate::util::guard_no_unrendered(
             ctx,
             log,
@@ -968,11 +977,19 @@ fn publish_optional_deps(
     // must already resolve at install time). Absent under skip_metapackage —
     // only the per-platform packages ship.
     if let Some(meta) = layout.metapackage_files.as_ref() {
-        let meta_embedded = vec![(
-            "shim.js".to_string(),
-            meta.shim_js.clone().into_bytes(),
-            0o755u32,
-        )];
+        // One embedded shim per emitted command (single `shim.js` by default,
+        // `<command>.js` per `bins` entry).
+        let meta_embedded: Vec<(String, Vec<u8>, u32)> = meta
+            .shims
+            .iter()
+            .map(|s| {
+                (
+                    s.filename.clone(),
+                    s.contents.clone().into_bytes(),
+                    0o755u32,
+                )
+            })
+            .collect();
         crate::util::guard_no_unrendered(
             ctx,
             log,
@@ -1088,7 +1105,11 @@ fn publish_postinstall(
     let dist_tag = resolve_tag(ctx, cfg)?;
     let access = resolve_access(cfg);
 
-    let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version, log)?;
+    // The download URL renders against binary_version (else the release
+    // version); package.json keeps the npm package version.
+    let download_version = super::manifest::resolve_binary_version(ctx, cfg, &version)?;
+    let binaries =
+        super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &download_version, log)?;
     if binaries.is_empty() {
         log.warn(&format!(
             "npm package '{}' has no archive artifacts matching any node platform/cpu pair; \

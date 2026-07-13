@@ -372,6 +372,15 @@ impl anodizer_core::Publisher for NpmPublisher {
             ) {
                 continue;
             }
+            acc = merge(
+                acc,
+                crate::publisher_helpers::targets_allowlist_check(
+                    ctx,
+                    cfg.targets.as_ref(),
+                    cfg.ids.as_ref(),
+                    "npm",
+                ),
+            );
             let Ok(registry) = crate::npm::manifest::resolve_registry(ctx, cfg) else {
                 continue;
             };

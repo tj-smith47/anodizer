@@ -423,11 +423,14 @@ fn render_package_json_extra_can_override_root_keys() {
 
 #[test]
 fn render_postinstall_js_includes_platform_check_and_sha256() {
-    let body = render_postinstall_js("@anodize/demo");
+    let body = render_postinstall_js(&["demo".to_string()]);
     assert!(body.contains("process.platform"));
     assert!(body.contains("process.arch"));
     assert!(body.contains("sha256"));
-    assert!(body.contains("demo.exe") || body.contains("'demo'"));
+    assert!(
+        body.contains("\"demo\""),
+        "TARGETS lists the binary basename"
+    );
     // Every format branch is present, including uncompressed `tar` (-xf, no -z)
     // distinct from gzip'd `tgz`/`tar.gz` (-xzf), zip, and raw binary.
     assert!(body.contains("'binary'"));
@@ -639,14 +642,12 @@ fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     }
 
     // shim resolves via require.resolve and detects musl.
-    assert!(meta_files(&layout).shim_js.contains("require.resolve"));
-    assert!(meta_files(&layout).shim_js.contains("BINARY_OVERRIDE"));
-    assert!(meta_files(&layout).shim_js.contains("musl"));
-    assert!(
-        meta_files(&layout)
-            .shim_js
-            .contains("@anodize/demo-linux-x64-musl")
-    );
+    let mf = meta_files(&layout);
+    let shim = &mf.shims[0].contents;
+    assert!(shim.contains("require.resolve"));
+    assert!(shim.contains("BINARY_OVERRIDE"));
+    assert!(shim.contains("musl"));
+    assert!(shim.contains("@anodize/demo-linux-x64-musl"));
 }
 
 #[test]
@@ -700,7 +701,7 @@ fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
         .iter()
         .find(|p| p.name == "@anodize/demo-linux-x64")
         .expect("collapsed linux pkg");
-    let src = linux.binary_src.to_string_lossy();
+    let src = linux.binaries[0].src.to_string_lossy();
     assert!(
         src.ends_with("x86_64-unknown-linux-gnu"),
         "collapse must keep the glibc binary deterministically, got {src}"
@@ -709,6 +710,92 @@ fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
         linux.triple.libc, "glibc",
         "retained triple must be glibc, got {:?}",
         linux.triple.libc
+    );
+}
+
+#[test]
+fn optional_deps_bins_map_co_locates_all_command_binaries_per_platform() {
+    // A multi-command `bins:` tool (e.g. hurl + hurlfmt) emits one binary
+    // artifact per command for the SAME platform. Model A: each platform gets
+    // ONE package embedding EVERY command binary; the metapackage emits one
+    // launcher shim per command, each resolving its own binary.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    // Two commands × two platforms = four artifacts.
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "hurl");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "hurlfmt");
+    add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "hurl");
+    add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "hurlfmt");
+
+    let mut bins = std::collections::BTreeMap::new();
+    bins.insert("hurl".to_string(), "hurl".to_string());
+    bins.insert("hurlfmt".to_string(), "hurlfmt".to_string());
+    let cfg = NpmConfig {
+        bins: Some(bins),
+        ..opt_cfg()
+    };
+
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+
+    // Exactly two platform packages (one per triple), NOT one per command.
+    assert_eq!(
+        layout.platforms.len(),
+        2,
+        "one package per platform, got {:?}",
+        layout.platforms.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+
+    // The linux package embeds BOTH command binaries side by side.
+    let linux = layout
+        .platforms
+        .iter()
+        .find(|p| p.name == "@anodize/demo-linux-x64-glibc")
+        .expect("linux pkg");
+    let mut subpaths: Vec<&str> = linux.binaries.iter().map(|b| b.subpath.as_str()).collect();
+    subpaths.sort_unstable();
+    assert_eq!(
+        subpaths,
+        vec!["hurl", "hurlfmt"],
+        "linux package must embed both command binaries"
+    );
+    // Its `files` allowlist lists every embedded binary.
+    let j: serde_json::Value = serde_json::from_str(&linux.package_json).expect("json");
+    let files: Vec<&str> = j["files"]
+        .as_array()
+        .expect("files array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(files.contains(&"hurl"), "files must list hurl: {files:?}");
+    assert!(
+        files.contains(&"hurlfmt"),
+        "files must list hurlfmt: {files:?}"
+    );
+
+    // The metapackage's bin map exposes both commands, each at its own shim.
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_files(&layout).package_json).expect("meta json");
+    assert_eq!(meta["bin"]["hurl"], "hurl.js");
+    assert_eq!(meta["bin"]["hurlfmt"], "hurlfmt.js");
+
+    // Two launcher shims are rendered, each resolving its own binary.
+    let mf = meta_files(&layout);
+    let mut shim_files: Vec<&str> = mf.shims.iter().map(|s| s.filename.as_str()).collect();
+    shim_files.sort_unstable();
+    assert_eq!(shim_files, vec!["hurl.js", "hurlfmt.js"]);
+    let hurlfmt_shim = mf
+        .shims
+        .iter()
+        .find(|s| s.filename == "hurlfmt.js")
+        .expect("hurlfmt shim");
+    assert!(
+        hurlfmt_shim.contents.contains("hurlfmt"),
+        "hurlfmt shim must resolve the hurlfmt binary"
     );
 }
 
@@ -752,7 +839,10 @@ fn optional_deps_layout_is_deterministic() {
     let l2 =
         generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("l2");
     assert_eq!(meta_files(&l1).package_json, meta_files(&l2).package_json);
-    assert_eq!(meta_files(&l1).shim_js, meta_files(&l2).shim_js);
+    assert_eq!(
+        meta_files(&l1).shims[0].contents,
+        meta_files(&l2).shims[0].contents
+    );
     let n1: Vec<&str> = l1.platforms.iter().map(|p| p.name.as_str()).collect();
     let n2: Vec<&str> = l2.platforms.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(n1, n2);
@@ -1187,6 +1277,374 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
         "only the demo binary is selected"
     );
     assert_eq!(layout.platforms[0].name, "@anodize/demo-linux-x64-musl");
+}
+
+// -----------------------------------------------------------------------------
+// targets: allowlist (git-cliff shape — publish a subset of the built targets)
+// -----------------------------------------------------------------------------
+
+/// The six targets git-cliff publishes to npm.
+const GIT_CLIFF_SIX: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+];
+
+/// Add an `UploadableBinary` for one crate + target (crate-name-parametric
+/// sibling of [`add_binary`], which hardcodes `"demo"`).
+fn add_binary_for(
+    ctx: &mut anodizer_core::context::Context,
+    dir: &std::path::Path,
+    crate_name: &str,
+    target: &str,
+) {
+    let path = dir.join(format!("{crate_name}-{target}"));
+    std::fs::write(&path, format!("ELF-{crate_name}-{target}").as_bytes()).expect("write binary");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UploadableBinary,
+        path,
+        name: "git-cliff".to_string(),
+        target: Some(target.to_string()),
+        crate_name: crate_name.to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+}
+
+/// The git-cliff `npms[]` config: template naming, `libc_aware: false`, and the
+/// six-target allowlist. `ids` narrows to one crate in the workspace modes.
+fn git_cliff_cfg(ids: Option<Vec<String>>) -> NpmConfig {
+    NpmConfig {
+        metapackage: Some("git-cliff".into()),
+        platform_name_template: Some("git-cliff-{{ Os }}-{{ NpmCpu }}".into()),
+        libc_aware: false,
+        targets: Some(GIT_CLIFF_SIX.iter().map(|s| s.to_string()).collect()),
+        ids,
+        ..Default::default()
+    }
+}
+
+/// The six package names the allowlist must yield, in no particular order.
+const GIT_CLIFF_EXPECTED: &[&str] = &[
+    "git-cliff-linux-x64",
+    "git-cliff-linux-arm64",
+    "git-cliff-windows-x64",
+    "git-cliff-windows-arm64",
+    "git-cliff-darwin-x64",
+    "git-cliff-darwin-arm64",
+];
+
+/// The six real targets PLUS an `ia32` build and a `windows-gnu` build (the
+/// latter would COLLIDE with `windows-msvc` on `git-cliff-windows-x64` if the
+/// allowlist did not drop it) — the exact shape `targets:` exists to tame.
+fn add_git_cliff_binaries(
+    ctx: &mut anodizer_core::context::Context,
+    dir: &std::path::Path,
+    krate: &str,
+) {
+    for t in GIT_CLIFF_SIX {
+        add_binary_for(ctx, dir, krate, t);
+    }
+    add_binary_for(ctx, dir, krate, "i686-pc-windows-msvc");
+    add_binary_for(ctx, dir, krate, "x86_64-pc-windows-gnu");
+}
+
+fn assert_git_cliff_six(layout: &OptionalDepsLayout) {
+    let mut names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    names.sort_unstable();
+    let mut want: Vec<&str> = GIT_CLIFF_EXPECTED.to_vec();
+    want.sort_unstable();
+    assert_eq!(
+        names, want,
+        "targets: must yield exactly the six listed packages"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("ia32")),
+        "the i686 build is not in targets: — no ia32 package: {names:?}"
+    );
+}
+
+/// Single-crate mode: `targets:` restricts the git-cliff build (6 real + i686 +
+/// windows-gnu) to exactly the six listed packages — no ia32, no gnu-windows
+/// collision.
+#[test]
+fn targets_allowlist_restricts_to_listed_single_crate() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("git-cliff")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    add_git_cliff_binaries(&mut ctx, tmp.path(), "demo");
+    let layout = generate_layout(
+        &ctx,
+        &git_cliff_cfg(None),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    assert_git_cliff_six(&layout);
+}
+
+/// Lockstep workspace mode: two crates each build all eight targets; `ids:
+/// [demo]` + the six-target allowlist still yields exactly the six demo
+/// packages (both filters apply).
+#[test]
+fn targets_allowlist_restricts_to_listed_lockstep_workspace() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("ws")
+        .tag("v1.2.3")
+        .crates(vec![
+            demo_crate(),
+            CrateConfig {
+                name: "other".to_string(),
+                path: "other".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            },
+        ])
+        .build();
+    add_git_cliff_binaries(&mut ctx, tmp.path(), "demo");
+    add_git_cliff_binaries(&mut ctx, tmp.path(), "other");
+    let layout = generate_layout(
+        &ctx,
+        &git_cliff_cfg(Some(vec!["demo".into()])),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    assert_git_cliff_six(&layout);
+}
+
+/// Per-crate workspace mode: one crate carries its own git-cliff binaries; the
+/// allowlist filters within that crate's own build set to the six packages.
+#[test]
+fn targets_allowlist_restricts_to_listed_per_crate() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("git-cliff")
+        .tag("v1.2.3")
+        .crates(vec![CrateConfig {
+            name: "git-cliff".to_string(),
+            path: "git-cliff".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }])
+        .build();
+    add_git_cliff_binaries(&mut ctx, tmp.path(), "git-cliff");
+    let layout = generate_layout(
+        &ctx,
+        &git_cliff_cfg(Some(vec!["git-cliff".into()])),
+        "git-cliff",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    assert_git_cliff_six(&layout);
+}
+
+/// Regression guard: `targets: None` (the default) is unchanged — every built
+/// target still becomes a package (the standard 4-target layout).
+#[test]
+fn targets_allowlist_none_is_unchanged() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = opt_cfg();
+    assert!(cfg.targets.is_none(), "opt_cfg has no allowlist");
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
+    assert_eq!(
+        layout.platforms.len(),
+        4,
+        "unfiltered layout keeps all four built targets"
+    );
+}
+
+/// The postinstall path honours `targets:` too: only the listed target's
+/// download entry survives.
+#[test]
+fn targets_allowlist_filters_postinstall_binaries() {
+    let ctx = ctx_with_archives(); // linux-gnu + darwin-arm64 archives
+    let cfg = NpmConfig {
+        targets: Some(vec!["x86_64-unknown-linux-gnu".into()]),
+        ..npm_cfg()
+    };
+    let bins =
+        collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
+            .expect("collect");
+    assert_eq!(bins.len(), 1, "only the listed target survives");
+    assert_eq!(bins[0].os, "linux");
+    assert_eq!(bins[0].cpu, "x64");
+}
+
+/// Config-time validation: a `targets:` triple that no selected build produces
+/// is a Blocker naming the offending triple.
+#[test]
+fn targets_allowlist_unbuilt_triple_blocks() {
+    use anodizer_core::config::BuildConfig;
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("demo".into()),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".into()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+    let targets = vec![
+        "x86_64-unknown-linux-gnu".to_string(),
+        "x86_64-foo-bar".to_string(),
+    ];
+    let check =
+        crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&targets), None, "npm");
+    match check {
+        PreflightCheck::Blocker(m) => {
+            assert!(
+                m.contains("x86_64-foo-bar"),
+                "names the offending triple: {m}"
+            );
+            assert!(m.contains("npm"), "labels the publisher: {m}");
+            assert!(
+                !m.contains("x86_64-unknown-linux-gnu"),
+                "the built triple is not flagged: {m}"
+            );
+        }
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// A fully-satisfied allowlist passes validation.
+#[test]
+fn targets_allowlist_all_built_passes() {
+    use anodizer_core::config::BuildConfig;
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("demo".into()),
+                targets: Some(GIT_CLIFF_SIX.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+    let targets: Vec<String> = GIT_CLIFF_SIX.iter().map(|s| s.to_string()).collect();
+    assert!(matches!(
+        crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&targets), None, "npm"),
+        PreflightCheck::Pass
+    ));
+}
+
+/// A crate with no explicit `builds:` block but a real `src/main.rs` gets a
+/// synthesized default build over `defaults.targets`, so a `targets:` allowlist
+/// naming one of those triples must Pass. Guards against re-deriving the
+/// universe from `c.builds` (which is `None` here and would false-block).
+#[test]
+fn targets_allowlist_synthesized_default_build_passes() {
+    use anodizer_core::config::Defaults;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let default_targets = vec![
+        "x86_64-unknown-linux-gnu".to_string(),
+        "aarch64-apple-darwin".to_string(),
+    ];
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .defaults(Defaults {
+            targets: Some(default_targets),
+            ..Default::default()
+        })
+        .crates(vec![CrateConfig {
+            name: "demo".to_string(),
+            path: dir.path().to_str().unwrap().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: None,
+            ..Default::default()
+        }])
+        .build();
+    let targets = vec!["aarch64-apple-darwin".to_string()];
+    assert!(
+        matches!(
+            crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&targets), None, "npm"),
+            PreflightCheck::Pass
+        ),
+        "synthesized default build produces the allowlisted triple",
+    );
+}
+
+/// An explicit empty `targets: []` reads as "publish nothing" yet the runtime
+/// filter would publish everything — a config mistake, so preflight Blocks.
+#[test]
+fn targets_allowlist_empty_list_blocks() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    let empty: Vec<String> = Vec::new();
+    match crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&empty), None, "npm") {
+        PreflightCheck::Blocker(m) => {
+            assert!(m.contains("npm"), "labels the publisher: {m}");
+            assert!(m.contains("empty"), "explains the empty list: {m}");
+        }
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// serde round-trip: `targets:` deserializes on an `npms[]` entry, defaults to
+/// `None`, and `deny_unknown_fields` still accepts it.
+#[test]
+fn targets_allowlist_config_round_trip() {
+    let yaml = r#"
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ .Version }}"
+npms:
+  - metapackage: git-cliff
+    platform_name_template: "git-cliff-{{ Os }}-{{ NpmCpu }}"
+    libc_aware: false
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-apple-darwin
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse npms targets");
+    let entry = &cfg.npms.as_ref().unwrap()[0];
+    assert_eq!(
+        entry.targets.as_deref(),
+        Some(
+            &[
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-apple-darwin".to_string()
+            ][..]
+        )
+    );
+    assert!(NpmConfig::default().targets.is_none(), "default is None");
 }
 
 // -----------------------------------------------------------------------------
@@ -3231,7 +3689,7 @@ fn files_explicit_override_and_empty_suppresses() {
 
 #[test]
 fn postinstall_js_uses_one_consistent_function_name_no_referenceerror() {
-    let body = render_postinstall_js("@anodize/demo");
+    let body = render_postinstall_js(&["demo".to_string()]);
     // The redirect-follow function is `go`; the call site must invoke `go`,
     // never the historical `follow` (which threw ReferenceError on install).
     assert!(body.contains("function go("), "defines go()");
@@ -3260,7 +3718,7 @@ fn postinstall_js_executes_redirect_without_referenceerror() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tmp");
-    let script = render_postinstall_js("@anodize/demo");
+    let script = render_postinstall_js(&["demo".to_string()]);
     let script_path = tmp.path().join("postinstall.js");
     std::fs::write(&script_path, &script).expect("write script");
 

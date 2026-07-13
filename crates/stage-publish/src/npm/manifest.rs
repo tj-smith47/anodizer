@@ -16,7 +16,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::NpmConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 
 use crate::util;
@@ -234,6 +234,28 @@ pub(crate) fn resolve_name<'a>(cfg: &'a NpmConfig, crate_name: &'a str) -> &'a s
         .unwrap_or(crate_name)
 }
 
+/// Resolve the version the `postinstall` download URL is rendered with:
+/// `cfg.binary_version` (templated) when set, else the release `version`. Lets
+/// the npm package version and the fetched native-binary release version
+/// diverge (e.g. re-publishing the wrapper against a pinned binary release).
+pub(crate) fn resolve_binary_version(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    version: &str,
+) -> anyhow::Result<String> {
+    match cfg
+        .binary_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => ctx
+            .render_template(raw)
+            .with_context(|| format!("npm: render binary_version template {raw:?}")),
+        None => Ok(version.to_string()),
+    }
+}
+
 /// Resolve the env var NAME (NOT value) that holds the npm auth token.
 /// Fixed to `NPM_TOKEN` — the canonical npm convention. Stored in evidence
 /// so rollback knows which env var to consult.
@@ -255,6 +277,21 @@ pub(crate) fn collect_platform_binaries(
     log: &StageLogger,
 ) -> Result<Vec<PlatformBinary>> {
     let format = resolve_format(cfg).to_string();
+    // A `binary`-format archive is a single raw binary per platform; it cannot
+    // satisfy a multi-command `bins:` map (only one command's binary would ship,
+    // and the other launchers would resolve a file that was never written).
+    if format == "binary" {
+        let commands = postinstall_commands(cfg, pkg_name);
+        if commands.len() > 1 {
+            bail!(
+                "npm: postinstall entry '{}' uses `format: binary` (one raw binary per \
+                 platform) but its `bins:` map declares {} commands — a single binary \
+                 download cannot provide them all; use a tar/zip archive format",
+                pkg_name,
+                commands.len()
+            );
+        }
+    }
     let id_filter = cfg.ids.as_ref();
     let url_template = cfg.url_template.as_deref();
 
@@ -270,6 +307,16 @@ pub(crate) fn collect_platform_binaries(
             continue;
         }
         let target = art.target.as_deref().unwrap_or("");
+        // `targets:` allowlist: silently skip targets left out of scope (the
+        // no-npm-mapping warning below is a distinct concern).
+        if !crate::publisher_helpers::target_in_allowlist(cfg.targets.as_ref(), target) {
+            continue;
+        }
+        // `amd64_variant` / `arm_variant` microarch filter — same as optional-deps
+        // mode, so a tuned build ships the chosen microarch in both modes.
+        if !artifact_matches_variant(art, cfg) {
+            continue;
+        }
         let Some(triple) = npm_triple(target) else {
             excluded.push(if target.is_empty() {
                 "<no target>".to_string()
@@ -297,6 +344,32 @@ pub(crate) fn collect_platform_binaries(
     Ok(out)
 }
 
+/// Whether an artifact passes the `amd64_variant` / `arm_variant` microarch
+/// filter for its arch. Mirrors the homebrew/nix/krew peers: an artifact with
+/// no variant metadata always passes; a tuned artifact is kept only when its
+/// metadata matches the configured (or default) variant. amd64 defaults to
+/// `v1`, arm (32-bit) to `6`. Shared by both npm modes (optional-deps +
+/// postinstall) so a tuned build ships the chosen microarch in either.
+pub(crate) fn artifact_matches_variant(art: &Artifact, cfg: &NpmConfig) -> bool {
+    let amd64_variant = cfg.amd64_variant.map_or("v1", |v| v.as_str());
+    let arm_variant = cfg.arm_variant.as_deref().unwrap_or("6");
+    let target = art.target.as_deref().unwrap_or("");
+    let (_, arch) = anodizer_core::target::map_target(target);
+    if arch == "amd64" {
+        return art
+            .metadata
+            .get("amd64_variant")
+            .is_none_or(|v| v == amd64_variant);
+    }
+    if arch.starts_with("arm") && arch != "arm64" {
+        return art
+            .metadata
+            .get("arm_variant")
+            .is_none_or(|v| v == arm_variant);
+    }
+    true
+}
+
 /// Resolve the archive's download URL, honouring `url_template` when set
 /// and falling back to the artifact's `url` metadata otherwise.
 fn resolve_artifact_url(
@@ -318,9 +391,9 @@ fn resolve_artifact_url(
 }
 
 /// Insert the shared metadata fields (`description`/`homepage`/`license`/
-/// `author`/`keywords`/`repository`/`bugs`) into a `package.json` root map,
-/// honouring the metadata fallbacks. Shared by postinstall + optional-deps
-/// metapackage generation.
+/// `author`/`keywords`/`repository`/`bugs`/`man`/`contributors`) into a
+/// `package.json` root map, honouring the metadata fallbacks. Shared by
+/// postinstall + optional-deps metapackage generation.
 ///
 /// `crate_name` selects the owning crate so the per-crate `meta_*_for`
 /// resolvers add a `Cargo.toml [package]` fallback: a plain Rust crate (no
@@ -391,7 +464,7 @@ pub(crate) fn insert_common_metadata(
     // OIDC-claimed repository. Fall back to the crate's
     // `Cargo.toml [package].repository` so the field is correct by default and
     // never requires the operator to restate it in the publisher config.
-    let repository = cfg.repository.as_deref().map(&render).or_else(|| {
+    let repository = cfg.repository_url.as_deref().map(&render).or_else(|| {
         ctx.config
             .meta_repository_for(crate_name)
             .map(str::to_string)
@@ -407,6 +480,54 @@ pub(crate) fn insert_common_metadata(
         let mut obj = serde_json::Map::new();
         obj.insert("url".into(), serde_json::Value::String(render(bugs)));
         root.insert("bugs".into(), serde_json::Value::Object(obj));
+    }
+
+    if let Some(man) = cfg.man.as_ref() {
+        root.insert(
+            "man".into(),
+            serde_json::Value::Array(
+                man.iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+    }
+
+    if let Some(contributors) = cfg.contributors.as_ref() {
+        root.insert(
+            "contributors".into(),
+            serde_json::Value::Array(
+                contributors
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+    }
+}
+
+/// Build the two launcher-shim JS fragments for [`NpmConfig::shim_env`]: the
+/// `const SHIM_ENV = { ... }` declaration (empty when `shim_env` is unset) and
+/// the `spawnSync` options object literal. With no `shim_env` the options are
+/// the historical `{ stdio: 'inherit' }`; with it, the child env is
+/// `{ ...process.env, ...SHIM_ENV }` so the configured vars win over the
+/// inherited environment. Keys/values are JSON-encoded (valid JS literals);
+/// the `BTreeMap` ordering keeps the emitted object deterministic. Shared by
+/// the optional-deps shim and the postinstall launcher.
+pub(crate) fn shim_env_fragments(cfg: &NpmConfig) -> (String, String) {
+    match cfg.shim_env.as_ref().filter(|m| !m.is_empty()) {
+        Some(env) => {
+            let mut items = String::new();
+            for (k, v) in env {
+                let key = serde_json::to_string(k).unwrap_or_else(|_| format!("{k:?}"));
+                let val = serde_json::to_string(v).unwrap_or_else(|_| format!("{v:?}"));
+                items.push_str(&format!("  {key}: {val},\n"));
+            }
+            let decl = format!("const SHIM_ENV = {{\n{items}}};\n");
+            let opts = "{ stdio: 'inherit', env: { ...process.env, ...SHIM_ENV } }".to_string();
+            (decl, opts)
+        }
+        None => (String::new(), "{ stdio: 'inherit' }".to_string()),
     }
 }
 
@@ -584,6 +705,31 @@ pub(crate) fn finalize_package_json(
         .context("npm: serialize package.json")
 }
 
+/// Resolve the postinstall command set as `(command, target-binary-basename)`
+/// pairs: every [`NpmConfig::bins`] entry when set (each command running its
+/// mapped binary), else the single package-basename command running the
+/// same-named binary. The launcher for `command` lives at `bin/<command>.js`
+/// and execs `<target>{,.exe}` from the extracted `bin/` directory.
+pub(crate) fn postinstall_commands(cfg: &NpmConfig, pkg_name: &str) -> Vec<(String, String)> {
+    let bins: Vec<(&String, &String)> = cfg
+        .bins
+        .as_ref()
+        .map(|m| {
+            m.iter()
+                .filter(|(k, v)| !k.trim().is_empty() && !v.trim().is_empty())
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+    if bins.is_empty() {
+        let base = pkg_name.rsplit('/').next().unwrap_or(pkg_name).to_string();
+        return vec![(base.clone(), base)];
+    }
+    bins.into_iter()
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
 /// Render the `package.json` content for one `npms[]` entry (postinstall mode).
 ///
 /// `crate_name` selects the owning crate for the per-crate metadata resolvers
@@ -615,25 +761,30 @@ pub(crate) fn render_package_json(
     insert_engines(&mut root, cfg);
     insert_publish_config(&mut root, cfg, provenance_override);
 
-    // `bin` points at the postinstall-installed launcher inside the package.
-    let bin_basename = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
+    // `bin` map: each command points at its postinstall-installed launcher.
+    // BTreeMap keeps the emitted map sorted for determinism.
+    let commands = postinstall_commands(cfg, pkg_name);
+    let mut bin_deps: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for (command, _target) in &commands {
+        bin_deps.insert(
+            command.clone(),
+            serde_json::Value::String(format!("bin/{}.js", command)),
+        );
+    }
     let mut bin = serde_json::Map::new();
-    bin.insert(
-        bin_basename.to_string(),
-        serde_json::Value::String(format!("bin/{}.js", bin_basename)),
-    );
+    for (k, v) in bin_deps {
+        bin.insert(k, v);
+    }
     root.insert("bin".into(), serde_json::Value::Object(bin));
 
     // Postinstall packages ship: package.json (implicit), the postinstall
-    // script, and the launcher under bin/. `files` makes that explicit.
-    insert_files(
-        &mut root,
-        cfg,
-        &[
-            "postinstall.js".to_string(),
-            format!("bin/{}.js", bin_basename),
-        ],
-    );
+    // script, and one launcher under bin/ per command. `files` makes that
+    // explicit.
+    let mut derived_files = vec!["postinstall.js".to_string()];
+    for (command, _target) in &commands {
+        derived_files.push(format!("bin/{}.js", command));
+    }
+    insert_files(&mut root, cfg, &derived_files);
 
     let mut scripts = serde_json::Map::new();
     scripts.insert(
@@ -667,23 +818,36 @@ pub(crate) fn render_package_json(
 
 /// Render the `postinstall.js` shim (postinstall mode). The script reads the
 /// embedded `anodize.binaries` table, selects the `process.platform` +
-/// `process.arch` entry, downloads + sha256-verifies the archive, and
-/// extracts the binary into `bin/<name>{,.exe}`. No third-party deps.
-pub(crate) fn render_postinstall_js(pkg_name: &str) -> String {
-    let bin_basename = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
+/// `process.arch` entry, downloads + sha256-verifies the archive, and extracts
+/// every command binary in `targets` into `bin/<target>{,.exe}` so each
+/// `npx <command>` works. `targets` is the set of binary basenames the package
+/// installs (one per `bins` command, or the single package basename). No
+/// third-party deps.
+pub(crate) fn render_postinstall_js(targets: &[String]) -> String {
+    // A `binary`-format archive carries exactly one binary, so it is written
+    // under the first target's name; multi-command packages ship an archive
+    // (tar/zip) whose extraction drops every target binary into bin/.
+    let targets_js = targets
+        .iter()
+        .map(|t| serde_json::to_string(t).unwrap_or_else(|_| format!("{t:?}")))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"#!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Generated by anodizer (https://github.com/tj-smith47/anodizer) — do not edit by hand.
 //
-// Selects the platform-matching binary archive from package.json,
-// downloads it, verifies its sha256, and extracts the binary into
-// ./bin/{bin_basename}{{.exe?}} so `npx {bin_basename}` works.
+// Selects the platform-matching binary archive from package.json, downloads
+// it, verifies its sha256, and extracts each command binary into
+// ./bin/<target>{{.exe?}} so every `npx <command>` works.
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
 const {{ execSync }} = require('child_process');
+
+const TARGETS = [{targets_js}];
+const exeSuffix = process.platform === 'win32' ? '.exe' : '';
 
 const pkg = require('./package.json');
 const binaries = (pkg.anodize && pkg.anodize.binaries) || [];
@@ -699,7 +863,6 @@ if (!target) {{
 const binDir = path.join(__dirname, 'bin');
 fs.mkdirSync(binDir, {{ recursive: true }});
 
-const exe = process.platform === 'win32' ? '{bin_basename}.exe' : '{bin_basename}';
 const archivePath = path.join(__dirname, `__anodize_${{target.os}}_${{target.cpu}}.${{target.format}}`);
 
 function download(url, dest) {{
@@ -732,9 +895,10 @@ function download(url, dest) {{
     console.error(`[anodize/npm] sha256 mismatch: expected ${{target.sha256}}, got ${{got}}`);
     process.exit(1);
   }}
-  // For `binary` format the archive IS the binary.
+  // A `binary`-format archive IS a single binary → name it after the first
+  // target; archive formats extract every target binary into bin/.
   if (target.format === 'binary') {{
-    fs.copyFileSync(archivePath, path.join(binDir, exe));
+    fs.copyFileSync(archivePath, path.join(binDir, TARGETS[0] + exeSuffix));
   }} else if (target.format === 'zip') {{
     execSync(`unzip -o "${{archivePath}}" -d "${{binDir}}"`, {{ stdio: 'inherit' }});
   }} else if (target.format === 'tar') {{
@@ -744,40 +908,55 @@ function download(url, dest) {{
   }}
   fs.unlinkSync(archivePath);
   if (process.platform !== 'win32') {{
-    try {{ fs.chmodSync(path.join(binDir, exe), 0o755); }} catch (_) {{}}
+    for (const t of TARGETS) {{
+      try {{ fs.chmodSync(path.join(binDir, t + exeSuffix), 0o755); }} catch (_) {{}}
+    }}
   }}
 }})().catch(err => {{
   console.error(`[anodize/npm] postinstall failed: ${{err.message}}`);
   process.exit(1);
 }});
 "#,
-        bin_basename = bin_basename
+        targets_js = targets_js
     )
 }
 
-/// Render the `bin/<name>.js` launcher that npm symlinks into
-/// `node_modules/.bin/<name>` (postinstall mode). It invokes the native
-/// binary the postinstall script dropped into `bin/<name>{,.exe}`.
-pub(crate) fn render_launcher_js(pkg_name: &str) -> String {
-    let bin_basename = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
+/// Render the `bin/<command>.js` launcher that npm symlinks into
+/// `node_modules/.bin/<command>` (postinstall mode). It invokes the native
+/// `target` binary the postinstall script dropped into `bin/<target>{,.exe}`,
+/// injecting [`NpmConfig::shim_env`] into the spawned child's environment
+/// (shared `shim_env_fragments` idiom with the optional-deps shim).
+pub(crate) fn render_launcher_js(cfg: &NpmConfig, command: &str, target: &str) -> String {
+    let (shim_env_decl, spawn_opts) = shim_env_fragments(cfg);
+    // JSON-encode the user-supplied `bins` key/value into JS string literals so
+    // a quote/backslash/backtick in a command or target name can never produce
+    // broken or injectable JS (mirrors the TARGETS encoding in postinstall.js).
+    let command_js = serde_json::to_string(command).unwrap_or_else(|_| format!("{command:?}"));
+    let target_js = serde_json::to_string(target).unwrap_or_else(|_| format!("{target:?}"));
     format!(
         r#"#!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Generated by anodizer (https://github.com/tj-smith47/anodizer) — do not edit by hand.
 const path = require('path');
 const {{ spawnSync }} = require('child_process');
-const exe = process.platform === 'win32' ? '{bin_basename}.exe' : '{bin_basename}';
-const target = path.join(__dirname, exe);
-const result = spawnSync(target, process.argv.slice(2), {{ stdio: 'inherit' }});
+{shim_env_decl}
+const CMD = {command_js};
+const base = {target_js};
+const exe = process.platform === 'win32' ? base + '.exe' : base;
+const bin = path.join(__dirname, exe);
+const result = spawnSync(bin, process.argv.slice(2), {spawn_opts});
 if (result.error) {{
   console.error(
-    `[{bin_basename}] failed to launch ${{target}}: ${{result.error.message}}; ` +
+    `[${{CMD}}] failed to launch ${{bin}}: ${{result.error.message}}; ` +
     `the postinstall step may not have completed — try reinstalling the package`
   );
   process.exit(1);
 }}
 process.exit(result.status === null ? 1 : result.status);
 "#,
-        bin_basename = bin_basename
+        shim_env_decl = shim_env_decl,
+        spawn_opts = spawn_opts,
+        command_js = command_js,
+        target_js = target_js,
     )
 }

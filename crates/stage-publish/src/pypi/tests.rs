@@ -10,9 +10,13 @@ use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scripted_responder};
 use anodizer_core::{PreflightCheck, Publisher};
 
-use super::publisher::{PypiPublisher, publish_to_pypi, resolve_token, version_probe};
+use super::publisher::{
+    PypiPublisher, build_spec_base, publish_to_pypi, resolve_token, version_probe,
+};
 use super::upload::{FileType, UploadOutcome, is_duplicate_rejection, upload_file};
-use super::wheel::{BinaryTraits, WheelSpec, build_wheel, inspect_binary, platform_tag};
+use super::wheel::{
+    BinaryTraits, WheelSpec, build_wheel, inspect_binary, platform_tag, render_metadata,
+};
 
 fn traits(
     glibc: Option<(u64, u64)>,
@@ -244,8 +248,12 @@ fn spec(tag: &str) -> WheelSpec {
         bin_name: "my-tool".to_string(),
         summary: Some("A tool".to_string()),
         description: Some("Long description".to_string()),
+        description_content_type: None,
+        author: None,
+        author_email: None,
         license: Some("MIT".to_string()),
         homepage: Some("https://example.com".to_string()),
+        project_urls: Vec::new(),
         requires_python: Some(">=3.7".to_string()),
         keywords: vec!["cli".to_string(), "rust".to_string()],
         classifiers: vec!["Programming Language :: Rust".to_string()],
@@ -588,7 +596,7 @@ fn run_publish_end_to_end(
 #[test]
 fn publishes_wheel_in_single_crate_mode() {
     let (files, log) = run_publish_end_to_end(vec![demo_crate("demo", ".")], |repo| PypiConfig {
-        repository: Some(repo),
+        index_url: Some(repo),
         ..Default::default()
     });
     assert_eq!(files.len(), 1);
@@ -611,7 +619,7 @@ fn publishes_wheel_in_lockstep_workspace_mode() {
         |repo| PypiConfig {
             name: Some("demo".into()),
             ids: Some(vec!["demo".into()]),
-            repository: Some(repo),
+            index_url: Some(repo),
             ..Default::default()
         },
     );
@@ -639,7 +647,7 @@ fn ids_filter_scopes_binaries_per_crate() {
         vec![demo_crate("demo", "."), demo_crate("other", "other")],
         PypiConfig {
             ids: Some(vec!["demo".into()]),
-            repository: Some(format!("http://{addr}/legacy/")),
+            index_url: Some(format!("http://{addr}/legacy/")),
             ..Default::default()
         },
     );
@@ -662,6 +670,322 @@ fn ids_filter_scopes_binaries_per_crate() {
     assert_eq!(files.len(), 1, "only the demo crate's binary is selected");
     assert!(files[0].filename.starts_with("demo-1.2.3"));
     assert_eq!(log.lock().unwrap().len(), 1);
+}
+
+/// Add a binary carrying explicit metadata (e.g. `amd64_variant`), with
+/// per-binary content so distinct artifacts hash differently.
+fn add_binary_with_meta(
+    ctx: &mut anodizer_core::context::Context,
+    dir: &std::path::Path,
+    target: &str,
+    crate_name: &str,
+    bin_name: &str,
+    meta: &[(&str, &str)],
+) {
+    let path = dir.join(format!("{bin_name}-{target}"));
+    std::fs::write(&path, format!("#!fake-{target}").as_bytes()).expect("write binary");
+    let mut metadata = std::collections::HashMap::new();
+    for (k, v) in meta {
+        metadata.insert((*k).to_string(), (*v).to_string());
+    }
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UploadableBinary,
+        path,
+        name: bin_name.to_string(),
+        target: Some(target.to_string()),
+        crate_name: crate_name.to_string(),
+        metadata,
+        size: None,
+    });
+}
+
+/// One scripted binary row: `(target, crate_name, bin_name, metadata pairs)`.
+type BinaryRow<'a> = (&'a str, &'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+/// Run a publish against a scripted 200-index over the supplied crates and
+/// binaries, mutating a base `PypiConfig` (with `index_url` prewired) before
+/// the run. Owns the tempdir for the call's duration.
+fn run_publish_with_binaries(
+    crates: Vec<CrateConfig>,
+    binaries: &[BinaryRow<'_>],
+    cfg_for: impl FnOnce(String) -> PypiConfig,
+) -> Vec<anodizer_core::publish_evidence::PypiFileSnapshot> {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/legacy/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+    let cfg = cfg_for(format!("http://{addr}/legacy/"));
+    let mut ctx = publish_ctx(tmp.path(), crates, cfg);
+    for (target, crate_name, bin_name, meta) in binaries {
+        add_binary_with_meta(&mut ctx, tmp.path(), target, crate_name, bin_name, meta);
+    }
+    let mut files = Vec::new();
+    publish_to_pypi(&ctx, &ctx.logger("publish"), &mut files).expect("publish");
+    files
+}
+
+// -----------------------------------------------------------------------------
+// METADATA gaps: Description-Content-Type, Project-URL map, Author headers
+// -----------------------------------------------------------------------------
+
+#[test]
+fn metadata_emits_author_project_urls_and_content_type_before_body() {
+    let mut s = spec("manylinux_2_28_x86_64");
+    s.author = Some("Ada Lovelace".to_string());
+    s.author_email = Some("ada@example.com".to_string());
+    s.description_content_type = Some("text/markdown".to_string());
+    s.project_urls = vec![
+        (
+            "Documentation".to_string(),
+            "https://docs.example.com".to_string(),
+        ),
+        (
+            "Repository".to_string(),
+            "https://github.com/me/tool".to_string(),
+        ),
+    ];
+    let md = render_metadata(&s);
+
+    assert!(md.contains("Author: Ada Lovelace\n"), "{md}");
+    assert!(md.contains("Author-email: ada@example.com\n"), "{md}");
+    // The Homepage link plus both explicit project_urls, in supplied order.
+    assert!(
+        md.contains("Project-URL: Homepage, https://example.com\n"),
+        "{md}"
+    );
+    assert!(
+        md.contains("Project-URL: Documentation, https://docs.example.com\n"),
+        "{md}"
+    );
+    assert!(
+        md.contains("Project-URL: Repository, https://github.com/me/tool\n"),
+        "{md}"
+    );
+    // Content-Type header must precede the blank line + body (pip reads it to
+    // pick the renderer).
+    let ct = md
+        .find("Description-Content-Type: text/markdown\n")
+        .expect("ct header");
+    let body = md.find("\nLong description\n").expect("body");
+    assert!(
+        ct < body,
+        "content-type header must precede the body:\n{md}"
+    );
+}
+
+#[test]
+fn metadata_omits_new_headers_when_unset() {
+    // The default `spec()` sets none of the new fields → no stray headers.
+    let md = render_metadata(&spec("musllinux_1_2_x86_64"));
+    assert!(!md.contains("Author:"), "{md}");
+    assert!(!md.contains("Author-email:"), "{md}");
+    assert!(!md.contains("Description-Content-Type:"), "{md}");
+    // Only the Homepage-derived Project-URL, no extras.
+    assert_eq!(md.matches("Project-URL:").count(), 1, "{md}");
+}
+
+#[test]
+fn content_type_defaults_to_markdown_when_description_present() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .dist(tmp.path().join("dist"))
+        .build();
+
+    // Description present, content-type unset → defaults to text/markdown so
+    // PyPI renders Markdown instead of raw plaintext.
+    let with_desc = PypiConfig {
+        description: Some("# Heading".into()),
+        ..Default::default()
+    };
+    let spec = build_spec_base(&ctx, &with_desc, "demo", "1.2.3", "demo").expect("spec");
+    assert_eq!(spec.description.as_deref(), Some("# Heading"));
+    assert_eq!(
+        spec.description_content_type.as_deref(),
+        Some("text/markdown")
+    );
+
+    // Explicit override wins.
+    let rst = PypiConfig {
+        description: Some("body".into()),
+        description_content_type: Some("text/x-rst".into()),
+        ..Default::default()
+    };
+    let spec = build_spec_base(&ctx, &rst, "demo", "1.2.3", "demo").expect("spec");
+    assert_eq!(spec.description_content_type.as_deref(), Some("text/x-rst"));
+
+    // No description body at all → no content-type header.
+    let bare = PypiConfig::default();
+    let spec = build_spec_base(&ctx, &bare, "demo", "1.2.3", "demo").expect("spec");
+    assert!(spec.description.is_none());
+    assert!(spec.description_content_type.is_none());
+}
+
+#[test]
+fn author_and_project_urls_render_through_templates() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .dist(tmp.path().join("dist"))
+        .build();
+    let mut project_urls = std::collections::BTreeMap::new();
+    project_urls.insert(
+        "Version".to_string(),
+        "https://ex/{{ .Version }}".to_string(),
+    );
+    project_urls.insert("Repo".to_string(), "https://ex/repo".to_string());
+    let cfg = PypiConfig {
+        author: Some("Grace {{ .ProjectName }}".into()),
+        author_email: Some("g@example.com".into()),
+        project_urls: Some(project_urls),
+        ..Default::default()
+    };
+    let spec = build_spec_base(&ctx, &cfg, "demo", "1.2.3", "demo").expect("spec");
+    assert_eq!(spec.author.as_deref(), Some("Grace demo"));
+    assert_eq!(spec.author_email.as_deref(), Some("g@example.com"));
+    // BTreeMap order → Repo before Version; the URL template is rendered.
+    assert_eq!(
+        spec.project_urls,
+        vec![
+            ("Repo".to_string(), "https://ex/repo".to_string()),
+            ("Version".to_string(), "https://ex/1.2.3".to_string()),
+        ]
+    );
+}
+
+// -----------------------------------------------------------------------------
+// P4: per-target platform-tag overrides (all three config modes)
+// -----------------------------------------------------------------------------
+
+fn override_cfg(repo: String, extra: impl FnOnce(&mut PypiConfig)) -> PypiConfig {
+    let mut overrides = std::collections::BTreeMap::new();
+    overrides.insert(
+        "aarch64-unknown-linux-gnu".to_string(),
+        "manylinux_2_28_aarch64".to_string(),
+    );
+    let mut cfg = PypiConfig {
+        index_url: Some(repo),
+        platform_tag_overrides: Some(overrides),
+        ..Default::default()
+    };
+    extra(&mut cfg);
+    cfg
+}
+
+#[test]
+fn platform_tag_override_wins_single_crate() {
+    // The fake bytes carry no GLIBC symbol, so the auto path would BAIL for a
+    // gnu target — the override proves inspection is skipped entirely and the
+    // configured tag is used verbatim (the git-cliff manylinux_2_28 case).
+    let files = run_publish_with_binaries(
+        vec![demo_crate("demo", ".")],
+        &[("aarch64-unknown-linux-gnu", "demo", "demo", &[])],
+        |repo| override_cfg(repo, |_| {}),
+    );
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        files[0].filename,
+        "demo-1.2.3-py3-none-manylinux_2_28_aarch64.whl"
+    );
+    assert_eq!(files[0].platform_tag, "manylinux_2_28_aarch64");
+}
+
+#[test]
+fn platform_tag_override_wins_lockstep_workspace() {
+    let files = run_publish_with_binaries(
+        vec![demo_crate("demo", "."), demo_crate("other", "other")],
+        &[("aarch64-unknown-linux-gnu", "demo", "demo", &[])],
+        |repo| {
+            override_cfg(repo, |c| {
+                c.name = Some("demo".into());
+                c.ids = Some(vec!["demo".into()]);
+            })
+        },
+    );
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].platform_tag, "manylinux_2_28_aarch64");
+}
+
+#[test]
+fn platform_tag_override_wins_per_crate() {
+    // Per-crate topology: two crates, entry scoped by ids to `other`.
+    let files = run_publish_with_binaries(
+        vec![demo_crate("demo", "."), demo_crate("other", "other")],
+        &[
+            ("x86_64-unknown-linux-musl", "demo", "demo", &[]),
+            ("aarch64-unknown-linux-gnu", "other", "other", &[]),
+        ],
+        |repo| {
+            override_cfg(repo, |c| {
+                c.ids = Some(vec!["other".into()]);
+            })
+        },
+    );
+    assert_eq!(files.len(), 1, "only the scoped crate's binary ships");
+    assert!(files[0].filename.starts_with("other-1.2.3"));
+    assert_eq!(files[0].platform_tag, "manylinux_2_28_aarch64");
+}
+
+#[test]
+fn no_override_keeps_auto_detected_tag() {
+    // Same aarch64-gnu triple but no override for it → the auto path runs; a
+    // musl binary (no glibc needed) tags musllinux from inspection, unchanged.
+    let files = run_publish_with_binaries(
+        vec![demo_crate("demo", ".")],
+        &[("aarch64-unknown-linux-musl", "demo", "demo", &[])],
+        |repo| PypiConfig {
+            index_url: Some(repo),
+            ..Default::default()
+        },
+    );
+    assert_eq!(files[0].platform_tag, "musllinux_1_2_aarch64");
+}
+
+// -----------------------------------------------------------------------------
+// F7: microarch variant selection
+// -----------------------------------------------------------------------------
+
+#[test]
+fn amd64_variant_selects_matching_microarch_build() {
+    // Two amd64 binaries on the SAME triple, tagged v1 (baseline) and v3.
+    // Selecting v3 must drop the v1 build — if both survived they would derive
+    // the same platform tag and the publish would bail on the collision, so a
+    // clean single-file publish is the proof the filter chose one.
+    let files = run_publish_with_binaries(
+        vec![demo_crate("demo", ".")],
+        &[
+            (
+                "x86_64-unknown-linux-musl",
+                "demo",
+                "demo",
+                &[("amd64_variant", "v1")],
+            ),
+            (
+                "x86_64-unknown-linux-musl",
+                "demo",
+                "demo",
+                &[("amd64_variant", "v3")],
+            ),
+        ],
+        |repo| PypiConfig {
+            index_url: Some(repo),
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V3),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        files.len(),
+        1,
+        "only the v3 microarch build becomes the wheel"
+    );
+    assert_eq!(files[0].platform_tag, "musllinux_1_2_x86_64");
 }
 
 #[test]
@@ -728,7 +1052,7 @@ fn dry_run_makes_no_requests() {
         .dry_run(true)
         .build();
     ctx.config.pypis = Some(vec![PypiConfig {
-        repository: Some(format!("http://{addr}/legacy/")),
+        index_url: Some(format!("http://{addr}/legacy/")),
         ..Default::default()
     }]);
     add_binary(
@@ -804,6 +1128,12 @@ pypis:
     assert_eq!(e.requires_python.as_deref(), Some(">=3.8"));
     assert_eq!(e.required, Some(false));
     assert_eq!(e.retain_on_rollback, Some(true));
+    // The legacy `repository:` spelling deserializes into `index_url` via
+    // serde alias.
+    assert_eq!(
+        e.index_url.as_deref(),
+        Some("https://test.pypi.org/legacy/")
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -840,13 +1170,16 @@ fn requirements_use_token_ladder_and_maturin_when_sdist() {
         )),
         "sdist demands maturin: {reqs:?}"
     );
+    // Default auth is `auto`: the token ladder rides inside a coarse
+    // token-OR-oidc any-of, so assert containment rather than exact equality.
     assert!(
         reqs.iter().any(|r| matches!(
             r,
             anodizer_core::EnvRequirement::EnvAnyOf { vars }
-                if vars == &vec!["PYPI_TOKEN".to_string(), "MATURIN_PYPI_TOKEN".to_string()]
+                if vars.contains(&"PYPI_TOKEN".to_string())
+                    && vars.contains(&"MATURIN_PYPI_TOKEN".to_string())
         )),
-        "token ladder is an any-of: {reqs:?}"
+        "token ladder is part of the auto any-of: {reqs:?}"
     );
 
     // Without sdist, maturin is not demanded.
@@ -892,6 +1225,268 @@ fn token_resolution_ladder() {
 }
 
 // -----------------------------------------------------------------------------
+// Trusted Publishing (OIDC)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn mint_token_url_maps_only_pypi_hosts() {
+    use super::oidc::mint_token_url;
+    assert_eq!(
+        mint_token_url("https://upload.pypi.org/legacy/").as_deref(),
+        Some("https://pypi.org/_/oidc/mint-token")
+    );
+    assert_eq!(
+        mint_token_url("https://test.pypi.org/legacy/").as_deref(),
+        Some("https://test.pypi.org/_/oidc/mint-token")
+    );
+    // A custom index has no Trusted-Publishing contract.
+    assert_eq!(mint_token_url("https://pypi.example.com/legacy/"), None);
+}
+
+#[test]
+fn oidc_context_available_requires_both_request_vars() {
+    let base = || {
+        TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .crates(vec![demo_crate("demo", ".")])
+    };
+    // Neither var → no context.
+    let ctx = base().build();
+    assert!(!super::oidc::oidc_context_available(&ctx));
+    // Only one var → still no context.
+    let ctx = base()
+        .env("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions/x")
+        .build();
+    assert!(!super::oidc::oidc_context_available(&ctx));
+    // Both non-empty → context present.
+    let mut ctx = base().build();
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions/x")
+            .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-tok"),
+    );
+    assert!(super::oidc::oidc_context_available(&ctx));
+}
+
+#[test]
+fn requirements_gate_on_auth_mode() {
+    use anodizer_core::config::PypiAuthMode;
+    let ctx_with = |auth: PypiAuthMode| {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .crates(vec![demo_crate("demo", ".")])
+            .build();
+        ctx.config.pypis = Some(vec![PypiConfig {
+            auth,
+            ..Default::default()
+        }]);
+        ctx
+    };
+    let oidc_all = anodizer_core::EnvRequirement::EnvAllOf {
+        vars: vec![
+            "ACTIONS_ID_TOKEN_REQUEST_URL".to_string(),
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN".to_string(),
+        ],
+    };
+
+    // Token: the token ladder any-of, no OIDC requirement.
+    let reqs = PypiPublisher::new().requirements(&ctx_with(PypiAuthMode::Token));
+    assert!(
+        reqs.iter().any(|r| matches!(
+            r,
+            anodizer_core::EnvRequirement::EnvAnyOf { vars }
+                if vars == &vec!["PYPI_TOKEN".to_string(), "MATURIN_PYPI_TOKEN".to_string()]
+        )),
+        "token mode requires the token ladder: {reqs:?}"
+    );
+    assert!(!reqs.contains(&oidc_all), "token mode must not demand OIDC");
+
+    // Oidc: strictly the Actions request pair; the token ladder is NOT required.
+    let reqs = PypiPublisher::new().requirements(&ctx_with(PypiAuthMode::Oidc));
+    assert!(
+        reqs.contains(&oidc_all),
+        "oidc mode demands the pair: {reqs:?}"
+    );
+    assert!(
+        !reqs.iter().any(|r| matches!(
+            r,
+            anodizer_core::EnvRequirement::EnvAnyOf { vars }
+                if vars == &vec!["PYPI_TOKEN".to_string(), "MATURIN_PYPI_TOKEN".to_string()]
+        )),
+        "oidc mode must not require a token: {reqs:?}"
+    );
+
+    // Auto: a coarse any-of accepting either a token var OR an OIDC context.
+    let reqs = PypiPublisher::new().requirements(&ctx_with(PypiAuthMode::Auto));
+    assert!(
+        reqs.iter().any(|r| matches!(
+            r,
+            anodizer_core::EnvRequirement::EnvAnyOf { vars }
+                if vars.contains(&"PYPI_TOKEN".to_string())
+                    && vars.contains(&"ACTIONS_ID_TOKEN_REQUEST_URL".to_string())
+        )),
+        "auto mode is token-OR-oidc: {reqs:?}"
+    );
+}
+
+#[test]
+fn oidc_mint_errors_without_request_env() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    let err = super::oidc::mint_trusted_publishing_token(
+        &ctx,
+        "https://upload.pypi.org/legacy/",
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &ctx.logger("publish"),
+    )
+    .expect_err("missing OIDC request env must error");
+    assert!(
+        err.to_string().contains("ACTIONS_ID_TOKEN_REQUEST_URL"),
+        "{err}"
+    );
+}
+
+#[test]
+fn oidc_mode_ignores_a_malformed_inline_token() {
+    use super::publisher::resolve_upload_credential;
+    // The token field is "Unused when auth: oidc": a stray/malformed inline
+    // token template must NOT be resolved (and abort) before the mint path.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    let cfg = PypiConfig {
+        auth: anodizer_core::config::PypiAuthMode::Oidc,
+        token: Some("{{ this_is_not_a_real_filter }}".into()),
+        ..Default::default()
+    };
+    // No OIDC request env → must fail on the OIDC path (missing
+    // ACTIONS_ID_TOKEN_REQUEST_URL), NOT on rendering the unused token.
+    let err = resolve_upload_credential(
+        &ctx,
+        &cfg,
+        "https://upload.pypi.org/legacy/",
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        "pypis[0]",
+        &ctx.logger("publish"),
+    )
+    .expect_err("oidc without request env must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ACTIONS_ID_TOKEN_REQUEST_URL"),
+        "must fail on the OIDC path, not the unused token template: {msg}"
+    );
+    assert!(
+        !msg.contains("render token template"),
+        "the unused token must never be rendered: {msg}"
+    );
+}
+
+#[test]
+fn auto_mode_routes_around_a_token_render_error_to_oidc() {
+    use super::publisher::resolve_upload_credential;
+    // auto's contract is "use whatever credential the environment offers": a
+    // `token:` template that fails to render must NOT abort the run when an
+    // OIDC context is present — it routes to Trusted Publishing instead. With
+    // a full OIDC context the mint path is taken, so the error is an OIDC-path
+    // error, never "render token template".
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions/x")
+            .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-tok"),
+    );
+    let cfg = PypiConfig {
+        auth: anodizer_core::config::PypiAuthMode::Auto,
+        token: Some("{{ this_is_not_a_real_filter }}".into()),
+        ..Default::default()
+    };
+    let err = resolve_upload_credential(
+        &ctx,
+        &cfg,
+        // Custom index → the mint path fast-fails deterministically offline.
+        "https://pypi.example.com/legacy/",
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        "pypis[0]",
+        &ctx.logger("publish"),
+    )
+    .expect_err("mint on a custom index must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("only supported against"),
+        "auto must route the token error to the OIDC mint path: {msg}"
+    );
+    assert!(
+        !msg.contains("render token template"),
+        "a token-render error must not abort auto when OIDC is available: {msg}"
+    );
+}
+
+#[test]
+fn auto_mode_surfaces_the_token_render_error_without_oidc() {
+    use super::publisher::resolve_upload_credential;
+    // No OIDC fallback to route around to: the token-render error IS the
+    // actionable failure and must be surfaced (not swallowed into the generic
+    // no-credential guidance).
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    let cfg = PypiConfig {
+        auth: anodizer_core::config::PypiAuthMode::Auto,
+        token: Some("{{ this_is_not_a_real_filter }}".into()),
+        ..Default::default()
+    };
+    let err = resolve_upload_credential(
+        &ctx,
+        &cfg,
+        "https://upload.pypi.org/legacy/",
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        "pypis[0]",
+        &ctx.logger("publish"),
+    )
+    .expect_err("a malformed token template with no OIDC fallback must error");
+    assert!(
+        err.to_string().contains("render token template"),
+        "the token-render error must surface when there is no OIDC fallback: {err}"
+    );
+}
+
+#[test]
+fn oidc_mint_errors_on_custom_index() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    // Even with a full OIDC context, a custom index has no mint endpoint.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions/x")
+            .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-tok"),
+    );
+    let err = super::oidc::mint_trusted_publishing_token(
+        &ctx,
+        "https://pypi.example.com/legacy/",
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &ctx.logger("publish"),
+    )
+    .expect_err("custom index must error under oidc");
+    assert!(err.to_string().contains("only supported against"), "{err}");
+}
+
+// -----------------------------------------------------------------------------
 // Preflight
 // -----------------------------------------------------------------------------
 
@@ -922,7 +1517,7 @@ fn preflight_blocks_on_unmappable_version() {
     ctx.config.pypis = Some(vec![PypiConfig {
         // A repository that version_probe maps to the /simple/ probe would
         // hit the network; an invalid URL keeps this test offline.
-        repository: Some("not a url".into()),
+        index_url: Some("not a url".into()),
         ..Default::default()
     }]);
     match PypiPublisher::new().preflight(&ctx).expect("preflight") {
@@ -1125,7 +1720,7 @@ fn metadata_scopes_to_entry_crate_via_ids() {
         vec![demo_crate("demo", "."), demo_crate("other", "other")],
         PypiConfig {
             ids: Some(vec!["other".into()]),
-            repository: Some(format!("http://{addr}/legacy/")),
+            index_url: Some(format!("http://{addr}/legacy/")),
             ..Default::default()
         },
     );
@@ -1226,6 +1821,7 @@ fn crate_with_targets(name: &str, path: &str, targets: &[&str]) -> CrateConfig {
         path: path.to_string(),
         tag_template: "v{{ .Version }}".to_string(),
         builds: Some(vec![BuildConfig {
+            binary: Some(name.to_string()),
             targets: Some(targets.iter().map(|t| t.to_string()).collect()),
             ..Default::default()
         }]),
@@ -1247,7 +1843,7 @@ fn preflight_warns_on_cross_crate_platform_tag_collision() {
     // wheel platform tag → identical filename collision. `not a url` keeps the
     // version probe offline.
     ctx.config.pypis = Some(vec![PypiConfig {
-        repository: Some("not a url".into()),
+        index_url: Some("not a url".into()),
         ..Default::default()
     }]);
     match PypiPublisher::new().preflight(&ctx).expect("preflight") {
@@ -1272,7 +1868,7 @@ fn preflight_passes_single_crate_multi_target() {
         .build();
     // Distinct triples in one crate never collide (different platform tags).
     ctx.config.pypis = Some(vec![PypiConfig {
-        repository: Some("not a url".into()),
+        index_url: Some("not a url".into()),
         ..Default::default()
     }]);
     assert!(matches!(
@@ -1319,7 +1915,7 @@ fn static_repository_defaults_and_rejects_template() {
     // Explicit static value is preserved.
     assert_eq!(
         static_repository(&PypiConfig {
-            repository: Some("https://test.pypi.org/legacy/".into()),
+            index_url: Some("https://test.pypi.org/legacy/".into()),
             ..Default::default()
         }),
         Some("https://test.pypi.org/legacy/".to_string())
@@ -1327,7 +1923,7 @@ fn static_repository_defaults_and_rejects_template() {
     // Templated repository → unresolvable host → fail closed.
     assert_eq!(
         static_repository(&PypiConfig {
-            repository: Some("https://{{ .Env.HOST }}/legacy/".into()),
+            index_url: Some("https://{{ .Env.HOST }}/legacy/".into()),
             ..Default::default()
         }),
         None
@@ -1471,4 +2067,214 @@ fn pypi_version_live_fails_closed_when_unreachable() {
         err.is_err(),
         "an unreachable index must surface Err, got {err:?}"
     );
+}
+
+// -----------------------------------------------------------------------------
+// targets: allowlist (subset of built targets; win_amd64 collision avoidance)
+// -----------------------------------------------------------------------------
+
+/// Without a `targets:` allowlist, a build that ships BOTH
+/// `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` derives the SAME
+/// `win_amd64` platform tag twice and collides on one `.whl` — the run-path
+/// hard gate. This is the shape `targets:` exists to tame.
+#[test]
+fn targets_allowlist_none_hits_win_amd64_collision() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let cfg = PypiConfig {
+        // A bogus repository is never contacted: the collision bail fires
+        // inside the wheel loop, before any upload.
+        index_url: Some("http://127.0.0.1:1/legacy/".into()),
+        ..Default::default()
+    };
+    let mut ctx = publish_ctx(tmp.path(), vec![demo_crate("demo", ".")], cfg);
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-pc-windows-msvc",
+        "demo",
+        "demo",
+    );
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-pc-windows-gnu",
+        "demo",
+        "demo",
+    );
+    let mut files = Vec::new();
+    let err = publish_to_pypi(&ctx, &ctx.logger("publish"), &mut files)
+        .expect_err("colliding win_amd64 wheels must hard-error");
+    assert!(
+        format!("{err:#}").contains("same wheel platform tag"),
+        "error must name the tag collision: {err:#}"
+    );
+}
+
+/// With `targets:` listing only the msvc triple, the colliding
+/// `x86_64-pc-windows-gnu` binary is silently dropped, so exactly one
+/// `win_amd64` wheel is built and uploaded — the collision is gone.
+#[test]
+fn targets_allowlist_prevents_win_amd64_collision() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/legacy/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+    let cfg = PypiConfig {
+        index_url: Some(format!("http://{addr}/legacy/")),
+        targets: Some(vec!["x86_64-pc-windows-msvc".into()]),
+        ..Default::default()
+    };
+    let mut ctx = publish_ctx(tmp.path(), vec![demo_crate("demo", ".")], cfg);
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-pc-windows-msvc",
+        "demo",
+        "demo",
+    );
+    add_binary(
+        &mut ctx,
+        tmp.path(),
+        "x86_64-pc-windows-gnu",
+        "demo",
+        "demo",
+    );
+    let mut files = Vec::new();
+    publish_to_pypi(&ctx, &ctx.logger("publish"), &mut files).expect("publish");
+    assert_eq!(files.len(), 1, "only the msvc wheel survives the allowlist");
+    assert_eq!(files[0].platform_tag, "win_amd64");
+    assert_eq!(files[0].filename, "demo-1.2.3-py3-none-win_amd64.whl");
+    assert_eq!(log.lock().unwrap().len(), 1, "exactly one upload");
+}
+
+/// Config-time validation: a `targets:` triple no selected build produces is a
+/// Blocker naming the offending triple, labelled `pypi`.
+#[test]
+fn targets_allowlist_unbuilt_triple_blocks() {
+    use anodizer_core::config::BuildConfig;
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("demo".into()),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".into()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+    let targets = vec![
+        "x86_64-unknown-linux-gnu".to_string(),
+        "x86_64-foo-bar".to_string(),
+    ];
+    match crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&targets), None, "pypi") {
+        PreflightCheck::Blocker(m) => {
+            assert!(m.contains("x86_64-foo-bar"), "names the triple: {m}");
+            assert!(m.contains("pypi"), "labels the publisher: {m}");
+            assert!(
+                !m.contains("x86_64-unknown-linux-gnu"),
+                "the built triple is not flagged: {m}"
+            );
+        }
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// A crate with no explicit `builds:` block but a real `src/main.rs` gets a
+/// synthesized default build over `defaults.targets`, so a `targets:` allowlist
+/// naming one of those triples must Pass. Guards against re-deriving the
+/// universe from `c.builds` (which is `None` here and would false-block).
+#[test]
+fn targets_allowlist_synthesized_default_build_passes() {
+    use anodizer_core::config::Defaults;
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let default_targets = vec![
+        "x86_64-unknown-linux-gnu".to_string(),
+        "aarch64-apple-darwin".to_string(),
+    ];
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .defaults(Defaults {
+            targets: Some(default_targets),
+            ..Default::default()
+        })
+        .crates(vec![CrateConfig {
+            name: "demo".to_string(),
+            path: dir.path().to_str().unwrap().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: None,
+            ..Default::default()
+        }])
+        .build();
+    let targets = vec!["aarch64-apple-darwin".to_string()];
+    assert!(
+        matches!(
+            crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&targets), None, "pypi"),
+            PreflightCheck::Pass
+        ),
+        "synthesized default build produces the allowlisted triple",
+    );
+}
+
+/// An explicit empty `targets: []` reads as "publish nothing" yet the runtime
+/// filter would publish everything — a config mistake, so preflight Blocks.
+#[test]
+fn targets_allowlist_empty_list_blocks() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    let empty: Vec<String> = Vec::new();
+    match crate::publisher_helpers::targets_allowlist_check(&ctx, Some(&empty), None, "pypi") {
+        PreflightCheck::Blocker(m) => {
+            assert!(m.contains("pypi"), "labels the publisher: {m}");
+            assert!(m.contains("empty"), "explains the empty list: {m}");
+        }
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// serde round-trip: `targets:` deserializes on a `pypis[]` entry, defaults to
+/// `None`, and `deny_unknown_fields` still accepts it.
+#[test]
+fn targets_allowlist_config_round_trip() {
+    let yaml = r#"
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ .Version }}"
+pypis:
+  - name: git-cliff
+    targets:
+      - x86_64-unknown-linux-gnu
+      - x86_64-pc-windows-msvc
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse pypis targets");
+    let entry = &cfg.pypis.as_ref().unwrap()[0];
+    assert_eq!(
+        entry.targets.as_deref(),
+        Some(
+            &[
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-pc-windows-msvc".to_string()
+            ][..]
+        )
+    );
+    assert!(PypiConfig::default().targets.is_none(), "default is None");
 }

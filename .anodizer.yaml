@@ -1328,6 +1328,23 @@ npms:
     provenance: true
     auth: auto
 
+# Self-dogfood: anodizer ships as pip-installable per-platform wheels so the
+# wheel-repackage publisher runs on a live PyPI release, not only in tests.
+# summary/homepage/license derive from `metadata:`; only the declarative PyPI
+# surface is named here. auth: oidc uses PyPI Trusted Publishing (the release
+# job already grants id-token: write) — no stored PYPI_TOKEN secret.
+pypis:
+  - name: anodizer
+    auth: oidc
+    requires_python: ">=3.8"
+    project_urls:
+      Documentation: "https://tj-smith47.github.io/anodizer"
+      Repository: "https://github.com/tj-smith47/anodizer"
+    classifiers:
+      - "Development Status :: 4 - Beta"
+      - "Programming Language :: Rust"
+      - "Topic :: Software Development :: Build Tools"
+
 # MCP (Model Context Protocol) server registry publisher.
 #
 # Publishes an apiv0.ServerJSON document to https://registry.modelcontextprotocol.io

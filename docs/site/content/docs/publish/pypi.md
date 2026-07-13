@@ -38,6 +38,23 @@ pypis:
 
 `anodizer preflight` warns when the selected crates would build the same triple more than once, and the publish itself hard-errors on an actual duplicate platform tag.
 
+### Publishing a subset of targets
+
+`targets:` restricts this entry to a subset of the built target triples — only binaries whose triple is listed become wheels; the rest are silently skipped. It is orthogonal to `ids:` (both filters apply). Besides trimming what ships, it resolves a same-platform-tag collision without splitting into separate entries: `x86_64-pc-windows-gnu` and `x86_64-pc-windows-msvc` both tag `win_amd64`, so building both would collide on one `.whl` — list only the one you publish:
+
+```yaml
+pypis:
+  - name: git-cliff
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-pc-windows-msvc      # gnu-windows omitted — no win_amd64 collision
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+```
+
+The collision preflight honours the allowlist (a triple filtered out cannot collide), and a listed triple that no selected build produces is a config error naming the offending triple.
+
 ## Classification
 
 | Group | Required (default) | Rollback | Token |
@@ -97,6 +114,7 @@ pypis:
 |---|---|---|
 | `id` | — | CLI selector for `--id=...` |
 | `ids` | all crates | Only include binaries built from these crates |
+| `targets` | all built | Target-triple allowlist: build wheels only for these triples. See [Publishing a subset of targets](#publishing-a-subset-of-targets) |
 | `name` | crate name | PyPI project name; any PEP 508 form (`My.Tool`, `my_tool`) — PyPI normalizes per PEP 503, wheel filenames escape per PEP 427 |
 | `sdist` | `false` | Also build + upload a source distribution via `maturin sdist` |
 | `sdist_manifest` | — | Templated. Directory containing `pyproject.toml`; **required** when `sdist: true` |
@@ -172,13 +190,41 @@ With `sdist: true`, `maturin` must be on `PATH` (surfaced by `anodizer preflight
 
 ## Authentication
 
-The upload authenticates via HTTP Basic auth with the literal username `__token__` — a [PyPI API token](https://pypi.org/help/#apitoken):
+The `auth` field selects between a stored API token and PyPI [Trusted
+Publishing](https://docs.pypi.org/trusted-publishers/) (GitHub Actions OIDC):
+
+| `auth` | Behaviour |
+|---|---|
+| `auto` *(default)* | A token when one is available, otherwise a Trusted-Publishing exchange when an OIDC context is present. Errors only when neither exists. |
+| `token` | Always the token; never OIDC. |
+| `oidc` | Always Trusted Publishing; never fall back to a token. Errors loudly if the OIDC request env is absent. |
+
+### Token
+
+HTTP Basic auth with the literal username `__token__` — a [PyPI API
+token](https://pypi.org/help/#apitoken):
 
 1. `pypis[].token` (templated) when set;
 2. `$PYPI_TOKEN`;
 3. `$MATURIN_PYPI_TOKEN` (so a project migrating from `maturin publish` keeps its existing secret name).
 
-To rehearse against TestPyPI:
+### Trusted Publishing (OIDC)
+
+No stored secret. anodizer requests a GitHub Actions id-token (audience
+`pypi`) and exchanges it at the index's `/_/oidc/mint-token` endpoint for a
+short-lived upload token. Requires `id-token: write` on the release job and a
+[Trusted Publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
+(or a *pending* publisher, for a brand-new project) configured on PyPI for
+this repository and workflow. Supported for `pypi.org` and `test.pypi.org`
+only — a custom index has no mint endpoint.
+
+```yaml
+pypis:
+  - name: my-tool
+    auth: oidc          # no PYPI_TOKEN secret needed
+```
+
+To rehearse against TestPyPI (token):
 
 ```yaml
 pypis:

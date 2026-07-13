@@ -6,7 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use anodizer_core::config::{
-    CrateConfig, HomebrewCoreConfig, ReleaseConfig, RepositoryConfig, ScmRepoConfig, StringOrBool,
+    CommitAuthorConfig, CrateConfig, HomebrewCoreConfig, PullRequestConfig, ReleaseConfig,
+    RepositoryConfig, ScmRepoConfig, StringOrBool,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::test_helpers::scripted_responder::{
@@ -346,6 +347,218 @@ fn rewrite_preserves_trailing_newline_presence() {
     let without_nl = with_nl.trim_end_matches('\n').to_string();
     let (out, _) = rewrite_formula(&without_nl, &rw(Some(new_sha()), None, None)).expect("rewrite");
     assert!(!out.ends_with('\n'), "absent trailing newline stays absent");
+}
+
+// -----------------------------------------------------------------------------
+// revision reset — a version bump drops the standalone `revision N` line
+// -----------------------------------------------------------------------------
+
+/// Archive-form formula carrying a standalone `revision 2` line between the
+/// `version` stanza and the bottle block. Dropping that line must leave the
+/// output byte-identical to the revision-less [`archive_formula`] rewrite.
+fn archive_formula_with_revision() -> String {
+    format!(
+        r#"class MyTool < Formula
+  desc "A tool"
+  homepage "https://example.com"
+  url "{OLD_URL}"
+  sha256 "{old}"
+  license "MIT"
+  version "1.0.0"
+  revision 2
+
+  bottle do
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "{bottle_a}"
+    sha256 arm64_ventura: "{bottle_b}"
+  end
+
+  def install
+    bin.install "my-tool"
+  end
+end
+"#,
+        old = old_sha(),
+        bottle_a = "aa".repeat(32),
+        bottle_b = "bb".repeat(32),
+    )
+}
+
+/// Git-form formula carrying BOTH the keyed `revision:` field (the git SHA
+/// inside the url stanza) and a standalone `revision 3` line. Only the
+/// standalone line is dropped; the keyed field is bumped as usual.
+fn git_formula_with_revision() -> String {
+    format!(
+        r#"class MyTool < Formula
+  desc "A tool"
+  homepage "https://example.com"
+  url "https://github.com/acme/my-tool.git",
+      tag: "v1.0.0",
+      revision: "{old_rev}"
+  revision 3
+
+  def install
+    bin.install "my-tool"
+  end
+end
+"#,
+        old_rev = "0".repeat(40),
+    )
+}
+
+#[test]
+fn rewrite_archive_form_drops_standalone_revision_line() {
+    let (out, summary) = rewrite_formula(
+        &archive_formula_with_revision(),
+        &rw(Some(new_sha()), None, None),
+    )
+    .expect("rewrite");
+    assert!(summary.revision_removed, "the revision line was dropped");
+    assert!(
+        !out.contains("revision 2"),
+        "stale `revision 2` must be gone: {out}"
+    );
+    // Byte-stable: the ONLY change vs the revision-less fixture is the removed
+    // line — everything else (url/sha256/version/bottle) is identical.
+    let (base, _) =
+        rewrite_formula(&archive_formula(), &rw(Some(new_sha()), None, None)).expect("base");
+    assert_eq!(out, base, "output equals the revision-less rewrite");
+}
+
+#[test]
+fn rewrite_git_form_drops_standalone_revision_but_keeps_keyed_revision() {
+    let new_rev = "f".repeat(40);
+    let (out, summary) = rewrite_formula(
+        &git_formula_with_revision(),
+        &FormulaRewrite {
+            url: None,
+            sha256: None,
+            version: "1.2.3".to_string(),
+            tag: Some("v1.2.3".to_string()),
+            revision: Some(new_rev.clone()),
+        },
+    )
+    .expect("rewrite");
+    assert!(summary.revision_removed, "standalone revision dropped");
+    assert!(summary.revision_rewritten, "keyed git revision bumped");
+    assert!(
+        !out.contains("revision 3"),
+        "standalone `revision 3` must be gone: {out}"
+    );
+    assert!(
+        out.contains(&format!("revision: \"{new_rev}\"")),
+        "the keyed git revision field must still be bumped: {out}"
+    );
+    assert!(out.contains("tag: \"v1.2.3\""), "{out}");
+}
+
+#[test]
+fn rewrite_drops_revision_and_swallows_double_blank() {
+    // The revision line sits between two blank lines; removing it must not
+    // leave a double blank behind.
+    let text = format!(
+        r#"class MyTool < Formula
+  url "{OLD_URL}"
+  sha256 "{old}"
+  version "1.0.0"
+
+  revision 5
+
+  def install
+  end
+end
+"#,
+        old = old_sha(),
+    );
+    let (out, summary) = rewrite_formula(&text, &rw(Some(new_sha()), None, None)).expect("rewrite");
+    assert!(summary.revision_removed);
+    assert!(!out.contains("revision 5"), "{out}");
+    assert!(
+        !out.contains("\n\n\n"),
+        "the double blank left by the removed revision was swallowed: {out:?}"
+    );
+}
+
+#[test]
+fn rewrite_revisionless_formula_is_unaffected() {
+    // git-cliff shape / any formula without a standalone `revision N` line is
+    // untouched by the revision-reset logic.
+    let (out, summary) =
+        rewrite_formula(&archive_formula(), &rw(Some(new_sha()), None, None)).expect("rewrite");
+    assert!(
+        !summary.revision_removed,
+        "no revision line to drop → flag stays false"
+    );
+    assert!(out.contains(&format!("url \"{NEW_URL}\"")), "{out}");
+    // The keyed git `revision:` field is NOT a standalone revision line, so a
+    // plain git-form bump also never trips revision_removed.
+    let (_, git_summary) = rewrite_formula(
+        &git_formula(),
+        &FormulaRewrite {
+            url: None,
+            sha256: None,
+            version: "1.2.3".to_string(),
+            tag: Some("v1.2.3".to_string()),
+            revision: Some("f".repeat(40)),
+        },
+    )
+    .expect("git rewrite");
+    assert!(
+        !git_summary.revision_removed,
+        "the keyed git `revision:` field must not be mistaken for a standalone revision line"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// resource blocks — multi-source formulae are left byte-identical past the
+// first url + first source sha256
+// -----------------------------------------------------------------------------
+
+/// Archive-form formula with a `resource "docs" do url ...; sha256 ... end`
+/// block. The resource's url/sha256 sit AFTER the top-level ones and must
+/// survive the first-match rewrite untouched.
+fn resource_formula() -> String {
+    format!(
+        r#"class MyTool < Formula
+  desc "A tool"
+  url "{OLD_URL}"
+  sha256 "{old}"
+  version "1.0.0"
+
+  resource "docs" do
+    url "https://example.com/docs-1.0.0.tar.gz"
+    sha256 "{res}"
+  end
+
+  def install
+    bin.install "my-tool"
+  end
+end
+"#,
+        old = old_sha(),
+        res = "cc".repeat(32),
+    )
+}
+
+#[test]
+fn rewrite_leaves_resource_url_and_sha256_untouched() {
+    let res_sha = "cc".repeat(32);
+    let (out, summary) =
+        rewrite_formula(&resource_formula(), &rw(Some(new_sha()), None, None)).expect("rewrite");
+    // Top-level stanzas moved.
+    assert!(out.contains(&format!("url \"{NEW_URL}\"")), "{out}");
+    assert!(out.contains(&format!("sha256 \"{}\"", new_sha())), "{out}");
+    assert!(summary.url_rewritten && summary.sha256_rewritten && summary.version_rewritten);
+    // The resource's own url + sha256 are byte-identical.
+    assert!(
+        out.contains("url \"https://example.com/docs-1.0.0.tar.gz\""),
+        "resource url must survive: {out}"
+    );
+    assert!(
+        out.contains(&format!("sha256 \"{res_sha}\"")),
+        "resource sha256 must survive: {out}"
+    );
+    // Exactly one source digest was rewritten (the top-level one).
+    assert_eq!(out.matches(&new_sha()).count(), 1, "{out}");
 }
 
 // -----------------------------------------------------------------------------
@@ -1371,5 +1584,339 @@ fn config_mode_per_crate_ids_scopes_name_and_download_url() {
     assert_eq!(
         resolve_download_url(&ctx, &cfg).unwrap(),
         "https://github.com/acme/cli-repo/archive/refs/tags/v1.2.3.tar.gz"
+    );
+}
+
+// =============================================================================
+// commit_author — author/committer identity on the contents-API commit
+// =============================================================================
+
+/// Decode the base64 `content` of a captured PUT into the committed formula.
+fn put_committed_body(put: &RequestLog) -> serde_json::Value {
+    serde_json::from_str(&put.body).expect("put json")
+}
+
+#[test]
+fn run_commit_author_sets_author_and_committer_in_put() {
+    let (addr, log) = spawn_scripted_responder(core_fork_pr_routes());
+    let mut cfg = pinned_cfg();
+    cfg.commit_author = Some(CommitAuthorConfig {
+        name: Some("Release Bot".into()),
+        email: Some("release@example.com".into()),
+        ..Default::default()
+    });
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/forkuser/homebrew-core/contents/Formula/m/my-tool.rb",
+    )
+    .expect("PUT");
+    let v = put_committed_body(put);
+    assert_eq!(v["author"]["name"], "Release Bot", "{}", put.body);
+    assert_eq!(v["author"]["email"], "release@example.com", "{}", put.body);
+    assert_eq!(v["committer"]["name"], "Release Bot", "{}", put.body);
+    assert_eq!(
+        v["committer"]["email"], "release@example.com",
+        "{}",
+        put.body
+    );
+}
+
+#[test]
+fn run_use_github_app_token_omits_author_and_committer() {
+    // `use_github_app_token: true` → the contents commit carries no author /
+    // committer, so GitHub attributes it to the App-token account (the DCO/CLA
+    // identity for homebrew-core).
+    let (addr, log) = spawn_scripted_responder(core_fork_pr_routes());
+    let mut cfg = pinned_cfg();
+    cfg.commit_author = Some(CommitAuthorConfig {
+        use_github_app_token: true,
+        ..Default::default()
+    });
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/forkuser/homebrew-core/contents/Formula/m/my-tool.rb",
+    )
+    .expect("PUT");
+    let v = put_committed_body(put);
+    assert!(
+        v.get("author").is_none(),
+        "app-token commit omits author: {}",
+        put.body
+    );
+    assert!(
+        v.get("committer").is_none(),
+        "app-token commit omits committer: {}",
+        put.body
+    );
+}
+
+// =============================================================================
+// direct_commit vs repository.pull_request.enabled convergence
+// =============================================================================
+
+/// The 3-route personal-repo set (the token can push): repo probe, sharded
+/// locate, and the direct-commit PUT to the base branch.
+fn personal_direct_routes() -> Vec<ScriptedRoute> {
+    vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/myorg/tap",
+            response: repo_resp("main", true),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/myorg/tap/contents/Formula/m/my-tool.rb?ref=main",
+            response: contents_resp(&archive_formula()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repos/myorg/tap/contents/Formula/m/my-tool.rb",
+            response: leak_resp("200 OK", "{}"),
+            times: None,
+        },
+    ]
+}
+
+#[test]
+fn run_pull_request_enabled_false_is_direct_commit_on_non_core() {
+    // `repository.pull_request.enabled: false` is the peer-idiom spelling of
+    // `direct_commit: true` — a pushable non-core repo commits straight to the
+    // base branch and opens no PR.
+    let (addr, log) = spawn_scripted_responder(personal_direct_routes());
+    let mut cfg = pinned_cfg();
+    cfg.repository = Some(RepositoryConfig {
+        owner: Some("myorg".into()),
+        name: Some("tap".into()),
+        pull_request: Some(PullRequestConfig {
+            enabled: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(targets.len(), 1);
+    assert!(
+        targets[0].direct_commit,
+        "pull_request.enabled=false selects the direct-commit path"
+    );
+    assert!(targets[0].pr_url.is_none(), "no PR opened");
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/myorg/tap/contents/Formula/m/my-tool.rb",
+    )
+    .expect("PUT");
+    assert!(
+        put.body.contains("\"branch\":\"main\""),
+        "committed to the base branch: {}",
+        put.body
+    );
+}
+
+#[test]
+fn run_pull_request_enabled_false_still_forks_pr_for_core() {
+    // The always-fork-and-PR rule for Homebrew/homebrew-core overrides the
+    // direct-commit request that pull_request.enabled=false would otherwise be.
+    let (addr, log) = spawn_scripted_responder(core_fork_pr_routes());
+    let mut cfg = pinned_cfg();
+    // No owner/name → resolve_upstream falls back to Homebrew/homebrew-core.
+    cfg.repository = Some(RepositoryConfig {
+        pull_request: Some(PullRequestConfig {
+            enabled: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(targets.len(), 1);
+    assert!(
+        !targets[0].direct_commit,
+        "core is never a direct commit even with pull_request.enabled=false"
+    );
+    assert!(targets[0].pr_url.is_some(), "core bump opens a PR");
+    let reqs = logged(&log);
+    assert!(find(&reqs, "POST", "/repos/Homebrew/homebrew-core/pulls").is_some());
+}
+
+// =============================================================================
+// update_existing_pr — refresh an open bump PR in place
+// =============================================================================
+
+#[test]
+fn run_update_existing_pr_refreshes_branch_in_place() {
+    let mut routes = core_fork_pr_routes();
+    // An open bump PR from an earlier run.
+    routes[3].response = leak_resp("200 OK", "[{\"number\":9}]");
+    let (addr, log) = spawn_scripted_responder(routes);
+    let mut cfg = pinned_cfg();
+    cfg.update_existing_pr = Some(StringOrBool::Bool(true));
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], cfg);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(
+        targets.len(),
+        1,
+        "the refreshed PR is recorded for rollback"
+    );
+    assert_eq!(
+        targets[0].pr_url.as_deref(),
+        Some("https://github.com/Homebrew/homebrew-core/pull/9"),
+        "the reused PR url is recorded so rollback/evidence can reference it"
+    );
+    let reqs = logged(&log);
+    assert!(
+        find(&reqs, "POST", "/repos/forkuser/homebrew-core/git/refs").is_some(),
+        "the bump branch was force-reset to base"
+    );
+    assert!(
+        find(
+            &reqs,
+            "PUT",
+            "/repos/forkuser/homebrew-core/contents/Formula/m/my-tool.rb"
+        )
+        .is_some(),
+        "the formula was re-committed in place"
+    );
+    assert!(
+        find(&reqs, "POST", "/repos/Homebrew/homebrew-core/pulls").is_none(),
+        "no duplicate PR is opened when refreshing in place"
+    );
+}
+
+#[test]
+fn run_default_leaves_open_pr_untouched() {
+    // Without update_existing_pr, an already-open bump PR is left alone (the
+    // warning-on-skip default).
+    let mut routes = core_fork_pr_routes();
+    routes[3].response = leak_resp("200 OK", "[{\"number\":9}]");
+    let (addr, log) = spawn_scripted_responder(routes);
+    let ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], pinned_cfg());
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert!(
+        targets.is_empty(),
+        "the open PR is skipped, nothing recorded"
+    );
+    let reqs = logged(&log);
+    assert!(
+        find(&reqs, "POST", "/repos/forkuser/homebrew-core/git/refs").is_none(),
+        "the branch is not touched on the default skip path"
+    );
+}
+
+// =============================================================================
+// per-crate config mode — commit_author + update_existing_pr end-to-end
+// =============================================================================
+
+#[test]
+fn run_per_crate_mode_threads_commit_author_and_updates_existing_pr() {
+    // `ids: [cli]` scopes the bump to the cli crate: the formula name is
+    // `cli`, the commit carries the configured author, and an open PR for the
+    // scoped branch is refreshed in place rather than duplicated.
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core",
+            response: repo_resp("master", false),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/contents/Formula/c/cli.rb?ref=master",
+            response: contents_resp(&archive_formula()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/Homebrew/homebrew-core/forks",
+            response: leak_resp("202 Accepted", "{\"owner\":{\"login\":\"forkuser\"}}"),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/pulls?state=open&head=forkuser:bump-cli-1.2.3&per_page=100",
+            response: leak_resp("200 OK", "[{\"number\":11}]"),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/git/ref/heads/master",
+            response: leak_resp("200 OK", "{\"object\":{\"sha\":\"base123\"}}"),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/forkuser/homebrew-core/git/refs",
+            response: leak_resp("201 Created", "{}"),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repos/forkuser/homebrew-core/contents/Formula/c/cli.rb",
+            response: leak_resp("200 OK", "{}"),
+            times: None,
+        },
+    ];
+    let (addr, log) = spawn_scripted_responder(routes);
+    let cfg = HomebrewCoreConfig {
+        ids: Some(vec!["cli".into()]),
+        download_url: Some(NEW_URL.into()),
+        sha256: Some(new_sha()),
+        commit_author: Some(CommitAuthorConfig {
+            name: Some("Release Bot".into()),
+            email: Some("release@example.com".into()),
+            ..Default::default()
+        }),
+        update_existing_pr: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    let ctx = run_ctx(
+        &addr,
+        vec![
+            crate_with_github("core", "acme", "core-repo"),
+            crate_with_github("cli", "acme", "cli-repo"),
+        ],
+        cfg,
+    );
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].formula, "cli", "ids-scoped formula name");
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/forkuser/homebrew-core/contents/Formula/c/cli.rb",
+    )
+    .expect("PUT");
+    let v = put_committed_body(put);
+    assert_eq!(v["committer"]["name"], "Release Bot", "{}", put.body);
+    assert!(
+        find(&reqs, "POST", "/repos/Homebrew/homebrew-core/pulls").is_none(),
+        "in-place refresh opens no duplicate PR"
     );
 }

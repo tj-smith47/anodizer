@@ -16,8 +16,11 @@
 //! so `pip install` drops it on the console-script PATH — the same layout
 //! maturin's `bindings = "bin"` mode emits. An optional source distribution
 //! is delegated to `maturin sdist`. Uploads speak PyPI's legacy
-//! (twine-protocol) multipart API with `__token__` Basic auth.
+//! (twine-protocol) multipart API with `__token__` Basic auth, using either a
+//! stored API token or a short-lived token minted via PyPI Trusted Publishing
+//! (GitHub Actions OIDC) — see [`publisher::PypiPublisher`] and `oidc`.
 
+pub(crate) mod oidc;
 pub(crate) mod pep;
 pub mod publisher;
 pub(crate) mod sdist;

@@ -139,11 +139,22 @@ pub(crate) fn upload_file(
             if let Some(s) = &spec.summary {
                 form = form.text("summary", s.clone());
             }
+            if let Some(a) = &spec.author {
+                form = form.text("author", a.clone());
+            }
+            if let Some(a) = &spec.author_email {
+                form = form.text("author_email", a.clone());
+            }
             if let Some(l) = &spec.license {
                 form = form.text("license", l.clone());
             }
             if let Some(h) = &spec.homepage {
                 form = form.text("home_page", h.clone());
+            }
+            // Legacy-API `project_urls` field: one repeated `Label, URL` entry
+            // per link, matching the METADATA `Project-URL` headers.
+            for (label, url) in &spec.project_urls {
+                form = form.text("project_urls", format!("{}, {}", label, url));
             }
             if let Some(r) = &spec.requires_python {
                 form = form.text("requires_python", r.clone());
@@ -156,6 +167,9 @@ pub(crate) fn upload_file(
             }
             if let Some(d) = &spec.description {
                 form = form.text("description", d.clone());
+                if let Some(ct) = &spec.description_content_type {
+                    form = form.text("description_content_type", ct.clone());
+                }
             }
             let file_part = match reqwest::blocking::multipart::Part::file(path) {
                 Ok(p) => p,

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 
 /// Binary-distribution strategy for an [`NpmConfig`] entry.
 ///
@@ -84,8 +84,22 @@ pub struct NpmConfig {
     /// Unique identifier for selecting this entry from the CLI (`--id=...`).
     pub id: Option<String>,
 
-    /// Build IDs filter: only include artifacts whose archive `id` is in this list.
+    /// Crate-name filter: only include artifacts whose owning `crate_name` is
+    /// in this list. Orthogonal to `targets:` (both filters apply).
     pub ids: Option<Vec<String>>,
+
+    /// Target-triple allowlist: restrict the per-platform packages to a subset
+    /// of the built targets. When unset (the default), every built target that
+    /// maps to an npm triple becomes a package. When set, only artifacts whose
+    /// target triple appears in this list are turned into packages; the rest
+    /// are silently skipped (deliberately out of scope — unlike a target with
+    /// no npm os/cpu mapping, which is warned about). Orthogonal to `ids:`:
+    /// both filters apply (an artifact must pass the `ids` filter AND, when
+    /// this is set, be listed here). A listed triple that no selected build
+    /// produces is a config error, and an explicit empty list (`targets: []`)
+    /// is rejected — omit the field to publish every built target. Example:
+    /// `targets: [x86_64-unknown-linux-gnu, aarch64-apple-darwin]`.
+    pub targets: Option<Vec<String>>,
 
     /// Binary-distribution strategy. `optional-deps` (default) emits npm's
     /// native per-platform packages; `postinstall` emits a download shim.
@@ -141,8 +155,38 @@ pub struct NpmConfig {
     pub metapackage: Option<String>,
 
     /// Command name installed by the metapackage's `bin` map (`optional-deps`
-    /// mode). Falls back to the metapackage basename when unset.
+    /// mode). Falls back to the metapackage basename when unset. Shorthand for a
+    /// single-command package; superseded by `bins` when both are set.
     pub bin: Option<String>,
+
+    /// Multiple commands installed by one package, as a map of `command name →
+    /// binary filename` to resolve inside the selected per-platform package
+    /// (`optional-deps`) or the extracted `bin/` directory (`postinstall`). The
+    /// package that ships `hurl` + `hurlfmt`, for example, sets
+    /// `bins: { hurl: hurl, hurlfmt: hurlfmt }` to emit both commands. Each
+    /// command gets its own launcher shim (`<command>.js`) and its own entry in
+    /// the package's `bin` map. When set, this supersedes the single-command
+    /// `bin:` shorthand; when unset, a single command is emitted from `bin:`.
+    pub bins: Option<BTreeMap<String, String>>,
+
+    /// Per-platform binary subdirectory inside each `optional-deps` package
+    /// (e.g. `bin`). When set, the platform binary lands at
+    /// `<platform_bin_dir>/<binary>` rather than the package root, the metapackage
+    /// shim resolves it at that path, and the package's `files` allowlist covers
+    /// it. Required by external shims that hard-code a nested resolve path — for
+    /// example git-cliff's own wrapper resolves
+    /// `git-cliff-<os>-<arch>/bin/git-cliff`, so a `skip_metapackage` layout must
+    /// place the binary under `bin/`. When unset (the default), the binary lands
+    /// at the package root (`<binary>`). Ignored in `postinstall` mode.
+    pub platform_bin_dir: Option<String>,
+
+    /// Environment variables injected into the child process the generated
+    /// launcher shim spawns (both the `optional-deps` metapackage shim and the
+    /// `postinstall` launcher). Each entry is merged over the inherited
+    /// `process.env` before the native binary is exec'd, so a wrapper can set a
+    /// runtime variable its binary expects (e.g. `{ BIOME_BINARY_SOURCE: npm }`).
+    /// When unset, the shim spawns with the inherited environment unchanged.
+    pub shim_env: Option<BTreeMap<String, String>>,
 
     /// In `optional-deps` mode, emit separate per-platform packages for linux
     /// `musl` vs `glibc` (distinguished by the npm `libc` selector). When
@@ -196,11 +240,24 @@ pub struct NpmConfig {
     pub provenance: Option<bool>,
 
     /// Templated repository URL. Emitted as `repository.url` in
-    /// `package.json` with `type: git`.
-    pub repository: Option<String>,
+    /// `package.json` with `type: git`. Falls back to the crate's
+    /// `Cargo.toml [package].repository` when unset. Named `repository_url` to
+    /// avoid colliding with the `{owner, name, token, ...}` `repository:` block
+    /// every git-based publisher uses; the legacy `repository:` spelling is
+    /// accepted via serde alias for back-compat.
+    #[serde(alias = "repository")]
+    pub repository_url: Option<String>,
 
     /// Templated bug tracker URL. Emitted as `bugs.url` in `package.json`.
     pub bugs: Option<String>,
+
+    /// npm `man` page list, emitted verbatim into `package.json` as `man` (a
+    /// path or array of paths to troff-formatted man pages npm installs).
+    pub man: Option<Vec<String>>,
+
+    /// npm `contributors` list, emitted verbatim into `package.json` as
+    /// `contributors` (each entry a name or `Name <email> (url)` string).
+    pub contributors: Option<Vec<String>>,
 
     /// NPM access level for scoped packages. Accepts `"public"` /
     /// `"restricted"`. Scoped packages on npmjs.org default to
@@ -219,6 +276,28 @@ pub struct NpmConfig {
     /// (templated). When unset, anodizer derives the URL from the
     /// release context. Only consulted in `postinstall` mode.
     pub url_template: Option<String>,
+
+    /// Version of the native binary the `postinstall` script downloads, when it
+    /// differs from the published npm package version. Feeds the `{{ Version }}`
+    /// var of the derived (or `url_template`) download URL, so the npm package
+    /// can be re-published at a new version while still fetching a pinned binary
+    /// release. Falls back to the release version when unset. Only consulted in
+    /// `postinstall` mode.
+    pub binary_version: Option<String>,
+
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// When set, an amd64 artifact is included only when its `amd64_variant`
+    /// metadata matches (artifacts without the metadata always pass). Steers
+    /// which tuned build lands in each platform package. Typed as
+    /// [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse
+    /// time. Default `v1`, mirroring the homebrew/winget/krew/nix/aur peers.
+    pub amd64_variant: Option<Amd64Variant>,
+
+    /// ARM version filter (e.g. `6`, `7`). When set, a 32-bit ARM artifact is
+    /// included only when its `arm_variant` metadata matches (artifacts without
+    /// the metadata always pass). Mirrors the homebrew/winget/krew/nix/aur
+    /// peers; defaults to `6` when unset.
+    pub arm_variant: Option<String>,
 
     /// Additional files to include in the published package alongside the
     /// generated metadata. Default `["README*", "LICENSE*"]` (applied at the
@@ -289,12 +368,16 @@ impl Default for NpmConfig {
         Self {
             id: None,
             ids: None,
+            targets: None,
             mode: NpmMode::default(),
             scope: None,
             platform_name_template: None,
             skip_metapackage: None,
             metapackage: None,
             bin: None,
+            bins: None,
+            platform_bin_dir: None,
+            shim_env: None,
             libc_aware: default_libc_aware(),
             name: None,
             description: None,
@@ -305,12 +388,17 @@ impl Default for NpmConfig {
             engines: None,
             files: None,
             provenance: None,
-            repository: None,
+            repository_url: None,
             bugs: None,
+            man: None,
+            contributors: None,
             access: None,
             tag: None,
             format: None,
             url_template: None,
+            binary_version: None,
+            amd64_variant: None,
+            arm_variant: None,
             extra_files: None,
             templated_extra_files: None,
             extra: None,

@@ -64,6 +64,66 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
     )
 }
 
+/// Resolve the credential sent as the `__token__` Basic-auth password, per the
+/// entry's [`PypiAuthMode`]: an explicit/env token, or a freshly-minted
+/// Trusted-Publishing token from the ambient GitHub Actions OIDC identity.
+pub(crate) fn resolve_upload_credential(
+    ctx: &Context,
+    cfg: &PypiConfig,
+    repository: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    label: &str,
+    log: &StageLogger,
+) -> Result<String> {
+    use anodizer_core::config::PypiAuthMode;
+    match cfg.auth {
+        PypiAuthMode::Token => {
+            let token = resolve_token(ctx, cfg)?;
+            if token.is_empty() {
+                bail!(
+                    "pypi: auth=token requires an API token to upload to {} (entry '{}'). \
+                     Set $PYPI_TOKEN (or $MATURIN_PYPI_TOKEN) or `pypis[].token`.",
+                    repository,
+                    label
+                );
+            }
+            Ok(token)
+        }
+        // Strict Trusted Publishing: never fall back to a token, so a
+        // misconfigured publisher fails the release loudly. The token field is
+        // documented "Unused when auth: oidc", so it is never resolved here — a
+        // malformed inline `token:` template must not abort an OIDC-only run.
+        PypiAuthMode::Oidc => {
+            super::oidc::mint_trusted_publishing_token(ctx, repository, policy, log)
+        }
+        // A token when present, else Trusted Publishing when an OIDC context is
+        // available, else a hard error naming both paths. A `token:` template
+        // that fails to render must NOT abort the run when OIDC is available:
+        // auto's contract is "use whatever credential the environment offers",
+        // so a token-render error is routed around to Trusted Publishing and
+        // surfaced only when there is no OIDC fallback to take.
+        PypiAuthMode::Auto => match resolve_token(ctx, cfg) {
+            Ok(token) if !token.is_empty() => Ok(token),
+            token_result => {
+                if super::oidc::oidc_context_available(ctx) {
+                    super::oidc::mint_trusted_publishing_token(ctx, repository, policy, log)
+                } else {
+                    // No OIDC fallback: surface a token-render error if there
+                    // was one, else the no-credential guidance.
+                    token_result?;
+                    bail!(
+                        "pypi: no credential available to upload to {} (entry '{}'). \
+                         Set $PYPI_TOKEN (or $MATURIN_PYPI_TOKEN) or `pypis[].token`, or run \
+                         under GitHub Actions with id-token: write for Trusted Publishing.",
+                        repository,
+                        label
+                    );
+                }
+            }
+        },
+    }
+}
+
 /// The crate this entry is scoped to: the first `ids:` entry (the entry's
 /// selected crate) when set, else the primary crate, else the project name.
 ///
@@ -112,13 +172,13 @@ pub fn static_project_name(crate_name: &str, cfg: &PypiConfig) -> Option<String>
 }
 
 /// Static (context-free) upload repository for the rollback burn probe:
-/// `cfg.repository` when set and not templated, else the production PyPI
-/// default. Returns `None` when `cfg.repository` is a template expression —
+/// `cfg.index_url` when set and not templated, else the production PyPI
+/// default. Returns `None` when `cfg.index_url` is a template expression —
 /// its host cannot be known outside a release run, so the guard cannot map it
 /// to an index endpoint and must fail closed.
 pub fn static_repository(cfg: &PypiConfig) -> Option<String> {
     match cfg
-        .repository
+        .index_url
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -140,10 +200,10 @@ pub(crate) fn resolve_name(ctx: &Context, cfg: &PypiConfig) -> String {
 
 /// Resolve the (templated) repository URL, defaulting to production PyPI.
 pub(crate) fn resolve_repository(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
-    match cfg.repository.as_deref().filter(|r| !r.is_empty()) {
+    match cfg.index_url.as_deref().filter(|r| !r.is_empty()) {
         Some(raw) => ctx
             .render_template(raw)
-            .context("pypi: render repository template"),
+            .context("pypi: render index_url template"),
         None => Ok(DEFAULT_REPOSITORY.to_string()),
     }
 }
@@ -160,7 +220,7 @@ fn wheel_mtime(ctx: &Context) -> Option<u64> {
 /// Build the [`WheelSpec`] metadata shared by every file of one entry,
 /// honouring the project-metadata fallbacks (summary ← `metadata.description`,
 /// homepage ← `metadata.homepage`, license ← `metadata.license`).
-fn build_spec_base(
+pub(crate) fn build_spec_base(
     ctx: &Context,
     cfg: &PypiConfig,
     name: &str,
@@ -183,19 +243,51 @@ fn build_spec_base(
             .meta_description_for(crate_name)
             .map(str::to_string)
     });
+    let explicit_description = render_opt("description", cfg.description.as_deref())?;
+    let description = explicit_description.clone().or_else(|| summary.clone());
+    // Default the content-type to Markdown only for an explicitly-configured
+    // `description` body — without a `Description-Content-Type` header PyPI
+    // renders the body as raw plaintext. A `summary` fallback is a plain
+    // one-liner and must NOT be tagged Markdown (its underscores/asterisks are
+    // literal). An explicit config value always wins.
+    let description_content_type = match cfg.description_content_type.as_deref() {
+        Some(ct) => Some(render("description_content_type", ct)?),
+        None if explicit_description.is_some() => Some("text/markdown".to_string()),
+        None => None,
+    };
+    // `Project-URL` links, rendered (URLs may be templated) and kept in the
+    // BTreeMap's sorted-by-label order for a byte-stable wheel.
+    let project_urls = cfg
+        .project_urls
+        .iter()
+        .flatten()
+        .map(|(label, url)| render("project_urls", url).map(|u| (label.clone(), u)))
+        .collect::<Result<Vec<_>>>()?;
+    let homepage = render_opt("homepage", cfg.homepage.as_deref())?
+        .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string));
+    // A `Homepage` label in project_urls is canonical; drop the separate
+    // homepage line so PyPI never receives two `Project-URL: Homepage` entries
+    // (Warehouse rejects duplicate Project-URL labels with HTTP 400).
+    let homepage = homepage.filter(|_| {
+        !project_urls
+            .iter()
+            .any(|(label, _)| label.eq_ignore_ascii_case("Homepage"))
+    });
     Ok(WheelSpec {
         name: name.to_string(),
         version: version.to_string(),
         platform_tag: String::new(),
         metadata_version: "2.1".to_string(),
         bin_name: String::new(),
-        description: render_opt("description", cfg.description.as_deref())?
-            .or_else(|| summary.clone()),
+        description,
+        description_content_type,
+        author: render_opt("author", cfg.author.as_deref())?,
+        author_email: render_opt("author_email", cfg.author_email.as_deref())?,
+        project_urls,
         summary,
         license: render_opt("license", cfg.license.as_deref())?
             .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string)),
-        homepage: render_opt("homepage", cfg.homepage.as_deref())?
-            .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string)),
+        homepage,
         requires_python: cfg.requires_python.clone(),
         keywords: cfg.keywords.clone().unwrap_or_default(),
         classifiers: cfg.classifiers.clone().unwrap_or_default(),
@@ -235,6 +327,41 @@ fn select_binaries<'a>(
     if let Some(ids) = cfg.ids.as_ref() {
         out.retain(|(a, _)| ids.iter().any(|id| id == &a.crate_name));
     }
+    // `targets:` allowlist (orthogonal to `ids:`): keep only binaries whose
+    // target triple is listed. A target left out of scope is silently dropped.
+    if cfg.targets.as_ref().is_some_and(|t| !t.is_empty()) {
+        out.retain(|(a, _)| {
+            crate::publisher_helpers::target_in_allowlist(
+                cfg.targets.as_ref(),
+                a.target.as_deref().unwrap_or_default(),
+            )
+        });
+    }
+    // Microarch variant selection (same shape as homebrew/krew): an amd64
+    // binary tagged with `amd64_variant` metadata is kept only when its
+    // variant matches the selector (default `v1`); a 32-bit ARM binary tagged
+    // with `arm_variant` is kept only when it matches `arm_variant` (when
+    // set). A binary carrying no variant metadata always passes — it is the
+    // baseline build.
+    let amd64_variant = cfg.amd64_variant.map_or("v1", |v| v.as_str());
+    let arm_variant = cfg.arm_variant.as_deref();
+    out.retain(|(a, _)| {
+        let target = a.target.as_deref().unwrap_or_default();
+        let (_, arch) = anodizer_core::target::map_target(target);
+        if arch == "amd64" {
+            return a
+                .metadata
+                .get("amd64_variant")
+                .is_none_or(|v| v == amd64_variant);
+        }
+        if arch.starts_with("arm")
+            && arch != "arm64"
+            && let Some(want) = arm_variant
+        {
+            return a.metadata.get("arm_variant").is_none_or(|v| v == want);
+        }
+        true
+    });
     out
 }
 
@@ -302,6 +429,32 @@ pub(crate) fn publish_to_pypi(
             ));
             continue;
         }
+        // A `platform_tag_overrides` key that no built target matches is a typo
+        // or a stale entry: without this guard the override silently falls
+        // through to binary-inspection auto-detection, shipping a wheel tag the
+        // operator thought they had pinned. Fail loudly instead.
+        if let Some(overrides) = cfg.platform_tag_overrides.as_ref() {
+            let built: std::collections::BTreeSet<&str> = binaries
+                .iter()
+                .filter_map(|(art, _)| art.target.as_deref())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let unknown: Vec<&str> = overrides
+                .keys()
+                .map(String::as_str)
+                .filter(|k| !built.contains(k))
+                .collect();
+            if !unknown.is_empty() {
+                bail!(
+                    "pypi: entry '{}' platform_tag_overrides names target(s) it never \
+                     builds: {} — remove the stale key or add a build for it (this \
+                     entry builds: {})",
+                    name,
+                    unknown.join(", "),
+                    built.into_iter().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
         let spec_base = build_spec_base(ctx, cfg, &name, &version, &crate_name)?;
         let staging = ctx.config.dist.join("pypi").join(&label);
         let mtime = wheel_mtime(ctx);
@@ -320,7 +473,17 @@ pub(crate) fn publish_to_pypi(
             let bytes = std::fs::read(&art.path)
                 .with_context(|| format!("pypi: read binary '{}'", art.path.display()))?;
             let traits = inspect_binary(&bytes, *universal)?;
-            let tag = platform_tag(target, &traits)?;
+            // A per-target override wins verbatim over binary inspection: the
+            // configured tag is used exactly as written, skipping glibc-floor
+            // and Mach-O deployment-target detection for this target.
+            let tag = match cfg
+                .platform_tag_overrides
+                .as_ref()
+                .and_then(|m| m.get(target))
+            {
+                Some(over) => over.clone(),
+                None => platform_tag(target, &traits)?,
+            };
             if seen_tags.contains(&tag) {
                 bail!(
                     "pypi: two binaries derive the same wheel platform tag '{}' — \
@@ -396,16 +559,8 @@ pub(crate) fn publish_to_pypi(
             continue;
         }
 
-        // ---- Token + upload ----
-        let token = resolve_token(ctx, cfg)?;
-        if token.is_empty() {
-            bail!(
-                "pypi: an API token is required to upload to {} (entry '{}'). \
-                 Set $PYPI_TOKEN (or $MATURIN_PYPI_TOKEN) or `pypis[].token`.",
-                repository,
-                label
-            );
-        }
+        // ---- Credential + upload ----
+        let token = resolve_upload_credential(ctx, cfg, &repository, &policy, &label, log)?;
         let client = anodizer_core::http::blocking_client(Duration::from_secs(60))
             .context("pypi: build HTTP client")?;
         for f in &dist_files {
@@ -654,7 +809,13 @@ fn platform_tag_collision_check(ctx: &Context, cfg: &PypiConfig) -> anodizer_cor
         if !selected {
             continue;
         }
-        for triple in crate_build_targets(ctx, c) {
+        for triple in crate::publisher_helpers::crate_build_targets(ctx, c) {
+            // Honour the `targets:` allowlist: a triple filtered out never
+            // becomes a wheel, so it cannot collide — a config that drops the
+            // colliding gnu-windows build no longer warns.
+            if !crate::publisher_helpers::target_in_allowlist(cfg.targets.as_ref(), &triple) {
+                continue;
+            }
             owners.entry(triple).or_default().push(c.name.clone());
         }
     }
@@ -676,35 +837,6 @@ fn platform_tag_collision_check(ctx: &Context, cfg: &PypiConfig) -> anodizer_cor
          this entry's `ids:` so it publishes one binary per platform",
         collisions.join("; ")
     ))
-}
-
-/// Distinct-per-build target triples a crate would produce: each build's
-/// explicit `targets` (or `effective_default_targets` when it inherits),
-/// skipping builds whose `skip:` statically renders truthy. Over-collecting
-/// is safe — a spurious hit is only a Warning.
-fn crate_build_targets(ctx: &Context, c: &anodizer_core::config::CrateConfig) -> Vec<String> {
-    let Some(builds) = c.builds.as_ref() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for b in builds {
-        let off = b
-            .skip
-            .as_ref()
-            .map(|s| {
-                s.try_evaluates_to_true(|t| ctx.render_template(t))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if off {
-            continue;
-        }
-        match b.targets.as_ref().filter(|t| !t.is_empty()) {
-            Some(t) => out.extend(t.iter().cloned()),
-            None => out.extend(ctx.config.effective_default_targets()),
-        }
-    }
-    out
 }
 
 impl anodizer_core::Publisher for PypiPublisher {
@@ -761,18 +893,50 @@ impl anodizer_core::Publisher for PypiPublisher {
             });
         }
         for entry in &active {
-            match entry.token.as_deref().filter(|t| !t.is_empty()) {
-                // Templated token: require its env refs (a literal declares
-                // nothing — the credential is inline).
-                Some(_) => out.extend(crate::publisher_helpers::secret_requirement(
+            use anodizer_core::config::PypiAuthMode;
+            // The token requirement in isolation: a templated token's env refs,
+            // else the PYPI_TOKEN/MATURIN_PYPI_TOKEN any-of fallback ladder. A
+            // literal inline token declares nothing (`None`).
+            let token_req = match entry.token.as_deref().filter(|t| !t.is_empty()) {
+                Some(_) => crate::publisher_helpers::secret_requirement(
                     entry.token.as_deref(),
                     TOKEN_ENV_VARS[0],
-                )),
-                // No configured token: either fallback env var satisfies the
-                // run path's ladder.
-                None => out.push(anodizer_core::EnvRequirement::EnvAnyOf {
+                ),
+                None => Some(anodizer_core::EnvRequirement::EnvAnyOf {
                     vars: TOKEN_ENV_VARS.iter().map(|s| s.to_string()).collect(),
                 }),
+            };
+            let oidc_vars = || -> Vec<String> {
+                super::oidc::OIDC_ENV_VARS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            };
+            match entry.auth {
+                // Token-only: the token is mandatory.
+                PypiAuthMode::Token => out.extend(token_req),
+                // Strict OIDC: require the GitHub Actions request pair; never a
+                // token (the run path refuses to fall back to one).
+                PypiAuthMode::Oidc => {
+                    out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: oidc_vars() })
+                }
+                // Auto resolves at publish time (token if present, else OIDC).
+                // Preflight applies only a COARSE token-OR-OIDC gate so it
+                // catches the zero-credential case without false-failing a valid
+                // OIDC-only run.
+                PypiAuthMode::Auto => match token_req {
+                    // Literal inline token → the credential is always present.
+                    None => {}
+                    Some(anodizer_core::EnvRequirement::EnvAnyOf { vars })
+                    | Some(anodizer_core::EnvRequirement::EnvAllOf { vars }) => {
+                        let mut any = vars;
+                        any.extend(oidc_vars());
+                        out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
+                    }
+                    // secret_requirement only yields EnvAllOf/None today; forward
+                    // any other shape verbatim rather than dropping the gate.
+                    Some(other) => out.push(other),
+                },
             }
         }
         out
@@ -896,6 +1060,15 @@ impl anodizer_core::Publisher for PypiPublisher {
                     continue;
                 }
             };
+            acc = merge(
+                acc,
+                crate::publisher_helpers::targets_allowlist_check(
+                    ctx,
+                    cfg.targets.as_ref(),
+                    cfg.ids.as_ref(),
+                    "pypi",
+                ),
+            );
             acc = merge(acc, platform_tag_collision_check(ctx, cfg));
             let normalized = normalize_project_name(&name);
             let already_published = match version_probe(&repository, &normalized, &version) {

@@ -7715,6 +7715,18 @@
       "description": "homebrew-core formula-bump publisher configuration.\n\nBumps an EXISTING formula in `Homebrew/homebrew-core` (or any formula repository override) purely through the GitHub API — no clone, no `brew` invocation. The formula file's `url` (or `tag:`/`revision:` pair), `sha256`, and `version` stanzas are rewritten to the new release, the change is committed to a branch, and a pull request is opened against the formula repository. Each `homebrew_cores[]` entry bumps one formula.\n\nEvery field is optional: the formula name defaults to the crate name, the target repository defaults to `Homebrew/homebrew-core`, the formula path defaults to the sharded core layout (`Formula/<letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb`), and the download URL defaults to the GitHub source tarball for the release tag.\n\n```yaml homebrew_cores: - name: my-tool ```",
       "type": "object",
       "properties": {
+        "commit_author": {
+          "description": "Commit author for the formula-bump commit, with optional signing. Its `use_github_app_token` is the canonical homebrew-core knob: when set, the `author`/`committer` fields are omitted from the contents-API commit so GitHub attributes it to the token's own account — the `<app-slug>[bot]` identity a GitHub App workflow needs to satisfy homebrew-core's DCO/CLA policy. Otherwise the resolved `name`/`email` (config → local git identity → the anodizer default) author the commit.\n\nNote: `signing` has no effect here — formula bumps commit through the GitHub contents API, which GitHub signs server-side; the git `-c commit.gpgsign` path the tap/winget/krew publishers use does not apply.\n\n```yaml homebrew_cores: - commit_author: use_github_app_token: true ```",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CommitAuthorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "commit_msg_template": {
           "description": "Templated commit message (also the PR title). Default: `\"<formula> <version>\"` — the message form homebrew-core's CI expects for version bumps.",
           "default": null,
@@ -7724,7 +7736,7 @@
           ]
         },
         "direct_commit": {
-          "description": "Commit straight to the base branch instead of opening a pull request. Accepts bool or template string. Only honored for formula repositories you can push to — bumps targeting `Homebrew/homebrew-core` always go through a fork + PR, because homebrew-core never accepts direct pushes.",
+          "description": "Commit straight to the base branch instead of opening a pull request. Accepts bool or template string. Only honored for formula repositories you can push to — bumps targeting `Homebrew/homebrew-core` always go through a fork + PR, because homebrew-core never accepts direct pushes.\n\nA back-compat alias for `repository.pull_request.enabled: false`, the preferred spelling shared with the tap/scoop/nix publishers — either one selects the direct-commit path (both are still overridden by the always-fork-and-PR rule for `Homebrew/homebrew-core`).",
           "default": null,
           "anyOf": [
             {
@@ -7823,6 +7835,18 @@
         },
         "skip": {
           "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "update_existing_pr": {
+          "description": "When truthy, refresh the existing bump PR in place instead of skipping it: a same-version re-cut force-resets the bump branch to the current base and re-commits the rewritten formula, so the open PR carries this run's content rather than a stale earlier attempt (and no duplicate PR is opened). When falsy (default), an already-open bump PR is left untouched and a warning names this toggle. Accepts bool or template string. Mirrors `winget` / `krew` / `homebrew_cask`'s `update_existing_pr`.",
           "default": null,
           "anyOf": [
             {
@@ -11405,6 +11429,26 @@
             "null"
           ]
         },
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, an amd64 artifact is included only when its `amd64_variant` metadata matches (artifacts without the metadata always pass). Steers which tuned build lands in each platform package. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse time. Default `v1`, mirroring the homebrew/winget/krew/nix/aur peers.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "arm_variant": {
+          "description": "ARM version filter (e.g. `6`, `7`). When set, a 32-bit ARM artifact is included only when its `arm_variant` metadata matches (artifacts without the metadata always pass). Mirrors the homebrew/winget/krew/nix/aur peers; defaults to `6` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "auth": {
           "description": "Credential-selection strategy: `auto` (default) decides per package by probing the registry for the package's existence; `token` always uses the token; `oidc` always uses Trusted Publishing with no token fallback. See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`.",
           "default": "auto",
@@ -11423,12 +11467,31 @@
           ]
         },
         "bin": {
-          "description": "Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset.",
+          "description": "Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset. Shorthand for a single-command package; superseded by `bins` when both are set.",
           "default": null,
           "type": [
             "string",
             "null"
           ]
+        },
+        "binary_version": {
+          "description": "Version of the native binary the `postinstall` script downloads, when it differs from the published npm package version. Feeds the `{{ Version }}` var of the derived (or `url_template`) download URL, so the npm package can be re-published at a new version while still fetching a pinned binary release. Falls back to the release version when unset. Only consulted in `postinstall` mode.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bins": {
+          "description": "Multiple commands installed by one package, as a map of `command name → binary filename` to resolve inside the selected per-platform package (`optional-deps`) or the extracted `bin/` directory (`postinstall`). The package that ships `hurl` + `hurlfmt`, for example, sets `bins: { hurl: hurl, hurlfmt: hurlfmt }` to emit both commands. Each command gets its own launcher shim (`<command>.js`) and its own entry in the package's `bin` map. When set, this supersedes the single-command `bin:` shorthand; when unset, a single command is emitted from `bin:`.",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "bugs": {
           "description": "Templated bug tracker URL. Emitted as `bugs.url` in `package.json`.",
@@ -11437,6 +11500,17 @@
             "string",
             "null"
           ]
+        },
+        "contributors": {
+          "description": "npm `contributors` list, emitted verbatim into `package.json` as `contributors` (each entry a name or `Name <email> (url)` string).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "description": {
           "description": "Templated package description. Falls back to the project-level `metadata.description` when unset.",
@@ -11513,7 +11587,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter: only include artifacts whose archive `id` is in this list.",
+          "description": "Crate-name filter: only include artifacts whose owning `crate_name` is in this list. Orthogonal to `targets:` (both filters apply).",
           "default": null,
           "type": [
             "array",
@@ -11555,6 +11629,17 @@
             "null"
           ]
         },
+        "man": {
+          "description": "npm `man` page list, emitted verbatim into `package.json` as `man` (a path or array of paths to troff-formatted man pages npm installs).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "metapackage": {
           "description": "Metapackage name for `optional-deps` mode (e.g. `biome`). This is the package users `npm install`; it lists every per-platform package under `optionalDependencies` and ships the `bin` shim. Falls back to `name` (or the crate name) when unset.",
           "default": null,
@@ -11574,6 +11659,14 @@
         },
         "name": {
           "description": "NPM package name (the metapackage / postinstall package). May be scoped (`@org/foo`) or unscoped (`foo`). Falls back to the crate name when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform_bin_dir": {
+          "description": "Per-platform binary subdirectory inside each `optional-deps` package (e.g. `bin`). When set, the platform binary lands at `<platform_bin_dir>/<binary>` rather than the package root, the metapackage shim resolves it at that path, and the package's `files` allowlist covers it. Required by external shims that hard-code a nested resolve path — for example git-cliff's own wrapper resolves `git-cliff-<os>-<arch>/bin/git-cliff`, so a `skip_metapackage` layout must place the binary under `bin/`. When unset (the default), the binary lands at the package root (`<binary>`). Ignored in `postinstall` mode.",
           "default": null,
           "type": [
             "string",
@@ -11604,8 +11697,8 @@
             "null"
           ]
         },
-        "repository": {
-          "description": "Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`.",
+        "repository_url": {
+          "description": "Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`. Falls back to the crate's `Cargo.toml [package].repository` when unset. Named `repository_url` to avoid colliding with the `{owner, name, token, ...}` `repository:` block every git-based publisher uses; the legacy `repository:` spelling is accepted via serde alias for back-compat.",
           "default": null,
           "type": [
             "string",
@@ -11634,6 +11727,17 @@
             "string",
             "null"
           ]
+        },
+        "shim_env": {
+          "description": "Environment variables injected into the child process the generated launcher shim spawns (both the `optional-deps` metapackage shim and the `postinstall` launcher). Each entry is merged over the inherited `process.env` before the native binary is exec'd, so a wrapper can set a runtime variable its binary expects (e.g. `{ BIOME_BINARY_SOURCE: npm }`). When unset, the shim spawns with the inherited environment unchanged.",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "skip": {
           "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
@@ -11666,6 +11770,17 @@
             "string",
             "null"
           ]
+        },
+        "targets": {
+          "description": "Target-triple allowlist: restrict the per-platform packages to a subset of the built targets. When unset (the default), every built target that maps to an npm triple becomes a package. When set, only artifacts whose target triple appears in this list are turned into packages; the rest are silently skipped (deliberately out of scope — unlike a target with no npm os/cpu mapping, which is warned about). Orthogonal to `ids:`: both filters apply (an artifact must pass the `ids` filter AND, when this is set, be listed here). A listed triple that no selected build produces is a config error, and an explicit empty list (`targets: []`) is rejected — omit the field to publish every built target. Example: `targets: [x86_64-unknown-linux-gnu, aarch64-apple-darwin]`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "templated_extra_files": {
           "description": "Template-rendered file mappings (`src` may be a glob; rendered contents written to `dst`).",
@@ -12604,10 +12719,75 @@
       },
       "additionalProperties": false
     },
+    "PypiAuthMode": {
+      "description": "How a `pypis[]` entry authenticates its upload: a long-lived API token, or GitHub Actions OIDC (PyPI Trusted Publishing, which mints a short-lived upload token per run — no stored secret).\n\nUnlike npm, PyPI is uploaded directly over HTTP rather than through a CLI, so the Trusted-Publishing exchange (Actions id-token → PyPI mint-token) is performed by anodizer itself. Trusted Publishing also creates brand-new projects when a *pending* publisher is configured on PyPI, so there is no per-package \"must already exist\" caveat as there is for npm.",
+      "oneOf": [
+        {
+          "description": "Use a token when one is available (`cfg.token` / `PYPI_TOKEN` / `MATURIN_PYPI_TOKEN`); otherwise, when an OIDC context is present, mint a Trusted-Publishing token. Errors only when neither is available.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Always authenticate with the token; never attempt OIDC. Errors if no token is available. This is anodizer's historical behaviour.",
+          "type": "string",
+          "const": "token"
+        },
+        {
+          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly instead of silently falling back to a token.",
+          "type": "string",
+          "const": "oidc"
+        }
+      ]
+    },
     "PypiConfig": {
       "description": "PyPI publisher configuration.\n\nPublishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (glibc floor for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.\n\n```yaml pypis: - name: my-tool requires_python: \">=3.7\" sdist: true sdist_manifest: \"pypi/\" ```",
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "`x86_64` micro-architecture variant selector — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. When set, an amd64 binary carrying `amd64_variant` metadata becomes the `win_amd64`/`manylinux…x86_64` wheel only when its variant matches; a binary with no variant metadata still matches (the baseline build). Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse time.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "arm_variant": {
+          "description": "ARM version selector (e.g. `\"6\"`, `\"7\"`). When set, a 32-bit ARM binary carrying `arm_variant` metadata becomes the wheel only when its variant matches; a binary with no variant metadata still matches. Does not affect `aarch64`/`arm64` (64-bit ARM has no sub-variant).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth": {
+          "description": "Whether the upload authenticates with a long-lived API token or with GitHub Actions OIDC (PyPI Trusted Publishing). Default [`Auto`]: a token when one is available, otherwise a Trusted-Publishing exchange when an OIDC context is present.\n\n[`Auto`]: PypiAuthMode::Auto",
+          "default": "auto",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PypiAuthMode"
+            }
+          ]
+        },
+        "author": {
+          "description": "Package author, emitted as the METADATA `Author` header.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author_email": {
+          "description": "Package author email, emitted as the METADATA `Author-email` header.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "classifiers": {
           "description": "Trove classifier lines (e.g. `\"Programming Language :: Rust\"`), one `Classifier:` METADATA header each.",
           "default": null,
@@ -12621,6 +12801,14 @@
         },
         "description": {
           "description": "Templated long description written as the METADATA body (rendered on the PyPI project page). Falls back to the summary when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description_content_type": {
+          "description": "`Description-Content-Type` for the long-description body — how PyPI renders it (`text/markdown`, `text/x-rst`, `text/plain`). When a `description` is present and this is unset, defaults to `text/markdown` (the modern norm); without the header PyPI renders the body as raw plaintext. Omitted entirely when there is no description.",
           "default": null,
           "type": [
             "string",
@@ -12662,6 +12850,14 @@
             "null"
           ]
         },
+        "index_url": {
+          "description": "Templated twine upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:\n\n```yaml pypis: - index_url: \"https://test.pypi.org/legacy/\" ```\n\nThis is the twine *upload* target, not a `{owner, name}` source repository — the name `index_url` keeps it distinct from the reserved `repository` meaning every git-based publisher uses. The legacy `repository:` spelling is still accepted via serde alias.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "keywords": {
           "description": "Keywords list, emitted comma-separated in METADATA.",
           "default": null,
@@ -12689,13 +12885,27 @@
             "null"
           ]
         },
-        "repository": {
-          "description": "Templated upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:\n\n```yaml pypis: - repository: \"https://test.pypi.org/legacy/\" ```",
+        "platform_tag_overrides": {
+          "description": "Per-target-triple wheel platform-tag overrides: `<target triple>` → explicit wheel platform tag. When a built target has an entry, its tag is used *verbatim* — binary inspection (the glibc floor for `manylinux`, the Mach-O deployment target for `macosx`) is skipped for that target. Every target without an entry keeps the auto-detected tag.\n\nThe escape hatch for toolchains whose emitted glibc floor is stricter than the compatibility a project wants to advertise — e.g. pinning `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a `maturin`/PyO3 build environment rather than shipping the higher floor the binary's symbols imply.\n\n```yaml pypis: - platform_tag_overrides: aarch64-unknown-linux-gnu: manylinux_2_28_aarch64 ```",
           "default": null,
           "type": [
-            "string",
+            "object",
             "null"
-          ]
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "project_urls": {
+          "description": "Arbitrary `Project-URL` label → URL map, one `Project-URL: <label>, <url>` METADATA header each (the PyPI sidebar links). Emitted in addition to the `Homepage` link derived from `homepage`; use this for `Repository`, `Documentation`, `Changelog`, `Funding`, etc. Rendered in sorted label order for a byte-stable wheel.\n\n```yaml pypis: - project_urls: Repository: \"https://github.com/me/my-tool\" Documentation: \"https://docs.example.com\" ```",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — PyPI is a Manager-group publisher whose uploads are one-way (a published filename can never be re-uploaded, even after deletion), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue.",
@@ -12758,8 +12968,19 @@
             "null"
           ]
         },
+        "targets": {
+          "description": "Target-triple allowlist: restrict the wheels to a subset of the built targets. When unset (the default), every built target becomes a wheel. When set, only binaries whose target triple appears in this list are built into wheels; the rest are silently skipped. Orthogonal to `ids:`: both filters apply (a binary must pass the `ids` filter AND, when this is set, be listed here). A listed triple that no selected build produces is a config error, and an explicit empty list (`targets: []`) is rejected — omit the field to publish every built target. A common use is excluding `x86_64-pc-windows-gnu` so it does not collide with the `x86_64-pc-windows-msvc` wheel on the shared `win_amd64` platform tag. Example: `targets: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc]`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "token": {
-          "description": "API token for the upload (templated). Falls back to the `PYPI_TOKEN` env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic auth with the literal username `__token__` and NEVER logged.",
+          "description": "API token for the upload (templated). Falls back to the `PYPI_TOKEN` env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic auth with the literal username `__token__` and NEVER logged. Unused when `auth: oidc` (Trusted Publishing mints its own short-lived token).",
           "default": null,
           "type": [
             "string",

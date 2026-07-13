@@ -24,13 +24,25 @@ use super::manifest::{
     insert_publish_config, npm_triple, warn_excluded_targets,
 };
 
+/// One native binary embedded in a per-platform package: its on-disk source
+/// and the package-relative path it lands under (`cli`, `cli.exe`, or
+/// `bin/git-cliff` when `platform_bin_dir` is set). A single-command package
+/// carries one; a multi-command `bins:` package carries one per command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmbeddedBinary {
+    /// Package-relative path the binary is embedded under.
+    pub subpath: String,
+    /// On-disk path of the binary to embed (mode `0o755`).
+    pub src: std::path::PathBuf,
+}
+
 /// One per-platform package emitted in `optional-deps` mode.
 ///
 /// `name` is the full npm name (`<scope>/<bin>-<os>-<cpu>[-<libc>]`).
 /// `package_json` is the rendered manifest carrying the `os`/`cpu`/`libc`
-/// selectors. `binary_src` is the on-disk path of the binary to embed (mode
-/// `0o755`), and `binary_name` is the filename it lands under inside the
-/// package.
+/// selectors. `binaries` are every native binary the package embeds — one for
+/// a single-command tool, or one per command for a multi-command `bins:` tool
+/// whose per-command launcher shims each resolve their own binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformPackage {
     /// Full npm package name (e.g. `@scope/cli-linux-x64-musl`).
@@ -39,10 +51,19 @@ pub(crate) struct PlatformPackage {
     pub triple: NpmTriple,
     /// Rendered `package.json` for the per-platform package.
     pub package_json: String,
-    /// On-disk path of the binary to embed.
-    pub binary_src: std::path::PathBuf,
-    /// Filename the binary is embedded under (e.g. `cli` / `cli.exe`).
-    pub binary_name: String,
+    /// Native binaries embedded in this package (≥1), each at its own subpath.
+    pub binaries: Vec<EmbeddedBinary>,
+}
+
+/// A per-platform package under construction, before its `package.json` is
+/// rendered. Held separately so multi-command `bins:` binaries for the same
+/// platform can be MERGED into one package (each command's launcher resolves
+/// its own binary) before the `files` allowlist — which must list every
+/// embedded binary — is baked into `package.json`.
+struct RawPlatform {
+    pkg_name: String,
+    triple: NpmTriple,
+    binaries: Vec<EmbeddedBinary>,
 }
 
 /// The rendered metapackage file pair (`package.json` + `shim.js`), grouped so
@@ -53,8 +74,19 @@ pub(crate) struct MetapackageFiles {
     /// Rendered metapackage `package.json` (carries `optionalDependencies` +
     /// `bin`).
     pub package_json: String,
-    /// Rendered `shim.js` for the metapackage `bin`.
-    pub shim_js: String,
+    /// Rendered launcher shims — one per emitted command (`shim.js` for the
+    /// single-command default, `<command>.js` per entry when `bins` is set).
+    pub shims: Vec<NpmShim>,
+}
+
+/// One generated metapackage launcher shim: the filename npm's `bin` map points
+/// at, plus its rendered JavaScript body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NpmShim {
+    /// Shim filename inside the package (`shim.js` or `<command>.js`).
+    pub filename: String,
+    /// Rendered shim body.
+    pub contents: String,
 }
 
 /// The full set of packages an `optional-deps` entry emits: the per-platform
@@ -87,6 +119,67 @@ pub(crate) fn resolve_bin<'a>(cfg: &'a NpmConfig, metapackage: &'a str) -> &'a s
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| metapackage.rsplit('/').next().unwrap_or(metapackage))
+}
+
+/// The trimmed, slash-stripped `platform_bin_dir` (e.g. `bin`), or `None` when
+/// unset/blank — the binary then lands at the package root.
+fn platform_bin_dir(cfg: &NpmConfig) -> Option<&str> {
+    cfg.platform_bin_dir
+        .as_deref()
+        .map(|s| s.trim().trim_matches('/'))
+        .filter(|s| !s.is_empty())
+}
+
+/// Join a package-relative binary path from an optional subdir + filename:
+/// `Some("bin")` + `git-cliff` → `bin/git-cliff`; `None` → `git-cliff`.
+fn join_bin_dir(dir: Option<&str>, name: &str) -> String {
+    match dir {
+        Some(d) => format!("{d}/{name}"),
+        None => name.to_string(),
+    }
+}
+
+/// One command the metapackage installs: the `bin`-map key, the launcher shim
+/// filename that key points at, and the per-platform binary the shim resolves
+/// (`None` = the platform package's own embedded binary — the single-command
+/// default; `Some(name)` = a specific binary filename from a `bins` entry).
+struct MetaCommand {
+    /// `bin`-map key (the CLI command name).
+    command: String,
+    /// Launcher shim filename (`shim.js` or `<command>.js`).
+    shim_file: String,
+    /// Binary filename to resolve inside the selected platform package.
+    target: Option<String>,
+}
+
+/// Resolve the command set the metapackage emits: every `bins` entry (each with
+/// its own `<command>.js` shim resolving the mapped binary) when set, else the
+/// single `bin:`-derived command with the default `shim.js`.
+fn resolve_commands(cfg: &NpmConfig, metapackage: &str) -> Vec<MetaCommand> {
+    let bins: Vec<(&String, &String)> = cfg
+        .bins
+        .as_ref()
+        .map(|m| {
+            m.iter()
+                .filter(|(k, v)| !k.trim().is_empty() && !v.trim().is_empty())
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+    if bins.is_empty() {
+        return vec![MetaCommand {
+            command: resolve_bin(cfg, metapackage).to_string(),
+            shim_file: "shim.js".to_string(),
+            target: None,
+        }];
+    }
+    bins.into_iter()
+        .map(|(cmd, bin)| MetaCommand {
+            command: cmd.trim().to_string(),
+            shim_file: format!("{}.js", cmd.trim()),
+            target: Some(bin.trim().to_string()),
+        })
+        .collect()
 }
 
 /// Tie-break rank for the not-libc-aware linux dedup: lower sorts first, and
@@ -213,8 +306,11 @@ fn render_platform_name(
 /// Render a per-platform `package.json`: `name`/`version` plus the npm
 /// `os`/`cpu`/`libc` selectors (libc only when `libc_aware` and present).
 ///
-/// `crate_name` drives the per-crate metadata resolvers; `binary_name` is the
-/// embedded binary filename, emitted as the package's `files` allowlist.
+/// `crate_name` drives the per-crate metadata resolvers; `bin_subpaths` are the
+/// package-relative paths the embedded binaries land under, emitted as the
+/// package's `files` allowlist (so every `platform_bin_dir` binary is included
+/// at its subdir — one entry for a single-command tool, one per command for a
+/// multi-command `bins:` package).
 // Each parameter is an independent render input (context, config, the three
 // identity strings, version, the derived triple, the libc toggle); bundling
 // them into a struct would only relocate the arity, not reduce coupling.
@@ -224,7 +320,7 @@ fn render_platform_json(
     cfg: &NpmConfig,
     pkg_name: &str,
     crate_name: &str,
-    binary_name: &str,
+    bin_subpaths: &[String],
     version: &str,
     triple: &NpmTriple,
     libc_aware: bool,
@@ -242,7 +338,7 @@ fn render_platform_json(
     insert_common_metadata(&mut root, ctx, cfg, crate_name);
     insert_engines(&mut root, cfg);
     insert_publish_config(&mut root, cfg, provenance_override);
-    insert_files(&mut root, cfg, &[binary_name.to_string()]);
+    insert_files(&mut root, cfg, bin_subpaths);
     root.insert(
         "os".into(),
         serde_json::Value::Array(vec![serde_json::Value::String(triple.os.clone())]),
@@ -263,15 +359,15 @@ fn render_platform_json(
 }
 
 /// Render the metapackage `package.json`: shared metadata, the `bin` map
-/// pointing at `shim.js`, and `optionalDependencies` listing every
-/// per-platform package at the same version.
+/// pointing every command at its launcher shim, and `optionalDependencies`
+/// listing every per-platform package at the same version.
 #[allow(clippy::too_many_arguments)]
 fn render_metapackage_json(
     ctx: &Context,
     cfg: &NpmConfig,
     metapackage: &str,
     crate_name: &str,
-    bin: &str,
+    commands: &[MetaCommand],
     version: &str,
     platforms: &[PlatformPackage],
     provenance_override: Option<bool>,
@@ -288,12 +384,23 @@ fn render_metapackage_json(
     insert_common_metadata(&mut root, ctx, cfg, crate_name);
     insert_engines(&mut root, cfg);
     insert_publish_config(&mut root, cfg, provenance_override);
-    // The metapackage ships only the `bin` shim (binaries live in the
+    // The metapackage ships only the launcher shim(s) (binaries live in the
     // per-platform optionalDependencies).
-    insert_files(&mut root, cfg, &["shim.js".to_string()]);
+    let shim_files: Vec<String> = commands.iter().map(|c| c.shim_file.clone()).collect();
+    insert_files(&mut root, cfg, &shim_files);
 
+    // `bin` map: one command → its shim file. BTreeMap keeps it sorted.
+    let mut bin_deps: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for c in commands {
+        bin_deps.insert(
+            c.command.clone(),
+            serde_json::Value::String(c.shim_file.clone()),
+        );
+    }
     let mut bin_map = serde_json::Map::new();
-    bin_map.insert(bin.to_string(), serde_json::Value::String("shim.js".into()));
+    for (k, v) in bin_deps {
+        bin_map.insert(k, v);
+    }
     root.insert("bin".into(), serde_json::Value::Object(bin_map));
 
     // optionalDependencies — BTreeMap keeps the keys sorted for determinism.
@@ -316,14 +423,28 @@ fn render_metapackage_json(
     finalize_package_json(root, cfg)
 }
 
-/// Render the metapackage `shim.js`. The shim builds a `PLATFORMS` table
+/// Render one metapackage launcher shim. The shim builds a `PLATFORMS` table
 /// mapping `<platform>-<arch>[-<libc>]` to the per-platform package name,
 /// detects musl-vs-glibc on linux, resolves the matching package's binary via
 /// `require.resolve`, and `spawnSync`s it (honouring a `BINARY_OVERRIDE` env
 /// var). No download, no third-party deps.
-fn render_shim_js(bin: &str, platforms: &[PlatformPackage]) -> String {
+///
+/// `bin` labels the command in error messages. `target` overrides which binary
+/// filename inside the resolved package to run (a `bins` command resolving a
+/// specific binary at `<platform_bin_dir>/<target>`); `None` resolves the
+/// platform package's own embedded binary (`bin_subpath`). `shim_env` is
+/// injected into the spawned child's environment.
+fn render_shim_js(
+    cfg: &NpmConfig,
+    bin: &str,
+    target: Option<&str>,
+    bin_dir: Option<&str>,
+    platforms: &[PlatformPackage],
+) -> String {
     // PLATFORMS entries: key is `<os>-<cpu>` or `<os>-<cpu>-<libc>` when the
-    // per-platform package carries a libc selector; value is the package name.
+    // per-platform package carries a libc selector; `bin` is the package-
+    // relative binary path (the command's `target` under platform_bin_dir, or
+    // the platform package's own embedded binary).
     let mut entries: Vec<String> = platforms
         .iter()
         .map(|p| {
@@ -332,14 +453,23 @@ fn render_shim_js(bin: &str, platforms: &[PlatformPackage]) -> String {
             } else {
                 format!("{}-{}-{}", p.triple.os, p.triple.cpu, p.triple.libc)
             };
-            format!(
-                "  {:?}: {{ pkg: {:?}, bin: {:?} }},",
-                key, p.name, p.binary_name
-            )
+            let bin_path = match target {
+                Some(t) => join_bin_dir(bin_dir, t),
+                None => p
+                    .binaries
+                    .first()
+                    .map(|b| b.subpath.clone())
+                    .unwrap_or_default(),
+            };
+            format!("  {:?}: {{ pkg: {:?}, bin: {:?} }},", key, p.name, bin_path)
         })
         .collect();
     entries.sort();
     let platforms_table = entries.join("\n");
+    let (shim_env_decl, spawn_opts) = super::manifest::shim_env_fragments(cfg);
+    // JSON-encode the command label so a quote/backtick in a `bins` key cannot
+    // break the generated JS (mirrors render_launcher_js / postinstall TARGETS).
+    let bin_js = serde_json::to_string(bin).unwrap_or_else(|_| format!("{bin:?}"));
 
     format!(
         r#"#!/usr/bin/env node
@@ -351,6 +481,8 @@ fn render_shim_js(bin: &str, platforms: &[PlatformPackage]) -> String {
 // optionalDependencies; this shim finds it and runs it.
 const {{ spawnSync }} = require('child_process');
 const fs = require('fs');
+{shim_env_decl}
+const CMD = {bin_js};
 
 // Detect glibc vs musl on linux. The presence of /lib/ld-musl-* (or a
 // musl-tagged ldd) means musl; otherwise glibc.
@@ -389,17 +521,17 @@ function resolveBinary() {{
   if (!entry) {{
     const supported = Object.keys(PLATFORMS).join(', ');
     throw new Error(
-      `[{bin}] unsupported platform ${{key}}; supported: ${{supported}}`
+      `[${{CMD}}] unsupported platform ${{key}}; supported: ${{supported}}`
     );
   }}
   return require.resolve(`${{entry.pkg}}/${{entry.bin}}`);
 }}
 
 const target = resolveBinary();
-const result = spawnSync(target, process.argv.slice(2), {{ stdio: 'inherit' }});
+const result = spawnSync(target, process.argv.slice(2), {spawn_opts});
 if (result.error) {{
   console.error(
-    `[{bin}] failed to launch ${{target}}: ${{result.error.message}}; ` +
+    `[${{CMD}}] failed to launch ${{target}}: ${{result.error.message}}; ` +
     `the platform package may be missing or not executable — try reinstalling`
   );
   process.exit(1);
@@ -407,7 +539,9 @@ if (result.error) {{
 process.exit(result.status === null ? 1 : result.status);
 "#,
         platforms_table = platforms_table,
-        bin = bin,
+        shim_env_decl = shim_env_decl,
+        spawn_opts = spawn_opts,
+        bin_js = bin_js,
     )
 }
 
@@ -481,7 +615,7 @@ pub(crate) fn generate_layout(
         binaries = ctx.artifacts.by_kind(ArtifactKind::Binary);
     }
 
-    let mut platforms: Vec<PlatformPackage> = Vec::new();
+    let mut raws: Vec<RawPlatform> = Vec::new();
     let mut excluded: Vec<String> = Vec::new();
     for art in binaries {
         if let Some(ids) = id_filter
@@ -490,6 +624,18 @@ pub(crate) fn generate_layout(
             continue;
         }
         let target = art.target.as_deref().unwrap_or("");
+        // `targets:` allowlist: a triple deliberately left out of scope is
+        // silently skipped (NOT routed through warn_excluded_targets, which is
+        // for targets npm has no os/cpu/libc mapping for — a different concern).
+        if !crate::publisher_helpers::target_in_allowlist(cfg.targets.as_ref(), target) {
+            continue;
+        }
+        // `amd64_variant` / `arm_variant` microarch filter: a tuned build whose
+        // variant metadata does not match the configured (or default) variant is
+        // dropped so only the chosen microarch lands in each package.
+        if !super::manifest::artifact_matches_variant(art, cfg) {
+            continue;
+        }
         let Some(triple) = npm_triple(target) else {
             excluded.push(if target.is_empty() {
                 "<no target>".to_string()
@@ -509,66 +655,74 @@ pub(crate) fn generate_layout(
                 render_platform_name(ctx, template, scope, target, &triple)?
             }
         };
-        let binary_name = art.name.clone();
-        let package_json = render_platform_json(
-            ctx,
-            cfg,
-            &pkg_name,
-            crate_name,
-            &binary_name,
-            version,
-            &triple,
-            libc_aware,
-            provenance_override,
-        )?;
-        platforms.push(PlatformPackage {
-            name: pkg_name,
+        let subpath = join_bin_dir(platform_bin_dir(cfg), &art.name);
+        raws.push(RawPlatform {
+            pkg_name,
             triple,
-            package_json,
-            binary_src: art.path.clone(),
-            binary_name,
+            binaries: vec![EmbeddedBinary {
+                subpath,
+                src: art.path.clone(),
+            }],
         });
     }
     warn_excluded_targets(log, &excluded);
 
-    // ORDER-COUPLED PASSES: the exact dedup, the libc collapse, and the
-    // collision bail below all assume this name-sorted order — `dedup_by`
-    // only removes ADJACENT duplicates and the collision scan only compares
-    // `windows(2)` neighbours, so reordering or skipping the sort silently
-    // breaks all three.
-    // Sort by name, breaking ties on libc so the dedup below has a
+    // ORDER-COUPLED PASSES: the merge, the libc collapse, and the collision
+    // bail below all assume this name-sorted order — each only compares
+    // ADJACENT entries, so reordering or skipping the sort silently breaks all
+    // three.
+    // Sort by name, breaking ties on libc so the collapse below has a
     // deterministic winner instead of one defined by artifact-insertion order.
     // When not libc-aware, a linux musl and glibc binary share the same package
-    // name; `libc_dedup_rank` ranks glibc ahead of musl so `dedup_by` (which
+    // name; `libc_dedup_rank` ranks glibc ahead of musl so the collapse (which
     // keeps the first of each run) always keeps the glibc binary. glibc is the
     // broadest-compatibility default for a single fallback linux package.
-    platforms.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
+    raws.sort_by(|a, b| {
+        a.pkg_name
+            .cmp(&b.pkg_name)
             .then_with(|| libc_dedup_rank(&a.triple.libc).cmp(&libc_dedup_rank(&b.triple.libc)))
     });
-    // Identical (name, triple) pairs are the same package emitted twice (e.g.
-    // duplicate artifacts); keep one.
-    platforms.dedup_by(|a, b| a.name == b.name && a.triple == b.triple);
-    // When not libc-aware, two linux binaries (musl + glibc) collapse to the
-    // same package name; drop the duplicate so optionalDependencies has no
-    // colliding key. The sort above guarantees glibc precedes musl, so the
-    // glibc binary is the one retained. The collapse only spans a libc
+    // Merge adjacent packages that share a (name, triple): a multi-command
+    // `bins:` tool emits one binary artifact per command for the SAME platform,
+    // and they must co-locate in ONE npm package (each command's launcher shim
+    // resolves its own binary) rather than collide as duplicate package names.
+    // Distinct subpaths embed side by side; a repeated subpath (a duplicate
+    // artifact) is kept once. `Vec::dedup_by` can only drop, so the merge is
+    // hand-rolled.
+    let mut merged: Vec<RawPlatform> = Vec::with_capacity(raws.len());
+    for raw in raws {
+        if let Some(last) = merged.last_mut()
+            && last.pkg_name == raw.pkg_name
+            && last.triple == raw.triple
+        {
+            for b in raw.binaries {
+                if !last.binaries.iter().any(|e| e.subpath == b.subpath) {
+                    last.binaries.push(b);
+                }
+            }
+            continue;
+        }
+        merged.push(raw);
+    }
+    // When not libc-aware, two linux packages (musl + glibc) collapse to the
+    // same name; drop the duplicate so optionalDependencies has no colliding
+    // key. The sort above guarantees glibc precedes musl, so the glibc package
+    // (with its full binary set) is retained. The collapse only spans a libc
     // difference — same-name packages for DIFFERENT os/cpu pairs are a naming
     // bug caught below, not silently merged.
     if !libc_aware {
-        platforms.dedup_by(|a, b| {
-            a.name == b.name && a.triple.os == b.triple.os && a.triple.cpu == b.triple.cpu
+        merged.dedup_by(|a, b| {
+            a.pkg_name == b.pkg_name && a.triple.os == b.triple.os && a.triple.cpu == b.triple.cpu
         });
     }
-    // Any duplicate name that survives the collapses above means two distinct
+    // Any duplicate name that survives the collapse above means two distinct
     // platforms rendered the same package name — with the default scheme that
     // is impossible, so this is a platform_name_template that omits a
     // distinguishing var (e.g. NpmLibc while libc_aware is true).
-    let mut colliding: Vec<&str> = platforms
+    let mut colliding: Vec<&str> = merged
         .windows(2)
-        .filter(|w| w[0].name == w[1].name)
-        .map(|w| w[0].name.as_str())
+        .filter(|w| w[0].pkg_name == w[1].pkg_name)
+        .map(|w| w[0].pkg_name.as_str())
         .collect();
     colliding.dedup();
     if !colliding.is_empty() {
@@ -580,7 +734,7 @@ pub(crate) fn generate_layout(
         );
     }
 
-    if platforms.is_empty() {
+    if merged.is_empty() {
         bail!(
             "npm: metapackage '{}' has no binary artifacts matching any npm platform; \
              nothing to publish (optional-deps mode requires per-target binaries)",
@@ -588,23 +742,55 @@ pub(crate) fn generate_layout(
         );
     }
 
+    // Render each `package.json` now that every package's full binary set — and
+    // thus its `files` allowlist — is final.
+    let mut platforms: Vec<PlatformPackage> = Vec::with_capacity(merged.len());
+    for raw in merged {
+        let subpaths: Vec<String> = raw.binaries.iter().map(|b| b.subpath.clone()).collect();
+        let package_json = render_platform_json(
+            ctx,
+            cfg,
+            &raw.pkg_name,
+            crate_name,
+            &subpaths,
+            version,
+            &raw.triple,
+            libc_aware,
+            provenance_override,
+        )?;
+        platforms.push(PlatformPackage {
+            name: raw.pkg_name,
+            triple: raw.triple,
+            package_json,
+            binaries: raw.binaries,
+        });
+    }
+
     let metapackage_files = if skip_metapackage {
         None
     } else {
+        let commands = resolve_commands(cfg, &metapackage);
         let package_json = render_metapackage_json(
             ctx,
             cfg,
             &metapackage,
             crate_name,
-            &bin,
+            &commands,
             version,
             &platforms,
             provenance_override,
         )?;
-        let shim_js = render_shim_js(&bin, &platforms);
+        let bin_dir = platform_bin_dir(cfg);
+        let shims = commands
+            .iter()
+            .map(|c| NpmShim {
+                filename: c.shim_file.clone(),
+                contents: render_shim_js(cfg, &c.command, c.target.as_deref(), bin_dir, &platforms),
+            })
+            .collect();
         Some(MetapackageFiles {
             package_json,
-            shim_js,
+            shims,
         })
     };
 

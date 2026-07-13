@@ -21,7 +21,7 @@ on:
         required: false
         default: ""
       skip_publishers:
-        description: "Comma-separated publishers to skip for THIS run only (e.g. chocolatey to ship everything else while one publisher is blocked). Appended to the always-skipped npm submitter, which the dedicated publish-npm job owns. Empty on the normal CI-driven flow."
+        description: "Comma-separated publishers to skip for THIS run only (e.g. chocolatey to ship everything else while one publisher is blocked). Appended to the always-skipped OIDC submitters (npm, pypi), which the dedicated publish-oidc job owns. Empty on the normal CI-driven flow."
         required: false
         default: ""
       anodizer_version:
@@ -49,11 +49,14 @@ env:
   # commit than the tag actually tags.
   RELEASE_REF: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
   # Publishers peeled off the self-hosted release job onto the github-hosted
-  # publish-npm job (npm provenance needs a GitHub OIDC token the registry only
-  # accepts from a github-hosted runner). The main job --skip=s this set; the
-  # hosted job --publishers=es it — one place keeps the two selectors exact
-  # complements (a mismatch double-publishes or silently drops a publisher).
-  HOSTED_PUBLISHERS: npm
+  # publish-oidc job. Both mint from a GitHub Actions OIDC identity that the
+  # registry only honours from a github-hosted runner: npm provenance
+  # attestations 422 on the self-hosted arc-anodizer runner, and PyPI Trusted
+  # Publishing exchanges the Actions id-token for a short-lived upload token
+  # (auth: oidc). The main job --skip=s this set; the hosted job --publishers=es
+  # it — one place keeps the two selectors exact complements (a mismatch
+  # double-publishes or silently drops a publisher).
+  HOSTED_PUBLISHERS: npm,pypi
   # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
   # runners that don't set init.defaultBranch; pin it via git's env-config so the
   # hint never fires (binds every git invocation regardless of HOME or global config).
@@ -66,7 +69,7 @@ jobs:
   # anodizer-action@v1 binary) because --preflight-secrets does not exist in
   # the published action until this release ships — chicken-and-egg. Validates
   # that every runner-agnostic publish secret / credential the downstream
-  # `release` + `publish-npm` jobs need is present (and key material is
+  # `release` + `publish-oidc` jobs need is present (and key material is
   # well-formed) WITHOUT checking host-local tools, so a missing CI secret
   # aborts before a tag is ever minted. Carries the full secret env block the
   # `release` job uses so the check is meaningful — the two blocks are held
@@ -78,8 +81,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # id-token: write so the OIDC request vars (ACTIONS_ID_TOKEN_REQUEST_URL /
-    # _TOKEN) the npm/mcp provenance surfaces require are injected and the
-    # gate sees them present — mirroring the publish-npm job's permission.
+    # _TOKEN) the npm/mcp/pypi OIDC surfaces require are injected and the
+    # gate sees them present — mirroring the publish-oidc job's permission.
     permissions:
       contents: read
       id-token: write
@@ -370,10 +373,12 @@ jobs:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          # npm is peeled onto the github-hosted publish-npm job below: npm
-          # provenance is minted from a GitHub-hosted OIDC token and the
-          # registry rejects it (HTTP 422) on the self-hosted arc-anodizer
-          # runner, so the main publish skips npm and the hosted job runs it.
+          # The OIDC publishers (npm, pypi) are peeled onto the github-hosted
+          # publish-oidc job below: both mint from a GitHub-hosted Actions OIDC
+          # identity that the registry only honours off a github-hosted runner
+          # (npm provenance 422s on the self-hosted arc-anodizer runner; PyPI
+          # Trusted Publishing exchanges the id-token for an upload token). The
+          # main publish skips this set and the hosted job runs it.
           args: release --publish-only --skip=${{ env.HOSTED_PUBLISHERS }}${{ inputs.skip_publishers != '' && format(',{0}', inputs.skip_publishers) || '' }}
         env:
           ANNOUNCE_WEBHOOK_URL: ${{ secrets.ANNOUNCE_WEBHOOK_URL }}
@@ -412,18 +417,20 @@ jobs:
             dist/run-*/determinism.json
           if-no-files-found: error
 
-  # npm is peeled off the self-hosted `release` job onto this github-hosted
-  # one. npm provenance is minted from a GitHub Actions OIDC token, and the
-  # registry only accepts that attestation from a github-hosted runner — on
-  # the self-hosted arc-anodizer runner the publish 422s (anodizer detects
-  # this and degrades to a non-provenance publish). Running npm here, on
-  # ubuntu-latest with `id-token: write`, lets the npm publish carry
-  # provenance while the main publish stays on arc-anodizer (which the
-  # determinism / blob / uploads legs require). It consumes the same
-  # preserved `dist-*` artifacts the main job used (npm optional-deps mode
-  # embeds the built platform binaries).
-  publish-npm:
-    name: Publish npm (provenance)
+  # The OIDC publishers (npm, pypi) are peeled off the self-hosted `release`
+  # job onto this github-hosted one. Both authenticate from a GitHub Actions
+  # OIDC identity the registry only honours off a github-hosted runner: npm
+  # provenance is minted from the id-token (and 422s on the self-hosted
+  # arc-anodizer runner, where anodizer degrades to a non-provenance publish),
+  # and PyPI Trusted Publishing (auth: oidc) exchanges the id-token for a
+  # short-lived upload token — no stored PYPI_TOKEN. Running them here, on
+  # ubuntu-latest with `id-token: write`, lets each carry its OIDC attestation
+  # while the main publish stays on arc-anodizer (which the determinism / blob
+  # / uploads legs require). It consumes the same preserved `dist-*` artifacts
+  # the main job used (npm optional-deps mode embeds the built platform
+  # binaries; the pypi wheels are built from them here).
+  publish-oidc:
+    name: Publish OIDC (npm provenance + PyPI Trusted Publishing)
     needs: [tag, release]
     # always() defeats GitHub's skipped-need propagation: a re-publish /
     # skip_determinism dispatch skips determinism-check, and without always()
@@ -433,6 +440,9 @@ jobs:
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # id-token: write injects ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — the request
+    # env npm provenance AND PyPI Trusted Publishing (auth: oidc) both exchange
+    # for their upload attestation. No stored PYPI_TOKEN in the env below.
     permissions:
       contents: read
       id-token: write
@@ -450,7 +460,7 @@ jobs:
           run-id: ${{ needs.tag.outputs.dist_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run anodizer release --publish-only --publishers npm
+      - name: Run anodizer release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: ${{ needs.tag.outputs.publish_from_artifact }}
@@ -458,18 +468,18 @@ jobs:
           artifact-run-id: auto
           artifact-workflow: ci.yml
           auto-install: true
-          # No --skip: `--publishers npm` auto-determines the surface. The
-          # allowlist deselects every non-npm PUBLISHER — including
-          # github-release (so the GitHub Release the main job owns is not
-          # re-touched), blob, snapcraft-publish, docker, docker-sign, and
+          # No --skip: `--publishers npm,pypi` auto-determines the surface. The
+          # allowlist deselects every publisher outside the hosted set —
+          # including github-release (so the GitHub Release the main job owns is
+          # not re-touched), blob, snapcraft-publish, docker, docker-sign, and
           # announce — and the sign stage self-skips BOTH cosign/GPG loops on
           # this github-hosted runner: the detached-signature (`signs:`) loop
           # because all of its consumers (github-release / blob / artifactory /
           # uploads) are deselected, and the raw-binary (`binary_signs:`) loop
           # because publish-only mode discards binary-sign output (it has no
           # publish-time consumer — binaries are signed at build time on the
-          # main job). So this runner is never asked for cosign/GPG material it
-          # does not carry.
+          # main job). Neither npm nor pypi consumes signing material, so this
+          # runner is never asked for cosign/GPG it does not carry.
           args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -482,9 +492,9 @@ jobs:
   advance-master:
     name: Advance master
     needs: [tag, release]
-    # always() for the same reason as publish-npm: a skipped determinism-check
+    # always() for the same reason as publish-oidc: a skipped determinism-check
     # must not auto-skip this job when `release` itself succeeded. This if: must
-    # stay byte-equal to publish-npm's (audit-workflow-lockstep.sh enforces it),
+    # stay byte-equal to publish-oidc's (audit-workflow-lockstep.sh enforces it),
     # so a one-sided edit can't split the two post-publish jobs' verdicts.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest

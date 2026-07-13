@@ -554,6 +554,95 @@ pub(crate) fn entry_inactive(
     anodizer_core::env_preflight::entry_inactive(ctx, skip, skip_upload, if_condition)
 }
 
+/// True when `target` is admitted by an optional `targets:` allowlist: an
+/// absent (`None`) or empty allowlist admits every target; otherwise only
+/// triples listed in it. Shared by the npm and pypi per-target publishers so
+/// their `targets:` filter has one definition.
+pub(crate) fn target_in_allowlist(allowlist: Option<&Vec<String>>, target: &str) -> bool {
+    match allowlist.filter(|l| !l.is_empty()) {
+        None => true,
+        Some(list) => list.iter().any(|t| t == target),
+    }
+}
+
+/// Distinct target triples a crate's builds actually produce. Thin wrapper
+/// over the build-planning SSOT
+/// ([`anodizer_core::build_plan::crate_target_list`]) so the npm and pypi
+/// `targets:` / platform-tag collision checks see the exact universe the build
+/// planner will emit — including the synthesized default build a crate with no
+/// explicit `builds:` block gets from its `src/main.rs`, which a direct
+/// `c.builds` read would miss (reporting an empty universe and false-blocking
+/// the release).
+pub(crate) fn crate_build_targets(
+    ctx: &anodizer_core::context::Context,
+    c: &anodizer_core::config::CrateConfig,
+) -> Vec<String> {
+    anodizer_core::build_plan::crate_target_list(c, &ctx.config.effective_default_targets())
+}
+
+/// Config-time validation for a per-target publisher's `targets:` allowlist:
+/// every listed triple must be produced by at least one build in the
+/// `ids`-filtered crate universe, otherwise the allowlist would filter the
+/// publisher down to nothing on a triple the release never emits — a silent
+/// no-op that almost always signals a typo. `publisher` labels the error
+/// (`"npm"` / `"pypi"`). Returns [`PreflightCheck::Pass`] when the allowlist is
+/// unset or fully satisfied.
+///
+/// An explicit empty list (`targets: []`) is a config mistake — it reads as
+/// "publish nothing" yet the runtime filter treats it as unset and publishes
+/// everything, contradicting the field's "when set, only these" contract — so
+/// it is a Blocker directing the operator to omit the field instead.
+///
+/// [`PreflightCheck::Pass`]: anodizer_core::PreflightCheck::Pass
+pub(crate) fn targets_allowlist_check(
+    ctx: &anodizer_core::context::Context,
+    targets: Option<&Vec<String>>,
+    ids: Option<&Vec<String>>,
+    publisher: &str,
+) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    let targets = match targets {
+        None => return PreflightCheck::Pass,
+        Some(t) if t.is_empty() => {
+            return PreflightCheck::Blocker(format!(
+                "{publisher}: targets: is empty — omit the field to publish all \
+                 targets, or list at least one target triple"
+            ));
+        }
+        Some(t) => t,
+    };
+    let mut universe: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for c in ctx.config.crate_universe() {
+        let selected = match ids {
+            Some(ids) => ids.iter().any(|id| id == &c.name),
+            None => true,
+        };
+        if !selected {
+            continue;
+        }
+        universe.extend(crate_build_targets(ctx, c));
+    }
+    let mut unknown: Vec<&str> = targets
+        .iter()
+        .filter(|t| !universe.contains(t.as_str()))
+        .map(String::as_str)
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
+    if unknown.is_empty() {
+        return PreflightCheck::Pass;
+    }
+    let list = unknown
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    PreflightCheck::Blocker(format!(
+        "{publisher}: targets: lists {list} which no selected build produces — \
+         remove the entry or add a matching build target",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

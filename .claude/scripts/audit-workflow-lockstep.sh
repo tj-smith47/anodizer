@@ -21,7 +21,7 @@
 #      resolve-release-target default equal the producer's upload name, AND
 #      every literal `artifact-workflow:` names the producer workflow's own
 #      filename (the NAME and the producing FILE are both load-bearing).
-#   6. Post-release gate: publish-npm and advance-master share one success if:.
+#   6. Post-release gate: publish-oidc and advance-master share one success if:.
 #   7. Cross-OS suite fallback: the go-task-less fallback in test-os-suite.sh
 #      reproduces every cargo pass of the Taskfile `test` target verbatim.
 #   8. skip_publishers prose: the static input description still names every
@@ -160,10 +160,10 @@ for f in "$CI" "$REL"; do
 done
 
 # --- 6. Post-release gate --------------------------------------------------
-npm_if=$(yqr -r '.jobs["publish-npm"].if' "$REL")
+oidc_if=$(yqr -r '.jobs["publish-oidc"].if' "$REL")
 adv_if=$(yqr -r '.jobs["advance-master"].if' "$REL")
-if [[ "$npm_if" != "$adv_if" ]]; then
-    fail "post-release gate drift: publish-npm if [${npm_if}] != advance-master if [${adv_if}]."
+if [[ "$oidc_if" != "$adv_if" ]]; then
+    fail "post-release gate drift: publish-oidc if [${oidc_if}] != advance-master if [${adv_if}]."
 fi
 
 # --- 7. Cross-OS suite fallback parity -------------------------------------

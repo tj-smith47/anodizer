@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
-use anodizer_core::url::percent_encode_unreserved;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -71,13 +70,6 @@ struct GithubAtBody<'a> {
 #[derive(Debug, Serialize)]
 struct GithubOidcBody<'a> {
     oidc_token: &'a str,
-}
-
-/// `GitHub Actions ID-token` response wrapping a `value` field.
-#[derive(Debug, Deserialize)]
-struct OidcTokenValue {
-    #[serde(default)]
-    value: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -288,76 +280,25 @@ pub struct GithubOidcAuthProvider {
 
 impl McpAuthProvider for GithubOidcAuthProvider {
     fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String> {
-        let request_url = self
-            .env
-            .var("ACTIONS_ID_TOKEN_REQUEST_URL")
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_URL \
-                 (set automatically by GitHub Actions runners with id-token: write \
-                 permission)"
-                )
-            })?;
-        let request_token = self
-            .env
-            .var("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-                 (set automatically by GitHub Actions runners with id-token: write \
-                 permission)"
-                )
-            })?;
-        if request_url.is_empty() || request_token.is_empty() {
-            anyhow::bail!(
-                "mcp: auth.type=github-oidc: ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN \
-                 are empty — id-token: write permission missing from workflow"
-            );
-        }
-
+        // Hop 1: fetch the Actions id-token for the registry-derived audience
+        // (shared with every other OIDC publisher).
         let audience = audience_from_registry_url(&self.registry_url)?;
-        let separator = if request_url.contains('?') { '&' } else { '?' };
-        let full_url = format!(
-            "{}{}audience={}",
-            request_url,
-            separator,
-            percent_encode_unreserved(&audience)
-        );
-
-        let client = build_client(Duration::from_secs(30))?;
-        let (_, oidc_body) = retry_http_blocking(
-            RetryLog::new("mcp: GitHub Actions OIDC token", log),
+        let oidc_value = crate::actions_oidc::request_id_token(
+            |k| self.env.var(k),
+            &audience,
             &self.policy,
-            SuccessClass::Strict,
-            |_| {
-                client
-                    .get(&full_url)
-                    .header("Authorization", format!("Bearer {}", request_token))
-                    .header("Accept", "application/json")
-                    .send()
-            },
-            |status, body| {
-                format!(
-                    "mcp: GET {} returned HTTP {}: {}",
-                    full_url,
-                    status,
-                    anodizer_core::redact::redact_bearer_tokens(body)
-                )
-            },
-        )
-        .context("mcp: fetch GitHub Actions id-token")?;
-        let oidc: OidcTokenValue =
-            serde_json::from_str(&oidc_body).context("mcp: parse OIDC token response")?;
-        if oidc.value.is_empty() {
-            anyhow::bail!("mcp: OIDC token response missing value");
-        }
+            log,
+            "mcp",
+        )?;
 
+        // Hop 2: exchange the JWT at the MCP registry's github-oidc endpoint.
+        let client = build_client(Duration::from_secs(30))?;
         let exchange_url = format!(
             "{}/v0/auth/github-oidc",
             self.registry_url.trim_end_matches('/')
         );
         let body_json = serde_json::to_string(&GithubOidcBody {
-            oidc_token: &oidc.value,
+            oidc_token: &oidc_value,
         })
         .context("mcp: serialize github-oidc exchange body")?;
         let (_, exchange_body) = retry_http_blocking(
@@ -733,7 +674,10 @@ mod tests {
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
-        assert!(err.contains("id-token: write permission missing"), "{err}");
+        // Empty and absent collapse to one message via the shared hop-1 helper:
+        // it names the missing request var and the id-token: write cause.
+        assert!(err.contains("id-token: write permission"), "{err}");
+        assert!(err.contains("ACTIONS_ID_TOKEN_REQUEST_URL"), "{err}");
     }
 
     #[test]
@@ -806,7 +750,10 @@ mod tests {
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
-        assert!(err.contains("OIDC token response missing value"), "{err}");
+        assert!(
+            err.contains("Actions id-token response missing value"),
+            "{err}"
+        );
     }
 
     #[test]

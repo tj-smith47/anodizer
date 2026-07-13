@@ -42,6 +42,10 @@ pub(crate) struct RewriteSummary {
     pub version_rewritten: bool,
     pub tag_rewritten: bool,
     pub revision_rewritten: bool,
+    /// A standalone `revision N` line was dropped — the formula's rebuild
+    /// counter, reset to zero (removed) by a version bump so `brew audit
+    /// --strict` does not reject the carried-over revision.
+    pub revision_removed: bool,
 }
 
 /// The sharded homebrew-core layout path for a formula:
@@ -91,6 +95,25 @@ fn is_url_line(line: &str) -> bool {
         return false;
     };
     rest.trim_start().starts_with('"')
+}
+
+/// True for a standalone Ruby-integer `revision N` line — the formula's
+/// rebuild counter (`revision 2`), which a version bump must reset to zero by
+/// removing the line. Deliberately NOT the keyed `revision:` field of a
+/// git-based `url ..., tag: ..., revision: "sha"` stanza: that carries a colon
+/// directly after `revision` and a quoted SHA, never a bare integer.
+fn is_revision_line(line: &str) -> bool {
+    let t = line.trim_start();
+    let Some(rest) = t.strip_prefix("revision") else {
+        return false;
+    };
+    // A whitespace separator (not a `:` or an identifier char) distinguishes
+    // `revision 2` from the git-form `revision:` field and from `revisions`.
+    if !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let value = strip_trailing_comment(rest).trim();
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// True for the explicit `version "..."` stanza.
@@ -210,6 +233,10 @@ fn replace_keyed_quoted(line: &str, key: &str, new_value: &str) -> Option<String
 ///   sha256 is required and its absence is a hard error.
 /// * The first explicit `version "..."` stanza, when present, becomes
 ///   `rw.version` in either form.
+/// * Any standalone `revision N` line (the formula's rebuild counter) is
+///   dropped — a bump resets the revision to zero, and a carried-over
+///   `revision` fails `brew audit --strict`. One resulting double-blank is
+///   swallowed so the diff stays minimal.
 ///
 /// Errors when the text has no `url` stanza (not a formula) or when the
 /// archive form needs a sha256 the caller did not supply.
@@ -224,7 +251,24 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
     let mut url_stanza_done = false;
     let mut in_url_stanza = false;
     let mut lines: Vec<String> = Vec::new();
+    // Set the turn after a `revision N` line is dropped: if that line sat
+    // between two blanks, the next blank is skipped so removal leaves no
+    // double-blank behind.
+    let mut swallow_next_blank = false;
+    // Latches once a `resource "..." do` block is entered. The top-level source
+    // `sha256` always precedes every resource block, so once a resource has been
+    // seen no later `sha256` can be the source digest — this makes the source
+    // sha256 match STRUCTURAL (before the first resource) rather than merely
+    // positional (first sha256 seen), so a formula whose only sha256 lives in a
+    // resource block can never have that resource digest clobbered.
+    let mut seen_resource = false;
     for line in text.lines() {
+        if swallow_next_blank {
+            swallow_next_blank = false;
+            if line.trim().is_empty() && lines.last().is_some_and(|l| l.trim().is_empty()) {
+                continue;
+            }
+        }
         let mut line = line.to_string();
         if !url_stanza_done && !in_url_stanza && is_url_line(&line) {
             url_seen = true;
@@ -269,8 +313,13 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
                 url_stanza_done = true;
             }
         }
-        // The source sha256 is rewritten only for the archive form.
-        if !git_form && !summary.sha256_rewritten && is_source_sha256_line(&line) {
+        if line.trim_start().starts_with("resource ") {
+            seen_resource = true;
+        }
+        // The source sha256 is rewritten only for the archive form, and only
+        // before any resource block (see `seen_resource`).
+        if !git_form && !seen_resource && !summary.sha256_rewritten && is_source_sha256_line(&line)
+        {
             let Some(sha) = rw.sha256.as_deref() else {
                 bail!(
                     "formula has an archive `sha256` stanza but no new digest was \
@@ -290,6 +339,15 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
                 line = new_line;
                 summary.version_rewritten = true;
             }
+        }
+        // A version bump resets the rebuild counter: drop the standalone
+        // `revision N` line entirely (never the git-form `revision:` field,
+        // which `is_revision_line` excludes) and swallow a resulting
+        // double-blank.
+        if is_revision_line(&line) {
+            summary.revision_removed = true;
+            swallow_next_blank = true;
+            continue;
         }
         lines.push(line);
     }
