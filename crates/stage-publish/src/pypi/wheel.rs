@@ -32,6 +32,20 @@ const MACOS_FALLBACK_ARM64: (u16, u16) = (11, 0);
 /// it genuinely runs on) instead of an unrecognized `manylinux_2_2`.
 const MANYLINUX_GLIBC_FLOOR: (u64, u64) = (2, 5);
 
+/// Lowest manylinux glibc pair a *fully-static* gnu binary may claim for
+/// `arch`. A static binary imports no versioned glibc symbol, so it runs on any
+/// glibc host — but the tag's arch must actually exist at that manylinux level.
+/// manylinux1 (`2_5`) and manylinux2010 (`2_12`) are x86-only; aarch64's first
+/// manylinux profile is manylinux2014 (`2_17`), so a static aarch64 binary
+/// floors to `2_17` (a `manylinux_2_5_aarch64` tag names a platform pip never
+/// enumerates). x86_64/i686 floor to the manylinux1 baseline.
+fn static_manylinux_floor(arch: &str) -> (u64, u64) {
+    match arch {
+        "aarch64" => (2, 17),
+        _ => MANYLINUX_GLIBC_FLOOR,
+    }
+}
+
 /// Inspection-derived traits of one built binary, separated from the file
 /// I/O so tag derivation is unit-testable on injected values.
 #[derive(Debug, Clone, Copy, Default)]
@@ -49,6 +63,17 @@ pub(crate) struct BinaryTraits {
     pub macho: bool,
     /// `true` for a universal (fat) Mach-O serving multiple arches.
     pub universal: bool,
+    /// `true` when the bytes begin with the ELF magic. A gnu-target binary that
+    /// is not an ELF is the wrong binary; combined with `dynamically_linked` it
+    /// distinguishes a legitimately-static ELF (no glibc requirement) from a
+    /// non-ELF artifact routed under a gnu triple.
+    pub elf: bool,
+    /// `true` when the ELF carries a `PT_INTERP` segment (a dynamic loader).
+    /// A dynamically linked gnu binary always imports versioned glibc symbols,
+    /// so `glibc: None` with `dynamically_linked: true` is the wrong (or
+    /// verneed-stripped) binary; `glibc: None` with `false` is a fully-static
+    /// binary that genuinely needs no glibc.
+    pub dynamically_linked: bool,
 }
 
 /// Inspect a binary's bytes for the traits [`platform_tag`] consumes.
@@ -68,6 +93,8 @@ pub(crate) fn inspect_binary(bytes: &[u8], universal: bool) -> Result<BinaryTrai
         macos_min,
         macho: anodizer_core::macho_check::is_macho(bytes),
         universal,
+        elf: bytes.starts_with(b"\x7fELF"),
+        dynamically_linked: anodizer_core::elf::is_dynamically_linked_bytes(bytes),
     })
 }
 
@@ -90,7 +117,8 @@ fn wheel_arch(triple: &str) -> Result<&'static str> {
 ///
 /// | target family | tag |
 /// |---|---|
-/// | `*-linux-gnu*` | `manylinux_<glibc maj>_<min>_<arch>` (from the binary's glibc floor) |
+/// | `*-linux-gnu*` (dynamic) | `manylinux_<glibc maj>_<min>_<arch>` (from the binary's glibc floor) |
+/// | `*-linux-gnu*` (fully static) | `manylinux_<floor>_<arch>` (arch-aware floor: `2_5` x86, `2_17` aarch64) |
 /// | `*-linux-musl*` | `musllinux_1_2_<arch>` |
 /// | `*-apple-darwin` (thin) | `macosx_<minos maj>_<min>_<x86_64\|arm64>` |
 /// | `*-apple-darwin` (fat) | `macosx_<minos maj>_<min>_universal2` |
@@ -98,9 +126,13 @@ fn wheel_arch(triple: &str) -> Result<&'static str> {
 /// | `i686-pc-windows-*` | `win32` |
 /// | `aarch64-pc-windows-*` | `win_arm64` |
 ///
-/// A gnu-target binary with NO glibc requirement errors: every dynamically
-/// linked gnu binary imports versioned glibc symbols, so its absence means
-/// the artifact under this triple is not the gnu binary it claims to be.
+/// A gnu-target binary with no glibc requirement is only accepted when it is a
+/// fully-static ELF (no `PT_INTERP` — anodizer's default build): it imports no
+/// versioned glibc symbol and runs on any glibc host, so it tags at an
+/// arch-aware manylinux floor. A *dynamically linked* gnu binary always imports
+/// versioned glibc symbols, so a missing requirement there (or a non-ELF under
+/// a gnu triple) means the artifact is not the gnu binary it claims to be, and
+/// the tag hard-errors.
 pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String> {
     if triple.contains("windows") {
         return Ok(match triple.split('-').next().unwrap_or_default() {
@@ -152,22 +184,43 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
             return Ok(format!("musllinux_1_2_{arch}"));
         }
         if triple.contains("gnu") {
-            let Some((maj, min)) = traits.glibc else {
-                bail!(
+            return match traits.glibc {
+                Some((maj, min)) => {
+                    // Floor below-baseline pairs (e.g. `2.2` from the truncated
+                    // `GLIBC_2.2.5` baseline symbol) up to the manylinux1
+                    // baseline — `manylinux_2_2` is below any recognized
+                    // manylinux platform.
+                    let (maj, min) = if (maj, min) < MANYLINUX_GLIBC_FLOOR {
+                        MANYLINUX_GLIBC_FLOOR
+                    } else {
+                        (maj, min)
+                    };
+                    Ok(format!("manylinux_{maj}_{min}_{arch}"))
+                }
+                // A fully-static ELF (no `PT_INTERP`) imports no versioned
+                // glibc symbol, so "no GLIBC_* requirement" is correct, not a
+                // wrong-binary tell — anodizer ships fully-static linux-gnu
+                // binaries. It runs on any glibc host; tag at the arch's lowest
+                // manylinux floor.
+                None if traits.elf && !traits.dynamically_linked => {
+                    let (maj, min) = static_manylinux_floor(arch);
+                    Ok(format!("manylinux_{maj}_{min}_{arch}"))
+                }
+                // A dynamically linked gnu ELF always imports versioned glibc
+                // symbols; their absence means a stripped verneed. A non-ELF
+                // under a gnu triple is likewise the wrong binary. Either way,
+                // no trustworthy manylinux floor can be derived — hard-error
+                // rather than ship an immutable wheel with a guessed tag.
+                None => bail!(
                     "pypi: binary for gnu target '{triple}' declares no GLIBC_* \
-                     requirement — a dynamically linked gnu binary always does, so \
-                     this looks like the wrong binary for the target"
-                );
+                     requirement and is not a fully-static ELF \
+                     (elf={}, dynamically_linked={}) — a dynamically linked gnu \
+                     binary always imports versioned glibc symbols, so this \
+                     looks like the wrong binary for the target",
+                    traits.elf,
+                    traits.dynamically_linked
+                ),
             };
-            // Floor below-baseline pairs (e.g. `2.2` from the truncated
-            // `GLIBC_2.2.5` baseline symbol) up to the manylinux1 baseline —
-            // `manylinux_2_2` is below any recognized manylinux platform.
-            let (maj, min) = if (maj, min) < MANYLINUX_GLIBC_FLOOR {
-                MANYLINUX_GLIBC_FLOOR
-            } else {
-                (maj, min)
-            };
-            return Ok(format!("manylinux_{maj}_{min}_{arch}"));
         }
         bail!("pypi: linux target '{triple}' is neither gnu nor musl — no wheel tag mapping");
     }

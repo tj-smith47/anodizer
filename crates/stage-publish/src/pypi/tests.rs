@@ -25,12 +25,30 @@ fn traits(
 ) -> BinaryTraits {
     // Healthy-binary traits: `macho: true` so darwin tag derivation exercises
     // the fallback path, not the not-a-Mach-O hard error (that case builds
-    // BinaryTraits explicitly with `macho: false`).
+    // BinaryTraits explicitly with `macho: false`). `elf: true` +
+    // `dynamically_linked: true` model a healthy dynamic ELF, so a gnu triple
+    // with `glibc: None` exercises the dynamic-missing-glibc hard error rather
+    // than the fully-static path (which its own tests build explicitly).
     BinaryTraits {
         glibc,
         macos_min,
         macho: true,
         universal,
+        elf: true,
+        dynamically_linked: true,
+    }
+}
+
+/// Traits for a fully-static gnu ELF: an ELF with no `PT_INTERP` and no glibc
+/// requirement — anodizer's default linux-gnu build shape.
+fn static_gnu_traits() -> BinaryTraits {
+    BinaryTraits {
+        glibc: None,
+        macos_min: None,
+        macho: false,
+        universal: false,
+        elf: true,
+        dynamically_linked: false,
     }
 }
 
@@ -64,9 +82,51 @@ fn gnu_targets_tag_manylinux_from_glibc_floor() {
 }
 
 #[test]
-fn gnu_target_without_glibc_requirement_errors() {
+fn dynamic_gnu_target_without_glibc_requirement_errors() {
+    // A *dynamically linked* gnu ELF with no glibc requirement is the wrong
+    // (or verneed-stripped) binary — `traits()` models a healthy dynamic ELF.
     let err = platform_tag("x86_64-unknown-linux-gnu", &traits(None, None, false)).unwrap_err();
     assert!(err.to_string().contains("GLIBC"), "{err:#}");
+}
+
+#[test]
+fn non_elf_under_gnu_target_errors() {
+    // A non-ELF artifact routed under a gnu triple is the wrong binary: it is
+    // neither dynamic-with-glibc nor a fully-static ELF, so it must hard-error
+    // rather than ship an immutable wheel with a guessed tag.
+    let not_elf = BinaryTraits {
+        glibc: None,
+        macos_min: None,
+        macho: false,
+        universal: false,
+        elf: false,
+        dynamically_linked: false,
+    };
+    let err = platform_tag("x86_64-unknown-linux-gnu", &not_elf).unwrap_err();
+    assert!(err.to_string().contains("GLIBC"), "{err:#}");
+}
+
+#[test]
+fn static_gnu_binary_tags_arch_aware_manylinux_floor() {
+    // anodizer ships fully-static linux-gnu binaries: no PT_INTERP, no glibc
+    // requirement. They run on any glibc host and must tag at the arch's
+    // lowest manylinux floor, NOT hard-error.
+    let s = static_gnu_traits();
+    // x86_64/i686 → manylinux1 baseline (2_5).
+    assert_eq!(
+        platform_tag("x86_64-unknown-linux-gnu", &s).unwrap(),
+        "manylinux_2_5_x86_64"
+    );
+    assert_eq!(
+        platform_tag("i686-unknown-linux-gnu", &s).unwrap(),
+        "manylinux_2_5_i686"
+    );
+    // aarch64's first manylinux profile is manylinux2014 (2_17); a
+    // `manylinux_2_5_aarch64` tag names a platform pip never enumerates.
+    assert_eq!(
+        platform_tag("aarch64-unknown-linux-gnu", &s).unwrap(),
+        "manylinux_2_17_aarch64"
+    );
 }
 
 #[test]
@@ -211,6 +271,8 @@ fn darwin_non_macho_bytes_error() {
         macos_min: None,
         macho: false,
         universal: false,
+        elf: false,
+        dynamically_linked: false,
     };
     let err = platform_tag("x86_64-apple-darwin", &not_macho).unwrap_err();
     assert!(err.to_string().contains("not a Mach-O"), "{err:#}");

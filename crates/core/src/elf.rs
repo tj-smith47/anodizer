@@ -7,6 +7,112 @@
 
 use std::path::Path;
 
+/// Little-/big-endian aware 2-byte read (shared by the path- and slice-based
+/// probes).
+fn read_u16(b: &[u8], is_le: bool) -> u16 {
+    if is_le {
+        u16::from_le_bytes([b[0], b[1]])
+    } else {
+        u16::from_be_bytes([b[0], b[1]])
+    }
+}
+
+/// Little-/big-endian aware 4-byte read.
+fn read_u32(b: &[u8], is_le: bool) -> u32 {
+    if is_le {
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+    } else {
+        u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+    }
+}
+
+/// Little-/big-endian aware 8-byte read.
+fn read_u64(b: &[u8], is_le: bool) -> u64 {
+    if is_le {
+        u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+    } else {
+        u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+    }
+}
+
+/// Extract `(program-header offset, entry size, count)` from a parsed ELF header
+/// prefix, keyed by ELF class. `hdr` must already be verified long enough for
+/// the class (≥ 58 bytes for 64-bit, ≥ 46 for 32-bit) — both probes gate on
+/// that before calling. Shared by the path- and slice-based probes so the field
+/// offsets live in exactly one place.
+fn ph_locator(hdr: &[u8], is_64bit: bool, is_le: bool) -> (u64, u16, u16) {
+    if is_64bit {
+        // 64-bit ELF: e_phoff at 32 (8 bytes), e_phentsize at 54, e_phnum at 56.
+        (
+            read_u64(&hdr[32..40], is_le),
+            read_u16(&hdr[54..56], is_le),
+            read_u16(&hdr[56..58], is_le),
+        )
+    } else {
+        // 32-bit ELF: e_phoff at 28 (4 bytes), e_phentsize at 42, e_phnum at 44.
+        (
+            read_u32(&hdr[28..32], is_le) as u64,
+            read_u16(&hdr[42..44], is_le),
+            read_u16(&hdr[44..46], is_le),
+        )
+    }
+}
+
+/// Byte-slice analogue of [`is_dynamically_linked`]: detect a `PT_INTERP`
+/// segment in an ELF image already held in memory.
+///
+/// Returns `false` for a non-ELF, an image too short to hold the program-header
+/// table for its own class, a program-header table pointing past the slice, or
+/// a statically linked ELF; `true` only when a `PT_INTERP` segment is present.
+///
+/// A caller that already holds the binary's bytes (e.g. the PyPI wheel builder,
+/// which loads each artifact to hash and repackage it) uses this rather than
+/// re-reading the file through [`is_dynamically_linked`]. All indexing is
+/// bounds-checked, so a malformed image yields `false`, never a panic.
+pub fn is_dynamically_linked_bytes(bytes: &[u8]) -> bool {
+    // Need the class/endian bytes (4, 5) plus the ELF magic.
+    if bytes.len() < 6 || &bytes[0..4] != b"\x7fELF" {
+        return false;
+    }
+    let is_64bit = bytes[4] == 2;
+    let is_le = bytes[5] == 1; // 1 = little-endian, 2 = big-endian
+
+    // A file too short to hold the program-header fields for its own class is
+    // not an ELF we can inspect — a 32-bit header ends at byte 46, a 64-bit
+    // one at 58.
+    let min_len = if is_64bit { 58 } else { 46 };
+    if bytes.len() < min_len {
+        return false;
+    }
+
+    let (ph_offset, ph_entry_size, ph_count) = ph_locator(bytes, is_64bit, is_le);
+    if ph_count == 0 || ph_entry_size == 0 {
+        return false;
+    }
+    let (ph_offset, ph_entry_size) = (ph_offset as usize, ph_entry_size as usize);
+
+    const PT_INTERP: u32 = 3;
+    for i in 0..ph_count as usize {
+        // Compute the entry's byte range with checked arithmetic: a malformed
+        // header can carry an absurd ph_offset that overflows `usize` (a
+        // debug-build panic). Any overflow means the table lies outside the
+        // image — stop, reporting "not dynamically linked". A range past the
+        // slice we hold is likewise a truncated/malformed image.
+        let field = i
+            .checked_mul(ph_entry_size)
+            .and_then(|rel| rel.checked_add(ph_offset))
+            .and_then(|start| start.checked_add(4).map(|end| start..end))
+            .and_then(|range| bytes.get(range));
+        let Some(field) = field else {
+            return false;
+        };
+        if read_u32(field, is_le) == PT_INTERP {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check whether the binary at `path` is dynamically linked by reading its ELF
 /// program headers and looking for a `PT_INTERP` segment (type 3, the dynamic
 /// linker).
@@ -60,42 +166,9 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
         return Ok(false);
     }
 
-    let read_u16 = |b: &[u8]| -> u16 {
-        if is_le {
-            u16::from_le_bytes([b[0], b[1]])
-        } else {
-            u16::from_be_bytes([b[0], b[1]])
-        }
-    };
-    let read_u32 = |b: &[u8]| -> u32 {
-        if is_le {
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        } else {
-            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-        }
-    };
-    let read_u64 = |b: &[u8]| -> u64 {
-        if is_le {
-            u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-        } else {
-            u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-        }
-    };
-
     // Parse program header offset, entry size, and count.
-    let (ph_offset, ph_entry_size, ph_count) = if is_64bit {
-        // 64-bit ELF: e_phoff at 32 (8 bytes), e_phentsize at 54, e_phnum at 56.
-        let offset = read_u64(&buf[32..40]);
-        let entry_size = read_u16(&buf[54..56]);
-        let count = read_u16(&buf[56..58]);
-        (offset, entry_size as u64, count)
-    } else {
-        // 32-bit ELF: e_phoff at 28 (4 bytes), e_phentsize at 42, e_phnum at 44.
-        let offset = read_u32(&buf[28..32]) as u64;
-        let entry_size = read_u16(&buf[42..44]);
-        let count = read_u16(&buf[44..46]);
-        (offset, entry_size as u64, count)
-    };
+    let (ph_offset, ph_entry_size, ph_count) = ph_locator(&buf, is_64bit, is_le);
+    let ph_entry_size = ph_entry_size as u64;
 
     if ph_count == 0 || ph_entry_size == 0 {
         return Ok(false);
@@ -114,7 +187,7 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
     const PT_INTERP: u32 = 3;
     for i in 0..ph_count as usize {
         let entry_start = i * ph_entry_size as usize;
-        let p_type = read_u32(&ph_buf[entry_start..entry_start + 4]);
+        let p_type = read_u32(&ph_buf[entry_start..entry_start + 4], is_le);
         if p_type == PT_INTERP {
             return Ok(true);
         }
@@ -125,7 +198,66 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_dynamically_linked;
+    use super::{is_dynamically_linked, is_dynamically_linked_bytes};
+
+    /// Build a minimal 64-bit LE ELF image with a single program header of the
+    /// given `p_type`, wholly in memory (no file). Mirrors the on-disk fixtures
+    /// used by the path-based tests.
+    fn elf64_one_phdr(p_type: u32) -> Vec<u8> {
+        let phoff: u64 = 64;
+        let phentsize: u16 = 56;
+        let phnum: u16 = 1;
+        let mut bytes = Vec::with_capacity(64 + phentsize as usize);
+        bytes.extend_from_slice(b"\x7fELF");
+        bytes.push(2); // 64-bit
+        bytes.push(1); // little-endian
+        bytes.push(1); // EI_VERSION
+        bytes.extend_from_slice(&[0u8; 9]);
+        bytes.extend_from_slice(&[0u8; 2]); // e_type
+        bytes.extend_from_slice(&[0u8; 2]); // e_machine
+        bytes.extend_from_slice(&[0u8; 4]); // e_version
+        bytes.extend_from_slice(&[0u8; 8]); // e_entry
+        bytes.extend_from_slice(&phoff.to_le_bytes()); // e_phoff
+        bytes.extend_from_slice(&[0u8; 8]); // e_shoff
+        bytes.extend_from_slice(&[0u8; 4]); // e_flags
+        bytes.extend_from_slice(&[0u8; 2]); // e_ehsize
+        bytes.extend_from_slice(&phentsize.to_le_bytes()); // e_phentsize
+        bytes.extend_from_slice(&phnum.to_le_bytes()); // e_phnum
+        bytes.extend_from_slice(&[0u8; 6]); // pad to 64
+        bytes.extend_from_slice(&p_type.to_le_bytes()); // p_type
+        bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
+        bytes
+    }
+
+    /// The in-memory probe detects `PT_INTERP` (dynamic) and its absence
+    /// (static), agreeing with the path-based probe on the same bytes.
+    #[test]
+    fn bytes_probe_detects_dynamic_and_static() {
+        assert!(is_dynamically_linked_bytes(&elf64_one_phdr(3))); // PT_INTERP
+        assert!(!is_dynamically_linked_bytes(&elf64_one_phdr(1))); // PT_LOAD only
+    }
+
+    /// Non-ELF and truncated images are "not dynamically linked", never a panic.
+    #[test]
+    fn bytes_probe_rejects_non_elf_and_truncated() {
+        assert!(!is_dynamically_linked_bytes(b"not an ELF"));
+        assert!(!is_dynamically_linked_bytes(b""));
+        // Valid header but the program-header table is truncated away.
+        let mut short = elf64_one_phdr(3);
+        short.truncate(66); // header + 2 bytes of the phdr — p_type field cut off
+        assert!(!is_dynamically_linked_bytes(&short));
+    }
+
+    /// A malformed header with an absurd `e_phoff` (all-ones) must not panic on
+    /// the `usize` offset arithmetic — the checked math reports "not dynamically
+    /// linked" instead of overflowing.
+    #[test]
+    fn bytes_probe_absurd_ph_offset_does_not_panic() {
+        let mut evil = elf64_one_phdr(3);
+        // e_phoff lives at bytes 32..40; set it to u64::MAX.
+        evil[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(!is_dynamically_linked_bytes(&evil));
+    }
 
     /// A genuinely-absent path is `Ok(false)` (open() NotFound), never an
     /// error: callers guard on existence or only feed registered artifacts.

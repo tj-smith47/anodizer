@@ -11,8 +11,10 @@ The platform tag is **derived by inspecting each binary**, never guessed:
 
 | Built target | Inspection | Wheel platform tag |
 |---|---|---|
-| `x86_64-unknown-linux-gnu` | max `GLIBC_*` requirement in the ELF (e.g. 2.28) | `manylinux_2_28_x86_64` |
-| `aarch64-unknown-linux-gnu` | max `GLIBC_*` requirement (e.g. 2.17) | `manylinux_2_17_aarch64` |
+| `x86_64-unknown-linux-gnu` (dynamic) | max `GLIBC_*` requirement in the ELF (e.g. 2.28) | `manylinux_2_28_x86_64` |
+| `aarch64-unknown-linux-gnu` (dynamic) | max `GLIBC_*` requirement (e.g. 2.17) | `manylinux_2_17_aarch64` |
+| `x86_64-unknown-linux-gnu` (fully static) | no `PT_INTERP`, no glibc dependency | `manylinux_2_5_x86_64` |
+| `aarch64-unknown-linux-gnu` (fully static) | no `PT_INTERP`, no glibc dependency | `manylinux_2_17_aarch64` |
 | `x86_64-unknown-linux-musl` | none needed (static musl) | `musllinux_1_2_x86_64` |
 | `aarch64-unknown-linux-musl` | none needed | `musllinux_1_2_aarch64` |
 | `x86_64-apple-darwin` | Mach-O deployment target (`LC_BUILD_VERSION`, e.g. 10.13) | `macosx_10_13_x86_64` |
@@ -22,7 +24,9 @@ The platform tag is **derived by inspecting each binary**, never guessed:
 | `i686-pc-windows-msvc` | — | `win32` |
 | `aarch64-pc-windows-msvc` | — | `win_arm64` |
 
-Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has. A gnu-target binary that declares **no** glibc requirement is a hard error — that means the wrong binary landed under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
+Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has.
+
+**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) landed under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
 
 ### One binary per platform per entry
 
