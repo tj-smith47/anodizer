@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-13
+
+### Features
+
+* 83cac3f9df1c finish the formula-bump publisher — tests, docs, indexes ([@tj-smith47](https://github.com/tj-smith47))
+* 2564553652da skip_metapackage + platform_name_template for platform-only distribution ([@tj-smith47](https://github.com/tj-smith47))
+* ce5f3a6c87e6 crates.io OIDC Trusted Publishing; split cargo.rs into cargo/ ([@tj-smith47](https://github.com/tj-smith47))
+* 7e09a5fd8ab9 npm multi-command bins, PyPI wheels + Trusted Publishing (OIDC), homebrew-core ([@tj-smith47](https://github.com/tj-smith47))
+* 539b0ec40309 native binary wheels + maturin sdist publisher ([@tj-smith47](https://github.com/tj-smith47))
+* 9b34a450dcb2 sign version tags with the git-config signing key ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* a4691ee79b19 drain review findings — git-form bump correctness, lazy repo_info, rollback token fidelity, npm preflight+token ([@tj-smith47](https://github.com/tj-smith47))
+* 131f29bc02a7 review fixes — single-source naming vars, uniform validation, mode gate, preflight skip_metapackage ([@tj-smith47](https://github.com/tj-smith47))
+* ba3d5eaa50f8 homebrew git-form detection survives an inline-commented url line ([@tj-smith47](https://github.com/tj-smith47))
+* d3c57c68a8ef make partial-rollback test hermetic #none ([@tj-smith47](https://github.com/tj-smith47))
+* 99e25c964db7 regroup npm + pypi to Submitter so the rollback guard sees their burn #C14 ([@tj-smith47](https://github.com/tj-smith47))
+* 640f60c59a87 drain review findings — tags, metadata, uploads, shared helpers ([@tj-smith47](https://github.com/tj-smith47))
+* f5b54152c8cf close three burn-guard false-negatives that let a poisoning re-cut through ([@tj-smith47](https://github.com/tj-smith47))
+* 689eb3306434 probe npm + pypi for burned versions in the unsummarized guard path ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.17.0] - 2026-07-12
 
 ### Features
@@ -637,7 +660,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/tj-smith47/anodizer/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/tj-smith47/anodizer/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...v0.16.0
