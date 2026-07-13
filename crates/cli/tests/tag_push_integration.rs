@@ -1360,3 +1360,144 @@ fn previous_tag_falls_back_to_local_when_remote_unreachable() {
         "local fallback must still derive v0.1.1: {combined}"
     );
 }
+
+/// Configure ephemeral SSH tag-signing on `dir` (no gpg-agent needed) and
+/// return the key dir so the key file outlives the repo for the whole test.
+fn configure_ssh_signing(dir: &Path) -> TempDir {
+    let keydir = TempDir::new().unwrap();
+    let key_path = keydir.path().join("sign_key");
+    let keygen = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("ssh-keygen");
+            cmd.args(["-t", "ed25519", "-N", "", "-C", "anodizer-test", "-f"])
+                .arg(&key_path);
+            cmd
+        },
+        "ssh-keygen",
+    );
+    assert!(
+        keygen.status.success(),
+        "ssh-keygen failed: {}",
+        String::from_utf8_lossy(&keygen.stderr)
+    );
+    let pub_path = format!("{}.pub", key_path.display());
+    run_git(dir, &["config", "gpg.format", "ssh"]);
+    run_git(dir, &["config", "user.signingkey", &pub_path]);
+    keydir
+}
+
+/// True when the local annotated tag object embeds an SSH signature block.
+fn local_tag_is_signed(dir: &Path, tag: &str) -> bool {
+    git_out(dir, &["cat-file", "tag", tag]).contains("-----BEGIN SSH SIGNATURE-----")
+}
+
+#[test]
+fn tag_sign_config_creates_signed_local_tag() {
+    // `tag.sign: true` in config makes a bare (local) `anodizer tag` cut a
+    // signed annotated tag; the key/method come from the fixture's git config.
+    let (work, _bare) = lockstep_with_origin();
+    let _keydir = configure_ssh_signing(work.path());
+    fs::write(work.path().join(".anodizer.yaml"), "tag:\n  sign: true\n").unwrap();
+    git_add_commit(work.path(), "chore: enable signed tags");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        local_tag_is_signed(work.path(), "v0.1.1"),
+        "tag.sign=true must produce a signed local tag"
+    );
+}
+
+#[test]
+fn tag_sign_cli_flag_creates_signed_local_tag() {
+    // `--sign` opts into a signed tag even with no `tag.sign` in config, and
+    // `--no-sign` overrides `tag.sign: true` back to an unsigned tag.
+    let (work, _bare) = lockstep_with_origin();
+    let _keydir = configure_ssh_signing(work.path());
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--sign"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --sign failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        local_tag_is_signed(work.path(), "v0.1.1"),
+        "--sign must produce a signed local tag"
+    );
+}
+
+#[test]
+fn tag_no_sign_overrides_config_to_unsigned() {
+    let (work, _bare) = lockstep_with_origin();
+    let _keydir = configure_ssh_signing(work.path());
+    fs::write(work.path().join(".anodizer.yaml"), "tag:\n  sign: true\n").unwrap();
+    git_add_commit(work.path(), "chore: enable signed tags");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--no-sign"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --no-sign failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !local_tag_is_signed(work.path(), "v0.1.1"),
+        "--no-sign must override tag.sign=true and leave the tag unsigned"
+    );
+}
+
+#[test]
+fn tag_sign_with_git_api_tagging_pushed_is_rejected() {
+    // A signed tag cannot be created via the GitHub API: the API mints the tag
+    // object server-side, out of reach of the local signing key. Rather than
+    // ship a silently-unsigned tag, the run must hard-error before creating any
+    // tag. `--push-dry-run` enters push mode (push_mode=true), so the guard
+    // fires without contacting a real remote.
+    let (work, _bare) = lockstep_with_origin();
+    let _keydir = configure_ssh_signing(work.path());
+    fs::write(
+        work.path().join(".anodizer.yaml"),
+        "tag:\n  git_api_tagging: true\n",
+    )
+    .unwrap();
+    git_add_commit(work.path(), "chore: enable git_api_tagging");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--sign", "--push-dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "signed tag + git_api_tagging on a pushed tag must be rejected; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("git_api_tagging"),
+        "error must name git_api_tagging: {stderr}"
+    );
+    // No new tag was cut — only the fixture baseline remains.
+    let tags = git_out(work.path(), &["tag", "--list"]);
+    assert!(
+        !tags.contains("v0.1.1"),
+        "the rejected run must create no tag; tags present: {tags:?}"
+    );
+}

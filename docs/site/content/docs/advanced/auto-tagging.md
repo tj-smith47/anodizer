@@ -256,6 +256,7 @@ tag:
 | `none_string_token` | string | `#none` | Custom skip trigger |
 | `git_api_tagging` | bool | `false` | Create the tag through the GitHub API instead of the git CLI when pushing. Not supported with per-crate auto-dispatch (its atomic branch+multi-tag push has no API equivalent) |
 | `push` | bool | `false` | Also push the version-sync bump commit atomically with the tag (CLI `--push` / `--no-push` override) |
+| `sign` | bool | `false` | Create the version tag as a signed annotated tag (`git tag -s`) instead of unsigned (`git tag -a`). Key/method come from git config (`user.signingkey`, `gpg.format` — GPG or SSH). CLI `--sign` / `--no-sign` override. See below |
 | `skip_ci_on_bump` | bool | `false` | Append `[skip ci]` to the bump commit subject. Only safe with a `workflow_run`-triggered release (see below) |
 
 ## Version source of truth
@@ -386,6 +387,44 @@ run's auto-tag job no-ops because no new release-worthy commits exist since the
 freshly created tag (the conventional-commit gate in bump detection). See
 [Release workflow patterns](@/docs/ci/release-workflows.md) for the two
 trigger styles.
+
+### Signed tags (`sign`)
+
+Set `tag.sign: true` and anodizer signs the version tag, creating it with
+`git tag -s` (a cryptographically signed annotated tag) instead of the default
+unsigned `git tag -a`. The signing key and method come entirely from your git
+configuration — `user.signingkey` and `gpg.format` — so both GPG and SSH
+signing work with no anodizer-specific key setup:
+
+```yaml
+tag:
+  sign: true
+```
+
+```bash
+# GPG signing (git default gpg.format)
+git config user.signingkey <KEY_ID>
+
+# or SSH signing
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+```
+
+Signing is workspace-global: every tag anodizer cuts is signed in single-crate,
+lockstep, and per-crate modes alike. The CLI overrides config per invocation —
+`--sign` forces a signed tag and `--no-sign` forces an unsigned one:
+
+```bash
+anodizer tag --sign      # sign this tag even if tag.sign is unset
+anodizer tag --no-sign   # unsigned tag even if tag.sign: true in config
+```
+
+Signing is mutually exclusive with `git_api_tagging: true` on a pushed tag. The
+GitHub API creates the tag object on the remote, where your local GPG/SSH key
+cannot sign it — so rather than ship a silently-unsigned tag, anodizer errors on
+that combination. Signing works with local tagging and with `--push-tags-only`
+(both cut the tag locally before any push); drop `git_api_tagging` to sign a
+pushed tag.
 
 ## GitHub Actions: single-crate repo
 

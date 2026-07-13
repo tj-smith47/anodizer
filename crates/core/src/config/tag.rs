@@ -58,7 +58,29 @@ pub struct TagConfig {
     /// Conventional commit token suppressing a version bump entirely (default: "none").
     pub none_string_token: Option<String>,
     /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
+    ///
+    /// Mutually exclusive with `sign` on a pushed tag: the API mints the tag
+    /// object server-side and cannot apply your local GPG/SSH signature, so
+    /// anodizer errors rather than shipping a silently-unsigned tag. Use local
+    /// tagging (drop `git_api_tagging`) to create signed tags.
     pub git_api_tagging: Option<bool>,
+    /// When true, anodizer creates the version tag with `git tag -s` (a
+    /// cryptographically signed annotated tag) instead of the default `git tag
+    /// -a` (unsigned annotated tag). The signing key and method are taken
+    /// entirely from the user's git configuration (`user.signingkey`, and
+    /// `gpg.format` to select GPG vs SSH signing) — anodizer adds no key field
+    /// of its own, so both GPG and SSH signing work with no anodizer-specific
+    /// setup. Applies in every workspace mode: single-crate, lockstep, and
+    /// per-crate — every tag anodizer cuts is signed when this is enabled. The
+    /// CLI `--sign` / `--no-sign` flags override this per invocation. Default
+    /// (unset or false) leaves the existing unsigned annotated-tag behavior
+    /// unchanged.
+    ///
+    /// Mutually exclusive with `git_api_tagging` on a pushed tag: the GitHub API
+    /// creates the tag object on the remote and cannot apply a local signature,
+    /// so combining the two on a push is a hard error. Signing works with local
+    /// tagging and with `--push-tags-only` (both cut the tag locally first).
+    pub sign: Option<bool>,
     /// When true, `anodizer tag` also pushes the version-sync bump commit to the
     /// release branch (atomically with the tag), not just the tag. CLI `--push` /
     /// `--no-push` override this. Default false preserves the "push the tag,

@@ -1,9 +1,9 @@
 use super::remote::{parse_github_remote, parse_remote_owner_repo, parse_remote_web_base};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
-    find_latest_tag_matching, find_latest_tag_matching_with_prefix, find_previous_tag,
-    find_previous_tag_with_prefix, get_all_semver_tags, list_remote_tag_names_in,
-    strip_monorepo_prefix,
+    create_tag_local_only, find_latest_tag_matching, find_latest_tag_matching_with_prefix,
+    find_previous_tag, find_previous_tag_with_prefix, get_all_semver_tags,
+    list_remote_tag_names_in, strip_monorepo_prefix, tag_is_signed,
 };
 use crate::redact::redact_url_credentials;
 use crate::test_helpers::CwdGuard;
@@ -1567,4 +1567,110 @@ fn list_remote_tag_names_dedupes_peeled_annotated_entries() {
         "/nonexistent/never-a-repo.git",
     ]);
     assert!(list_remote_tag_names_in(work.path(), "origin").is_err());
+}
+
+/// Set up an empty repo with a single commit and ephemeral SSH tag-signing
+/// configured (no gpg-agent needed). Returns the keydir so the key outlives
+/// the repo for the whole test.
+fn init_repo_with_ssh_signing(dir: &std::path::Path) -> tempfile::TempDir {
+    use std::process::Command;
+
+    let run = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    run(&["init"]);
+    run(&["config", "user.email", "test@test.com"]);
+    run(&["config", "user.name", "test"]);
+    std::fs::write(dir.join("README"), "init").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-m", "initial"]);
+
+    let keydir = tempfile::tempdir().unwrap();
+    let key_path = keydir.path().join("sign_key");
+    let keygen = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("ssh-keygen");
+            cmd.args(["-t", "ed25519", "-N", "", "-C", "anodizer-test", "-f"])
+                .arg(&key_path);
+            cmd
+        },
+        "ssh-keygen",
+    );
+    assert!(
+        keygen.status.success(),
+        "ssh-keygen failed: {}",
+        String::from_utf8_lossy(&keygen.stderr)
+    );
+    let pub_path = format!("{}.pub", key_path.display());
+    run(&["config", "gpg.format", "ssh"]);
+    run(&["config", "user.signingkey", &pub_path]);
+    keydir
+}
+
+/// P1 regression: a prior run leaves an UNSIGNED tag at HEAD (debris); a
+/// re-run with `sign=true` must upgrade it to a SIGNED tag via the
+/// idempotent-reuse branch, not silently reuse the unsigned one.
+#[test]
+#[serial]
+fn create_tag_local_only_upgrades_unsigned_reuse_to_signed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _keydir = init_repo_with_ssh_signing(tmp.path());
+    let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+
+    // Seed the exact debris the bug is about: an UNSIGNED annotated tag at HEAD.
+    let seeded = create_tag_local_only(tmp.path(), "v1.0.0", "seed", false, false, &log);
+    assert!(seeded.is_ok(), "seeding unsigned tag failed: {seeded:?}");
+    assert!(
+        !tag_is_signed(tmp.path(), "v1.0.0").unwrap(),
+        "precondition: seeded tag must be unsigned"
+    );
+
+    // Re-run with sign=true: the reuse branch must delete + re-create signed.
+    let re = create_tag_local_only(tmp.path(), "v1.0.0", "seed", false, true, &log);
+    assert!(re.is_ok(), "signed re-run failed: {re:?}");
+    assert!(
+        tag_is_signed(tmp.path(), "v1.0.0").unwrap(),
+        "reuse path must UPGRADE the unsigned tag to a signed one"
+    );
+}
+
+/// The reuse branch must NOT re-create when the existing tag is ALREADY signed
+/// (sign=true): a signed tag at HEAD is reused as-is.
+#[test]
+#[serial]
+fn create_tag_local_only_reuses_already_signed_tag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _keydir = init_repo_with_ssh_signing(tmp.path());
+    let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+
+    let first = create_tag_local_only(tmp.path(), "v1.0.0", "seed", false, true, &log);
+    assert!(first.is_ok(), "first signed create failed: {first:?}");
+    assert!(tag_is_signed(tmp.path(), "v1.0.0").unwrap());
+
+    // Re-run over the already-signed tag: idempotent reuse, still signed.
+    let again = create_tag_local_only(tmp.path(), "v1.0.0", "seed", false, true, &log);
+    assert!(again.is_ok(), "signed reuse failed: {again:?}");
+    assert!(
+        tag_is_signed(tmp.path(), "v1.0.0").unwrap(),
+        "already-signed tag must remain signed on reuse"
+    );
 }

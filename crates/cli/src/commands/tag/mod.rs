@@ -37,6 +37,13 @@ pub struct TagOpts {
     /// nothing. The branch MUST be advanced separately or the remote tag
     /// permanently references a commit missing from every branch.
     pub push_tags_only: bool,
+    /// Create the version tag as a signed annotated tag (`git tag -s`). The
+    /// signing key/method come from the user's git config (`user.signingkey`,
+    /// `gpg.format`). Overrides `tag.sign = false`.
+    pub sign: bool,
+    /// Create the version tag unsigned (`git tag -a`), overriding
+    /// `tag.sign = true`. Wins over `--sign` and config, mirroring `--no-push`.
+    pub no_sign: bool,
     /// Remote to push to; defaults to `origin` when unset.
     pub push_remote: Option<String>,
     /// Preview the `git push` commands `--push` would run, without executing.
@@ -67,6 +74,19 @@ fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>) -> bool {
         false
     } else {
         opts.push || config_push == Some(true)
+    }
+}
+
+/// Resolve whether the version tag is created signed (`git tag -s`) or unsigned
+/// (`git tag -a`). Workspace-global: the resolved value applies to every tag
+/// this run cuts in single-crate, lockstep, and per-crate modes. Precedence
+/// mirrors `resolve_effective_push`: `--no-sign` always wins, then `--sign` or
+/// `tag.sign = true` selects a signed tag; otherwise the tag is unsigned.
+fn resolve_effective_sign(opts: &TagOpts, config_sign: Option<bool>) -> bool {
+    if opts.no_sign {
+        false
+    } else {
+        opts.sign || config_sign == Some(true)
     }
 }
 
@@ -246,6 +266,10 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // per-crate path can carry its own (true) default.
     let remote = opts.push_remote.as_deref().unwrap_or("origin").to_string();
     let config_push = tag_config.push;
+    // Signed-tag selection is workspace-global: resolved once here and threaded
+    // to every tag-creation call site (single/lockstep closure, github-api
+    // fallback, and the per-crate engine) so no dispatch shape can diverge.
+    let effective_sign = resolve_effective_sign(&opts, tag_config.sign);
 
     // When --crate is given, look up the crate in config and derive the tag
     // prefix from its tag_template.  Also capture the crate path to
@@ -467,6 +491,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             PushControls {
                 remote: &remote,
                 config_push,
+                sign: effective_sign,
                 changelog_enabled,
                 pre_hooks: &pre_hooks,
                 post_hooks: &post_hooks,
@@ -516,6 +541,21 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // `--push-dry-run` as a preview of the tags-only push.
     let push_mode =
         !opts.push_tags_only && (resolve_effective_push(&opts, config_push) || opts.push_dry_run);
+
+    // A signed tag and API tagging on a pushed tag are mutually exclusive: the
+    // API path mints the tag object on the remote, where the user's local
+    // GPG/SSH signing key cannot reach it, so honoring `--sign` there would
+    // silently ship an UNSIGNED tag. Since signing is opt-in, an explicit
+    // signature request must hard-error rather than downgrade.
+    if effective_sign && cfg.git_api_tagging && push_mode {
+        anyhow::bail!(
+            "signed tags (--sign / tag.sign) are incompatible with git_api_tagging \
+             on a pushed tag: the GitHub API creates the tag object on the remote and \
+             cannot apply your local GPG/SSH signature. Remove git_api_tagging to \
+             create a signed tag locally, or drop --sign / tag.sign."
+        );
+    }
+
     let push_preview = opts.push_dry_run;
     let push_branch = if push_mode {
         Some(git::get_current_branch()?)
@@ -592,13 +632,14 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 // the real `gh api` call during a preview and orphan the tag on
                 // a commit no pushed branch contains.
                 push_dry,
+                effective_sign,
                 &log,
                 strict,
             )?;
         } else if push_mode {
             // Create the tag locally, then push branch + tag atomically so
             // neither an orphan tag NOR an orphan bump commit is possible.
-            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
+            git::create_tag_local_only(&cwd, tag, message, dry_run, effective_sign, &log)?;
             git::push_branch_and_tags_atomic_in(
                 &cwd,
                 &git::AtomicPushSpec {
@@ -621,7 +662,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                      an unpushed commit)",
                 );
             }
-            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
+            git::create_tag_local_only(&cwd, tag, message, dry_run, effective_sign, &log)?;
             git::push_branch_and_tags_atomic_in(
                 &cwd,
                 &git::AtomicPushSpec {
@@ -636,7 +677,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         } else {
             // No push selected: everything stays local. Pushing the tag here
             // without the branch would orphan the bump commit on the remote.
-            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
+            git::create_tag_local_only(&cwd, tag, message, dry_run, effective_sign, &log)?;
         }
 
         if !post_hooks.is_empty() {
@@ -2030,6 +2071,9 @@ fn compute_per_crate_tags(
 struct PushControls<'a> {
     remote: &'a str,
     config_push: Option<bool>,
+    /// Resolved signed-tag selection (`--sign`/`--no-sign`/`tag.sign`), threaded
+    /// in so per-crate tags are signed identically to the single/lockstep path.
+    sign: bool,
     changelog_enabled: bool,
     /// `tag_pre_hooks` / `tag_post_hooks`, threaded in so the per-crate path
     /// honors the same hook config as the single/lockstep `create_tag` closure.
@@ -2426,7 +2470,7 @@ fn run_per_crate_tag(
                 if created.contains(&tag.as_str()) {
                     continue;
                 }
-                git::create_tag_local_only(&cwd, tag, message, false, log)?;
+                git::create_tag_local_only(&cwd, tag, message, false, controls.sign, log)?;
                 created.push(tag.as_str());
             }
         }
@@ -2456,6 +2500,20 @@ fn run_per_crate_tag(
                 &mut pre_fired,
                 log,
             )?;
+        }
+        // Preview the tag creations too, one line per distinct tag, matching
+        // the single/lockstep closure. Routing through create_tag_local_only in
+        // dry-run mode reuses its exact `(dry-run) would create local [signed]
+        // tag …` wording and honors the resolved sign flag; it creates nothing.
+        let mut previewed: Vec<&str> = Vec::new();
+        for group_result in &tag_results {
+            for (tag, message) in &group_result.new_tags {
+                if previewed.contains(&tag.as_str()) {
+                    continue;
+                }
+                git::create_tag_local_only(&cwd, tag, message, true, controls.sign, log)?;
+                previewed.push(tag.as_str());
+            }
         }
     }
 
@@ -3120,6 +3178,8 @@ mod tests {
             push,
             no_push,
             push_tags_only: false,
+            sign: false,
+            no_sign: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3155,6 +3215,37 @@ mod tests {
                 resolve_effective_push(&opts, config_push),
                 expected,
                 "push={push} no_push={no_push} config_push={config_push:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_effective_sign_matrix() {
+        // (sign, no_sign, config_sign) -> expected. Signing is opt-in and
+        // workspace-global: --no-sign always wins, then --sign or
+        // tag.sign=true selects a signed tag; otherwise the tag is unsigned.
+        let cases: &[(bool, bool, Option<bool>, bool)] = &[
+            // --no-sign wins over everything.
+            (true, true, Some(true), false),
+            (false, true, Some(true), false),
+            (false, true, None, false),
+            // --sign forces a signed tag.
+            (true, false, None, true),
+            // config sign=true forces a signed tag.
+            (false, false, Some(true), true),
+            // config sign=false is inert; the unsigned default stands.
+            (false, false, Some(false), false),
+            // No signal: unsigned.
+            (false, false, None, false),
+        ];
+        for &(sign, no_sign, config_sign, expected) in cases {
+            let mut opts = push_opts(false, false);
+            opts.sign = sign;
+            opts.no_sign = no_sign;
+            assert_eq!(
+                resolve_effective_sign(&opts, config_sign),
+                expected,
+                "sign={sign} no_sign={no_sign} config_sign={config_sign:?}"
             );
         }
     }
@@ -3680,6 +3771,8 @@ mod tests {
             push: false,
             no_push: false,
             push_tags_only: false,
+            sign: false,
+            no_sign: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3720,6 +3813,8 @@ mod tests {
             push: false,
             no_push: false,
             push_tags_only: false,
+            sign: false,
+            no_sign: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3755,6 +3850,7 @@ mod tests {
             patch_string_token: Some("fix:".to_string()),
             none_string_token: Some("skip".to_string()),
             git_api_tagging: Some(false),
+            sign: None,
             push: None,
             skip_ci_on_bump: None,
             verbose: Some(false),
@@ -3770,6 +3866,8 @@ mod tests {
             push: false,
             no_push: false,
             push_tags_only: false,
+            sign: false,
+            no_sign: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,

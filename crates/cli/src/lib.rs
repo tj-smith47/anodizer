@@ -543,6 +543,17 @@ pub enum Commands {
         push_tags_only: bool,
         #[arg(
             long,
+            help = "Create a signed annotated tag (git tag -s), using the signing key/method from git config (user.signingkey, gpg.format)"
+        )]
+        sign: bool,
+        #[arg(
+            long,
+            conflicts_with = "sign",
+            help = "Create an unsigned annotated tag (git tag -a), overriding tag.sign = true in config"
+        )]
+        no_sign: bool,
+        #[arg(
+            long,
             value_name = "NAME",
             help = "Remote to push to (default: origin)"
         )]

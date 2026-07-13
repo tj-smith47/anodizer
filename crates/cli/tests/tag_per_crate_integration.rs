@@ -430,6 +430,7 @@ fn per_crate_dry_run_emits_output_but_no_tags_no_commits() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success());
     assert!(
         stdout.contains("anodizer-output crates=[\"core\"]"),
@@ -438,6 +439,12 @@ fn per_crate_dry_run_emits_output_but_no_tags_no_commits() {
     assert!(
         stdout.contains("anodizer-output versions={\"core\":\"0.1.1\"}"),
         "dry-run must still emit versions=: {stdout}"
+    );
+    // Per-crate dry-run must also preview the tag creation, matching the
+    // single/lockstep path's `(dry-run) would create local tag …` line.
+    assert!(
+        stderr.contains("(dry-run) would create local tag core-v0.1.1"),
+        "dry-run must preview the per-crate tag creation: {stderr}"
     );
 
     let head_after = git_head_sha(tmp.path());

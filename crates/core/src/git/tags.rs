@@ -454,11 +454,35 @@ pub fn list_remote_tag_names_in(cwd: &Path, remote: &str) -> Result<Vec<String>>
     Ok(names)
 }
 
+/// The `git tag` create flag selecting a signed (`-s`) versus unsigned (`-a`)
+/// annotated tag. Pure so the flag choice is unit-testable without a real
+/// signing key or a git repository.
+pub(crate) fn tag_create_flag(sign: bool) -> &'static str {
+    if sign { "-s" } else { "-a" }
+}
+
+/// Whether the annotated tag object named `tag` embeds a signature block.
+///
+/// Reads the raw object with `git cat-file tag <tag>` and looks for a GPG or
+/// SSH signature armor header. Both signing formats are supported by the tag
+/// create path (`gpg.format = ssh` vs the default openpgp), so both headers
+/// count — distinguishing a signed tag from unsigned debris a prior run may
+/// have left behind.
+pub(crate) fn tag_is_signed(cwd: &Path, tag: &str) -> Result<bool> {
+    let body = git_output_in(cwd, &["cat-file", "tag", tag])?;
+    Ok(body.contains("-----BEGIN PGP SIGNATURE-----")
+        || body.contains("-----BEGIN SSH SIGNATURE-----"))
+}
+
 /// Create an annotated tag and push it if an `origin` remote exists.
+///
+/// When `sign` is true the tag is created with `git tag -s` (signed) instead
+/// of `git tag -a`; the signing key/method come from the user's git config.
 pub fn create_and_push_tag(
     tag: &str,
     message: &str,
     dry_run: bool,
+    sign: bool,
     log: &crate::log::StageLogger,
     strict: bool,
 ) -> Result<()> {
@@ -467,6 +491,7 @@ pub fn create_and_push_tag(
         tag,
         message,
         dry_run,
+        sign,
         log,
         strict,
     )
@@ -482,17 +507,20 @@ pub fn create_and_push_tag_in(
     tag: &str,
     message: &str,
     dry_run: bool,
+    sign: bool,
     log: &crate::log::StageLogger,
     strict: bool,
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create tag {} (\"{}\")",
-            tag, message
+            "(dry-run) would create {}tag {} (\"{}\")",
+            if sign { "signed " } else { "" },
+            tag,
+            message
         ));
         return Ok(());
     }
-    git_output_in(cwd, &["tag", "-a", tag, "-m", message])?;
+    git_output_in(cwd, &["tag", tag_create_flag(sign), tag, "-m", message])?;
 
     if super::has_remote_in(cwd, "origin") {
         git_output_in(cwd, &["push", "origin", tag])?;
@@ -506,24 +534,28 @@ pub fn create_and_push_tag_in(
 
 /// Create an annotated tag locally without pushing.
 ///
-/// Writes `git tag -a <tag> -m <message>` in `cwd`. Does NOT push. The caller
-/// is responsible for pushing all tags (typically atomically via
-/// [`push_branch_and_tags_atomic_in`]).
+/// Writes `git tag -a <tag> -m <message>` in `cwd` (or `git tag -s …` when
+/// `sign` is true, taking the signing key/method from the user's git config).
+/// Does NOT push. The caller is responsible for pushing all tags (typically
+/// atomically via [`push_branch_and_tags_atomic_in`]).
 pub fn create_tag_local_only(
     cwd: &Path,
     tag: &str,
     message: &str,
     dry_run: bool,
+    sign: bool,
     log: &crate::log::StageLogger,
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create local tag {} (\"{}\")",
-            tag, message
+            "(dry-run) would create local {}tag {} (\"{}\")",
+            if sign { "signed " } else { "" },
+            tag,
+            message
         ));
         return Ok(());
     }
-    if let Err(e) = git_output_in(cwd, &["tag", "-a", tag, "-m", message]) {
+    if let Err(e) = git_output_in(cwd, &["tag", tag_create_flag(sign), tag, "-m", message]) {
         // A prior `tag` run that committed writeback and created the tag but
         // failed to push leaves this exact debris behind; a re-run must be
         // idempotent when the leftover tag already points at the commit we
@@ -531,6 +563,18 @@ pub fn create_tag_local_only(
         let tag_ref = format!("refs/tags/{}", tag);
         if git_output_in(cwd, &["rev-parse", "--verify", "--quiet", &tag_ref]).is_ok() {
             if tag_points_at_head_in(cwd, tag)? {
+                // A signed re-run over an UNSIGNED leftover must not silently
+                // ship the unsigned tag. A local-only tag is a two-way door, so
+                // delete and re-create it signed rather than reuse it.
+                if sign && !tag_is_signed(cwd, tag)? {
+                    delete_local_tag_in(cwd, tag)?;
+                    git_output_in(cwd, &["tag", tag_create_flag(sign), tag, "-m", message])?;
+                    log.status(&format!(
+                        "tag {} existed unsigned at HEAD; re-created it signed",
+                        tag
+                    ));
+                    return Ok(());
+                }
                 log.status(&format!(
                     "tag {} already exists and points at HEAD; reusing it",
                     tag
@@ -1228,10 +1272,10 @@ mod create_tag_local_only_tests {
     fn recreating_tag_at_same_head_is_idempotent() {
         let repo = init_repo();
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
-        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, false, &log)
             .expect("first create must succeed");
         // Same tag, same HEAD — the leftover-from-failed-push case.
-        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, false, &log)
             .expect("re-creating a tag that already points at HEAD must be idempotent");
     }
 
@@ -1239,11 +1283,12 @@ mod create_tag_local_only_tests {
     fn recreating_tag_at_different_commit_fails_actionably() {
         let repo = init_repo();
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
-        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
+        create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, false, &log)
             .expect("first create must succeed");
         commit_change(repo.path());
-        let err = create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, &log)
-            .expect_err("stale tag at a different commit must fail");
+        let err =
+            create_tag_local_only(repo.path(), "v1.0.0", "Release v1.0.0", false, false, &log)
+                .expect_err("stale tag at a different commit must fail");
         let msg = err.to_string();
         assert!(msg.contains("v1.0.0"), "error must name the tag: {msg}");
         assert!(
@@ -1253,6 +1298,103 @@ mod create_tag_local_only_tests {
         assert!(
             msg.contains("anodizer tag rollback") && msg.contains("git tag -d v1.0.0"),
             "error must suggest a remedy: {msg}"
+        );
+    }
+
+    #[test]
+    fn tag_create_flag_selects_signed_or_annotated() {
+        assert_eq!(tag_create_flag(true), "-s");
+        assert_eq!(tag_create_flag(false), "-a");
+    }
+
+    /// Run a git command against `dir`, asserting success.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The raw annotated-tag object body for `tag` in `dir`.
+    fn cat_file_tag(dir: &Path, tag: &str) -> String {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["cat-file", "tag", tag]).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git cat-file tag {tag} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Configure ephemeral SSH tag-signing on `dir` and return the key dir so it
+    /// outlives the repo. No gpg-agent involved: a throwaway ed25519 key drives
+    /// `git tag -s` end to end.
+    fn configure_ssh_signing(dir: &Path) -> tempfile::TempDir {
+        let keydir = tempfile::tempdir().unwrap();
+        let key_path = keydir.path().join("sign_key");
+        let keygen = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("ssh-keygen");
+                cmd.args(["-t", "ed25519", "-N", "", "-C", "anodizer-test", "-f"])
+                    .arg(&key_path);
+                cmd
+            },
+            "ssh-keygen",
+        );
+        assert!(
+            keygen.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&keygen.stderr)
+        );
+        let pub_path = format!("{}.pub", key_path.display());
+        git_in(dir, &["config", "gpg.format", "ssh"]);
+        git_in(dir, &["config", "user.signingkey", &pub_path]);
+        keydir
+    }
+
+    #[test]
+    fn signed_tag_carries_ssh_signature_block() {
+        let repo = init_repo();
+        let _keydir = configure_ssh_signing(repo.path());
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        create_tag_local_only(repo.path(), "v2.0.0", "Release v2.0.0", false, true, &log)
+            .expect("signed tag creation must succeed");
+        let body = cat_file_tag(repo.path(), "v2.0.0");
+        assert!(
+            body.contains("-----BEGIN SSH SIGNATURE-----"),
+            "signed tag must embed an SSH signature block, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn unsigned_tag_has_no_signature_block() {
+        let repo = init_repo();
+        // Signing is configured but NOT requested — the tag must stay unsigned.
+        let _keydir = configure_ssh_signing(repo.path());
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        create_tag_local_only(repo.path(), "v2.0.0", "Release v2.0.0", false, false, &log)
+            .expect("unsigned tag creation must succeed");
+        let body = cat_file_tag(repo.path(), "v2.0.0");
+        assert!(
+            !body.contains("-----BEGIN SSH SIGNATURE-----"),
+            "unsigned tag must NOT embed a signature block, got:\n{body}"
         );
     }
 }

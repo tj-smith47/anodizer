@@ -355,6 +355,30 @@ fn gh_api_post_with_binary(
     Ok(response)
 }
 
+/// Error shown when a signed tag is requested on the GitHub-API path: the API
+/// mints the tag object server-side, out of reach of any local GPG/SSH key, so
+/// the request is rejected rather than downgraded to a silently-unsigned tag.
+/// Shared by the real-run guard and the dry-run preview so the two cannot
+/// diverge on wording or on whether the case errors at all.
+const SIGN_VIA_API_UNSUPPORTED: &str = "cannot create a signed tag via the GitHub API: the API creates the tag object \
+     server-side and cannot apply a local signature (sign a tag locally instead of \
+     using git_api_tagging)";
+
+/// Cheap, side-effect-free probe of whether `gh_binary` can be spawned at all.
+///
+/// Runs `<gh> --version` and reports only whether the process launched (exit
+/// status is ignored). Used exclusively so the dry-run preview can mirror the
+/// real run's branch selection — API path vs local-signing fallback — WITHOUT
+/// issuing the real `gh api` tag-creation call.
+fn gh_is_available(gh_binary: &Path) -> bool {
+    Command::new(gh_binary)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
 /// Create a tag via the GitHub API (using the `gh` CLI).
 ///
 /// This avoids the need for local git push access. Requires the `gh` CLI to be
@@ -371,6 +395,7 @@ pub fn create_tag_via_github_api(
     tag: &str,
     message: &str,
     dry_run: bool,
+    sign: bool,
     log: &crate::log::StageLogger,
     strict: bool,
 ) -> Result<()> {
@@ -381,6 +406,7 @@ pub fn create_tag_via_github_api(
         tag,
         message,
         dry_run,
+        sign,
         log,
         strict,
     )
@@ -401,10 +427,29 @@ pub fn create_tag_via_github_api_in(
     tag: &str,
     message: &str,
     dry_run: bool,
+    sign: bool,
     log: &crate::log::StageLogger,
     strict: bool,
 ) -> Result<()> {
     if dry_run {
+        // Only a *signed* request needs to resolve which branch the real run
+        // takes — with `gh` present the API path rejects the signature, with
+        // `gh` missing the local-signing fallback honors it — so probe (a
+        // side-effect-free `gh --version`, never the real `gh api` tag call)
+        // ONLY then, letting a `dry_run + sign` request surface the same
+        // incompatibility the real run would. A non-signed preview never shells
+        // out: it reports the configured API-tagging intent uniformly (the real
+        // run's common `gh`-present branch), so a push preview contacts nothing.
+        if sign {
+            if gh_is_available(gh_binary) {
+                anyhow::bail!("{}", SIGN_VIA_API_UNSUPPORTED);
+            }
+            if strict {
+                anyhow::bail!("gh CLI not found, cannot create tag via GitHub API (strict mode)");
+            }
+            log.warn("gh CLI not found, falling back to local git tag + push");
+            return create_and_push_tag_in(cwd, tag, message, dry_run, sign, log, strict);
+        }
         log.status(&format!(
             "(dry-run) would create tag {} via GitHub API (\"{}\")",
             tag, message
@@ -442,11 +487,24 @@ pub fn create_tag_via_github_api_in(
                     );
                 }
                 log.warn("gh CLI not found, falling back to local git tag + push");
-                return create_and_push_tag_in(cwd, tag, message, dry_run, log, strict);
+                // Contract: the API path proper rejects `sign == true` (guarded
+                // below, before the `gh api` POST); only THIS local fallback can
+                // honor signing, because the API-created tag object is minted
+                // server-side and cannot carry a local GPG/SSH signature.
+                return create_and_push_tag_in(cwd, tag, message, dry_run, sign, log, strict);
             }
             return Err(e);
         }
     };
+
+    // API path proper: `gh` is present and the tag object was minted
+    // server-side, where a local GPG/SSH key cannot reach it. A caller that
+    // requested a signature here would otherwise get a silently-unsigned tag,
+    // so reject rather than downgrade. The gh-missing branch above already
+    // returned through the local-signing fallback, so this never fires for it.
+    if sign {
+        anyhow::bail!("{}", SIGN_VIA_API_UNSUPPORTED);
+    }
 
     let tag_sha = response["sha"]
         .as_str()
@@ -473,7 +531,7 @@ mod tests {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
         let slug = RepoSlug::for_test("owner", "repo");
         // Even with no git repo / no gh CLI, dry-run must succeed.
-        let result = create_tag_via_github_api(&slug, "v1.0.0", "msg", true, &log, false);
+        let result = create_tag_via_github_api(&slug, "v1.0.0", "msg", true, false, &log, false);
         assert!(result.is_ok(), "dry-run must succeed: {result:?}");
     }
 
@@ -681,6 +739,7 @@ mod tests {
             "v1.0.0",
             "msg",
             false,
+            false,
             &log,
             true,
         )
@@ -707,9 +766,70 @@ mod tests {
             "v1.0.0",
             "msg",
             true,
+            false,
             &log,
             false,
         );
         assert!(result.is_ok(), "dry-run must succeed: {result:?}");
+    }
+
+    /// P2: with `gh` present, a `dry_run + sign` request on the API path must
+    /// be REJECTED — mirroring the real run's post-POST sign guard — so the
+    /// preview never masks the sign incompatibility. A spawnable stub `gh`
+    /// makes `gh_is_available` true without any real API call being reached
+    /// (the bail fires in the dry-run block first).
+    #[cfg(unix)]
+    #[test]
+    fn create_tag_via_github_api_in_dry_run_sign_rejected_when_gh_present() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = tmp.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\necho 'gh version 2.0.0'\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let slug = RepoSlug::for_test("owner", "repo");
+        let err = create_tag_via_github_api_in(
+            tmp.path(),
+            &gh,
+            &slug,
+            "v1.0.0",
+            "msg",
+            true, // dry_run
+            true, // sign
+            &log,
+            false,
+        )
+        .expect_err("dry-run + sign on the API path must be rejected");
+        assert!(
+            err.to_string().contains("signed tag via the GitHub API"),
+            "dry-run rejection must match the real-run guard message, got: {err}"
+        );
+    }
+
+    /// P2 companion: with `gh` ABSENT, `dry_run + sign` must NOT be rejected —
+    /// the real run would take the local-signing fallback, so the preview must
+    /// mirror that (it previews `create_and_push_tag_in` in dry-run, which can
+    /// sign locally) and return Ok rather than erroring on the API-path guard.
+    #[test]
+    fn create_tag_via_github_api_in_dry_run_sign_gh_missing_previews_local() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-gh");
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let slug = RepoSlug::for_test("owner", "repo");
+        let result = create_tag_via_github_api_in(
+            tmp.path(),
+            &missing,
+            &slug,
+            "v1.0.0",
+            "msg",
+            true, // dry_run
+            true, // sign
+            &log,
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "gh-missing dry-run + sign must preview the local fallback, not reject: {result:?}"
+        );
     }
 }
