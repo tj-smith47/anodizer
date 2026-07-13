@@ -2814,6 +2814,179 @@ fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// resolve_workspace_cargo_token — the workspace credential-decision ladder
+//
+// The ladder (auth: token / auto / oidc × ambient-token × OIDC-context) was
+// previously exercised only incidentally, by the real-run integration tests on
+// a host that happened to carry a `CARGO_REGISTRY_TOKEN`. These drive it
+// directly through the builder's `MapEnvSource`, so every branch is proven
+// without touching the process environment (no `#[serial]`, parallel-safe).
+// ---------------------------------------------------------------------------
+
+/// A context whose crate universe is `crates`, with `env` seeded into the
+/// `MapEnvSource` the resolver reads (`env_source().var` / `env_var`).
+fn auth_ctx(crates: Vec<CrateConfig>, env: &[(&str, &str)]) -> Context {
+    // `sealed_env()` forces a CLOSED MapEnvSource even when `env` is empty, so
+    // the resolver never observes the host's ambient `CARGO_REGISTRY_TOKEN` /
+    // OIDC vars — the exact leak that let these branches pass only on a
+    // token-carrying box.
+    let mut b = TestContextBuilder::new().crates(crates).sealed_env();
+    for (k, v) in env {
+        b = b.env(*k, *v);
+    }
+    b.build()
+}
+
+/// A cargo-eligible crate carrying the given auth mode and (optional) custom
+/// index.
+fn cargo_auth_crate(
+    name: &str,
+    auth: Option<anodizer_core::config::CargoAuthMode>,
+    index: Option<&str>,
+) -> CrateConfig {
+    cargo_crate_with_cfg(
+        name,
+        &[],
+        CargoPublishConfig {
+            auth,
+            index: index.map(str::to_string),
+            ..Default::default()
+        },
+    )
+}
+
+/// `auth: token` inherits the ambient token path — Ok(None) WITHOUT consulting
+/// the environment (no token and no OIDC context still never bails).
+#[test]
+fn resolve_token_mode_returns_none_without_any_env() {
+    use anodizer_core::config::CargoAuthMode;
+    let ctx = auth_ctx(
+        vec![cargo_auth_crate("a", Some(CargoAuthMode::Token), None)],
+        &[],
+    );
+    let got = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect("token mode never errors during resolution");
+    assert_eq!(
+        got, None,
+        "token mode inherits the ambient token; nothing minted"
+    );
+}
+
+/// `auth: auto` with an ambient `CARGO_REGISTRY_TOKEN` takes the token path
+/// (Ok(None)) — no mint attempted.
+#[test]
+fn resolve_auto_with_ambient_token_returns_none() {
+    use anodizer_core::config::CargoAuthMode;
+    let ctx = auth_ctx(
+        vec![cargo_auth_crate("a", Some(CargoAuthMode::Auto), None)],
+        &[("CARGO_REGISTRY_TOKEN", "deadbeef")],
+    );
+    let got = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect("auto with a token never errors");
+    assert_eq!(got, None);
+}
+
+/// `auth: auto` with NEITHER an ambient token NOR an OIDC context is a hard
+/// error — the run refuses to proceed credential-less rather than reach a
+/// `cargo publish` that would fail unauthenticated.
+#[test]
+fn resolve_auto_without_token_or_oidc_bails() {
+    use anodizer_core::config::CargoAuthMode;
+    let ctx = auth_ctx(
+        vec![cargo_auth_crate("a", Some(CargoAuthMode::Auto), None)],
+        &[],
+    );
+    let err = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect_err("auto with no credential must bail");
+    assert!(
+        err.to_string().contains("no credential available"),
+        "unexpected error: {err:#}"
+    );
+}
+
+/// `auth: oidc` against a CUSTOM registry (Trusted Publishing is crates.io-only)
+/// bails on the registry check BEFORE any mint attempt — even with a full OIDC
+/// context present.
+#[test]
+fn resolve_oidc_against_custom_registry_bails() {
+    use anodizer_core::config::CargoAuthMode;
+    let ctx = auth_ctx(
+        vec![cargo_auth_crate(
+            "a",
+            Some(CargoAuthMode::Oidc),
+            Some("sparse+https://custom.example/"),
+        )],
+        &[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", "http://127.0.0.1:1/token"),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "x"),
+        ],
+    );
+    let err = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect_err("oidc + custom registry is unsupported");
+    assert!(
+        err.to_string().contains("only supported against crates.io"),
+        "unexpected error: {err:#}"
+    );
+}
+
+/// No active cargo config in the universe ⇒ nothing to authenticate ⇒ Ok(None),
+/// regardless of environment.
+#[test]
+fn resolve_no_active_cargo_config_returns_none() {
+    let ctx = auth_ctx(vec![plain_crate("plain", &[])], &[]);
+    let got = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect("no active cargo config never errors");
+    assert_eq!(got, None);
+}
+
+/// `auth: auto` with NO ambient token but a PRESENT OIDC context routes to the
+/// mint path, NOT the credential-less bail. The mint fails here (the OIDC
+/// endpoint is an unreachable localhost sentinel), which is exactly the point:
+/// the error is a mint failure, proving the ladder CHOSE to mint.
+#[test]
+fn resolve_auto_without_token_but_oidc_context_routes_to_mint() {
+    use anodizer_core::config::CargoAuthMode;
+    let ctx = auth_ctx(
+        vec![cargo_auth_crate("a", Some(CargoAuthMode::Auto), None)],
+        &[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", "http://127.0.0.1:1/token"),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "x"),
+        ],
+    );
+    let no_retry = anodizer_core::retry::RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(1),
+    };
+    let err = resolve_workspace_cargo_token(&ctx, &no_retry, &quiet_log())
+        .expect_err("mint against an unreachable OIDC endpoint fails");
+    assert!(
+        !err.to_string().contains("no credential available"),
+        "auto must route to mint when an OIDC context exists, not bail: {err:#}"
+    );
+}
+
 /// Single-crate mode: one eligible crate with no deps publishes itself
 /// and only itself. The expanded selection is exactly `[the crate]`.
 #[test]

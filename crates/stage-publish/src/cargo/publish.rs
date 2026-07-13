@@ -206,7 +206,7 @@ pub fn publish_to_cargo(
 ///   contract).
 /// * `auth: auto` → ambient token present → `None`; else OIDC context present
 ///   → mint; else a hard error naming both paths.
-fn resolve_workspace_cargo_token(
+pub(crate) fn resolve_workspace_cargo_token(
     ctx: &Context,
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
