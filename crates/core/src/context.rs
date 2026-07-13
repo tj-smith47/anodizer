@@ -890,6 +890,51 @@ impl Context {
         crate::template::render(template, &self.template_vars)
     }
 
+    /// Render `template` with the FULL version-derived var set (`Version`, `Tag`,
+    /// `Major`/`Minor`/`Patch`, `RawVersion`, `Prerelease`, `BuildMetadata`,
+    /// `Base`) re-derived from `version`/`tag` rather than the context's own git
+    /// version — used by promotion to reconstruct the immutable tag a prior
+    /// release pushed for a specific `--version`. Overriding only `Version`+`Tag`
+    /// would leave `{{ .Major }}` etc. resolving to the CONTEXT version, so a
+    /// `{{ .Major }}.{{ .Minor }}.{{ .Patch }}` tag template would render the
+    /// wrong source tag whenever the context version differs from the target.
+    ///
+    /// A non-semver `version` (no parse) falls back to overriding `Version`+`Tag`
+    /// and BLANKING the seven semver-part vars (`RawVersion`, `Base`, `Major`,
+    /// `Minor`, `Patch`, `Prerelease`, `BuildMetadata`), so a semver-part template
+    /// cannot silently resolve the context version — it renders empty instead of
+    /// inheriting the cloned context's parts. Does not mutate `self`.
+    pub fn render_template_for_version(
+        &self,
+        template: &str,
+        version: &str,
+        tag: &str,
+    ) -> anyhow::Result<String> {
+        let mut vars = self.template_vars.clone();
+        match crate::git::parse_semver(version) {
+            Ok(semver) => set_version_vars(&mut vars, &semver, tag),
+            Err(_) => {
+                vars.set("Version", version);
+                vars.set("Tag", tag);
+                // Blank the semver-derived vars `set_version_vars` writes so a
+                // `{{ .Major }}`-style template renders empty rather than
+                // inheriting the cloned context version's parts (a false match).
+                for key in [
+                    "RawVersion",
+                    "Base",
+                    "Major",
+                    "Minor",
+                    "Patch",
+                    "Prerelease",
+                    "BuildMetadata",
+                ] {
+                    vars.set(key, "");
+                }
+            }
+        }
+        crate::template::render(template, &vars)
+    }
+
     /// Render a template if present, returning `None` for `None` input.
     pub fn render_template_opt(&self, template: Option<&str>) -> anyhow::Result<Option<String>> {
         template.map(|t| self.render_template(t)).transpose()
@@ -1275,38 +1320,13 @@ impl Context {
     /// - `Checksums` — combined checksum file contents, set by checksum stage
     pub fn populate_git_vars(&mut self) {
         if let Some(ref info) = self.git_info {
-            // RawVersion: just major.minor.patch, no prerelease or build metadata.
-            let raw_version = info.semver.raw_version_string();
-
-            // Version: clean semver derived from the parsed SemVer struct, not
-            // from the tag string.  The old `tag.strip_prefix('v')` approach
-            // broke for monorepo workspace tags like `core-v0.3.2` because it
-            // only stripped a leading 'v', leaving `core-v0.3.2` intact.
-            // Deriving from the struct handles all tag_template prefixes.
-            let version = info.semver.version_string();
-
-            self.template_vars.set("Tag", &info.tag);
-            self.template_vars.set("Version", &version);
-            self.template_vars.set("RawVersion", &raw_version);
-            // `Base`: the numeric base semver (no prerelease / build metadata),
-            // captured before snapshot/nightly version templating overwrites
-            // `Version`. Lets a nightly `version_template` reference the stable
-            // base for schemes like `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.
-            self.template_vars.set("Base", &raw_version);
-            self.template_vars
-                .set("Major", &info.semver.major.to_string());
-            self.template_vars
-                .set("Minor", &info.semver.minor.to_string());
-            self.template_vars
-                .set("Patch", &info.semver.patch.to_string());
-            self.template_vars.set(
-                "Prerelease",
-                info.semver.prerelease.as_deref().unwrap_or(""),
-            );
-            self.template_vars.set(
-                "BuildMetadata",
-                info.semver.build_metadata.as_deref().unwrap_or(""),
-            );
+            // The version-derived var block (Tag/Version/RawVersion/Base/Major/
+            // Minor/Patch/Prerelease/BuildMetadata) is factored into
+            // `set_version_vars` so `render_template_for_version` can re-derive
+            // the SAME block for a promotion's target version without drift.
+            // Deriving Version/RawVersion from the parsed `SemVer` struct (not
+            // `tag.strip_prefix('v')`) handles monorepo tags like `core-v0.3.2`.
+            set_version_vars(&mut self.template_vars, &info.semver, &info.tag);
             self.template_vars.set("FullCommit", &info.commit);
             self.template_vars.set("Commit", &info.commit);
             self.template_vars.set("ShortCommit", &info.short_commit);
@@ -1777,6 +1797,36 @@ pub fn map_os_to_goos(os: &str) -> &str {
 /// "arm" — plus exotics) pass through unchanged.
 pub fn map_arch_to_goarch(arch: &str) -> &str {
     crate::target::rust_arch_to_goarch(arch, cfg!(target_endian = "little")).unwrap_or(arch)
+}
+
+/// Set the full version-derived template var block (`Tag`, `Version`,
+/// `RawVersion`, `Base`, `Major`, `Minor`, `Patch`, `Prerelease`,
+/// `BuildMetadata`) from a parsed `semver` and the release `tag`. The single
+/// source of truth for this block, shared by [`Context::populate_git_vars`] (the
+/// context's own git version) and [`Context::render_template_for_version`] (a
+/// promotion's target version) so the two can never drift.
+fn set_version_vars(vars: &mut TemplateVars, semver: &crate::git::SemVer, tag: &str) {
+    // RawVersion: major.minor.patch only, no prerelease / build metadata.
+    let raw_version = semver.raw_version_string();
+    // Version: clean semver derived from the parsed struct (handles every
+    // tag_template prefix, e.g. monorepo `core-v0.3.2`).
+    let version = semver.version_string();
+
+    vars.set("Tag", tag);
+    vars.set("Version", &version);
+    vars.set("RawVersion", &raw_version);
+    // `Base`: the numeric base semver, captured before snapshot/nightly version
+    // templating overwrites `Version`, for schemes like
+    // `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.
+    vars.set("Base", &raw_version);
+    vars.set("Major", &semver.major.to_string());
+    vars.set("Minor", &semver.minor.to_string());
+    vars.set("Patch", &semver.patch.to_string());
+    vars.set("Prerelease", semver.prerelease.as_deref().unwrap_or(""));
+    vars.set(
+        "BuildMetadata",
+        semver.build_metadata.as_deref().unwrap_or(""),
+    );
 }
 
 #[cfg(test)]
@@ -3598,6 +3648,37 @@ mod tests {
 
         // Project name should be available.
         assert_eq!(v.get("ProjectName"), Some(&"mymonorepo".to_string()));
+    }
+
+    #[test]
+    fn render_template_for_version_blanks_semver_parts_on_non_semver() {
+        // Context version is 2.0.0 — its Major/Minor/Patch must NOT leak into a
+        // non-semver `--version` render.
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let vars = ctx.template_vars_mut();
+        vars.set("Version", "2.0.0");
+        vars.set("Major", "2");
+        vars.set("Minor", "0");
+        vars.set("Patch", "0");
+
+        let rendered = ctx
+            .render_template_for_version(
+                "{{ .Major }}.{{ .Minor }}.{{ .Patch }}",
+                "not-a-semver",
+                "not-a-semver",
+            )
+            .expect("render");
+        // The context version (parts) must not leak — semver-part vars are blanked.
+        assert!(
+            !rendered.contains('2') && !rendered.contains("2.0.0"),
+            "context version leaked into non-semver render: {rendered:?}"
+        );
+
+        // The raw `Version` var still resolves to the supplied non-semver string.
+        let version_only = ctx
+            .render_template_for_version("{{ .Version }}", "not-a-semver", "vX")
+            .expect("render");
+        assert_eq!(version_only, "not-a-semver");
     }
 
     #[test]

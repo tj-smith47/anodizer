@@ -48,6 +48,7 @@ pub mod path_util;
 pub mod pipe_skip;
 pub mod preflight;
 pub mod progress;
+pub mod promote;
 pub mod publish_evidence;
 pub mod publish_report;
 pub mod publisher;
@@ -83,6 +84,11 @@ pub use env_preflight::{
     SourcedRequirement,
 };
 pub use env_source::{EnvSource, LayeredEnvSource, MapEnvSource, ProcessEnvSource};
+pub use promote::{
+    CANONICAL_TRACKS, DEFAULT_FROM_TRACK, PROMOTABLE_PUBLISHERS, Promotable, PromoteOutcome,
+    PromoteReport, PromoteRequest, PromoteSelector, PromoteSkipReason, PromoteStatus,
+    dispatch_promotions, is_promotion_capable,
+};
 pub use publish_evidence::{PublishEvidence, PublishEvidenceExtra};
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,

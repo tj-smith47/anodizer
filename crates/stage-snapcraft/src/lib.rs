@@ -12,6 +12,7 @@ mod arch;
 mod build_stage;
 mod command;
 mod generate;
+mod promote;
 mod publish_stage;
 mod targets;
 mod validate;
@@ -22,9 +23,12 @@ mod tests;
 
 pub use build_stage::{SnapcraftStage, snapcraft_snap_yamls_for_crate};
 pub use command::{
-    is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
+    is_retriable_snap_push, resolve_effective_channels, snap_newest_revision_in_channel,
+    snap_revision_for_version, snapcraft_command, snapcraft_release_command,
+    snapcraft_upload_command,
 };
 pub use generate::generate_snap_yaml;
+pub use promote::{SnapcraftPromoter, preflight as snapcraft_promote_preflight};
 pub use publish_stage::SnapcraftPublishStage;
 pub use validate::{TagResolver, validate_snapcraft_templates};
 

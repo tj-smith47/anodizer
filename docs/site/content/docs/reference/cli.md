@@ -315,6 +315,21 @@ Run only the publish stages (release, blob, publish) from a completed dist/
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 
 
+### `anodizer promote`
+
+Promote an already-published artifact from a pre-release track to a stable track, without rebuilding
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--to` | — | — | Destination track: stable | prerelease | candidate | beta | edge, or a publisher-native track name (passed through verbatim). |
+| `--from` | — | — | Source track (default: prerelease — each publisher's pre-stable track). Canonical or publisher-native. |
+| `--publishers` | — | — | Comma-separated promotion-capable publishers to run (default: all configured). Naming a configured-but-not-promotable publisher is an error. |
+| `--version` | — | — | Promote this explicit version/tag (default: the newest artifact in the --from track). |
+| `--from-run` | — | — | Promote what a prior release run recorded (reads dist/run-<id>/report.json). |
+| `--dry-run` | — | — | Resolve and print the plan without running any external command |
+
+
 ### `anodizer bump`
 
 Bump crate versions (Conventional Commits → semver level)

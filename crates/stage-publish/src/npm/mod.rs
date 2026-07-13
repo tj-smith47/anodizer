@@ -16,12 +16,14 @@
 
 mod manifest;
 mod optional_deps;
+mod promote;
 pub mod publish;
 pub mod publisher;
 
 #[cfg(test)]
 mod tests;
 
+pub use promote::{NpmPromoter, preflight as npm_promote_preflight};
 pub use publish::{NpmTarget, publish_to_npm};
 pub use publisher::NpmPublisher;
 

@@ -809,6 +809,25 @@ fn run() {
                 publishers,
             })
         }
+        Commands::Promote {
+            to,
+            from,
+            publishers,
+            version_selector,
+            from_run,
+            dry_run,
+        } => commands::promote::run(commands::promote::PromoteOpts {
+            to,
+            from,
+            publishers,
+            version: version_selector,
+            from_run,
+            dry_run,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+        }),
         Commands::Bump {
             level_or_version,
             package,

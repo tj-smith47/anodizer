@@ -54,6 +54,7 @@ pub mod winget;
 pub mod testing;
 
 pub use dispatch::{DispatchOptions, dispatch};
+pub use npm::{NpmPromoter, npm_promote_preflight};
 pub use registry::{configured_publishers, group_dispatch_order};
 pub use schema_validation::{TagResolver, validate_publisher_schemas};
 

@@ -96,6 +96,101 @@ pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) ->
 }
 
 // ---------------------------------------------------------------------------
+// Promotion — `snapcraft release <name> <revision> <channel>`
+// ---------------------------------------------------------------------------
+
+/// Construct the `snapcraft release <name> <revision> <channel>` command used to
+/// promote an already-uploaded revision into a channel without rebuilding.
+///
+/// `snapcraft release` is non-interactive by construction — it takes the target
+/// channel as a positional argument and needs no prompt — so no extra
+/// `--non-interactive`-style flag is required (unlike `snapcraft register`).
+pub fn snapcraft_release_command(snap_name: &str, revision: &str, channel: &str) -> Vec<String> {
+    vec![
+        "snapcraft".to_string(),
+        "release".to_string(),
+        snap_name.to_string(),
+        revision.to_string(),
+        channel.to_string(),
+    ]
+}
+
+/// Locate the 0-based index of a named column in a `snapcraft list-revisions`
+/// header row. Column matching is case-insensitive. Returns `None` when the
+/// header is absent or the column is missing.
+fn revision_table_column(output: &str, column: &str) -> Option<(Vec<String>, usize)> {
+    let mut lines = output.lines();
+    let header = loop {
+        let line = lines.next()?;
+        if line
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("Rev"))
+        {
+            break line;
+        }
+    };
+    let idx = header
+        .split_whitespace()
+        .position(|h| h.eq_ignore_ascii_case(column))?;
+    let rows: Vec<String> = lines.map(|l| l.to_string()).collect();
+    Some((rows, idx))
+}
+
+/// Parse `snapcraft list-revisions` output and return the revision number whose
+/// `Version` column equals `version`. When several revisions share the version
+/// (each re-upload mints a fresh revision), the numerically highest revision
+/// wins so a re-promotion targets the latest upload of that version. Returns
+/// `None` when no row matches or the table is unparseable — the caller then
+/// reports "nothing to promote" rather than releasing a wrong revision.
+pub fn snap_revision_for_version(output: &str, version: &str) -> Option<String> {
+    let (rows, version_col) = revision_table_column(output, "Version")?;
+    let (_, rev_col) = revision_table_column(output, "Rev")?;
+    rows.iter()
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let matches_version = cols.get(version_col).is_some_and(|v| *v == version);
+            if !matches_version {
+                return None;
+            }
+            cols.get(rev_col).and_then(|r| r.parse::<u64>().ok())
+        })
+        .max()
+        .map(|r| r.to_string())
+}
+
+/// Parse `snapcraft list-revisions` output and return the numerically highest
+/// revision currently released into `channel`. The `Channels` column lists the
+/// channels a revision occupies (comma- or space-separated, sometimes with a
+/// `track/risk` form like `latest/candidate`); a revision counts as "in
+/// `channel`" when any listed channel's risk component equals `channel`.
+/// Returns `None` when no revision occupies the channel or the table is
+/// unparseable.
+pub fn snap_newest_revision_in_channel(output: &str, channel: &str) -> Option<String> {
+    let (rows, chan_col) = revision_table_column(output, "Channels")?;
+    let (_, rev_col) = revision_table_column(output, "Rev")?;
+    rows.iter()
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // The Channels column and everything after it may hold multiple
+            // channel tokens; scan from the Channels column to end of row.
+            let in_channel = cols.iter().skip(chan_col).any(|tok| {
+                tok.split([',', '/']).any(|risk| {
+                    // A progressive/follower channel carries a trailing marker
+                    // (`candidate*`); strip it before comparing the risk token.
+                    risk.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                        .eq_ignore_ascii_case(channel)
+                })
+            });
+            if !in_channel {
+                return None;
+            }
+            cols.get(rev_col).and_then(|r| r.parse::<u64>().ok())
+        })
+        .max()
+        .map(|r| r.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Channel auto-population based on grade
 // ---------------------------------------------------------------------------
 

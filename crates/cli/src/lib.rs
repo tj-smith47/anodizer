@@ -672,6 +672,58 @@ pub enum Commands {
         #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
         publishers: Vec<String>,
     },
+    /// Promote an already-published artifact from a pre-release track to a
+    /// stable track, without rebuilding.
+    ///
+    /// A cross-publisher capability (snapcraft channels, npm dist-tags, OCI
+    /// floating tags, GitHub prerelease flips). Reads existing publisher config
+    /// only to learn each publisher's native track vocabulary — there is no
+    /// `promote:` config block (a static one would auto-promote the just-
+    /// uploaded revision every release, defeating the candidate gate).
+    Promote {
+        #[arg(
+            long,
+            help = "Destination track: stable | prerelease | candidate | beta | edge, \
+                    or a publisher-native track name (passed through verbatim)."
+        )]
+        to: String,
+        #[arg(
+            long,
+            help = "Source track (default: prerelease — each publisher's pre-stable track). \
+                    Canonical or publisher-native."
+        )]
+        from: Option<String>,
+        #[arg(
+            long = "publishers",
+            value_delimiter = ',',
+            help = "Comma-separated promotion-capable publishers to run (default: all \
+                    configured). Naming a configured-but-not-promotable publisher is an error."
+        )]
+        publishers: Vec<String>,
+        // `long = "version"` with a distinct field id (not `version`): the doc
+        // generator skips any arg whose clap id is literally `version` (the
+        // global version flag), so the field is named `version_selector` to
+        // keep the user-facing `--version` flag documented, matching `tag`'s
+        // `version_override`.
+        #[arg(
+            long = "version",
+            value_name = "VERSION",
+            conflicts_with = "from_run",
+            help = "Promote this explicit version/tag (default: the newest artifact in the \
+                    --from track)."
+        )]
+        version_selector: Option<String>,
+        #[arg(
+            long = "from-run",
+            help = "Promote what a prior release run recorded (reads dist/run-<id>/report.json)."
+        )]
+        from_run: Option<String>,
+        #[arg(
+            long,
+            help = "Resolve and print the plan without running any external command"
+        )]
+        dry_run: bool,
+    },
     /// Bump crate versions (Conventional Commits → semver level)
     ///
     /// Infers the per-crate level from commits since each crate's last tag

@@ -39,6 +39,9 @@ pub use command::{
 mod baseimage;
 pub use baseimage::{BaseImage, get_base_image, parse_base_image};
 
+mod promote;
+pub use promote::{DockerPromoter, preflight as docker_promote_preflight};
+
 // ---------------------------------------------------------------------------
 // DockerBuildJob / DockerBuildResult / execute_docker_build
 // ---------------------------------------------------------------------------

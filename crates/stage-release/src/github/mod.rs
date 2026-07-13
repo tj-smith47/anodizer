@@ -33,7 +33,7 @@ pub(crate) use rate_limit::check_github_rate_limit_with_env;
 pub(crate) use retry_call::{
     is_octocrab_404, is_octocrab_transport_error, octocrab_retry_cause, retry_octocrab_call,
 };
-use secondary_rate_limit::RetryAfterCapture;
+pub(crate) use secondary_rate_limit::RetryAfterCapture;
 
 pub(crate) use backend::run_github_backend;
 pub use lookup::{PublishedAsset, fetch_published_assets};
