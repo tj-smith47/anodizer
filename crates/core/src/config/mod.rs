@@ -235,6 +235,13 @@ pub struct Config {
     #[serde(default, deserialize_with = "deserialize_makeselfs")]
     #[schemars(schema_with = "makeselfs_schema")]
     pub makeselfs: Vec<MakeselfConfig>,
+    /// `curl | sh` installer-script configurations. Each entry emits a
+    /// deterministic POSIX `install.sh` release asset that detects the host
+    /// OS + arch, downloads and sha256-verifies the matching archive, and
+    /// installs the binary.
+    #[serde(default, deserialize_with = "deserialize_install_scripts")]
+    #[schemars(schema_with = "install_scripts_schema")]
+    pub install_scripts: Vec<InstallScriptConfig>,
     /// AppImage configurations. Each entry bundles a built Linux binary plus
     /// its desktop integration into a single self-contained `.AppImage` via
     /// linuxdeploy.
@@ -401,6 +408,7 @@ impl Default for Config {
             template_files: None,
             monorepo: None,
             makeselfs: Vec::new(),
+            install_scripts: Vec::new(),
             appimages: Vec::new(),
             verify_release: VerifyReleaseConfig::default(),
             preflight: PreflightConfig::default(),
@@ -2342,6 +2350,7 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "mcp",
         "makeselfs",
         "makeselves",
+        "install_scripts",
         "appimages",
         "msis",
         "pkgs",
@@ -2884,10 +2893,12 @@ pub use string_or_bool::*;
 // import paths used by stages and tests.
 
 pub use crate::packagers::{
-    AppImageConfig, AppImageExtra, MakeselfConfig, MakeselfFile, RuntimeHarvest, SrpmConfig,
+    AppImageConfig, AppImageExtra, InstallScriptConfig, MakeselfConfig, MakeselfFile,
+    RuntimeHarvest, SrpmConfig,
 };
 pub(crate) use crate::packagers::{
-    appimages_schema, deserialize_appimages, deserialize_makeselfs, makeselfs_schema,
+    appimages_schema, deserialize_appimages, deserialize_install_scripts, deserialize_makeselfs,
+    install_scripts_schema, makeselfs_schema,
 };
 
 // ---------------------------------------------------------------------------

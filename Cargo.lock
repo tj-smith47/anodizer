@@ -63,6 +63,7 @@ dependencies = [
  "anodizer-stage-dmg",
  "anodizer-stage-docker",
  "anodizer-stage-flatpak",
+ "anodizer-stage-install-script",
  "anodizer-stage-makeself",
  "anodizer-stage-msi",
  "anodizer-stage-nfpm",
@@ -318,6 +319,17 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "anodizer-stage-install-script"
+version = "0.18.0"
+dependencies = [
+ "anodizer-core",
+ "anyhow",
+ "serde_yaml_ng",
+ "serial_test",
  "tempfile",
 ]
 

@@ -90,6 +90,7 @@ fn push_artifact_stages(p: &mut Pipeline) {
     use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_dmg::DmgStage;
     use anodizer_stage_flatpak::FlatpakStage;
+    use anodizer_stage_install_script::InstallScriptStage;
     use anodizer_stage_makeself::MakeselfStage;
     use anodizer_stage_msi::MsiStage;
     use anodizer_stage_nfpm::NfpmStage;
@@ -125,6 +126,11 @@ fn push_artifact_stages(p: &mut Pipeline) {
     p.add(Box::new(AppImageStage));
     p.add(Box::new(SnapcraftStage));
     p.add(Box::new(FlatpakStage));
+    // Derives its per-platform case tables from configured release intent
+    // (not from produced artifacts), so it needs no binary and no ArchiveStage
+    // output. Placed before the integrity tail so the emitted install.sh is
+    // checksummed and signed like any other release asset.
+    p.add(Box::new(InstallScriptStage));
     p.add(Box::new(SbomStage));
     p.add(Box::new(TemplateFilesStage));
 

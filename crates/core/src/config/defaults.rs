@@ -19,7 +19,7 @@ use super::snapcraft::SnapcraftConfig;
 use super::source::SourceConfig;
 use super::upx::UpxConfig;
 use super::{ChecksumConfig, CrossStrategy, DockerSignConfig, DockerV2Config, SignConfig};
-use crate::packagers::{MakeselfConfig, SrpmConfig};
+use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -69,6 +69,8 @@ pub struct Defaults {
     pub nsis: Option<NsisConfig>,
     /// Default makeself settings applied to all crates.
     pub makeselves: Option<MakeselfConfig>,
+    /// Default install-script settings applied to all crates.
+    pub install_scripts: Option<InstallScriptConfig>,
     /// Default SRPM settings applied to all crates.
     pub srpms: Option<SrpmConfig>,
     /// Default Docker (V2 API) image settings applied to all crates. The

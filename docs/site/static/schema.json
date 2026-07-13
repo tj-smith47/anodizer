@@ -299,6 +299,14 @@
         "$ref": "#/definitions/IncludeSpec"
       }
     },
+    "install_scripts": {
+      "description": "`curl | sh` installer-script configurations. Each entry emits a deterministic POSIX `install.sh` release asset that detects the host OS + arch, downloads and sha256-verifies the matching archive, and installs the binary.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InstallScriptConfig"
+      }
+    },
     "makeselfs": {
       "description": "Makeself self-extracting archive configurations.",
       "default": [],
@@ -4919,6 +4927,18 @@
             }
           ]
         },
+        "install_scripts": {
+          "description": "Default install-script settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InstallScriptConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "makeselves": {
           "description": "Default makeself settings applied to all crates.",
           "default": null,
@@ -8082,6 +8102,108 @@
         "url": {
           "description": "URL to fetch. If it does not start with `http://` or `https://`, `https://raw.githubusercontent.com/` is prepended (GitHub shorthand).",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "InstallScriptConfig": {
+      "description": "`curl | sh` installer-script configuration.\n\nDrives the install-script stage, which emits a deterministic POSIX `install.sh` as a release asset. At run time the script detects the host OS + architecture, maps it to the matching release archive, downloads and sha256-verifies it, extracts the binary, and installs it into an install directory (falling back to `$HOME/.local/bin` when the primary directory is not writable and no `sudo` is available).\n\nEvery field is optional: the repository slug is derived from the git `origin` remote, the installed binary names from the project name, the per-platform asset names from the release's configured targets (via the same engine SSOT that keeps cargo-binstall `pkg_url` from 404ing), and the checksums filename and tag prefix from the flagship crate that builds the project binary — so a bare `install_scripts: {}` produces a fully working installer with no required input.",
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "description": "Base URL the script downloads releases from and queries the REST API against (default: `https://github.com`). Point this at a GitHub Enterprise host to install from a self-hosted GitHub; the script derives the API base as `<base_url>/api/v3` for any non-`github.com` host.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "binaries": {
+          "description": "Binary names to install out of the extracted archive (default: a single-element list of the project name). Every name is installed, so an archive shipping multiple binaries lands them all.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "description": "One-line description rendered into the script's header banner.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "description": "Output filename (default: `install.sh`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "homepage": {
+          "description": "Project homepage URL rendered into the script's header banner.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique identifier for this install-script config (default: \"default\").",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "install_dir": {
+          "description": "Directory the binary is installed into (default: `/usr/local/bin`). The generated script falls back to `$HOME/.local/bin` when this directory is not writable and no `sudo` is available.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Human-readable name rendered into the script's header banner (default: the project name).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "GitHub `owner/name` slug the script downloads releases from (default: derived from the git `origin` remote).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verify_checksum": {
+          "description": "Whether the script verifies each download's sha256 checksum before installing (default: `true`). Set `false` only for repos that publish no checksums file or `.sha256` sidecars.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

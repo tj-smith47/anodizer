@@ -48,6 +48,7 @@ anodizer-stage-flatpak.workspace = true
 anodizer-stage-notarize.workspace = true
 anodizer-stage-templatefiles.workspace = true
 anodizer-stage-makeself.workspace = true
+anodizer-stage-install-script.workspace = true
 anodizer-stage-srpm.workspace = true
 anodizer-stage-sbom.workspace = true
 anodizer-stage-attest.workspace = true

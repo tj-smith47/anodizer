@@ -137,6 +137,129 @@ pub(crate) fn makeselfs_schema(generator: &mut schemars::SchemaGenerator) -> sch
 }
 
 // ---------------------------------------------------------------------------
+// InstallScriptConfig
+// ---------------------------------------------------------------------------
+
+/// `curl | sh` installer-script configuration.
+///
+/// Drives the install-script stage, which emits a deterministic POSIX
+/// `install.sh` as a release asset. At run time the script detects the host
+/// OS + architecture, maps it to the matching release archive, downloads and
+/// sha256-verifies it, extracts the binary, and installs it into an install
+/// directory (falling back to `$HOME/.local/bin` when the primary directory is
+/// not writable and no `sudo` is available).
+///
+/// Every field is optional: the repository slug is derived from the git
+/// `origin` remote, the installed binary names from the project name, the
+/// per-platform asset names from the release's configured targets (via the
+/// same engine SSOT that keeps cargo-binstall `pkg_url` from 404ing), and the
+/// checksums filename and tag prefix from the flagship crate that builds the
+/// project binary — so a bare `install_scripts: {}` produces a fully working
+/// installer with no required input.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct InstallScriptConfig {
+    /// Unique identifier for this install-script config (default: "default").
+    pub id: Option<String>,
+    /// Output filename (default: `install.sh`).
+    pub filename: Option<String>,
+    /// Binary names to install out of the extracted archive (default: a
+    /// single-element list of the project name). Every name is installed, so
+    /// an archive shipping multiple binaries lands them all.
+    pub binaries: Option<Vec<String>>,
+    /// GitHub `owner/name` slug the script downloads releases from
+    /// (default: derived from the git `origin` remote).
+    pub repo: Option<String>,
+    /// Base URL the script downloads releases from and queries the REST API
+    /// against (default: `https://github.com`). Point this at a GitHub
+    /// Enterprise host to install from a self-hosted GitHub; the script
+    /// derives the API base as `<base_url>/api/v3` for any non-`github.com`
+    /// host.
+    pub base_url: Option<String>,
+    /// Whether the script verifies each download's sha256 checksum before
+    /// installing (default: `true`). Set `false` only for repos that publish
+    /// no checksums file or `.sha256` sidecars.
+    pub verify_checksum: Option<bool>,
+    /// Directory the binary is installed into (default: `/usr/local/bin`).
+    /// The generated script falls back to `$HOME/.local/bin` when this
+    /// directory is not writable and no `sudo` is available.
+    pub install_dir: Option<String>,
+    /// Human-readable name rendered into the script's header banner
+    /// (default: the project name).
+    pub name: Option<String>,
+    /// One-line description rendered into the script's header banner.
+    pub description: Option<String>,
+    /// Project homepage URL rendered into the script's header banner.
+    pub homepage: Option<String>,
+    /// Skip this config. Accepts bool or template string.
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported configs.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
+    pub skip: Option<StringOrBool>,
+}
+
+/// Deserialize install_scripts: single object → vec of one, array → vec of many.
+pub(crate) fn deserialize_install_scripts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<InstallScriptConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct InstallScriptVisitor;
+
+    impl<'de> Visitor<'de> for InstallScriptVisitor {
+        type Value = Vec<InstallScriptConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(
+                "an install-script config object or an array of install-script config objects",
+            )
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<InstallScriptConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config =
+                InstallScriptConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(InstallScriptVisitor)
+}
+
+pub(crate) fn install_scripts_schema(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    let mut schema = generator.subschema_for::<Vec<InstallScriptConfig>>();
+    schema.ensure_object().insert(
+        "description".to_owned(),
+        "curl | sh installer-script configurations. Accepts a single object or array.".into(),
+    );
+    schema
+}
+
+// ---------------------------------------------------------------------------
 // AppImageConfig
 // ---------------------------------------------------------------------------
 

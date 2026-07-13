@@ -276,6 +276,7 @@ pub fn stage_header(stage: &str) -> &'static str {
         "pkg" => "Building pkg",
         "notarize" => "Notarizing app",
         "makeself" => "Building installer",
+        "install-script" => "Building install script",
         "srpm" => "Building source RPM",
         "appbundle" => "Building app bundle",
         "appimage" => "Building AppImage",

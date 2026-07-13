@@ -40,6 +40,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `homebrew_cores` | list of HomebrewCoreConfig | — | homebrew-core formula-bump configurations. One entry per formula. Bumps an existing formula in `Homebrew/homebrew-core` (or a formula repository override) via the GitHub API and opens a pull request. The `homebrew_cores:` block. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
+| `install_scripts` | list of InstallScriptConfig | `[]` | `curl \| sh` installer-script configurations. Each entry emits a deterministic POSIX `install.sh` release asset that detects the host OS + arch, downloads and sha256-verifies the matching archive, and installs the binary. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
 | `mcp` | McpConfig | `{"name":null,"title":null,"description":null,"homepage":null,"packages":[],"transports":[],"skip":null,"repository":{"url":"","source":"","id":"","subfolder":""},"auth":{"type":"none"},"registry":null,"if":null,"retain_on_rollback":null}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
@@ -340,6 +341,7 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 | `dockers_v2` | DockerV2Config | — | Default Docker (V2 API) image settings applied to all crates. The `docker_v2:` spelling is still accepted via serde alias for back-compat. |
 | `env` | list of string | — | Default environment variables (`KEY=VALUE` strings) hoisted across crates. |
 | `flatpaks` | FlatpakConfig | — | Default flatpak settings applied to all crates. |
+| `install_scripts` | InstallScriptConfig | — | Default install-script settings applied to all crates. |
 | `makeselves` | MakeselfConfig | — | Default makeself settings applied to all crates. |
 | `msis` | MsiConfig | — | Default MSI settings applied to all crates. |
 | `nfpms` | NfpmConfig | — | Default nfpm (deb/rpm/apk) settings applied to all crates. |
@@ -513,6 +515,26 @@ Every field is optional: the formula name defaults to the crate name, the target
 | `sha256` | string | — | Hex SHA-256 of the new download (templated). When unset, anodizer downloads `download_url` and hashes it — the same behavior as `brew bump-formula-pr` without `--sha256`. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `update_existing_pr` | StringOrBool | — | When truthy, refresh the existing bump PR in place instead of skipping it: a same-version re-cut force-resets the bump branch to the current base and re-commits the rewritten formula, so the open PR carries this run's content rather than a stale earlier attempt (and no duplicate PR is opened). When falsy (default), an already-open bump PR is left untouched and a warning names this toggle. Accepts bool or template string. Mirrors `winget` / `krew` / `homebrew_cask`'s `update_existing_pr`. |
+
+## `install_scripts`
+`curl | sh` installer-script configuration.
+
+Drives the install-script stage, which emits a deterministic POSIX `install.sh` as a release asset. At run time the script detects the host OS + architecture, maps it to the matching release archive, downloads and sha256-verifies it, extracts the binary, and installs it into an install directory (falling back to `$HOME/.local/bin` when the primary directory is not writable and no `sudo` is available).
+
+Every field is optional: the repository slug is derived from the git `origin` remote, the installed binary names from the project name, the per-platform asset names from the release's configured targets (via the same engine SSOT that keeps cargo-binstall `pkg_url` from 404ing), and the checksums filename and tag prefix from the flagship crate that builds the project binary — so a bare `install_scripts: {}` produces a fully working installer with no required input.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `base_url` | string | — | Base URL the script downloads releases from and queries the REST API against (default: `https://github.com`). Point this at a GitHub Enterprise host to install from a self-hosted GitHub; the script derives the API base as `<base_url>/api/v3` for any non-`github.com` host. |
+| `binaries` | list of string | — | Binary names to install out of the extracted archive (default: a single-element list of the project name). Every name is installed, so an archive shipping multiple binaries lands them all. |
+| `description` | string | — | One-line description rendered into the script's header banner. |
+| `filename` | string | — | Output filename (default: `install.sh`). |
+| `homepage` | string | — | Project homepage URL rendered into the script's header banner. |
+| `id` | string | — | Unique identifier for this install-script config (default: "default"). |
+| `install_dir` | string | — | Directory the binary is installed into (default: `/usr/local/bin`). The generated script falls back to `$HOME/.local/bin` when this directory is not writable and no `sudo` is available. |
+| `name` | string | — | Human-readable name rendered into the script's header banner (default: the project name). |
+| `repo` | string | — | GitHub `owner/name` slug the script downloads releases from (default: derived from the git `origin` remote). |
+| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs. |
+| `verify_checksum` | bool | — | Whether the script verifies each download's sha256 checksum before installing (default: `true`). Set `false` only for repos that publish no checksums file or `.sha256` sidecars. |
 
 ## `makeselfs`
 | Field | Type | Default | Description |

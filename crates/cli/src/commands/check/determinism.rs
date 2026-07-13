@@ -480,6 +480,11 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
 /// `anodizer_core::DeterminismState::seed_from_commit`) and excluded from
 /// `drift_count` while still surfaced in the report:
 ///
+/// - `install-script` — **GATED**: the `curl | sh` installer is derived from
+///   configured release intent (targets + flagship crate) and only written to
+///   disk — no external tool, no read of produced binaries — so it is
+///   byte-identical on every shard by construction and its merge-dedup across
+///   shards is a no-op.
 /// - `appbundle` — **GATED**: pure file assembly, byte-reproducible
 ///   (`appbundle_is_byte_reproducible_across_time`).
 /// - `nsis` — **GATED**: `makensis` honors `SOURCE_DATE_EPOCH`, byte-
@@ -542,6 +547,7 @@ const ALWAYS_ON_STAGES: &[StageId] = &[
     StageId::Source,
     StageId::Upx,
     StageId::Archive,
+    StageId::InstallScript,
     StageId::Sbom,
     StageId::Sign,
     StageId::Checksum,

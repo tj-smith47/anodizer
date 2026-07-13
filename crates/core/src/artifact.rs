@@ -23,6 +23,7 @@ pub enum ArtifactKind {
     SourceArchive,
     Makeself,
     AppImage,
+    InstallScript,
 
     // --- Linux packages ---
     LinuxPackage,
@@ -89,6 +90,7 @@ impl ArtifactKind {
             ArtifactKind::SourceArchive => "source_archive",
             ArtifactKind::Makeself => "makeself",
             ArtifactKind::AppImage => "appimage",
+            ArtifactKind::InstallScript => "install_script",
             ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Snap => "snap",
             ArtifactKind::PublishableSnapcraft => "publishable_snapcraft",
@@ -139,6 +141,7 @@ impl ArtifactKind {
             "source_archive" => Some(ArtifactKind::SourceArchive),
             "makeself" => Some(ArtifactKind::Makeself),
             "appimage" => Some(ArtifactKind::AppImage),
+            "install_script" => Some(ArtifactKind::InstallScript),
             "linux_package" => Some(ArtifactKind::LinuxPackage),
             "snap" => Some(ArtifactKind::Snap),
             "publishable_snapcraft" => Some(ArtifactKind::PublishableSnapcraft),
@@ -542,6 +545,7 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::UploadableFile,
         ArtifactKind::Makeself,
         ArtifactKind::AppImage,
+        ArtifactKind::InstallScript,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
@@ -576,6 +580,7 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::UploadableFile,
         ArtifactKind::Makeself,
         ArtifactKind::AppImage,
+        ArtifactKind::InstallScript,
         ArtifactKind::LinuxPackage,
         ArtifactKind::PublishableSnapcraft,
         ArtifactKind::Flatpak,
@@ -611,6 +616,7 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::SourceArchive,
         ArtifactKind::Makeself,
         ArtifactKind::AppImage,
+        ArtifactKind::InstallScript,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
@@ -648,6 +654,7 @@ pub fn primary_subject_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::SourceArchive,
         ArtifactKind::UploadableFile,
         ArtifactKind::Makeself,
+        ArtifactKind::InstallScript,
         ArtifactKind::AppImage,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
@@ -806,10 +813,11 @@ pub fn is_directory_bundle_artifact(artifact: &Artifact) -> bool {
 /// Artifact kinds the `ids:` filter always keeps — these are emitted for
 /// every release, not per-build, so a build-id filter has nothing to say
 /// about them.
-const ID_FILTER_ALWAYS_PASS: [ArtifactKind; 4] = [
+const ID_FILTER_ALWAYS_PASS: [ArtifactKind; 5] = [
     ArtifactKind::Checksum,
     ArtifactKind::SourceArchive,
     ArtifactKind::UploadableFile,
+    ArtifactKind::InstallScript,
     ArtifactKind::Metadata,
 ];
 
@@ -1063,6 +1071,7 @@ mod tests {
             SourceArchive,
             Makeself,
             AppImage,
+            InstallScript,
             LinuxPackage,
             Snap,
             PublishableSnapcraft,
@@ -1114,6 +1123,7 @@ mod tests {
             | ArtifactKind::SourceArchive
             | ArtifactKind::Makeself
             | ArtifactKind::AppImage
+            | ArtifactKind::InstallScript
             | ArtifactKind::LinuxPackage
             | ArtifactKind::Snap
             | ArtifactKind::PublishableSnapcraft
@@ -2354,6 +2364,7 @@ mod tests {
             ArtifactKind::SourceArchive,
             ArtifactKind::Makeself,
             ArtifactKind::AppImage,
+            ArtifactKind::InstallScript,
             ArtifactKind::LinuxPackage,
             ArtifactKind::Flatpak,
             ArtifactKind::SourceRpm,

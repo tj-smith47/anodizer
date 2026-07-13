@@ -237,6 +237,11 @@ const GATED_STAGES: &[GatedStage] = &[
     ),
     gated_stage!("sbom", Skip, anodizer_stage_sbom::env_requirements),
     gated_stage!("makeself", Skip, anodizer_stage_makeself::env_requirements),
+    gated_stage!(
+        "install-script",
+        Skip,
+        anodizer_stage_install_script::env_requirements
+    ),
     gated_stage!("upx", Skip, anodizer_stage_upx::env_requirements),
     gated_stage!("appimage", Skip, anodizer_stage_appimage::env_requirements),
     gated_stage!("docker", Selected, anodizer_stage_docker::env_requirements),
@@ -2012,7 +2017,14 @@ builds:
             "publish-only scope drifted from build_publish_only_pipeline"
         );
         for producer in [
-            "build", "nfpm", "srpm", "sbom", "makeself", "upx", "appimage",
+            "build",
+            "nfpm",
+            "srpm",
+            "sbom",
+            "makeself",
+            "install-script",
+            "upx",
+            "appimage",
         ] {
             assert!(
                 !publish_only.contains(producer),

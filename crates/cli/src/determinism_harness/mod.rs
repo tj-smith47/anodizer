@@ -91,6 +91,15 @@ pub enum StageId {
     Archive,
     Nfpm,
     Makeself,
+    /// `curl | sh` installer-script reproducibility probe.
+    ///
+    /// Drives the `anodizer_stage_install_script` crate, which derives its
+    /// case tables from configured release intent (via
+    /// `anodizer_core::installer::render_installer_cases`) and only writes a
+    /// text file — no external tool, no read of produced artifacts. It is
+    /// therefore byte-identical on every shard regardless of which binaries
+    /// that shard compiled, so it needs no gating tool and no build.
+    InstallScript,
     Snapcraft,
     Sbom,
     Sign,
@@ -237,6 +246,7 @@ impl StageId {
             StageId::Archive => "archive",
             StageId::Nfpm => "nfpm",
             StageId::Makeself => "makeself",
+            StageId::InstallScript => "install-script",
             StageId::Snapcraft => "snapcraft",
             StageId::Sbom => "sbom",
             StageId::Sign => "sign",
@@ -301,6 +311,9 @@ fn stage_requires_binary(stage: StageId) -> bool {
         // packaging; the source RPM ships a spec + source tarball, compiled
         // later on the target.)
         StageId::Source | StageId::Srpm | StageId::CargoPackage => false,
+        // The install-script derives its case tables from configured release
+        // intent (not from produced binaries), so it needs no compiled binary.
+        StageId::InstallScript => false,
         // `build` is itself the producer; when requested it is already kept
         // by `requested_names`, so its answer here is immaterial.
         StageId::Build => false,

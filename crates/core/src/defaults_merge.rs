@@ -165,6 +165,11 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
     {
         config.makeselfs = vec![d.clone()];
     }
+    if config.install_scripts.is_empty()
+        && let Some(ref d) = defaults.install_scripts
+    {
+        config.install_scripts = vec![d.clone()];
+    }
 
     // Option<Vec<T>> filled from a single defaults entry when None / empty.
     if config.docker_signs.as_ref().is_none_or(|v| v.is_empty())

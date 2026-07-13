@@ -25,6 +25,7 @@ members = [
     "crates/stage-notarize",
     "crates/stage-templatefiles",
     "crates/stage-makeself",
+    "crates/stage-install-script",
     "crates/stage-srpm",
     "crates/stage-sbom",
     "crates/stage-attest",
@@ -62,6 +63,7 @@ default-members = [
     "crates/stage-notarize",
     "crates/stage-templatefiles",
     "crates/stage-makeself",
+    "crates/stage-install-script",
     "crates/stage-srpm",
     "crates/stage-sbom",
     "crates/stage-attest",
@@ -123,6 +125,7 @@ anodizer-stage-flatpak = { path = "crates/stage-flatpak", version = "0.18.0" }
 anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.18.0" }
 anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.18.0" }
 anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.18.0" }
+anodizer-stage-install-script = { path = "crates/stage-install-script", version = "0.18.0" }
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.18.0" }
 anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.18.0" }
 anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.18.0" }

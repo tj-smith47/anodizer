@@ -635,6 +635,23 @@ impl ChecksumConfig {
             .as_deref()
             .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
     }
+
+    /// Resolve the combined-checksums `name_template` for a crate, applying the
+    /// canonical precedence — the crate's own `checksum.name_template`, then the
+    /// global `defaults.checksum.name_template`, then [`Self::DEFAULT_NAME_TEMPLATE`].
+    ///
+    /// The single source of truth shared by the checksum stage (which writes the
+    /// file) and the install-script stage (which references it in the generated
+    /// `install.sh`), so the two can never derive different names.
+    pub fn resolve_combined_name_template<'a>(
+        crate_checksum: Option<&'a ChecksumConfig>,
+        global_checksum: Option<&'a ChecksumConfig>,
+    ) -> &'a str {
+        crate_checksum
+            .and_then(|c| c.name_template.as_deref())
+            .or_else(|| global_checksum.and_then(|c| c.name_template.as_deref()))
+            .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
+    }
 }
 
 // ---------------------------------------------------------------------------

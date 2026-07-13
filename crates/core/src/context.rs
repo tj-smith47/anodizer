@@ -58,6 +58,7 @@ const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
     "snapcraft",
     "nfpm",
     "makeself",
+    "install-script",
     "appimage",
     "flatpak",
     "srpm",
