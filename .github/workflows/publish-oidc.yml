@@ -1,0 +1,102 @@
+name: Publish OIDC
+
+# The OIDC submitters (npm, pypi, cargo) run here, split out of release.yml into
+# a standalone workflow_dispatch workflow. crates.io AND PyPI Trusted Publishing
+# reject the `workflow_run` event release.yml fires on ("does not support the
+# workflow_run event trigger" — the OIDC event_name claim is fixed per
+# workflow-run, so no job inside release.yml can present an accepted trigger).
+# workflow_dispatch is on their accepted list (push / release / workflow_dispatch),
+# so the id-token minted here carries an event_name the registries honour.
+# release.yml's `dispatch-oidc` job invokes this after its `release` job succeeds
+# and polls it to a verdict, so the release run still reflects this leg's result.
+#
+# Registry Trusted-Publisher configs must therefore name THIS file
+# (`publish-oidc.yml`) as their workflow, not release.yml — the OIDC token's
+# `workflow` claim comes from the file that actually runs the publish.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to publish (the tagged bump commit)."
+        required: true
+        default: ""
+      dist_run_id:
+        description: "Run id whose preserved dist-* artifacts to download. The Release run that built them (its own github.run_id on a fresh cut)."
+        required: true
+        default: ""
+      publish_from_artifact:
+        description: "anodizer binary artifact to install the publisher from (resolve-release-target's publish_from_artifact; normally anodizer-linux)."
+        required: false
+        default: "anodizer-linux"
+      publish_version:
+        description: "anodizer version to install (resolve-release-target's publish_version; normally latest)."
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same hosted publisher set as release.yml's env.HOSTED_PUBLISHERS. Held
+  # byte-equal to that copy by audit-workflow-lockstep.sh (no cross-file GHA
+  # constant exists): the main release job --skip=s this set, this job
+  # --publishers=es it — the two selectors must stay exact complements.
+  HOSTED_PUBLISHERS: npm,pypi,cargo
+  # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
+  # runners that don't set init.defaultBranch; pin it via git's env-config so the
+  # hint never fires (binds every git invocation regardless of HOME or global config).
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: master
+
+jobs:
+  publish-oidc:
+    name: Publish OIDC (npm, PyPI, crates.io)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # id-token: write injects ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — the request
+    # env npm provenance, PyPI Trusted Publishing, AND crates.io Trusted
+    # Publishing all exchange for their short-lived upload token. No stored
+    # PYPI_TOKEN / CARGO_REGISTRY_TOKEN.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write # anodizer-action's build-provenance step writes artifact attestations to the GH attestations API
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.sha }}
+
+      - name: Download preserved dist artifacts
+        uses: ./.github/actions/download-preserved-dist
+        with:
+          run-id: ${{ inputs.dist_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run anodizer release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: ${{ inputs.publish_from_artifact }}
+          version: ${{ inputs.publish_version }}
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          auto-install: true
+          # No --skip: `--publishers npm,pypi,cargo` auto-determines the surface. The
+          # allowlist deselects every publisher outside the hosted set —
+          # including github-release (so the GitHub Release the main job owns is
+          # not re-touched), blob, snapcraft-publish, docker, docker-sign, and
+          # announce — and the sign stage self-skips BOTH cosign/GPG loops on
+          # this github-hosted runner: the detached-signature (`signs:`) loop
+          # because all of its consumers (github-release / blob / artifactory /
+          # uploads) are deselected, and the raw-binary (`binary_signs:`) loop
+          # because publish-only mode discards binary-sign output (it has no
+          # publish-time consumer — binaries are signed at build time on the
+          # main job). None of npm, pypi, or cargo consumes signing material, so
+          # this runner is never asked for cosign/GPG it does not carry.
+          args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -29,12 +29,16 @@ CI (master, success)  ──or──  workflow_dispatch
         │              and uploads its hermetic dist-* artifact.
         ▼
   release (publish)    download + merge all 4 shards' preserved dist →
-        │              release --publish-only --skip=npm,pypi. Ships the PROVEN
-        │              bytes; never recompiles. Runs every non-OIDC publisher.
+        │              release --publish-only --skip=npm,pypi,cargo. Ships the
+        │              PROVEN bytes; never recompiles. Runs every non-OIDC publisher.
         ▼
-  publish-oidc         release --publish-only --publishers npm,pypi, on a
-                       github-hosted runner so the GitHub Actions OIDC identity
-                       is accepted: npm provenance + PyPI Trusted Publishing.
+  dispatch-oidc        gh workflow run publish-oidc.yml (+ wait for its verdict).
+        │              release.yml fires on workflow_run, which crates.io/PyPI
+        │              Trusted Publishing REJECT; dispatch hops onto an accepted
+        ▼              trigger without tainting the OIDC event_name claim.
+  publish-oidc.yml     release --publish-only --publishers npm,pypi,cargo, on a
+  (workflow_dispatch)  github-hosted runner so the GitHub Actions OIDC identity is
+                       accepted: npm provenance + PyPI + crates.io Trusted Publishing.
 ```
 
 The release job **publishes the shards' preserved dist — it never rebuilds.** An artifact ships only if a determinism shard produced it: the stage list that the shards validate is also the produce filter.
@@ -145,7 +149,7 @@ A reusable workflow fans the determinism harness across four shards (one per hos
 
 ### 4. `release` — publish the proven bytes
 
-The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi` peels the OIDC publishers onto the dedicated job below.
+The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi,cargo` peels the OIDC publishers onto the standalone workflow dispatched below.
 
 ```yaml
   release:
@@ -172,9 +176,8 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
           auto-install: true
           download-dist: true        # merge all dist-* shards
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --publish-only --skip=npm,pypi
+          args: release --publish-only --skip=npm,pypi,cargo
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           # …the same publish-secret env block the preflight gate validated…
@@ -182,41 +185,63 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
 
 There is **no workflow-side rollback step**: `anodizer release` executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process — rolling back the tag and bump by default, auto-degrading to `hold` once a one-way-door publisher has landed.
 
-### 5. `publish-oidc` — OIDC publishers on a hosted runner
+### 5. `dispatch-oidc` → `publish-oidc.yml` — OIDC publishers on a hosted runner
 
-Two publishers authenticate from a GitHub Actions OIDC identity that the registry only honours from a github-hosted runner: **npm** provenance (minted from the id-token; a self-hosted runner 422s and degrades to a non-provenance publish) and **pypi** [Trusted Publishing](@/docs/publish/pypi.md) (`auth: oidc` exchanges the id-token for a short-lived upload token — no stored `PYPI_TOKEN`). The main publish skips both; this job runs them on `ubuntu-latest` with `id-token: write`, consuming the same preserved dist. Both selectors interpolate one `HOSTED_PUBLISHERS` env value, so `--skip` and `--publishers` stay exact complements.
+Three publishers authenticate from a GitHub Actions OIDC identity that the registry only honours from a github-hosted runner: **npm** provenance (minted from the id-token; a self-hosted runner 422s and degrades to a non-provenance publish), **pypi** [Trusted Publishing](@/docs/publish/pypi.md), and **cargo** [crates.io Trusted Publishing](@/docs/publish/crates-io.md#trusted-publishing-oidc) (`auth: oidc` exchanges the id-token for a short-lived upload token — no stored `PYPI_TOKEN` / `CARGO_REGISTRY_TOKEN`). The main publish skips all three.
+
+These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted Publishing accept only `push`, `release`, and `workflow_dispatch` — they **reject the `workflow_run` event** `release.yml` fires on (`400 "does not support the workflow_run event trigger"`), and the OIDC `event_name` claim is fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger. So the OIDC publishers live in a standalone **`publish-oidc.yml`** (`on: workflow_dispatch`), and a small `dispatch-oidc` job triggers it via the Actions API and waits on its verdict — the release run still reflects the OIDC leg's pass/fail. A reusable `workflow_call` workflow would not work either: it inherits the caller's `workflow_run` event.
 
 ```yaml
-  publish-oidc:
-    name: Publish OIDC (npm provenance + PyPI Trusted Publishing)
+  # In release.yml: dispatch the standalone workflow and block on its result.
+  dispatch-oidc:
+    name: Dispatch OIDC publish
     needs: [tag, release]
-    # always() defeats GitHub's skipped-need propagation (a re-publish dispatch
-    # skips determinism-check); the explicit result check keeps it gated on a
-    # real publish.
+    # always() + explicit result check: gated on a real publish, not skipped-need
+    # propagation. Byte-equal to advance-master's if: (audit-workflow-lockstep.sh).
     if: ${{ always() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write        # dispatch publish-oidc.yml via the Actions API
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/dispatch-and-wait
+        with:
+          workflow: publish-oidc.yml
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          inputs: |
+            sha=${{ needs.tag.outputs.sha }}
+            dist_run_id=${{ needs.tag.outputs.dist_run_id || github.run_id }}
+```
+
+```yaml
+  # In publish-oidc.yml: on: workflow_dispatch — an accepted Trusted-Publishing trigger.
+  publish-oidc:
+    name: Publish OIDC (npm, PyPI, crates.io)
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.sha }}
+      - uses: actions/checkout@v7
+        with: { ref: ${{ inputs.sha }} }
+      - uses: ./.github/actions/download-preserved-dist
+        with: { run-id: ${{ inputs.dist_run_id }} }
       - uses: tj-smith47/anodizer-action@v1
         with:
-          download-dist: true
           auto-install: true
-          # --publishers npm,pypi auto-determines the surface: it deselects
-          # every publisher outside the hosted set (including github-release)
-          # and self-skips the sign loops, so this runner is never asked for
-          # cosign/GPG material — neither npm nor pypi consumes it.
-          args: release --publish-only --publishers npm,pypi
+          # --publishers npm,pypi,cargo auto-determines the surface: it deselects
+          # every publisher outside the hosted set (including github-release) and
+          # self-skips the sign loops, so this runner is never asked for cosign/GPG
+          # material — none of npm, pypi, cargo consumes it.
+          args: release --publish-only --publishers npm,pypi,cargo
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi under auth: oidc needs no token
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
 ```
+
+> **`dist_run_id` on a fresh cut.** When the tag is freshly minted, `dist_run_id` is empty and the preserved `dist-*` artifacts live under the release run's own `github.run_id` — so `release.yml` passes `dist_run_id || github.run_id`. The dispatched run has a different id and cannot fall back on its own; the caller must hand it the right run to download from.
 
 ## The version-bump model (consumer level)
 
@@ -267,7 +292,7 @@ The full precedence table, the `Cargo.toml`-ahead guard, and every `tag:` config
 | Version decision | `tag` | One commit-driven bump + atomic push; downstream gates on `tagged` |
 | Reproducibility | `determinism-check` | Prove every byte is reproducible across hosts before any of it ships |
 | Publishing | `release` | Ship the **proven** bytes; in-process `on_failure` policy handles partial failure |
-| OIDC publishers (npm provenance, PyPI Trusted Publishing) | `publish-oidc` | GitHub Actions OIDC identity only accepted on a github-hosted runner |
+| OIDC publishers (npm provenance, PyPI + crates.io Trusted Publishing) | `dispatch-oidc` → `publish-oidc.yml` | crates.io/PyPI reject `workflow_run`, so a standalone `workflow_dispatch` workflow runs them on an accepted trigger + github-hosted runner |
 
 For the lighter-weight shapes — single-crate tag-push, lockstep workspace, per-crate fan-out — see [Release Workflow Strategies](@/docs/ci/release-workflows.md), which presents a decision tree and a canonical YAML per shape.
 

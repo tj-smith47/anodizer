@@ -418,73 +418,53 @@ jobs:
             dist/run-*/determinism.json
           if-no-files-found: error
 
-  # The OIDC publishers (npm, pypi, cargo) are peeled off the self-hosted
-  # `release` job onto this github-hosted one. All authenticate from a GitHub
-  # Actions OIDC identity the registry only honours off a github-hosted runner:
-  # npm provenance is minted from the id-token (and 422s on the self-hosted
-  # arc-anodizer runner, where anodizer degrades to a non-provenance publish),
-  # and PyPI + crates.io Trusted Publishing (auth: oidc) exchange the id-token
-  # for a short-lived upload token — no stored PYPI_TOKEN or CARGO_REGISTRY_TOKEN.
-  # Running them here, on ubuntu-latest with `id-token: write`, lets each carry
-  # its OIDC attestation while the main publish stays on arc-anodizer (which the
-  # determinism / blob / uploads legs require). It consumes the same preserved
-  # `dist-*` artifacts the main job used (npm optional-deps mode embeds the built
-  # platform binaries; the pypi wheels are built from them here).
-  publish-oidc:
-    name: Publish OIDC (npm, PyPI, crates.io)
+  # The OIDC publishers (npm, pypi, cargo) run in a SEPARATE workflow_dispatch
+  # workflow (publish-oidc.yml), not here. crates.io AND PyPI Trusted Publishing
+  # reject the `workflow_run` event this workflow fires on: the OIDC event_name
+  # claim is fixed per workflow-run, so no job inside a workflow_run-triggered
+  # workflow can present the push/release/workflow_dispatch trigger those
+  # registries require. This job dispatches publish-oidc.yml (an accepted
+  # trigger — workflow_dispatch runs are exempt from the GITHUB_TOKEN recursion
+  # block and always create a run, with their OWN clean event_name claim) after
+  # `release` succeeds, and polls it to a verdict so the release run still
+  # reflects the OIDC result. The preserved dist and OIDC identity live in
+  # publish-oidc.yml; this job only dispatches the tag context and waits.
+  dispatch-oidc:
+    name: Dispatch OIDC publish
     needs: [tag, release]
     # always() defeats GitHub's skipped-need propagation: a re-publish /
     # skip_determinism dispatch skips determinism-check, and without always()
-    # this job is auto-skipped even when `release` succeeded — which silently
-    # dropped npm from the release set since 0.12.3. The explicit
-    # `&& result == 'success'` keeps it gated on a real publish.
+    # this job is auto-skipped even when `release` succeeded — which would
+    # silently drop npm/pypi/cargo from the release set. The explicit
+    # `&& result == 'success'` keeps it gated on a real publish. Held byte-equal
+    # to advance-master's if: by audit-workflow-lockstep.sh.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # id-token: write injects ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — the request
-    # env npm provenance AND PyPI Trusted Publishing (auth: oidc) both exchange
-    # for their upload attestation. No stored PYPI_TOKEN in the env below.
+    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
-      attestations: write # anodizer-action's build-provenance step writes artifact attestations to the GH attestations API
+      actions: write # dispatch publish-oidc.yml via the Actions API
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.sha }}
+          fetch-depth: 1
 
-      - name: Download preserved dist artifacts
-        uses: ./.github/actions/download-preserved-dist
+      - name: Dispatch publish-oidc.yml and wait for its verdict
+        uses: ./.github/actions/dispatch-and-wait
         with:
-          run-id: ${{ needs.tag.outputs.dist_run_id }}
+          workflow: publish-oidc.yml
+          ref: master
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run anodizer release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          from-artifact: ${{ needs.tag.outputs.publish_from_artifact }}
-          version: ${{ needs.tag.outputs.publish_version }}
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          auto-install: true
-          # No --skip: `--publishers npm,pypi,cargo` auto-determines the surface. The
-          # allowlist deselects every publisher outside the hosted set —
-          # including github-release (so the GitHub Release the main job owns is
-          # not re-touched), blob, snapcraft-publish, docker, docker-sign, and
-          # announce — and the sign stage self-skips BOTH cosign/GPG loops on
-          # this github-hosted runner: the detached-signature (`signs:`) loop
-          # because all of its consumers (github-release / blob / artifactory /
-          # uploads) are deselected, and the raw-binary (`binary_signs:`) loop
-          # because publish-only mode discards binary-sign output (it has no
-          # publish-time consumer — binaries are signed at build time on the
-          # main job). None of npm, pypi, or cargo consumes signing material, so
-          # this runner is never asked for cosign/GPG it does not carry.
-          args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Fresh-cut path leaves dist_run_id empty and the preserved dist-*
+          # artifacts live under THIS release run's github.run_id (the reusable
+          # determinism-check runs as part of this run). The dispatched child
+          # has a different run_id and cannot fall back — pass it explicitly.
+          inputs: |
+            sha=${{ needs.tag.outputs.sha }}
+            dist_run_id=${{ needs.tag.outputs.dist_run_id || github.run_id }}
+            publish_from_artifact=${{ needs.tag.outputs.publish_from_artifact }}
+            publish_version=${{ needs.tag.outputs.publish_version }}
 
   # Fast-forward master onto the published bump commit once publish succeeds.
   # tag pushed the tag (not the branch); the bump commit is reachable via the

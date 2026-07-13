@@ -93,7 +93,7 @@ anodizer release
 
 ### Trusted Publishing (OIDC)
 
-anodizer publishes to crates.io without a stored `CARGO_REGISTRY_TOKEN` by exchanging a GitHub Actions OIDC identity for a short-lived crates.io token — the same Trusted Publishing model anodizer offers for PyPI. Register a Trusted Publisher for each crate on crates.io (Settings → Trusted Publishing) with this repository and workflow, grant the job `id-token: write`, and set `auth: oidc`:
+anodizer publishes to crates.io without a stored `CARGO_REGISTRY_TOKEN` by exchanging a GitHub Actions OIDC identity for a short-lived crates.io token — the same Trusted Publishing model anodizer offers for PyPI. Register a Trusted Publisher for each crate on crates.io (Settings → Trusted Publishing) with this repository and the **workflow file that actually runs the publish**, grant the job `id-token: write`, and set `auth: oidc`:
 
 ```yaml
 publish:
@@ -102,11 +102,24 @@ publish:
 ```
 
 ```yaml
-# .github/workflows/release.yml
+# publish-oidc.yml — the workflow named in the crates.io Trusted-Publisher config
 permissions:
   id-token: write   # required — lets the runner request the OIDC id-token
-  contents: write
+  contents: read
 ```
+
+**The publish must run on an accepted trigger.** crates.io Trusted Publishing accepts
+only `push`, `release`, and `workflow_dispatch` — it **rejects `workflow_run`** with
+`400 "does not support the workflow_run event trigger"`. The OIDC `event_name` claim is
+fixed per workflow-run, so if your release workflow is triggered by `workflow_run` (as
+anodizer's `release.yml` is, after CI), the cargo publish cannot run inside it. Anodizer
+solves this by running the OIDC publishers from a standalone **`publish-oidc.yml`**
+(`on: workflow_dispatch`), which `release.yml` dispatches after its main publish and
+waits on. Register the Trusted Publisher against **`publish-oidc.yml`**, not
+`release.yml`. If your release workflow is `push`- or `release`-triggered, no split is
+needed — name that workflow directly. The same constraint applies to a reusable
+`workflow_call` workflow: it inherits the caller's event and cannot be a Trusted
+Publisher, so the OIDC publish must live in a standalone `workflow_dispatch` workflow.
 
 anodizer mints **one** token before the dependency-order publish loop, injects it into every `cargo publish` via `CARGO_REGISTRY_TOKEN` (never on the command line), and revokes it after the loop — the token is workspace-scoped, so a single mint authorizes every crate whose Trusted-Publisher config matches this repository/workflow. A minted token also self-expires in ~30 minutes, so even a failed revoke leaves nothing long-lived behind. Trusted Publishing targets crates.io only; an `oidc` block against a custom `registry:`/`index:` is a config error — use a token there.
 

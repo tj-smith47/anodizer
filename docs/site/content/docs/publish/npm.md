@@ -262,8 +262,14 @@ Configure the Trusted Publisher once per package: **npmjs.com → the package �
 |-------|-------|
 | Organization or user | `tj-smith47` |
 | Repository | `anodizer` |
-| Workflow filename | `release.yml` |
+| Workflow filename | `publish-oidc.yml` |
 | Environment | *(leave blank unless your job uses one)* |
+
+The Trusted Publisher matches the **file that actually runs the publish**. Anodizer's
+own release runs the OIDC publishers from a standalone `publish-oidc.yml`
+(see [below](#provenance-needs-a-github-hosted-runner)), so that is the filename to
+register — not `release.yml`, which only dispatches it. Name whichever workflow file
+in your repo invokes `anodizer release --publish-only --publishers npm`.
 
 Once configured, anodizer detects the OIDC context (the GitHub-injected `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars), writes a process-private `.npmrc` carrying **no token line**, and threads those OIDC request vars into the `npm publish` subprocess so the npm CLI performs the exchange itself. No secret is read or written.
 
@@ -287,27 +293,49 @@ failing the release. The package still ships; only the provenance attestation is
 
 To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
 exactly this — and peels **every** publisher that authenticates from a GitHub Actions
-OIDC identity onto that one hosted job: npm (provenance) and pypi ([Trusted
-Publishing](./pypi.md#trusted-publishing-oidc)). The main publish runs on a self-hosted
-runner with `--skip=npm,pypi`, and a small github-hosted job runs the complementary
-`--publishers npm,pypi`:
+OIDC identity onto one hosted workflow: npm (provenance), pypi ([Trusted
+Publishing](./pypi.md#trusted-publishing-oidc)), and cargo ([crates.io Trusted
+Publishing](./crates-io.md#trusted-publishing-oidc)). The main publish runs on a
+self-hosted runner with `--skip=npm,pypi,cargo`; the complementary
+`--publishers npm,pypi,cargo` runs in a **standalone `publish-oidc.yml`**.
+
+That workflow is standalone (not an inline job, not a reusable `workflow_call`) for a
+hard reason: crates.io and PyPI Trusted Publishing **reject the `workflow_run` event**
+that anodizer's `release.yml` fires on (`"does not support the workflow_run event
+trigger — use push, release, or workflow_dispatch"`). The OIDC `event_name` claim is
+fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger.
+`publish-oidc.yml` is `on: workflow_dispatch` — an accepted trigger — and `release.yml`
+dispatches it after the main publish succeeds, then waits on its verdict. npm alone is
+unaffected (its provenance only *records* the trigger, never gates on it), but it rides
+the same hosted workflow so a single job owns the whole OIDC surface.
 
 ```yaml
+# release.yml — on: workflow_run (after CI)
 jobs:
   publish:                       # self-hosted: everything except the OIDC publishers
     runs-on: self-hosted
     steps:
-      - run: anodizer release --publish-only --skip=npm,pypi
+      - run: anodizer release --publish-only --skip=npm,pypi,cargo
 
-  publish-oidc:                  # github-hosted: npm provenance + PyPI Trusted Publishing
+  dispatch-oidc:                 # dispatches the standalone OIDC workflow and waits
     needs: publish
+    permissions:
+      actions: write             # dispatch publish-oidc.yml via the Actions API
+    steps:
+      - run: gh workflow run publish-oidc.yml --ref master -f sha=<tagged-sha> ...
+```
+
+```yaml
+# publish-oidc.yml — on: workflow_dispatch (an accepted Trusted-Publishing trigger)
+jobs:
+  publish-oidc:                  # github-hosted: npm provenance + PyPI + crates.io TP
     runs-on: ubuntu-latest
     permissions:
-      id-token: write            # mints the npm provenance + PyPI upload token
+      id-token: write            # mints npm provenance + PyPI + crates.io upload tokens
     env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi under auth: oidc needs no token
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
     steps:
-      - run: anodizer release --publish-only --publishers npm,pypi
+      - run: anodizer release --publish-only --publishers npm,pypi,cargo
 ```
 
 The `--publishers`/`--skip` selectors that make this split possible are described in

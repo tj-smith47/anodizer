@@ -20,12 +20,15 @@
 #   5. CI-bootstrap artifact: every literal `from-artifact:` and the
 #      resolve-release-target default equal the producer's upload name, AND
 #      every literal `artifact-workflow:` names the producer workflow's own
-#      filename (the NAME and the producing FILE are both load-bearing).
-#   6. Post-release gate: publish-oidc and advance-master share one success if:.
+#      filename (the NAME and the producing FILE are both load-bearing). Scans
+#      release.yml AND publish-oidc.yml (both install anodizer from the CI build).
+#   6. Post-release gate: dispatch-oidc and advance-master share one success if:.
 #   7. Cross-OS suite fallback: the go-task-less fallback in test-os-suite.sh
 #      reproduces every cargo pass of the Taskfile `test` target verbatim.
-#   8. skip_publishers prose: the static input description still names every
-#      HOSTED_PUBLISHERS token (a change to the hosted set can't leave it stale).
+#   8. skip_publishers prose + hosted set: the static input description still
+#      names every HOSTED_PUBLISHERS token, AND publish-oidc.yml's copy of
+#      HOSTED_PUBLISHERS stays byte-equal to release.yml's (the --skip and
+#      --publishers selectors must remain exact complements across the split).
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -34,6 +37,7 @@ cd "$ROOT"
 command -v yq >/dev/null 2>&1 || { echo "audit-workflow-lockstep: yq is required but not found on PATH." >&2; exit 2; }
 
 REL=".github/workflows/release.yml"
+OIDC=".github/workflows/publish-oidc.yml"
 DET=".github/workflows/determinism.yml"
 CI=".github/workflows/ci.yml"
 NIGHTLY=".github/workflows/nightly.yml"
@@ -41,7 +45,7 @@ RESOLVE=".github/actions/resolve-release-target/action.yml"
 SUITE=".claude/scripts/test-os-suite.sh"
 TASKFILE="Taskfile.yml"
 
-for f in "$REL" "$DET" "$CI" "$NIGHTLY" "$RESOLVE" "$SUITE" "$TASKFILE"; do
+for f in "$REL" "$OIDC" "$DET" "$CI" "$NIGHTLY" "$RESOLVE" "$SUITE" "$TASKFILE"; do
     [[ -f "$f" ]] || { echo "audit-workflow-lockstep: FAIL — ${f} not found." >&2; exit 2; }
 done
 
@@ -119,7 +123,7 @@ producer=$(yqr -r '.jobs.test.steps[] | select(.name == "Upload release binary")
 if [[ -z "$producer" || "$producer" == "null" ]]; then
     fail "bootstrap artifact: could not read the producer upload name from ${CI}."
 else
-    for f in "$CI" "$REL"; do
+    for f in "$CI" "$REL" "$OIDC"; do
         while IFS= read -r val; do
             [[ -z "$val" ]] && continue
             # A GHA expression (e.g. the resolve output) is not a literal name.
@@ -145,7 +149,7 @@ fi
 # workflow NAME, not the filename, so a file rename is not otherwise a loud
 # failure — a stale artifact-workflow 404s only at post-tag publish time.
 producer_wf=$(basename "$CI")
-for f in "$CI" "$REL"; do
+for f in "$CI" "$REL" "$OIDC"; do
     while IFS= read -r wf; do
         [[ -z "$wf" ]] && continue
         # A GHA expression is not a literal filename.
@@ -160,10 +164,10 @@ for f in "$CI" "$REL"; do
 done
 
 # --- 6. Post-release gate --------------------------------------------------
-oidc_if=$(yqr -r '.jobs["publish-oidc"].if' "$REL")
+disp_if=$(yqr -r '.jobs["dispatch-oidc"].if' "$REL")
 adv_if=$(yqr -r '.jobs["advance-master"].if' "$REL")
-if [[ "$oidc_if" != "$adv_if" ]]; then
-    fail "post-release gate drift: publish-oidc if [${oidc_if}] != advance-master if [${adv_if}]."
+if [[ "$disp_if" != "$adv_if" ]]; then
+    fail "post-release gate drift: dispatch-oidc if [${disp_if}] != advance-master if [${adv_if}]."
 fi
 
 # --- 7. Cross-OS suite fallback parity -------------------------------------
@@ -198,6 +202,17 @@ else
             *) fail "skip_publishers prose drift: description does not name hosted publisher '${pub}' (HOSTED_PUBLISHERS='${hosted}') — the always-skipped set changed but the operator-facing prose is stale." ;;
         esac
     done
+fi
+
+# The main release job --skip=s HOSTED_PUBLISHERS; publish-oidc.yml --publishers=es
+# the same set. GHA has no cross-file constant, so the two copies must stay
+# byte-equal or the selectors stop being exact complements (a mismatch
+# double-publishes or silently drops a hosted publisher).
+oidc_hosted=$(yqr -r '.env.HOSTED_PUBLISHERS' "$OIDC")
+if [[ -z "$oidc_hosted" || "$oidc_hosted" == "null" ]]; then
+    fail "hosted set: could not read env.HOSTED_PUBLISHERS from ${OIDC}."
+elif [[ "$oidc_hosted" != "$hosted" ]]; then
+    fail "hosted set drift: ${OIDC} HOSTED_PUBLISHERS [${oidc_hosted}] != ${REL} [${hosted}] — the main job's --skip set and the OIDC job's --publishers set are no longer complements."
 fi
 
 if [[ -n "$failures" ]]; then

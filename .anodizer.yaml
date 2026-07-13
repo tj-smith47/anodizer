@@ -126,8 +126,10 @@ defaults:
       required: true
       retain_on_rollback: true
       # crates.io Trusted Publishing: exchange the Actions id-token for a
-      # short-lived crates.io token (no stored CARGO_REGISTRY_TOKEN). Ambient
-      # only on the github-hosted publish-oidc job, where cargo now runs.
+      # short-lived crates.io token (no stored CARGO_REGISTRY_TOKEN). Runs only
+      # on the github-hosted, workflow_dispatch-triggered publish-oidc.yml —
+      # crates.io TP REJECTS release.yml's workflow_run event, and its
+      # Trusted-Publisher config names publish-oidc.yml, not release.yml.
       auth: oidc
     on_error:
       # anodizer notify --raw: --raw skips Tera rendering so the
@@ -1335,8 +1337,10 @@ npms:
 # Self-dogfood: anodizer ships as pip-installable per-platform wheels so the
 # wheel-repackage publisher runs on a live PyPI release, not only in tests.
 # summary/homepage/license derive from `metadata:`; only the declarative PyPI
-# surface is named here. auth: oidc uses PyPI Trusted Publishing (the release
-# job already grants id-token: write) — no stored PYPI_TOKEN secret.
+# surface is named here. auth: oidc uses PyPI Trusted Publishing — no stored
+# PYPI_TOKEN secret. Runs on the github-hosted, workflow_dispatch-triggered
+# publish-oidc.yml (id-token: write there): PyPI TP, like crates.io, REJECTS
+# release.yml's workflow_run event, so the TP config names publish-oidc.yml.
 pypis:
   - name: anodizer
     auth: oidc
