@@ -778,11 +778,12 @@ fn run_cargo_publish_simulation_with(
         })
         .collect();
 
-    // ---- (1) partial-publish abort (cheap, HTTP-only) --------------------
+    // ---- (1) partial-publish probe (cheap, HTTP-only) --------------------
     if check_partial_publish(&to_publish, index_query, log, report) {
-        // A mixed index state (or an Unknown transport error) already pushed a
-        // blocker; the dependent build can't be simulated meaningfully against
-        // an inconsistent registry, so stop here.
+        // Only an Unknown transport error stops here — the registry state
+        // couldn't be determined, so a resume can't be reasoned about safely.
+        // A resumable mixed state warns and falls through to the completeness
+        // guard (1b) and dry-run (2), which decide it precisely.
         return;
     }
 
@@ -840,20 +841,25 @@ fn check_publish_set_completeness(
     }
 }
 
-/// (1) PARTIAL-PUBLISH ABORT.
+/// (1) PARTIAL-PUBLISH PROBE.
 ///
 /// Query each to-be-published crate's already-published state at its target
 /// version and classify the set:
-/// - MIXED (≥1 Published AND ≥1 Clean at the same V) → push a blocker naming
-///   an example of each, and return `true` (caller stops). crates.io versions
-///   are immutable, so a half-published version can never complete.
+/// - MIXED (≥1 Published AND ≥1 Clean at the same V) → a RESUMABLE partial
+///   publish: push a warning and return `false` (proceed). The Clean crates are
+///   the ones this release publishes; the dep-completeness guard (1b) and the
+///   dry-run (2) verify the resume actually completes, blocking only on a
+///   genuine content conflict (a stale published dep surfaces as a dry-run
+///   CompileError). Aborting here would strand every recoverable resume behind
+///   a spurious version bump.
 /// - any Unknown (transport error) → push a blocker (don't silently pass) and
-///   return `true`.
+///   return `true`. The registry state is undetermined, so a resume can't be
+///   reasoned about safely.
 /// - all-Clean → fresh release; return `false` (proceed to dry-run).
 /// - all-Published → idempotent (the real publish would skip cargo); return
 ///   `false` (nothing to simulate, no abort).
 ///
-/// Returns `true` when a blocker was pushed and the caller should stop.
+/// Returns `true` only when a blocker was pushed (Unknown) and the caller stops.
 fn check_partial_publish(
     to_publish: &[(String, String)],
     index_query: &IndexQuery<'_>,
@@ -899,13 +905,25 @@ fn check_partial_publish(
 
     match (first_published, first_clean) {
         (Some((pub_name, pub_ver)), Some((clean_name, clean_ver))) => {
-            report.blockers.push(format!(
+            // A mixed set is a RESUMABLE partial publish, not a dead end. The
+            // Clean crates are exactly the ones this release publishes; the
+            // Published ones skip idempotently. Whether the resume truly
+            // completes depends on the published crates' content matching what
+            // the Clean dependents build against — and that is precisely what
+            // the dep-completeness guard (1b) and the `cargo publish --dry-run`
+            // simulation (2) verify. Aborting here would strand every recoverable
+            // partial publish (e.g. a re-run that only adds a crate the first
+            // attempt missed from the publish set) behind a spurious version
+            // bump. Warn and defer to the precise checks; only a genuine content
+            // conflict — a Clean dependent that cannot build against a stale
+            // published dep — blocks, via the dry-run's CompileError.
+            report.warnings.push(format!(
                 "crates.io version {pub_ver} is partially published ({pub_name}@{pub_ver} \
-                 exists, {clean_name}@{clean_ver} does not); crates.io versions are \
-                 immutable, so this release cannot complete consistently — bump to a new \
-                 version"
+                 exists, {clean_name}@{clean_ver} does not) — resuming: the published crates \
+                 skip idempotently and the remainder complete the version. Verifying \
+                 completability via publish-simulation"
             ));
-            true
+            false
         }
         // all-Published → idempotent skip; all-Clean → fresh; either proceeds.
         _ => false,
@@ -2435,14 +2453,17 @@ mod tests {
                 .build()
         }
 
-        // ---- (1) partial-publish abort ----------------------------------
+        // ---- (1) partial-publish probe (resumable) ----------------------
 
         #[test]
-        fn partial_publish_mixed_state_aborts() {
+        fn partial_publish_mixed_state_resumes_when_dry_run_ok() {
+            // core already on the index, stage-blob not — a RESUMABLE partial
+            // publish (the exact v0.19.0 case: 30 libs published, the CLI +
+            // one stage crate still Clean, byte-identical content). The mixed
+            // state must WARN and defer to the dry-run, not abort.
             let mut ctx = two_crate_ctx();
             let log = quiet_log();
             let mut report = PreflightReport::new();
-            // core already on the index, stage-blob not — the exact poison.
             let index = |krate: &str, _v: &str| {
                 if krate == "anodizer-core" {
                     PublisherState::Published
@@ -2450,24 +2471,64 @@ mod tests {
                     PublisherState::Clean
                 }
             };
-            // Dry-run must never run once partial-publish aborts.
+            // The Clean dependent builds fine against the published dep → the
+            // resume completes. (Published crates are skipped by the dry-run.)
+            let ran_for = std::cell::RefCell::new(Vec::<String>::new());
             let dry = |krate: &str| -> DryRunOutcome {
-                panic!("dry-run must not run on a mixed index state (ran for {krate})")
+                ran_for.borrow_mut().push(krate.to_string());
+                DryRunOutcome::Ok
             };
             run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
 
-            assert_eq!(report.blockers.len(), 1, "exactly one partial blocker");
-            let b = &report.blockers[0];
-            assert!(b.contains("partially published"), "blocker: {b}");
             assert!(
-                b.contains("anodizer-core"),
-                "names the published crate: {b}"
+                report.blockers.is_empty(),
+                "a resumable partial publish must not block: {:?}",
+                report.blockers
+            );
+            assert_eq!(report.warnings.len(), 1, "one resume warning");
+            let w = &report.warnings[0];
+            assert!(w.contains("partially published"), "warns: {w}");
+            assert!(w.contains("resuming"), "explains the resume: {w}");
+            assert_eq!(
+                *ran_for.borrow(),
+                vec!["anodizer-stage-blob"],
+                "dry-run verified only the Clean crate (proceeded past the probe)"
+            );
+        }
+
+        #[test]
+        fn partial_publish_mixed_state_blocks_on_stale_dep() {
+            // Same mixed state, but the Clean dependent cannot build against the
+            // stale published dep — the genuine v0.11.3 poison. The dry-run's
+            // CompileError (not the coarse partial-publish probe) is what blocks.
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |krate: &str, _v: &str| {
+                if krate == "anodizer-core" {
+                    PublisherState::Published
+                } else {
+                    PublisherState::Clean
+                }
+            };
+            let dry = |_krate: &str| {
+                DryRunOutcome::CompileError("anodizer-core 0.19.0 API mismatch".into())
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+
+            assert_eq!(
+                report.blockers.len(),
+                1,
+                "stale dep is caught by the dry-run"
             );
             assert!(
-                b.contains("anodizer-stage-blob"),
-                "names the clean crate: {b}"
+                report
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("partially published")),
+                "still warns about the partial state: {:?}",
+                report.warnings
             );
-            assert!(b.contains("bump to a new version"), "actionable: {b}");
         }
 
         #[test]
@@ -2924,7 +2985,9 @@ mod tests {
         fn partial_publish_non_index_state_is_treated_as_published() {
             // crates.io never yields InModeration, but the partial-publish
             // classifier must treat ANY non-Clean/non-Unknown state as
-            // "present" so a mixed set (one present, one Clean) still aborts.
+            // "present" so it still forms a mixed set (one present, one Clean).
+            // The mixed set is a resumable partial publish: it warns and defers
+            // to the dry-run rather than aborting.
             let mut ctx = two_crate_ctx();
             let log = quiet_log();
             let mut report = PreflightReport::new();
@@ -2937,16 +3000,21 @@ mod tests {
                     PublisherState::Clean
                 }
             };
-            let dry = |krate: &str| -> DryRunOutcome {
-                panic!("dry-run must not run once a mixed state aborts (ran for {krate})")
-            };
+            let dry = |_krate: &str| DryRunOutcome::Ok;
             run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
-            assert_eq!(report.blockers.len(), 1, "mixed state aborts");
-            let b = &report.blockers[0];
-            assert!(b.contains("partially published"), "blocker: {b}");
             assert!(
-                b.contains("anodizer-core") && b.contains("anodizer-stage-blob"),
-                "names both crates: {b}"
+                report.blockers.is_empty(),
+                "the mixed set resumes, not aborts: {:?}",
+                report.blockers
+            );
+            let w = report
+                .warnings
+                .iter()
+                .find(|w| w.contains("partially published"))
+                .expect("warns about the partial state");
+            assert!(
+                w.contains("anodizer-core") && w.contains("anodizer-stage-blob"),
+                "names both crates: {w}"
             );
         }
 
