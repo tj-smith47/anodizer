@@ -54,13 +54,15 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Flatpak bundles
 - AppImage portable Linux applications
 - Makeself self-extracting archives
+- `curl | sh` install-script generation — a per-platform asset table derived from your build/archive config (no hand-maintained URLs to 404), with a checksum-verify gate
 - Source RPMs (.src.rpm)
 - Source archives with file filtering
 - SBOM generation (CycloneDX/SPDX)
-- Checksums with SHA-256, SHA-512, SHA3, BLAKE2b, BLAKE2s, BLAKE3, CRC32, MD5, and more
+- Checksums with SHA-256, SHA-512, SHA3, BLAKE2b, BLAKE2s, BLAKE3, CRC32, MD5, and more — combined or split per-artifact sidecars in bare or coreutils (`shasum -c`) format
 
 **Sign**
 - GPG and cosign signing for binaries, archives, checksums, Docker images, and SBOMs
+- Signed git tags (GPG or SSH) using your existing git signing key
 - Multiple independent signing configurations
 - Conditional signing via template expressions
 - Build provenance attestations (SLSA-style) for binaries and artifacts
@@ -81,6 +83,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Docker multi-arch images via `docker buildx`
 - Blob storage uploads (S3, GCS, Azure)
 - NPM per-platform binary packages and PyPI native binary wheels
+- Keyless OIDC Trusted Publishing for crates.io, npm (with provenance), and PyPI — no stored registry tokens
 - Artifactory, Cloudsmith, Fury, Docker Hub
 - Custom publisher commands
 
@@ -99,6 +102,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Auto-tagging from commit message directives
 - Reproducible builds with `mod_timestamp` and `builds_info`
 - Version-string file syncing (`version_files`) to keep docs, scripts, and manifests in lockstep at tag
+- Cross-publisher track promotion (`anodizer promote`) — flip an already-published artifact to a stable track (snapcraft channels, npm dist-tags, OCI floating tags, GitHub prerelease) with no rebuild
 - Post-release verification with install smoke tests
 - JSON Schema for editor autocomplete and validation
 
@@ -265,6 +269,10 @@ For split/merge fan-out, GPG key import, registry login, and per-platform varian
 anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only, --rollback-only)
 anodizer tag           Auto-tag from commit directives
 anodizer tag rollback  Delete anodize-managed tags at a SHA and revert the bump commit
+anodizer bump          Bump crate versions (Conventional Commits → semver level) without tagging
+anodizer promote       Promote a published artifact to a stable track without rebuilding
+anodizer continue      Resume a stalled or split release from a populated dist/ (--merge to fan-in)
+anodizer publish       Run only the publish stages (release, blob, publish) from a completed dist/
 anodizer check         Validate configuration + run determinism harness
 anodizer preflight     Verify the environment can run the configured release (tools, secrets, key material)
 anodizer init          Generate starter .anodizer.yaml
