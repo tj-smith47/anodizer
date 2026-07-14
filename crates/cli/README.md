@@ -146,6 +146,10 @@ anodizer release --snapshot
 # Dry run (full pipeline, no side effects)
 anodizer release --dry-run
 
+# Bump crate versions from Conventional Commits (rewrites Cargo.toml/lock, no tag)
+anodizer bump            # infer patch/minor/major per crate since its last tag
+anodizer bump minor      # or force a level / exact version / `release`
+
 # Auto-tag from commit directives
 # (Conventional Commits: feat: → minor, fix: → patch, BREAKING CHANGE: → major)
 anodizer tag --dry-run   # preview what tag would be created
@@ -153,6 +157,13 @@ anodizer tag --push      # create + push the tag, which triggers the release wor
 
 # Or force a specific tag value:
 anodizer tag --custom-tag v0.1.0
+
+# Resume a stalled release, or run just the publish stages, from an existing dist/
+anodizer continue        # rebuild-free resume after a transient publish failure
+anodizer publish         # lower-level: run only release/blob/publish from dist/
+
+# Promote an already-published artifact to a stable track — no rebuild
+anodizer promote --to stable
 ```
 
 For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZER_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
