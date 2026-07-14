@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-14
+
+### Features
+
+* 2e8e602ba1b5 add split_format (bare|coreutils) for shasum -c sidecars ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* c3d93f5b31a0 resume a completable partial crates.io publish instead of aborting ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.19.0] - 2026-07-13
 
 ### Features
@@ -673,7 +684,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/tj-smith47/anodizer/compare/v0.16.1...v0.17.0
