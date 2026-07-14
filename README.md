@@ -144,24 +144,37 @@ anodizer release --snapshot
 # Dry run (full pipeline, no side effects)
 anodizer release --dry-run
 
-# Bump crate versions from Conventional Commits (rewrites Cargo.toml/lock, no tag)
-anodizer bump            # infer patch/minor/major per crate since its last tag
-anodizer bump minor      # or force a level / exact version / `release`
+# Bump crate versions from Conventional Commits — rewrites Cargo.toml + Cargo.lock,
+# no tag (tag separately, or let the release workflow tag for you)
+anodizer bump --dry-run --output json         # preview the per-crate plan as JSON
+anodizer bump                                 # infer patch/minor/major per crate since its last tag
+anodizer bump minor --package mycrate         # force a level for one crate
+anodizer bump --workspace --commit --changelog  # bump every member, commit, refresh CHANGELOG.md
+anodizer bump --pre rc.1                       # append a prerelease identifier (0.5.0-rc.1)
 
 # Auto-tag from commit directives
 # (Conventional Commits: feat: → minor, fix: → patch, BREAKING CHANGE: → major)
-anodizer tag --dry-run   # preview what tag would be created
-anodizer tag --push      # create + push the tag, which triggers the release workflow
+anodizer tag --dry-run                         # preview what tag would be created
+anodizer tag --push --changelog                # tag + refresh changelog + push (triggers the release)
+anodizer tag --sign --push                     # signed annotated tag (uses git user.signingkey)
+anodizer tag --custom-tag v0.1.0               # force a tag value, bypassing bump derivation
+anodizer tag --version 1.2.3 --crate mycrate   # pin an exact version for recovery (per-crate mode)
+anodizer tag rollback "$GITHUB_SHA"            # delete anodize-managed tags at a SHA + revert the bump
 
-# Or force a specific tag value:
-anodizer tag --custom-tag v0.1.0
+# Resume a stalled release from a populated dist/ — no rebuild
+anodizer continue                              # resume the publish-only pipeline after a transient failure
+anodizer continue --merge                      # fan-in split-build workers, then sign/checksum/release/publish
+anodizer continue --skip npm,announce          # resume but skip named stages/publishers
 
-# Resume a stalled release, or run just the publish stages, from an existing dist/
-anodizer continue        # rebuild-free resume after a transient publish failure
-anodizer publish         # lower-level: run only release/blob/publish from dist/
+# Run only the publish stages (release / blob / publish) from a completed dist/
+anodizer publish --publishers homebrew,scoop   # publish to a subset of configured publishers
+anodizer publish --dry-run                     # preview the publish chain with no side effects
 
 # Promote an already-published artifact to a stable track — no rebuild
-anodizer promote --to stable
+anodizer promote --to stable                                  # promote the newest prerelease artifact
+anodizer promote --to stable --from candidate --dry-run       # preview promoting from a named source track
+anodizer promote --to stable --version v1.2.0 \
+  --publishers snapcraft,npm                                  # promote a pinned version on chosen publishers
 ```
 
 For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZER_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
