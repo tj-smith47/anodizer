@@ -221,6 +221,10 @@ crates:
     path: crates/stage-checksum
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
+  - name: anodizer-stage-install-script
+    path: crates/stage-install-script
+    tag_template: "v{{ Version }}"
+    depends_on: [anodizer-core]
   - name: anodizer-stage-changelog
     path: crates/stage-changelog
     tag_template: "v{{ Version }}"
