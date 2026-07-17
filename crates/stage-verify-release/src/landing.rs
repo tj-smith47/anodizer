@@ -26,10 +26,24 @@
 //!
 //! A publisher that was ATTEMPTED and reported `Failed` is a different case:
 //! the run tried to ship it and did not. That is a landing defect on its own
-//! merits — reported as an issue without a network probe — so a `required:
-//! false` (advisory) publisher failing can never silently keep this gate
-//! green; `required` only controls whether the pipeline ABORTS mid-run, not
-//! whether a post-publish failure gets certified as success.
+//! merits — recorded without a network probe. How a landing finding (a failed
+//! publish attempt, or a probe that could not confirm the upload landed) is
+//! reported follows the publisher's `required` flag: a REQUIRED publisher's
+//! landing finding is a gate-failing issue; an advisory (`required: false`)
+//! publisher's is a loud, recorded WARNING that never fails the release.
+//! Non-silent — the failure still shows in this log line and in the publish
+//! report's own `Failed` row that the run summary renders — while honouring
+//! the operator's explicit tolerance. This stops an optional publisher from
+//! stranding the required ones: in the release workflow a failed
+//! verify-release skips the downstream OIDC leg, so a fatal optional landing
+//! finding would block crates.io / npm / PyPI.
+//!
+//! This `required`-routing governs PUBLISHER landing findings only. The
+//! artifact-quality / integrity gates the operator opts into elsewhere in
+//! verify-release (asset-existence, install-smoke, glibc-ceiling, signature
+//! crypto-verification) are NOT publisher-tolerance questions — a broken,
+//! missing, or forged artifact is a release defect regardless of which
+//! publisher shipped it — so they stay fatal by the operator's own opt-in.
 //!
 //! The probes are injected as closures so the orchestration (report
 //! filtering, evidence decoding, issue wording) is unit-testable offline;
@@ -86,35 +100,52 @@ pub(crate) fn run_landing_checks(
     };
     let mut probed_publishers = 0usize;
     for result in &report.results {
-        if !matches!(result.outcome, PublisherOutcome::Succeeded) {
-            if let PublisherOutcome::Failed(reason) = &result.outcome {
-                // A publisher this run actually attempted and failed is a
-                // landing defect on its own merits — every publisher, not
-                // just the four network-probed ones, since a `required:
-                // false` failure must never silently keep this gate green.
+        // A publisher's landing findings are routed by its `required` flag: a
+        // required publisher's finding fails the gate; an advisory
+        // (`required: false`) publisher's is a loud, recorded warning that
+        // never fails the release — so an optional publisher can neither
+        // silently pass nor, by failing, block the required ones (a fatal
+        // verify-release skips the downstream OIDC leg, stranding crates.io /
+        // npm / PyPI). Operator-enabled artifact-quality gates elsewhere in
+        // this stage stay fatal regardless; see the module doc.
+        let mut findings: Vec<String> = Vec::new();
+        let probed = if let PublisherOutcome::Succeeded = result.outcome {
+            match result.name.as_str() {
+                "cargo" => check_cargo_landing(result, log, probes, &mut findings),
+                "npm" => check_npm_landing(result, log, probes, &mut findings),
+                "blob" => check_blob_landing(result, log, probes, &mut findings),
+                "snapcraft" => check_snapcraft_landing(result, log, probes, &mut findings),
+                _ => false,
+            }
+        } else if let PublisherOutcome::Failed(reason) = &result.outcome {
+            // A publisher the run actually attempted and failed is a landing
+            // defect on its own merits (no probe needed) — every publisher,
+            // not just the four network-probed ones.
+            log.warn(&format!(
+                "{} publish attempt failed this run — landing not verified: {reason}",
+                result.name
+            ));
+            findings.push(format!(
+                "{}: publish attempt failed this run — {reason}",
+                result.name
+            ));
+            false
+        } else {
+            log.verbose(&format!(
+                "skipped {} landing check — publisher did not succeed this run ({:?})",
+                result.name, result.outcome
+            ));
+            false
+        };
+        if result.required {
+            issues.extend(findings);
+        } else {
+            for finding in findings {
                 log.warn(&format!(
-                    "{} publish attempt failed this run — landing not verified: {reason}",
-                    result.name
-                ));
-                issues.push(format!(
-                    "{}: publish attempt failed this run — {reason}",
-                    result.name
-                ));
-            } else {
-                log.verbose(&format!(
-                    "skipped {} landing check — publisher did not succeed this run ({:?})",
-                    result.name, result.outcome
+                    "optional publisher not gating the release (required: false) — {finding}"
                 ));
             }
-            continue;
         }
-        let probed = match result.name.as_str() {
-            "cargo" => check_cargo_landing(result, log, probes, issues),
-            "npm" => check_npm_landing(result, log, probes, issues),
-            "blob" => check_blob_landing(result, log, probes, issues),
-            "snapcraft" => check_snapcraft_landing(result, log, probes, issues),
-            _ => false,
-        };
         if probed {
             probed_publishers += 1;
         }
@@ -532,6 +563,89 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("snapcraft"));
         assert!(issues[0].contains("dedup collision"));
+    }
+
+    /// Flip a result to advisory (`required: false`).
+    fn optional(mut result: PublisherResult) -> PublisherResult {
+        result.required = false;
+        result
+    }
+
+    #[test]
+    fn optional_publisher_failure_warns_but_never_fails_the_gate() {
+        // The v0.21.0 regression: snapcraft is advisory (required: false) and
+        // failed a Snap Store content-dedup. verify-release must NOT turn that
+        // into a gate-failing issue — a fatal verdict here skips the downstream
+        // OIDC leg and strands the REQUIRED registries (crates.io / npm / PyPI).
+        let report = PublishReport {
+            results: vec![optional(result_with(
+                "snapcraft",
+                PublisherOutcome::Failed(
+                    "store rejected upload: content-identical dedup at another version".into(),
+                ),
+                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
+            ))],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0);
+        assert!(
+            issues.is_empty(),
+            "an optional publisher's failure must never fail the gate: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn required_publisher_failure_still_fails_the_gate() {
+        // The `required` knob is the single source of truth: a required
+        // publisher's failure stays fatal even after optional ones are relaxed.
+        let report = PublishReport {
+            results: vec![result_with(
+                "cargo",
+                PublisherOutcome::Failed("registry 500".into()),
+                cargo_extra(&[("app", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(issues.len(), 1, "required failure must remain fatal");
+        assert!(issues[0].contains("cargo"));
+    }
+
+    #[test]
+    fn optional_publisher_unverifiable_landing_warns_but_never_fails_the_gate() {
+        // A required: false publisher that reported success but whose landing
+        // cannot be confirmed (probe says absent) is a false-success — still
+        // surfaced (warned) but never gate-failing, since the operator marked
+        // it advisory. Required publishers keep failing on the same condition.
+        let report = PublishReport {
+            results: vec![optional(result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
+            ))],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let probes = LandingProbes {
+            cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
+            npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
+            blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
+            snap_channel_map: &|_, _, _| Ok(false),
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            issues.is_empty(),
+            "an optional publisher's unverifiable landing must not fail the gate: {issues:?}"
+        );
     }
 
     #[test]
