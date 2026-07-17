@@ -38,3 +38,6 @@ cobertura.xml
 /preserved-dist/
 /preserved-dist-*/
 .tokensave
+
+# local working scratch — not version-controlled
+.claude/known-bugs.md
