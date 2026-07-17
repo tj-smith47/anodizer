@@ -32,6 +32,10 @@ on:
         description: "anodizer version to install (resolve-release-target's publish_version; normally latest)."
         required: false
         default: "latest"
+      tag:
+        description: "Release tag to publish. Empty on a fresh cut (version resolves from the highest tag at HEAD). Set to a specific tag (e.g. v0.20.0) to backfill that version from master's orchestrator: it exports ANODIZER_CURRENT_TAG so anodizer resolves the requested version instead of the newest tag, letting a github-hosted dispatch run on the default branch (fresh, fully-patched publisher binary) rather than the tag's own stale CI build."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -98,6 +102,10 @@ jobs:
           # this runner is never asked for cosign/GPG it does not carry.
           args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
         env:
+          # Empty on a fresh cut → anodizer resolves the highest tag at HEAD.
+          # A backfill dispatch sets inputs.tag so the version is pinned here
+          # while the job runs on master's up-to-date publisher binary.
+          ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # pypis.auth: auto prefers this token when set (needed for the FIRST
