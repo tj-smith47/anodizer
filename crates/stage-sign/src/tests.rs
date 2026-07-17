@@ -84,13 +84,17 @@ fn shell_echo_literal_to_file(literal: &str, dest_file: &str) -> (String, Vec<St
 
 /// Return a shell command + args that copies the signer's stdin to
 /// `dest_file`, so a test can assert what content was piped in.
-/// On Unix: `sh -c "cat > file"`. On Windows: `findstr "^"` echoes every
-/// stdin line to the redirected file (`^` matches the start of any line).
+/// On Unix: `sh -c "cat > file"`. On Windows: `more > file` copies stdin to
+/// the redirected file. `more` is used (not `findstr "^"`) because the latter
+/// needs a quoted pattern arg, and Rust's Windows command-line escaping mangles
+/// the embedded quotes — `more` has no quotes, matching the proven
+/// `shell_echo_to_file` shape. (`more` may append trailing whitespace; callers
+/// assert with `contains`.)
 fn shell_stdin_capture_to_file(dest_file: &str) -> (String, Vec<String>) {
     if cfg!(windows) {
         (
             "cmd.exe".to_string(),
-            vec!["/C".to_string(), format!("findstr \"^\" > {}", dest_file)],
+            vec!["/C".to_string(), format!("more > {}", dest_file)],
         )
     } else {
         (
