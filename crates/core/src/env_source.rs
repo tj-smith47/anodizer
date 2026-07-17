@@ -39,13 +39,17 @@ pub trait EnvSource: Send + Sync {
     /// harness's Windows inherit-everything pass, which drops a
     /// credential deny-list out of the host env) use this instead of
     /// `std::env::vars()` so a test can inject a closed map of fixture
-    /// entries. The default implementation returns an empty `Vec` so
-    /// any source that only supports point lookups (a stub, a small
-    /// fixture) stays usable for `var(...)`-only call sites without
-    /// extra boilerplate.
-    fn vars(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
+    /// entries.
+    ///
+    /// Required (no default): log/announce secret redaction builds its
+    /// mask table from this snapshot, so a source that returned an empty
+    /// `Vec` here would silently disable redaction while `var(...)` lookups
+    /// kept working — a silent-failure footgun. Forcing every impl to
+    /// provide `vars()` turns that mistake into a compile error. A source
+    /// that genuinely cannot enumerate must return its full point-lookup
+    /// domain (or, if truly unbounded, be reworked — never fall back to an
+    /// empty snapshot).
+    fn vars(&self) -> Vec<(String, String)>;
 }
 
 /// Production implementation that reads `std::env::var`.

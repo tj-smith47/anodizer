@@ -13,7 +13,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use strum::IntoEnumIterator;
 
 /// Rollback policy after the publish stage. `BestEffort` is the default when
@@ -492,6 +492,13 @@ pub struct StageOutputs {
     pub post_publish_results: Vec<serde_json::Value>,
 }
 
+/// Callback that re-runs release-content verification against the already
+/// published reversible surface and reports whether it passed. Stored on
+/// [`Context`] so the publish dispatcher can gate one-way-door publishers on
+/// a fresh verify without `stage-publish` depending on `stage-verify-release`.
+/// `Arc` so it can be cheaply cloned out of `&mut Context` before invocation.
+pub type VerifyGate = std::sync::Arc<dyn Fn(&mut Context) -> anyhow::Result<bool> + Send + Sync>;
+
 pub struct Context {
     pub config: Config,
     pub artifacts: ArtifactRegistry,
@@ -542,6 +549,23 @@ pub struct Context {
     /// read `succeeded` while this slot records whether the published release
     /// has unverified defects to investigate.
     pub verify_release: Option<VerifyReleaseSummary>,
+    /// Pre-submitter verify-release gate, installed once by the CLI's
+    /// pipeline-composition layer right after construction (never by a
+    /// stage). Invoked by `stage-publish`'s dispatcher immediately before
+    /// the first Submitter-group (one-way-door) publisher would run:
+    /// `Ok(true)` clears the gate, `Ok(false)` or `Err` blocks every
+    /// Submitter-group publisher for the run with
+    /// `SkipReason::VerifyGateBlocked`.
+    ///
+    /// A plain closure field, not a stage, because `stage-publish` cannot
+    /// depend on `stage-verify-release` (the dependency runs the other way:
+    /// `stage-verify-release` already depends on `stage-publish` for its
+    /// terminal landing checks) — routing the call through `Context`, which
+    /// every stage crate depends on, avoids the cycle without inventing a
+    /// second verify taxonomy. `Arc` (not a bare `Box`) so the field can be
+    /// cheaply cloned out of `&mut Context` before being invoked with
+    /// `&mut Context`.
+    pub verify_gate: Option<VerifyGate>,
     /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
     /// run. `None` until a stage (typically `BuildStage`) seeds it from
     /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
@@ -591,6 +615,18 @@ pub struct Context {
     /// process env. Read through [`Context::env_var`]; replace via
     /// [`Context::set_env_source`].
     env_source: Arc<dyn EnvSource>,
+    /// Live handle to the secret-redaction table shared with every
+    /// [`StageLogger`] this context has ever produced via [`Context::logger`]
+    /// (each gets a clone of the same `Arc<Mutex<_>>` cell). Refreshed from
+    /// [`Context::env_for_redact`] by [`Context::refresh_secret_env`] at every
+    /// `env_source` mutation point (`set_env_source`, `set_env_source_arc`,
+    /// `begin_cargo_trusted_publishing`, `end_cargo_trusted_publishing`), so a
+    /// logger constructed BEFORE a mid-run credential mint — e.g. crates.io
+    /// Trusted Publishing minting `CARGO_REGISTRY_TOKEN` into `env_source`
+    /// partway through `publish_to_cargo` — still redacts it: `StageLogger::
+    /// redact` reads this cell live rather than a frozen construction-time
+    /// snapshot.
+    secret_env: crate::log::RedactionEnv,
     /// Live crates.io Trusted-Publishing overlay state, set for the duration
     /// of a cargo publish that minted a short-lived token via OIDC. Holds the
     /// minted token (the revoke + yank-injection credential) and the base env
@@ -638,15 +674,6 @@ pub struct Context {
     /// affected; anodizer's own logs are redacted unconditionally regardless of
     /// this flag.
     pub redact_body: bool,
-    /// Memoized `std::env::vars()` snapshot — the immutable half of the
-    /// redaction env. `env_for_redact` is called once per provider per
-    /// dispatch (and per `StageLogger`), and the process env never changes
-    /// for the lifetime of a run, so collecting it once and merging only the
-    /// cheap, dynamic template-var portion fresh on each call avoids
-    /// re-walking the whole process environment every time. Lazily filled on
-    /// first use via [`std::cell::OnceCell`] (Context is already `!Sync` via
-    /// `render_strict`, so the single-threaded cell weakens no auto-trait).
-    process_env_cache: std::cell::OnceCell<std::collections::HashMap<String, String>>,
 }
 
 /// Live crates.io Trusted-Publishing overlay state (see the `Context`
@@ -661,7 +688,7 @@ impl Context {
     pub fn new(config: Config, options: ContextOptions) -> Self {
         let mut vars = TemplateVars::new();
         vars.set("ProjectName", &config.project_name);
-        Self {
+        let ctx = Self {
             config,
             artifacts: ArtifactRegistry::new(),
             options,
@@ -674,19 +701,22 @@ impl Context {
             publish_report: None,
             publish_attempted: false,
             verify_release: None,
+            verify_gate: None,
             determinism: None,
             pending_outcome: None,
             pending_evidence: None,
             built_crate_names: None,
             env_source: Arc::new(ProcessEnvSource),
+            secret_env: Arc::new(Mutex::new(Vec::new())),
             cargo_trusted_publishing: None,
             #[cfg(feature = "test-helpers")]
             log_capture: None,
             render_strict: std::cell::Cell::new(false),
             literal_message: false,
             redact_body: true,
-            process_env_cache: std::cell::OnceCell::new(),
-        }
+        };
+        ctx.refresh_secret_env();
+        ctx
     }
 
     /// Redact known-secret env values from outbound announce text, using the
@@ -715,6 +745,7 @@ impl Context {
     /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env).
     pub fn set_env_source<S: EnvSource + 'static>(&mut self, src: S) {
         self.env_source = Arc::new(src);
+        self.refresh_secret_env();
     }
 
     /// Replace the injected environment-variable source with an already-boxed
@@ -723,6 +754,7 @@ impl Context {
     /// [`Context::begin_cargo_trusted_publishing`]) without re-wrapping it.
     pub fn set_env_source_arc(&mut self, src: Arc<dyn EnvSource>) {
         self.env_source = src;
+        self.refresh_secret_env();
     }
 
     /// Overlay a minted crates.io Trusted-Publishing token as
@@ -746,6 +778,7 @@ impl Context {
             [("CARGO_REGISTRY_TOKEN".to_string(), token.clone())],
         ));
         self.cargo_trusted_publishing = Some(CargoTrustedPublishing { token, base });
+        self.refresh_secret_env();
     }
 
     /// The minted crates.io Trusted-Publishing token, if an overlay is active.
@@ -765,6 +798,7 @@ impl Context {
     pub fn end_cargo_trusted_publishing(&mut self) -> Option<String> {
         let state = self.cargo_trusted_publishing.take()?;
         self.env_source = state.base;
+        self.refresh_secret_env();
         Some(state.token)
     }
 
@@ -1246,8 +1280,16 @@ impl Context {
     /// snapshot, so any secret value reachable to a hook or subprocess is
     /// available for scrubbing.
     pub fn logger(&self, stage: &'static str) -> StageLogger {
+        // Snapshot the current redaction env into the shared cell at
+        // construction so a secret injected via `template_vars_mut().set_env`
+        // (which has no mutation hook) is captured, matching the historical
+        // snapshot-at-`logger()` behavior. The cell stays shared afterward, so
+        // a secret minted later through an `env_source` mutation still reaches
+        // this logger via `refresh_secret_env` at that mutation point.
+        self.refresh_secret_env();
         #[allow(unused_mut)]
-        let mut log = StageLogger::new(stage, self.verbosity()).with_env(self.env_for_redact());
+        let mut log =
+            StageLogger::new(stage, self.verbosity()).with_shared_env(Arc::clone(&self.secret_env));
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.log_capture {
             log = log.with_capture_handle(cap.clone());
@@ -1257,24 +1299,36 @@ impl Context {
 
     /// Build the env-pairs list used to seed every [`StageLogger`] created
     /// via [`Context::logger`]. Combines the template-engine env map
-    /// (process env + config env + `.env` file values) with the current
-    /// `std::env::vars` snapshot, deduplicating by key (template-engine
-    /// values win because they reflect any user overrides).
+    /// (config env + `.env` file values) with the injected [`EnvSource`]'s
+    /// full snapshot ([`EnvSource::vars`]), deduplicating by key
+    /// (template-engine values win because they reflect any user
+    /// overrides).
     ///
-    /// The `std::env::vars` half is memoized in `process_env_cache` (it is
-    /// immutable for the process lifetime); only the cheap template-var
-    /// overlay is rebuilt per call. The merged output is identical to
-    /// collecting both fresh each time.
+    /// Routes through `self.env_source` — not a raw `std::env::vars()` read
+    /// — so [`TestContextBuilder::sealed_env`](crate::test_helpers::TestContextBuilder::sealed_env)'s
+    /// documented "never the ambient process environment" promise also
+    /// covers log/announce redaction, not just [`Context::env_var`] point
+    /// lookups. A hermetic test that seals its env must not have an
+    /// unrelated real ambient secret-suffixed var silently mask a literal
+    /// fixture substring in the redacted output.
     fn env_for_redact(&self) -> Vec<(String, String)> {
         use std::collections::HashMap;
-        let mut map: HashMap<String, String> = self
-            .process_env_cache
-            .get_or_init(|| std::env::vars().collect())
-            .clone();
+        let mut map: HashMap<String, String> = self.env_source.vars().into_iter().collect();
         for (k, v) in self.template_vars.all_env() {
             map.insert(k.clone(), v.clone());
         }
         map.into_iter().collect()
+    }
+
+    /// Recompute [`Context::env_for_redact`] and publish it into
+    /// [`Context::secret_env`], the live cell every [`StageLogger`] produced
+    /// by [`Context::logger`] shares. Called at every `env_source` mutation
+    /// point so a logger built earlier in the run still redacts a secret
+    /// minted afterward (see the `secret_env` field doc for the concrete
+    /// crates.io Trusted-Publishing scenario this closes).
+    fn refresh_secret_env(&self) {
+        let fresh = self.env_for_redact();
+        *self.secret_env.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
     }
 
     /// Populate template variables from `self.git_info`.
@@ -1835,7 +1889,61 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::git::{GitInfo, SemVer};
+    use crate::test_helpers::env::env_mutex;
     use std::collections::BTreeSet;
+
+    /// A `StageLogger` built via `Context::logger` before a secret is minted
+    /// into `env_source` (e.g. crates.io Trusted Publishing overlaying
+    /// `CARGO_REGISTRY_TOKEN` mid-run via `begin_cargo_trusted_publishing`)
+    /// must still redact that secret: the logger holds a live handle to the
+    /// context's redaction table, not a frozen construction-time snapshot.
+    #[test]
+    fn stage_logger_redacts_secret_minted_after_construction() {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.set_env_source(crate::MapEnvSource::new());
+        let log = ctx.logger("cargo");
+
+        ctx.set_env_source(crate::MapEnvSource::new().with("SOMETHING_TOKEN", "supersecret123"));
+
+        let redacted = log.redact("publish failed: token=supersecret123 rejected");
+        assert!(
+            !redacted.contains("supersecret123"),
+            "logger built before the mint must still redact a secret added afterward: {redacted}"
+        );
+        assert!(
+            redacted.contains("$SOMETHING_TOKEN"),
+            "redacted output should substitute the env-var name: {redacted}"
+        );
+    }
+
+    /// `env_for_redact` must honor an injected/sealed `env_source` instead of
+    /// unconditionally reading `std::env::vars()` — otherwise a hermetic test
+    /// that seals its env can still leak an unrelated real ambient
+    /// secret-suffixed var into a `StageLogger`'s redaction table (silently
+    /// masking substrings of literal test fixture text that happen to
+    /// collide with the ambient value).
+    #[test]
+    fn env_for_redact_honors_injected_env_source_not_real_process_env() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let key = "ANODIZER_T3_ENV_REDACT_FIXTURE_TOKEN";
+        // SAFETY: serialised by env_mutex; cleaned up before guard drop.
+        // env-ok: contract test for env_for_redact source routing; unique key.
+        unsafe { std::env::set_var(key, "should-not-leak") };
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.set_env_source(crate::MapEnvSource::new());
+        let log = ctx.logger("test");
+        let redacted = log.redact("value=should-not-leak");
+
+        // SAFETY: serialised by env_mutex.
+        // env-ok: contract test for env_for_redact source routing; unique key.
+        unsafe { std::env::remove_var(key) };
+
+        assert_eq!(
+            redacted, "value=should-not-leak",
+            "a sealed env_source must not let the real ambient var mask this literal value"
+        );
+    }
 
     /// `VALID_RELEASE_SKIPS` MUST recognize every publisher token. Driven off
     /// [`PublisherKind::iter`] so a newly added publisher that is not folded

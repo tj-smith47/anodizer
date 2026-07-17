@@ -173,6 +173,28 @@ pub(crate) struct UploadAssetRequest<'a> {
     pub env_source: &'a dyn anodizer_core::EnvSource,
 }
 
+/// Compute the local sha256 digest for the 422 `already_exists` comparison,
+/// but ONLY when [`classify_already_exists`] can actually use it: it
+/// consults `local_digest` exclusively inside the `remote_size ==
+/// Some(local_size)` branch, and only when the remote side ALSO exposes a
+/// digest — every other case (`remote_digest_available == false`, or a size
+/// mismatch) falls back to the size-only rule and never looks at the
+/// digest. Hashing the artifact off disk in those cases is pure waste, and
+/// it needlessly widens the Fatal surface: a transient read/permission
+/// error while hashing would abort an upload that a size-only comparison
+/// would have resolved cleanly.
+fn hash_for_already_exists_comparison(
+    path: &std::path::Path,
+    remote_digest_available: bool,
+    remote_size: Option<u64>,
+    local_size: u64,
+) -> Result<Option<String>> {
+    if !remote_digest_available || remote_size != Some(local_size) {
+        return Ok(None);
+    }
+    anodizer_core::hashing::sha256_file(path).map(Some)
+}
+
 /// Upload one artifact to the release, retrying transient failures and
 /// recovering 422 `already_exists` conflicts (idempotent skip, partial-
 /// asset delete-and-retry, or opted-in overwrite).
@@ -318,7 +340,7 @@ pub(crate) async fn upload_release_asset(
                                 ))));
                             }
                         };
-                        let partial = probe.is_some_and(|p| !p.uploaded);
+                        let partial = probe.as_ref().is_some_and(|p| !p.uploaded);
 
                         // Eventual-consistency tolerance for PUBLISHED assets
                         // only: if a prior attempt already deleted the stale
@@ -339,12 +361,58 @@ pub(crate) async fn upload_release_asset(
                             ));
                         }
 
-                        match classify_already_exists(replace_existing_artifacts, probe, local_size)
-                        {
+                        // `data` was already moved into the upload request, so
+                        // the digest is computed lazily here (re-read from
+                        // disk) rather than eagerly on every attempt — only
+                        // the 422-already-exists branch ever needs it, and
+                        // only when the comparison can actually consult it
+                        // (see [`hash_for_already_exists_comparison`]): a
+                        // digest-unavailable or size-mismatched probe never
+                        // reaches the digest check in
+                        // [`classify_already_exists`], so hashing there would
+                        // be wasted work AND would needlessly Fatal-fail a
+                        // case a size-only comparison could have resolved.
+                        let remote_digest_available =
+                            probe.as_ref().and_then(|p| p.digest.as_deref()).is_some();
+                        let remote_size = probe.as_ref().map(|p| p.size);
+                        let local_digest = match hash_for_already_exists_comparison(
+                            path,
+                            remote_digest_available,
+                            remote_size,
+                            local_size,
+                        ) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                return Step::Fail(UploadFailure::Fatal(e.context(format!(
+                                    "release: hash artifact {} for already-exists comparison",
+                                    path.display()
+                                ))));
+                            }
+                        };
+
+                        match classify_already_exists(
+                            replace_existing_artifacts,
+                            probe,
+                            local_size,
+                            local_digest.as_deref(),
+                        ) {
                             AlreadyExistsAction::SkipIdempotent => {
                                 // A prior attempt in this same release already
                                 // uploaded byte-identical content. Pure no-op,
                                 // regardless of `replace_existing_artifacts`.
+                                if remote_digest_available {
+                                    release_log().verbose(&format!(
+                                        "skipped re-upload of '{file_name}' on release '{tag}' \
+                                         (digest verified) — byte-identical content already \
+                                         published"
+                                    ));
+                                } else {
+                                    release_log().verbose(&format!(
+                                        "skipped re-upload of '{file_name}' on release '{tag}' \
+                                         (size-only; remote digest unavailable) — sizes match, \
+                                         content not digest-verified"
+                                    ));
+                                }
                                 return Step::Done(crate::forge::UploadOutcome::SkippedIdentical(
                                     file_name.to_string(),
                                 ));
@@ -566,6 +634,9 @@ mod tests {
         fn var(&self, _key: &str) -> Option<String> {
             None
         }
+        fn vars(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
     }
 
     fn http(status_line: &str, body: &str) -> String {
@@ -673,6 +744,76 @@ mod tests {
             env_source,
         })
         .await
+    }
+
+    // =======================================================================
+    // hash_for_already_exists_comparison — the 422-branch hash gate
+    // =======================================================================
+
+    #[test]
+    fn hash_gate_skips_hashing_when_remote_digest_unavailable() {
+        // GitHub served no digest for the existing asset, so
+        // `classify_already_exists` can never consult a local digest —
+        // hashing would be pure waste AND would needlessly Fatal-fail this
+        // case if the read failed. A nonexistent path proves no hash is
+        // attempted: the old unconditional `sha256_file` call would return
+        // `Err` here.
+        let result = hash_for_already_exists_comparison(
+            std::path::Path::new("/nonexistent/does-not-exist.tar.gz"),
+            false,
+            Some(10),
+            10,
+        );
+        assert_eq!(
+            result.expect("no hash should be attempted when remote digest is unavailable"),
+            None
+        );
+    }
+
+    #[test]
+    fn hash_gate_skips_hashing_when_sizes_differ() {
+        // Even with a remote digest available, `classify_already_exists`
+        // only consults it inside the `remote_size == local_size` branch —
+        // a size mismatch never reaches the digest comparison, so hashing
+        // is wasted work (and, on a read failure, a needless Fatal).
+        let result = hash_for_already_exists_comparison(
+            std::path::Path::new("/nonexistent/does-not-exist.tar.gz"),
+            true,
+            Some(4),
+            10,
+        );
+        assert_eq!(
+            result.expect("no hash should be attempted when sizes differ"),
+            None
+        );
+    }
+
+    #[test]
+    fn hash_gate_hashes_when_digest_available_and_sizes_match() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"same-bytes");
+        let expected = anodizer_core::hashing::sha256_file(&path).expect("hash fixture");
+
+        let result = hash_for_already_exists_comparison(&path, true, Some(10), 10)
+            .expect("hash must succeed when it is actually needed");
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn hash_gate_propagates_read_failure_when_hash_is_actually_needed() {
+        // When the comparison genuinely depends on the digest (available +
+        // sizes match), a hash-read failure must still surface — the gate
+        // must not silently swallow a real need for the hash.
+        let result = hash_for_already_exists_comparison(
+            std::path::Path::new("/nonexistent/does-not-exist.tar.gz"),
+            true,
+            Some(10),
+            10,
+        );
+        assert!(
+            result.is_err(),
+            "a hash-read failure must propagate when the classification needs the digest"
+        );
     }
 
     #[tokio::test]

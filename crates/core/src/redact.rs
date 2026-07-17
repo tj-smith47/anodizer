@@ -42,10 +42,35 @@ fn is_secret(key: &str, value: &str) -> bool {
         return false;
     }
     let key_upper = key.to_uppercase();
-    if SECRET_KEY_SUFFIXES.iter().any(|s| key_upper.ends_with(s)) {
+    if !is_boolean_shape(value) && SECRET_KEY_SUFFIXES.iter().any(|s| key_upper.ends_with(s)) {
         return true;
     }
     SECRET_VALUE_PREFIXES.iter().any(|p| value.starts_with(p))
+}
+
+/// A value that shares a `*_TOKEN`/`*_KEY`/`*_SECRET`/`*_PASSWORD` key name
+/// but cannot be a credential by its shape: a boolean literal used as an
+/// enable-flag. Covers both the word forms (`USE_TOKEN=true`,
+/// `SIGN_WITH_KEY=false`) and the canonical numeric flags `0`/`1`
+/// (`HF_HUB_DISABLE_IMPLICIT_TOKEN=1`, `GPG_SIGN_KEY=0`) — the single most
+/// common env enable-flag idiom, where the `_TOKEN`/`_KEY` suffix names the
+/// feature being toggled, not a credential.
+///
+/// The numeric exemption is deliberately restricted to the single characters
+/// `0` and `1`: a lone bit cannot be a credential, and redacting it corrupts
+/// every unrelated `0`/`1` in the same output (a version like `1.0.0`, a
+/// revision number, a timestamp). A *multi*-digit numeric value (a 4-digit
+/// HSM/smartcard PIN, a 6-digit OTP) is still NOT exempted, because it is
+/// indistinguishable from a genuine short numeric credential and a false
+/// exemption there is silent data exposure. Short *alphabetic* values are
+/// likewise never exempted: a 5-char `API_KEY=short` is still masked. A
+/// [`SECRET_VALUE_PREFIXES`] match takes precedence, so a positively
+/// secret-shaped value is never dropped by this filter.
+fn is_boolean_shape(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "true" | "false" | "yes" | "no" | "on" | "off" | "0" | "1"
+    )
 }
 
 /// Redact secret values in a string, replacing them with `$KEY_NAME`.
@@ -620,5 +645,124 @@ mod tests {
         );
         assert!(!result.contains("ghp_aaa"));
         assert!(!result.contains("ghp_bbb"));
+    }
+
+    #[test]
+    fn numeric_boolean_flag_does_not_corrupt_http_status_regression() {
+        // A `*_TOKEN`-suffixed var set to the enable-flag `1` must NOT rewrite
+        // every `1` in unrelated text — `HTTP 401` must stay `HTTP 401`, not
+        // become `HTTP 40$…`. A single bit carries no cryptographic value, so
+        // it cannot be a credential worth protecting; masking it only corrupts
+        // output and breaks downstream parses. Multi-digit numeric secrets (a
+        // 4-digit PIN, a 6-digit OTP) remain masked — see
+        // `short_numeric_pin_under_password_key_is_masked` and
+        // `six_digit_otp_under_token_key_is_masked`.
+        let env = vec![("HF_HUB_DISABLE_IMPLICIT_TOKEN".to_string(), "1".to_string())];
+        assert_eq!(
+            string("HTTP 401 unauthorized", &env),
+            "HTTP 401 unauthorized"
+        );
+    }
+
+    #[test]
+    fn boolean_flag_under_secret_key_name_is_not_masked() {
+        let env = vec![("FEATURE_TOKEN".to_string(), "true".to_string())];
+        assert_eq!(string("enabled=true here", &env), "enabled=true here");
+    }
+
+    #[test]
+    fn short_alphabetic_secret_under_secret_key_name_is_still_masked() {
+        // The deliberately-kept behavior: a short *alphabetic* value under a
+        // secret key name is a credential and stays masked.
+        let env = vec![("API_KEY".to_string(), "short".to_string())];
+        assert_eq!(string("Value is short", &env), "Value is $API_KEY");
+    }
+
+    #[test]
+    fn numeric_value_matching_prefix_rule_is_still_masked() {
+        // A positively secret-shaped value is masked even if numeric-adjacent;
+        // the shape filter only guards the key-name branch.
+        let env = vec![("CI".to_string(), "ghp_1".to_string())];
+        assert_eq!(string("token ghp_1", &env), "token $CI");
+    }
+
+    #[test]
+    fn long_numeric_value_under_secret_key_is_masked() {
+        // Only the single-character boolean flags `0`/`1` are digit-exempt
+        // under a secret-suffixed key (see `is_boolean_shape`) — a 32-digit
+        // token under a `*_TOKEN` key must be redacted, same as any other
+        // multi-digit length.
+        let value = "1".repeat(32);
+        let env = vec![("MY_TOKEN".to_string(), value.clone())];
+        let result = string(&format!("token {value}"), &env);
+        assert_eq!(result, "token $MY_TOKEN");
+        assert!(!result.contains(&value));
+    }
+
+    #[test]
+    fn six_digit_otp_under_token_key_is_masked() {
+        // A 6-digit OTP/PIN (e.g. a PyPI 2FA code) under a `*_TOKEN` key is a
+        // real, sensitive value; no digit-shape exemption applies.
+        let env = vec![("PYPI_2FA_TOKEN".to_string(), "483920".to_string())];
+        let result = string("submitting code 483920", &env);
+        assert_eq!(result, "submitting code $PYPI_2FA_TOKEN");
+        assert!(!result.contains("483920"));
+    }
+
+    #[test]
+    fn short_numeric_pin_under_password_key_is_masked() {
+        // A 4-digit HSM/smartcard PIN under a `*_PASSWORD` key is a real
+        // credential — the short-digit exemption must never apply to a
+        // secret-suffixed key, no matter how short the value is.
+        let env = vec![("CARD_PASSWORD".to_string(), "1234".to_string())];
+        let result = string("PIN entered: 1234", &env);
+        assert_eq!(result, "PIN entered: $CARD_PASSWORD");
+        assert!(!result.contains("1234"));
+    }
+
+    #[test]
+    fn short_numeric_pin_under_key_suffix_is_masked() {
+        let env = vec![("SIGNING_KEY".to_string(), "9999".to_string())];
+        let result = string("key value 9999", &env);
+        assert_eq!(result, "key value $SIGNING_KEY");
+        assert!(!result.contains("9999"));
+    }
+
+    #[test]
+    fn boolean_literal_under_secret_key_name_stays_unmasked_regression() {
+        // The boolean-literal exemption survives the short-digit-exemption
+        // removal: a `*_TOKEN`-named var used as an enable-flag must not
+        // rewrite every "true" in unrelated output.
+        let env = vec![("ENABLE_TOKEN".to_string(), "true".to_string())];
+        assert_eq!(string("flag is true", &env), "flag is true");
+    }
+
+    #[test]
+    fn non_secret_suffixed_key_short_number_stays_unmasked_regression() {
+        // A key with no secret suffix never enters the key-suffix masking
+        // branch at all; a small count/id value must stay untouched.
+        let env = vec![("RETRY_COUNT".to_string(), "42".to_string())];
+        assert_eq!(string("retries: 42", &env), "retries: 42");
+    }
+
+    #[test]
+    fn numeric_boolean_flag_under_token_key_does_not_corrupt_output_regression() {
+        // The real-world trap: `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` names the
+        // feature being toggled, not a credential. Its value `1` must NOT be
+        // treated as a secret — masking a lone bit rewrites every unrelated
+        // `1` in the output (a version, a revision number, a timestamp),
+        // silently corrupting downstream parses such as `snapcraft
+        // list-revisions` version matching.
+        let env = vec![("HF_HUB_DISABLE_IMPLICIT_TOKEN".to_string(), "1".to_string())];
+        let line = "7  2024-06-01T00:00:00Z  amd64  1.0.0  stable";
+        assert_eq!(string(line, &env), line);
+    }
+
+    #[test]
+    fn numeric_zero_flag_under_key_suffix_stays_unmasked_regression() {
+        // `0` is the other canonical numeric enable-flag; it must not rewrite
+        // unrelated zeros in output (`v0.9.0`, a revision `10`).
+        let env = vec![("GPG_SIGN_KEY".to_string(), "0".to_string())];
+        assert_eq!(string("sign=0 rev 10 v0.9.0", &env), "sign=0 rev 10 v0.9.0");
     }
 }

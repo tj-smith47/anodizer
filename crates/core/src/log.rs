@@ -67,6 +67,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use colored::Colorize;
 
+/// Secret-redaction table shape shared by [`StageLogger`] and
+/// [`crate::context::Context`]: a live, shareable cell of `(env-var name,
+/// value)` pairs. Named so the field/parameter declarations that use it
+/// don't repeat the nested `Arc<Mutex<Vec<(String, String)>>>` shape (which
+/// clippy's `type_complexity` lint flags on the raw form).
+pub(crate) type RedactionEnv = Arc<Mutex<Vec<(String, String)>>>;
+
 /// Process-global section nesting depth. Drives the 2-space-per-level
 /// indentation applied to every stderr log line so output produced
 /// inside a [`StageLogger::group`] sits visually beneath its header.
@@ -578,11 +585,18 @@ pub struct StageLogger {
     #[allow(dead_code)]
     stage: &'static str,
     verbosity: Verbosity,
-    /// Env-pairs used to redact subprocess output and bail messages. The
-    /// inner vec is shared via `Arc` so cloning a logger does not copy the
-    /// env every time. `None` means redaction is a no-op (matches the
-    /// behaviour before this field existed).
-    env: Option<Arc<Vec<(String, String)>>>,
+    /// Env-pairs used to redact subprocess output and bail messages, behind
+    /// a shared `Arc<Mutex<_>>` cell rather than a frozen `Arc<Vec<_>>`.
+    /// [`crate::context::Context::logger`] hands every `StageLogger` a clone
+    /// of the SAME cell it refreshes on every `env_source` mutation (e.g.
+    /// the crates.io Trusted-Publishing token mint), so a logger constructed
+    /// before a mid-run credential mint still redacts secrets minted
+    /// afterward — [`StageLogger::redact`] reads the cell at call time, not
+    /// a snapshot taken at construction. `StageLogger::with_env` wraps its
+    /// argument in a private, never-mutated cell, so manual construction
+    /// keeps its previous frozen-table behavior. `None` means redaction is a
+    /// no-op (matches the behaviour before this field existed).
+    env: Option<RedactionEnv>,
     /// Optional in-memory capture sink. When present, every log method also
     /// appends to the capture vec (after the stderr write). `None` means
     /// the logger only writes to stderr (production default).
@@ -636,11 +650,28 @@ impl StageLogger {
     }
 
     /// Attach an env-pairs list to drive secret redaction inside
-    /// [`StageLogger::check_output`] and [`StageLogger::redact`]. The list
-    /// is shared via `Arc`, so passing the same vec to many loggers does
-    /// not duplicate the underlying storage.
+    /// [`StageLogger::check_output`] and [`StageLogger::redact`]. Wraps the
+    /// list in a private cell that nothing else mutates — a frozen table,
+    /// same as before this method's underlying storage moved to
+    /// `Arc<Mutex<_>>`. Use [`StageLogger::with_shared_env`] to attach a
+    /// cell that can still change after construction.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
-        self.env = Some(Arc::new(env));
+        self.env = Some(Arc::new(Mutex::new(env)));
+        self
+    }
+
+    /// Attach a shared, mutable redaction cell: unlike [`StageLogger::with_env`],
+    /// updates the caller makes to `env` AFTER this call are visible to
+    /// every clone of this logger, because [`StageLogger::redact`] reads
+    /// the cell live rather than a snapshot taken here.
+    ///
+    /// Used exclusively by [`crate::context::Context::logger`], which hands
+    /// out clones of its own live redaction cell — refreshed on every
+    /// `env_source` mutation — so a logger built before a mid-run
+    /// credential mint (e.g. crates.io Trusted Publishing's
+    /// `CARGO_REGISTRY_TOKEN`) still redacts it.
+    pub(crate) fn with_shared_env(mut self, env: RedactionEnv) -> Self {
+        self.env = Some(env);
         self
     }
 
@@ -665,7 +696,10 @@ impl StageLogger {
         }
     }
 
-    /// Redact secret values from `s` using this logger's attached env.
+    /// Redact secret values from `s` using this logger's attached env,
+    /// re-read from the cell at call time (see [`Self::with_shared_env`]) —
+    /// a secret added to a live cell after this logger was constructed is
+    /// still masked.
     ///
     /// When no env has been attached (the default for `StageLogger::new`),
     /// returns the input unchanged. Combines `redact::string` (for
@@ -673,8 +707,11 @@ impl StageLogger {
     /// (for inline `https://<user>:<pass>@host` URL credentials that may
     /// not match any exported env-var value).
     pub fn redact(&self, s: &str) -> String {
-        match self.env.as_deref() {
-            Some(env) => crate::redact::with_env(s, env),
+        match &self.env {
+            Some(env) => {
+                let table = env.lock().unwrap_or_else(|e| e.into_inner());
+                crate::redact::with_env(s, &table)
+            }
             None => crate::redact::redact_url_credentials(s),
         }
     }
@@ -1004,7 +1041,10 @@ impl StageLogger {
     /// Normal-verbosity clone so ciphertext is never teed live, yet must keep
     /// the original logger's redaction coverage.
     pub fn redaction_env(&self) -> Vec<(String, String)> {
-        self.env.as_deref().cloned().unwrap_or_default()
+        self.env
+            .as_ref()
+            .map(|env| env.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .unwrap_or_default()
     }
 
     /// Check if verbose output is enabled.
@@ -2078,14 +2118,15 @@ mod tests {
 
     #[test]
     fn test_with_env_is_arc_shared() {
-        // Cloning a logger should share the env vec via Arc, not deep-copy.
-        // Verified by pointer equality on the inner Vec backing the Arc.
+        // Cloning a logger should share the env cell via Arc, not deep-copy.
+        // Verified by `Arc::ptr_eq` on the shared `Arc<Mutex<Vec<_>>>` cell.
         let env = vec![("K".to_string(), "v_long_enough_to_be_a_token".to_string())];
         let a = StageLogger::new("a", Verbosity::Normal).with_env(env);
         let b = a.clone();
-        let pa: *const Vec<(String, String)> = a.env.as_ref().unwrap().as_ref();
-        let pb: *const Vec<(String, String)> = b.env.as_ref().unwrap().as_ref();
-        assert_eq!(pa, pb);
+        assert!(Arc::ptr_eq(
+            a.env.as_ref().unwrap(),
+            b.env.as_ref().unwrap()
+        ));
     }
 
     #[test]
