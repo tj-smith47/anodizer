@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-17
+
+### Features
+
+* 516519c88a41 derive cargo publish order + crate tag_template defaults ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* d591266bf753 honor workspace `exclude` on Windows ([@tj-smith47](https://github.com/tj-smith47))
+* ba35fec5cf66 guard the mutable `latest` dist-tag against version regression ([@tj-smith47](https://github.com/tj-smith47))
+* b615ddb6db37 R1-R8 one-way-door reliability + release verification gates ([@tj-smith47](https://github.com/tj-smith47))
+* 7dd290af1c90 don't mask boolean 0/1 flags + require EnvSource::vars() ([@tj-smith47](https://github.com/tj-smith47))
+* f3f978e2bfc4 template-expand signs.stdin and docker_signs.stdin ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* e6876dc5d09a add bump/continue/publish/promote to Quick Start ([@tj-smith47](https://github.com/tj-smith47))
+* dc45548edba5 flesh out Quick Start examples with real flags ([@tj-smith47](https://github.com/tj-smith47))
+* 86a3c770b7d8 sync feature list with shipped surface ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.20.0] - 2026-07-14
 
 ### Features
@@ -684,7 +706,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...v0.18.0
