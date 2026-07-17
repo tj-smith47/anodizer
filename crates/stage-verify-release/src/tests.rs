@@ -3051,3 +3051,808 @@ fn run_asset_gate_ignores_skip_verify_release_and_still_blocks() {
         "--skip=verify-release must NOT bypass the pre-submitter asset gate"
     );
 }
+
+/// Cryptographic verification of published signature/certificate assets:
+/// a signature that is present and non-empty but does NOT verify against
+/// its payload must hard-fail; underivable material or an absent verifier
+/// tool must fall back to the presence-only check, never fail.
+#[cfg(unix)]
+mod signature_crypto_verification {
+    use super::*;
+    use anodizer_core::config::SignConfig;
+    use anodizer_stage_release::PublishedAsset;
+
+    /// Write an executable shell script and return its path.
+    fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod script");
+        path
+    }
+
+    /// Register an on-disk artifact under the context's dist dir.
+    fn add_file_artifact(
+        ctx: &mut Context,
+        dir: &std::path::Path,
+        kind: ArtifactKind,
+        name: &str,
+        crate_name: &str,
+        bytes: &[u8],
+    ) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("artifact bytes");
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: name.to_string(),
+            path: path.clone(),
+            target: None,
+            crate_name: crate_name.to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        path
+    }
+
+    fn published(name: &str, size: u64) -> PublishedAsset {
+        PublishedAsset {
+            name: name.to_string(),
+            size,
+            digest: None,
+            download_url: format!("http://127.0.0.1:9/assets/{name}"),
+        }
+    }
+
+    /// Detached-signature gpg-style sign config pointing at a stub verifier.
+    fn gpg_sign_config(cmd: &std::path::Path) -> SignConfig {
+        SignConfig {
+            cmd: Some(cmd.to_string_lossy().to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    fn contents_ctx(dist: &std::path::Path, signs: Vec<SignConfig>) -> Context {
+        TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dry_run(false)
+            .signs(signs)
+            .crates(vec![published_crate("app", None)])
+            .dist(dist.to_path_buf())
+            .sealed_env()
+            .build()
+    }
+
+    fn run_contents_for(
+        ctx: &Context,
+        crate_name: &str,
+        expected: &[String],
+        published: &[PublishedAsset],
+    ) -> Vec<String> {
+        let crate_cfg = published_crate(crate_name, None);
+        let release_cfg = crate_cfg.release.clone().expect("release block");
+        let log = ctx.logger("verify-release");
+        let mut issues = Vec::new();
+        super::super::verify_published_contents(
+            ctx,
+            &log,
+            &crate_cfg,
+            &release_cfg,
+            expected,
+            published,
+            &mut issues,
+        );
+        issues
+    }
+
+    fn run_contents(
+        ctx: &Context,
+        expected: &[String],
+        published: &[PublishedAsset],
+    ) -> Vec<String> {
+        run_contents_for(ctx, "app", expected, published)
+    }
+
+    #[test]
+    fn cryptographically_invalid_signature_is_a_hard_failure() {
+        // A verifier that reports a BAD signature (gpg exit 1) on a present,
+        // non-empty signature asset must push an issue — presence alone is
+        // not proof the signature verifies.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = write_script(
+            tmp.path(),
+            "gpg",
+            "#!/bin/sh\necho 'gpg: BAD signature from test' >&2\nexit 1\n",
+        );
+        let mut ctx = contents_ctx(tmp.path(), vec![gpg_sign_config(&stub)]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            b"forged signature bytes",
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app.tar.gz.sig", 22)]);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app.tar.gz.sig") && i.contains("cryptographic")),
+            "an invalid signature must be reported as a cryptographic failure: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn cryptographically_valid_signature_passes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = write_script(tmp.path(), "gpg", "#!/bin/sh\nexit 0\n");
+        let mut ctx = contents_ctx(tmp.path(), vec![gpg_sign_config(&stub)]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            b"good signature bytes",
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app.tar.gz.sig", 20)]);
+        assert!(
+            issues.is_empty(),
+            "a verifying signature must not be an issue: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn absent_verifier_tool_falls_back_to_presence_only() {
+        // The configured signer binary does not exist in the verify
+        // environment: the check must keep today's presence + non-empty
+        // behavior, never fail.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = gpg_sign_config(std::path::Path::new("/nonexistent-anodizer-test/gpg"));
+        cfg.cmd = Some("/nonexistent-anodizer-test/gpg".to_string());
+        let mut ctx = contents_ctx(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            b"signature bytes",
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app.tar.gz.sig", 15)]);
+        assert!(
+            issues.is_empty(),
+            "an absent verifier must fall back, never fail: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn underivable_keyless_material_falls_back_to_presence_only() {
+        // Keyless cosign outside GitHub Actions with no configured
+        // identity/issuer: the material is not derivable, so the check must
+        // fall back to presence + non-empty.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // A stub that would FAIL if invoked — proving fallback never spawns it.
+        let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 1\n");
+        let cfg = SignConfig {
+            cmd: Some(stub.to_string_lossy().to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "--output-signature".to_string(),
+                "{{ .Signature }}".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            ..Default::default()
+        };
+        let mut ctx = contents_ctx(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            b"signature bytes",
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app.tar.gz.sig", 15)]);
+        assert!(
+            issues.is_empty(),
+            "underivable keyless material must fall back, never fail: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_tail_signature_failure_reaches_the_contents_gate() {
+        // A signature name minted from a dynamic-tail template has no static
+        // suffix, so classification rides on its ArtifactKind — and an
+        // invalid such signature must still surface as an issue.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = write_script(
+            tmp.path(),
+            "gpg",
+            "#!/bin/sh\necho 'gpg: BAD signature from test' >&2\nexit 1\n",
+        );
+        let cfg = SignConfig {
+            signature: Some("{{ .Artifact }}.sig-{{ Version }}".to_string()),
+            ..gpg_sign_config(&stub)
+        };
+        let mut ctx = contents_ctx(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig-1.0.0",
+            "app",
+            b"forged signature bytes",
+        );
+
+        let expected = vec!["app.tar.gz.sig-1.0.0".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app.tar.gz.sig-1.0.0", 22)]);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app.tar.gz.sig-1.0.0") && i.contains("cryptographic")),
+            "a dynamic-tail signature failing verification must be an issue: {issues:?}"
+        );
+    }
+
+    /// Run a real tool with the given env pairs, panicking on failure.
+    fn run_tool(cmd: &str, args: &[&str], env: &[(&str, &str)]) {
+        let mut command = std::process::Command::new(cmd);
+        command.args(args);
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        let out = command.output().expect("spawn tool");
+        assert!(
+            out.status.success(),
+            "{cmd} {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn real_gpg_rejects_wrong_payload_and_accepts_matching_signature() {
+        if !anodizer_core::tool_detect::on_path("gpg") {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("gnupghome");
+        std::fs::create_dir(&home).expect("gnupg home");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod gnupg home");
+        }
+        let home_str = home.to_string_lossy().to_string();
+        let genv = [("GNUPGHOME", home_str.as_str())];
+        run_tool(
+            "gpg",
+            &[
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "",
+                "--quick-generate-key",
+                "anodizer-verify-test",
+                "ed25519",
+                "sign",
+                "never",
+            ],
+            &genv,
+        );
+
+        let payload = tmp.path().join("app.tar.gz");
+        std::fs::write(&payload, b"real payload bytes").expect("payload");
+        let decoy = tmp.path().join("decoy.bin");
+        std::fs::write(&decoy, b"different bytes entirely").expect("decoy");
+        // A REAL signature over the WRONG content, parked as the payload's
+        // sidecar: byte-plausible, cryptographically false.
+        let sig = tmp.path().join("app.tar.gz.sig");
+        run_tool(
+            "gpg",
+            &[
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "",
+                "--output",
+                sig.to_string_lossy().as_ref(),
+                "--detach-sig",
+                decoy.to_string_lossy().as_ref(),
+            ],
+            &genv,
+        );
+
+        let cfg = SignConfig {
+            env: Some(vec![format!("GNUPGHOME={home_str}")]),
+            ..gpg_sign_config(std::path::Path::new("gpg"))
+        };
+        let mut ctx = contents_ctx(tmp.path(), vec![cfg.clone()]);
+        let sig_bytes = std::fs::read(&sig).expect("sig bytes");
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"real payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            &sig_bytes,
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(
+            &ctx,
+            &expected,
+            &[published("app.tar.gz.sig", sig_bytes.len() as u64)],
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app.tar.gz.sig") && i.contains("cryptographic")),
+            "real gpg must reject a signature over different content: {issues:?}"
+        );
+
+        // The matching signature over the actual payload must pass clean.
+        std::fs::remove_file(&sig).expect("drop forged sig");
+        run_tool(
+            "gpg",
+            &[
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "",
+                "--output",
+                sig.to_string_lossy().as_ref(),
+                "--detach-sig",
+                payload.to_string_lossy().as_ref(),
+            ],
+            &genv,
+        );
+        let good_bytes = std::fs::read(&sig).expect("good sig bytes");
+        let mut good_ctx = contents_ctx(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut good_ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"real payload bytes",
+        );
+        add_file_artifact(
+            &mut good_ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            &good_bytes,
+        );
+        let issues = run_contents(
+            &good_ctx,
+            &expected,
+            &[published("app.tar.gz.sig", good_bytes.len() as u64)],
+        );
+        assert!(
+            issues.is_empty(),
+            "real gpg must accept the matching signature: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn real_cosign_keyed_rejects_wrong_payload_and_accepts_matching_signature() {
+        if !anodizer_core::tool_detect::on_path("cosign") {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prefix = tmp.path().join("ci");
+        let cenv = [("COSIGN_PASSWORD", ""), ("COSIGN_YES", "true")];
+        run_tool(
+            "cosign",
+            &[
+                "generate-key-pair",
+                "--output-key-prefix",
+                prefix.to_string_lossy().as_ref(),
+            ],
+            &cenv,
+        );
+        let key = format!("{}.key", prefix.display());
+
+        let payload = tmp.path().join("app.tar.gz");
+        std::fs::write(&payload, b"real payload bytes").expect("payload");
+        let decoy = tmp.path().join("decoy.bin");
+        std::fs::write(&decoy, b"different bytes entirely").expect("decoy");
+        let sig = tmp.path().join("app.tar.gz.sig");
+        run_tool(
+            "cosign",
+            &[
+                "sign-blob",
+                "--key",
+                key.as_str(),
+                "--tlog-upload=false",
+                "--yes",
+                "--output-signature",
+                sig.to_string_lossy().as_ref(),
+                decoy.to_string_lossy().as_ref(),
+            ],
+            &cenv,
+        );
+
+        let cfg = SignConfig {
+            cmd: Some("cosign".to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "--key".to_string(),
+                key.clone(),
+                "--tlog-upload=false".to_string(),
+                "--yes".to_string(),
+                "--output-signature".to_string(),
+                "{{ .Signature }}".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            env: Some(vec!["COSIGN_PASSWORD=".to_string()]),
+            ..Default::default()
+        };
+        let mut ctx = contents_ctx(tmp.path(), vec![cfg.clone()]);
+        let sig_bytes = std::fs::read(&sig).expect("sig bytes");
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"real payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            &sig_bytes,
+        );
+
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(
+            &ctx,
+            &expected,
+            &[published("app.tar.gz.sig", sig_bytes.len() as u64)],
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app.tar.gz.sig") && i.contains("cryptographic")),
+            "real cosign must reject a keyed signature over different content: {issues:?}"
+        );
+
+        std::fs::remove_file(&sig).expect("drop forged sig");
+        run_tool(
+            "cosign",
+            &[
+                "sign-blob",
+                "--key",
+                key.as_str(),
+                "--tlog-upload=false",
+                "--yes",
+                "--output-signature",
+                sig.to_string_lossy().as_ref(),
+                payload.to_string_lossy().as_ref(),
+            ],
+            &cenv,
+        );
+        let good_bytes = std::fs::read(&sig).expect("good sig bytes");
+        let mut good_ctx = contents_ctx(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut good_ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"real payload bytes",
+        );
+        add_file_artifact(
+            &mut good_ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            &good_bytes,
+        );
+        let issues = run_contents(
+            &good_ctx,
+            &expected,
+            &[published("app.tar.gz.sig", good_bytes.len() as u64)],
+        );
+        assert!(
+            issues.is_empty(),
+            "real cosign must accept the matching keyed signature: {issues:?}"
+        );
+    }
+
+    /// Serve `bytes` as the body of every request to a local HTTP server.
+    fn spawn_asset_server(bytes: &'static [u8]) -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(bytes);
+            }
+        });
+        addr
+    }
+
+    /// gpg stub that rejects (exit 1) exactly when the signature FILE it is
+    /// handed contains the marker word `tampered` — so the test can tell
+    /// which bytes (local vs downloaded-published) were actually verified.
+    fn tamper_sensitive_gpg(dir: &std::path::Path) -> std::path::PathBuf {
+        write_script(
+            dir,
+            "gpg",
+            concat!(
+                "#!/bin/sh\n",
+                "[ -n \"$STATE\" ] && echo \"$@\" >> \"$STATE/calls\"\n",
+                "if grep -q tampered \"$2\"; then\n",
+                "  echo 'gpg: BAD signature from test' >&2\n",
+                "  exit 1\n",
+                "fi\n",
+                "exit 0\n",
+            ),
+        )
+    }
+
+    #[test]
+    fn tampered_published_signature_bytes_are_caught() {
+        // The locally-produced signature verifies, but the PUBLISHED copy
+        // was replaced after upload: the gate must verify the downloaded
+        // published bytes, not the local ones, and report the tamper.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = tamper_sensitive_gpg(tmp.path());
+        let mut ctx = contents_ctx(tmp.path(), vec![gpg_sign_config(&stub)]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+            b"good local signature bytes",
+        );
+
+        let served: &'static [u8] = b"tampered published signature bytes";
+        let addr = spawn_asset_server(served);
+        let asset = PublishedAsset {
+            name: "app.tar.gz.sig".to_string(),
+            size: served.len() as u64,
+            digest: None,
+            download_url: format!("http://{addr}/assets/app.tar.gz.sig"),
+        };
+        let expected = vec!["app.tar.gz.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[asset]);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app.tar.gz.sig") && i.contains("cryptographic")),
+            "tampered PUBLISHED signature bytes must fail the gate even though \
+             the local bytes verify: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn renamed_signature_upload_is_crypto_checked_under_its_published_name() {
+        // An upload that renamed the signature file: the crypto verdict is
+        // recorded under the PUBLISHED name, so the renamed asset still gets
+        // its check instead of silently falling back.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = write_script(
+            tmp.path(),
+            "gpg",
+            "#!/bin/sh\necho 'gpg: BAD signature from test' >&2\nexit 1\n",
+        );
+        let mut ctx = contents_ctx(tmp.path(), vec![gpg_sign_config(&stub)]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+            b"payload bytes",
+        );
+        // The local file keeps the config-derived name; the registered asset
+        // NAME is the custom destination the upload used.
+        let sig_path = tmp.path().join("app.tar.gz.sig");
+        std::fs::write(&sig_path, b"forged signature bytes").expect("sig bytes");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Signature,
+            name: "app-v1-custom.sig".to_string(),
+            path: sig_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let expected = vec!["app-v1-custom.sig".to_string()];
+        let issues = run_contents(&ctx, &expected, &[published("app-v1-custom.sig", 22)]);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("app-v1-custom.sig") && i.contains("cryptographic")),
+            "a renamed signature upload must be crypto-checked under its \
+             published name: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn each_crate_signature_verifies_against_its_own_payload() {
+        // Two crates on one release: each crate's pass must verify its OWN
+        // signature/payload pair — crate-a's clean verdict must never credit
+        // crate-b's bad signature.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = tamper_sensitive_gpg(tmp.path());
+        let cfg = SignConfig {
+            env: Some(vec![format!("STATE={}", state.display())]),
+            ..gpg_sign_config(&stub)
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dry_run(false)
+            .signs(vec![cfg])
+            .crates(vec![
+                published_crate("crate-a", None),
+                published_crate("crate-b", None),
+            ])
+            .dist(tmp.path().to_path_buf())
+            .sealed_env()
+            .build();
+        let a_payload = add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "a.tar.gz",
+            "crate-a",
+            b"crate-a payload",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "a.tar.gz.sig",
+            "crate-a",
+            b"good signature over a",
+        );
+        let b_payload = add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "b.tar.gz",
+            "crate-b",
+            b"crate-b payload",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "b.tar.gz.sig",
+            "crate-b",
+            b"tampered signature over b",
+        );
+
+        let a_issues = run_contents_for(
+            &ctx,
+            "crate-a",
+            &["a.tar.gz.sig".to_string()],
+            &[published("a.tar.gz.sig", 21)],
+        );
+        assert!(
+            a_issues.is_empty(),
+            "crate-a's valid signature must pass its own pass: {a_issues:?}"
+        );
+        let b_issues = run_contents_for(
+            &ctx,
+            "crate-b",
+            &["b.tar.gz.sig".to_string()],
+            &[published("b.tar.gz.sig", 25)],
+        );
+        assert!(
+            b_issues
+                .iter()
+                .any(|i| i.contains("b.tar.gz.sig") && i.contains("cryptographic")),
+            "crate-b's bad signature must fail crate-b's pass — crate-a's \
+             clean verdict may not credit it: {b_issues:?}"
+        );
+        let calls = std::fs::read_to_string(state.join("calls")).expect("calls");
+        let calls: Vec<&str> = calls.lines().collect();
+        assert_eq!(
+            calls,
+            vec![
+                format!("--verify {p}.sig {p}", p = a_payload.display()).as_str(),
+                format!("--verify {p}.sig {p}", p = b_payload.display()).as_str(),
+            ],
+            "each crate's signature must be verified against its OWN payload"
+        );
+    }
+}

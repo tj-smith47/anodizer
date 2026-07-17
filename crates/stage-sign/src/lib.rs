@@ -13,10 +13,15 @@ mod keyload;
 mod process;
 mod tuf_cache;
 mod verify;
+mod verify_assets;
 
 pub use expected::expected_signature_assets;
 pub use helpers::VALID_SIGN_ARTIFACT_FILTERS;
 pub use keyload::{CosignKeyLoad, verify_cosign_key_loads};
+pub use verify_assets::{
+    PublishedSignatureSource, SignatureCryptoOutcome, SignatureVerification,
+    verify_signature_assets,
+};
 
 use helpers::{default_sign_cmd, prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};

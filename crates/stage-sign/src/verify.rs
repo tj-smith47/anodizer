@@ -412,7 +412,17 @@ pub(crate) fn derive_cosign_public_key(
         .output()
         .with_context(|| format!("sign verify: failed to spawn '{cmd} public-key'"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The child ran under the job env, which may hold a literal secret
+        // from the sign config's `env:` block that the process-env redaction
+        // table has never seen — scrub those values (plus the process env)
+        // out of the captured stderr before it can enter the error chain.
+        let env_pairs: Vec<(String, String)> = env
+            .iter()
+            .flat_map(|pairs| pairs.iter().cloned())
+            .chain(std::env::vars())
+            .collect();
+        let stderr =
+            anodizer_core::redact::string(&String::from_utf8_lossy(&output.stderr), &env_pairs);
         anyhow::bail!(
             "sign verify: deriving the public key for '{key_ref}' failed ({}): {}",
             output.status,
@@ -422,11 +432,39 @@ pub(crate) fn derive_cosign_public_key(
     Ok(())
 }
 
-/// Execute one verification job: spawn, capture, redact, and fail on a
-/// non-zero verifier exit. The full argv is verbose-only detail; the
-/// default-level signal is the per-config `verified N signature(s)` result
-/// the caller emits.
-pub(crate) fn execute_verify_job(job: &VerifyJob, log: &StageLogger) -> Result<()> {
+/// Wall-clock bound on one verifier invocation. Cosign completes in seconds
+/// even with a cold TUF cache and live tlog lookups; the bound exists so a
+/// stalled tlog/TUF connection cannot hang the release indefinitely, while
+/// sitting far above any legitimate slow path.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Spawn one verification job under `timeout` and return its redacted
+/// output: the job env and the process env are scrubbed from the verifier's
+/// stdio before either can reach a log line or an error message. A verifier
+/// that outlives the deadline is killed (whole subtree) and reported as an
+/// error — which the classified caller maps to
+/// [`VerifyRunVerdict::Inconclusive`], never a positive rejection.
+fn run_verify_command_with_timeout(
+    job: &VerifyJob,
+    log: &StageLogger,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
+    // A secret written literally in the sign config's `env:` reaches the
+    // child's environment without ever being in the process env, so the
+    // logger's redaction table doesn't know it and the verbose live tee
+    // inside `run_capture_timeout` would stream it unmasked. Extend a
+    // sibling logger's table with the rendered job-env values (same
+    // snapshot-and-extend mechanism as the blob KMS path) so the tee masks
+    // them exactly like process-env secrets; the post-spawn scrub below
+    // stays as defense-in-depth for the captured buffers.
+    let log = match &job.env {
+        Some(env_vars) if !env_vars.is_empty() => {
+            let mut pairs = log.redaction_env();
+            pairs.extend(env_vars.iter().cloned());
+            log.clone().with_env(pairs)
+        }
+        _ => log.clone(),
+    };
     log.verbose(&format!(
         "verifying {}: {} {}",
         job.what,
@@ -434,23 +472,20 @@ pub(crate) fn execute_verify_job(job: &VerifyJob, log: &StageLogger) -> Result<(
         job.args.join(" ")
     ));
     let mut command = Command::new(&job.cmd);
-    command
-        .args(&job.args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.args(&job.args).stdin(Stdio::null());
     if let Some(ref env_vars) = job.env {
         for (k, v) in env_vars {
             command.env(k, v);
         }
     }
-    let output = command
-        .output()
-        .with_context(|| format!("verify: failed to run '{}' for {}", job.cmd, job.what))?;
+    let output = anodizer_core::run::run_capture_timeout(
+        &mut command,
+        &log,
+        &format!("signature verification of {}", job.what),
+        timeout,
+    )
+    .with_context(|| format!("verify: failed to run '{}' for {}", job.cmd, job.what))?;
 
-    // Same redaction discipline as the sign path: scrub the job env and the
-    // process env from the verifier's stdio before it can reach a log line
-    // or an error message.
     let env_pairs: Vec<(String, String)> = job
         .env
         .iter()
@@ -464,10 +499,127 @@ pub(crate) fn execute_verify_job(job: &VerifyJob, log: &StageLogger) -> Result<(
     redacted.stderr =
         anodizer_core::redact::string(&String::from_utf8_lossy(&redacted.stderr), &env_pairs)
             .into_bytes();
+    Ok(redacted)
+}
 
+/// Execute one verification job: spawn, capture, redact, and fail on a
+/// non-zero verifier exit. The full argv is verbose-only detail; the
+/// default-level signal is the per-config `verified N signature(s)` result
+/// the caller emits.
+pub(crate) fn execute_verify_job(job: &VerifyJob, log: &StageLogger) -> Result<()> {
+    let redacted = run_verify_command_with_timeout(job, log, VERIFY_TIMEOUT)?;
     log.check_output(redacted, &job.cmd)
         .with_context(|| format!("signature verification failed for {}", job.what))?;
     Ok(())
+}
+
+/// Classified result of a standalone re-verification run, distinguishing a
+/// signature the verifier POSITIVELY rejected from one it could not judge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VerifyRunVerdict {
+    /// The verifier exited 0: the signature cryptographically verifies.
+    Verified,
+    /// The verifier positively rejected the signature (gpg `BAD signature` /
+    /// exit 1, cosign signature-mismatch diagnostics): the bytes do not
+    /// verify against the payload under the configured material.
+    Invalid(String),
+    /// The verifier failed for a reason that does NOT prove the signature
+    /// bad (missing public key, unreachable transparency log, malformed
+    /// invocation): the caller must fall back, never fail.
+    Inconclusive(String),
+}
+
+/// Substrings (matched case-insensitively) that identify a verifier failure
+/// as a POSITIVE cryptographic rejection rather than an environmental one.
+///
+/// Restricted to gpg's bad-signature wording plus cosign's LOCAL-crypto-layer
+/// wordings only. Broader phrases that cosign also emits on transient
+/// failures are deliberately absent: bare `verification error` appears in
+/// TUF's `length/hash verification error`, bare `invalid signature` in the
+/// TLS handshake's `tls: invalid signature by the server certificate`, bare
+/// `failed to verify signature` in SCT/network errors, and
+/// `no matching signatures` in identity-mismatch diagnostics — none of which
+/// prove the signature bytes bad. An unlisted failure classifies as
+/// [`VerifyRunVerdict::Inconclusive`], because a re-verification environment
+/// can legitimately lack key material, tlog reachability, or (for keyless)
+/// the signing workflow's OIDC identity.
+const INVALID_SIGNATURE_MARKERS: &[&str] = &[
+    "bad signature",
+    "invalid signature when validating",
+    "crypto/rsa: verification error",
+    "crypto/ecdsa: verification error",
+    "ed25519: invalid signature",
+    "failed to verify signature using ecdsa",
+];
+
+/// Execute one verification job and classify the outcome instead of
+/// hard-failing on any non-zero exit — the contract the post-publish
+/// re-verification path needs, where only a POSITIVE rejection may fail the
+/// gate. gpg reserves exit code 1 for a bad signature (other errors exit 2),
+/// so it classifies by code as well as by message.
+pub(crate) fn execute_verify_job_classified(
+    job: &VerifyJob,
+    log: &StageLogger,
+) -> VerifyRunVerdict {
+    execute_verify_job_classified_with_timeout(job, log, VERIFY_TIMEOUT)
+}
+
+/// [`execute_verify_job_classified`] with an explicit deadline, so tests can
+/// exercise the timeout path without waiting out the production bound.
+pub(crate) fn execute_verify_job_classified_with_timeout(
+    job: &VerifyJob,
+    log: &StageLogger,
+    timeout: std::time::Duration,
+) -> VerifyRunVerdict {
+    let output = match run_verify_command_with_timeout(job, log, timeout) {
+        Ok(o) => o,
+        Err(e) => return VerifyRunVerdict::Inconclusive(format!("{e:#}")),
+    };
+    if output.status.success() {
+        return VerifyRunVerdict::Verified;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = {
+        let d = stderr.trim();
+        if d.is_empty() {
+            format!("verifier exited {}", output.status)
+        } else {
+            d.to_string()
+        }
+    };
+    classify_verifier_failure(
+        is_gpg_cmd(&job.cmd),
+        output.status.code(),
+        &stdout,
+        &stderr,
+        detail,
+    )
+}
+
+/// Classify a non-zero verifier exit into a POSITIVE rejection or an
+/// environmental failure. Pure — no subprocess — so the marker set is
+/// unit-testable against real verifier wordings.
+///
+/// gpg reserves exit code 1 for a bad signature (environmental errors exit
+/// 2), so gpg additionally classifies by exit code.
+pub(crate) fn classify_verifier_failure(
+    is_gpg: bool,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    detail: String,
+) -> VerifyRunVerdict {
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    let positively_rejected = INVALID_SIGNATURE_MARKERS
+        .iter()
+        .any(|m| combined.contains(m))
+        || (is_gpg && exit_code == Some(1));
+    if positively_rejected {
+        VerifyRunVerdict::Invalid(detail)
+    } else {
+        VerifyRunVerdict::Inconclusive(detail)
+    }
 }
 
 #[cfg(test)]
@@ -1035,6 +1187,203 @@ mod tests {
         assert!(
             format!("{err:#}").contains("bad key material"),
             "error must carry stderr: {err:#}"
+        );
+    }
+
+    /// A literal secret from the sign config's `env:` block (never present in
+    /// the process env) that the tool echoes back on failure must be scrubbed
+    /// from the error before it enters the chain — while the key_ref and exit
+    /// status stay intact for diagnosis.
+    #[cfg(unix)]
+    #[test]
+    fn derive_public_key_failure_scrubs_job_env_secrets() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("cosign");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"wrong password: $COSIGN_PASSWORD\" >&2\nexit 1\n",
+        )
+        .expect("write script");
+        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+
+        let secret = "hunter2-literal-job-env-secret";
+        assert!(
+            std::env::vars().all(|(_, v)| !v.contains(secret)),
+            "test precondition: secret must not be in the process env"
+        );
+        let env = vec![("COSIGN_PASSWORD".to_string(), secret.to_string())];
+        let out = tmp.path().join("derived.pub");
+        let err = derive_cosign_public_key(script.to_str().unwrap(), "env://K", Some(&env), &out)
+            .expect_err("must fail");
+        let rendered = format!("{err:#}");
+        assert!(
+            !rendered.contains(secret),
+            "job-env secret must be scrubbed from the error: {rendered}"
+        );
+        assert!(
+            rendered.contains("env://K") && rendered.contains("exit status"),
+            "error must still name the key_ref and status: {rendered}"
+        );
+    }
+
+    // ---- failure classification ----
+
+    fn classify_cosign(stderr: &str) -> VerifyRunVerdict {
+        classify_verifier_failure(false, Some(1), "", stderr, stderr.to_string())
+    }
+
+    /// Transient/network cosign wordings that CONTAIN crypto-sounding
+    /// substrings must never classify as a positive rejection — each of
+    /// these has produced a false release failure when matched broadly.
+    #[test]
+    fn transient_cosign_failures_classify_inconclusive() {
+        for stderr in [
+            // TUF metadata download failure.
+            "length/hash verification error: x",
+            // TLS handshake failure on the way to the tlog.
+            "tls: invalid signature by the server certificate: x",
+            // SCT / network failure.
+            "failed to verify signature: dial tcp: connection refused",
+            // Keyless identity mismatch in a split-OIDC re-verify leg.
+            "none of the expected identities matched what was in the \
+             certificate, got subjects [x] with issuer y",
+            "no matching signatures: rekor client unavailable",
+            "verification error: something transient",
+        ] {
+            assert!(
+                matches!(classify_cosign(stderr), VerifyRunVerdict::Inconclusive(_)),
+                "must be Inconclusive (fallback), got Invalid for: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn crypto_layer_cosign_rejections_classify_invalid() {
+        for stderr in [
+            "invalid signature when validating ASN.1",
+            "crypto/ecdsa: verification error",
+            "crypto/rsa: verification error",
+            "ed25519: invalid signature",
+            "failed to verify signature using ecdsa",
+        ] {
+            assert!(
+                matches!(classify_cosign(stderr), VerifyRunVerdict::Invalid(_)),
+                "must be Invalid, got Inconclusive for: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpg_exit_one_is_invalid_exit_two_is_inconclusive() {
+        let bad = classify_verifier_failure(
+            true,
+            Some(1),
+            "",
+            "gpg: BAD signature from test",
+            "detail".to_string(),
+        );
+        assert!(matches!(bad, VerifyRunVerdict::Invalid(_)));
+        let env_fail = classify_verifier_failure(
+            true,
+            Some(2),
+            "",
+            "gpg: Can't check signature: No public key",
+            "detail".to_string(),
+        );
+        assert!(
+            matches!(env_fail, VerifyRunVerdict::Inconclusive(_)),
+            "gpg exit 2 (environmental) must fall back, never fail"
+        );
+    }
+
+    /// A secret written literally in the sign config's `env:` (rendered into
+    /// the verifier's environment, absent from the process env) must be
+    /// masked in the verbose live tee of the verifier's stderr — the tee
+    /// must treat rendered job-env values exactly like process-env secrets.
+    #[cfg(unix)]
+    #[test]
+    fn literal_job_env_secret_masked_in_verbose_live_tee() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("cosign");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"token=$COSIGN_PASSWORD\" >&2\nexit 1\n",
+        )
+        .expect("write script");
+        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+
+        let secret = "hunter2-literal-config-secret";
+        assert!(
+            !std::env::vars().any(|(_, v)| v.contains(secret)),
+            "probe secret must not be in the process env for this test to prove anything"
+        );
+        let job = VerifyJob {
+            cmd: script.to_string_lossy().into_owned(),
+            args: vec!["verify-blob".to_string()],
+            env: Some(vec![("COSIGN_PASSWORD".to_string(), secret.to_string())]),
+            what: "live-tee redaction probe".to_string(),
+        };
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "sign-test",
+            anodizer_core::log::Verbosity::Verbose,
+        );
+        let verdict = execute_verify_job_classified(&job, &log);
+        assert!(
+            matches!(verdict, VerifyRunVerdict::Inconclusive(_)),
+            "environmental failure must classify Inconclusive, got {verdict:?}"
+        );
+        let teed: Vec<String> = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, msg)| msg)
+            .collect();
+        let joined = teed.join("\n");
+        assert!(
+            joined.contains("token=$COSIGN_PASSWORD"),
+            "the live tee must stream the line with the secret masked, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains(secret),
+            "a literal sign-config env secret leaked into the log stream:\n{joined}"
+        );
+    }
+
+    /// A verifier that outlives the deadline is killed and classified
+    /// Inconclusive — a stalled tlog connection must fall back, never hang
+    /// the gate or count as a rejection.
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_verifier_classifies_inconclusive() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("cosign");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("write script");
+        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+
+        let job = VerifyJob {
+            cmd: script.to_string_lossy().into_owned(),
+            args: vec!["verify-blob".to_string()],
+            env: None,
+            what: "timeout probe".to_string(),
+        };
+        let log =
+            anodizer_core::log::StageLogger::new("sign-test", anodizer_core::log::Verbosity::Quiet);
+        let verdict = execute_verify_job_classified_with_timeout(
+            &job,
+            &log,
+            std::time::Duration::from_millis(300),
+        );
+        assert!(
+            matches!(verdict, VerifyRunVerdict::Inconclusive(_)),
+            "a timed-out verifier must be Inconclusive, got {verdict:?}"
         );
     }
 }

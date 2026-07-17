@@ -635,23 +635,30 @@ fn verify_published_contents(
         issue_count: 0,
         digest_unverified: 0,
     };
-    for name in expected {
-        let Some(asset) = published.iter().find(|p| &p.name == name) else {
-            continue;
-        };
-        // A locally-registered asset is classified by its exact
-        // `ArtifactKind` (`Signature` / `Certificate`); an asset with no
-        // local entry (uploaded from a prior run, or produced outside this
-        // invocation) falls back to the suffix set, since no kind signal
-        // exists for it. The suffix set's dynamic-tail templates can
-        // false-fail this fallback, but a false digest-mismatch report is
-        // the safer failure mode than silently exempting real content.
-        let is_signature = match local.get(name) {
+    // A locally-registered asset is classified by its exact `ArtifactKind`
+    // (`Signature` / `Certificate`); an asset with no local entry (uploaded
+    // from a prior run, or produced outside this invocation) falls back to
+    // the suffix set, since no kind signal exists for it. The suffix set's
+    // dynamic-tail templates can false-fail this fallback, but a false
+    // digest-mismatch report is the safer failure mode than silently
+    // exempting real content.
+    let classify_signature = |name: &str| -> bool {
+        match local.get(name) {
             Some((_, _, kind)) => {
                 matches!(kind, ArtifactKind::Signature | ArtifactKind::Certificate)
             }
             None => anodizer_core::signature_assets::is_signature_asset(name, &signature_suffixes),
+        }
+    };
+    // Cryptographic re-verification of signature assets, resolved lazily so
+    // a release without a single present signature asset never spawns a
+    // verifier, derives a public key, or downloads anything.
+    let mut crypto: Option<anodizer_stage_sign::SignatureVerification> = None;
+    for name in expected {
+        let Some(asset) = published.iter().find(|p| &p.name == name) else {
+            continue;
         };
+        let is_signature = classify_signature(name);
         if is_signature {
             // GPG/cosign signatures embed a timestamp or random nonce, so a
             // resign of byte-identical input never reproduces the same
@@ -659,9 +666,6 @@ fn verify_published_contents(
             // signature as "mismatched" even though nothing is wrong.
             // Presence is still enforced upstream in the missing-asset
             // diff; this only exempts the byte-level comparison.
-            // Cryptographic verification (`cosign verify-blob` /
-            // `gpg --verify`) needs key material whose access differs per
-            // environment, so this check is presence plus non-empty only.
             // This is a DELIBERATE, narrower exemption than it looks: it
             // applies only inside this `if is_signature` arm. Every other
             // (payload) asset falls through to the digest/size comparison
@@ -675,11 +679,73 @@ fn verify_published_contents(
                     crate_cfg.name
                 ));
                 summary.issue_count += 1;
-            } else {
-                log.verbose(&format!(
-                    "asset '{name}' is a signature/certificate — present and non-empty, \
-                     digest comparison exempted"
-                ));
+                continue;
+            }
+            // In place of the exempted digest comparison, the signature is
+            // re-verified CRYPTOGRAPHICALLY against its payload with
+            // material derived from the resolved `signs:` config (keyed
+            // cosign public key, keyless identity, gpg keyring). The
+            // PUBLISHED signature bytes are downloaded and verified against
+            // the local payload (whose equality with the published payload
+            // the digest check establishes), so a signature corrupted or
+            // replaced on the release is caught; a failed download degrades
+            // to verifying the locally-produced bytes. Only a POSITIVE
+            // rejection fails; any environmental shortfall (tool or key
+            // material absent in this leg, download unavailable) falls back
+            // to the presence + non-empty check above.
+            let verification = crypto.get_or_insert_with(|| {
+                let download_dir = tempfile::Builder::new()
+                    .prefix("anodizer-verify-sig-")
+                    .tempdir();
+                let source = match &download_dir {
+                    Ok(dir) => published_signature_source(
+                        &local,
+                        published,
+                        expected,
+                        &classify_signature,
+                        ctx.options.token.as_deref(),
+                        dir.path(),
+                        log,
+                    ),
+                    Err(e) => {
+                        log.verbose(&format!(
+                            "could not create a download dir for published signature \
+                             bytes ({e}) — verifying locally-produced bytes instead"
+                        ));
+                        anodizer_stage_sign::PublishedSignatureSource::default()
+                    }
+                };
+                anodizer_stage_sign::verify_signature_assets(
+                    ctx,
+                    &crate_cfg.name,
+                    release_cfg.ids.as_deref(),
+                    &source,
+                    log,
+                )
+            });
+            match verification.outcome(name) {
+                Some(anodizer_stage_sign::SignatureCryptoOutcome::Verified) => {
+                    log.status(&format!(
+                        "verified signature '{name}' (cryptographic check)"
+                    ));
+                }
+                Some(anodizer_stage_sign::SignatureCryptoOutcome::Invalid(reason)) => {
+                    issues.push(format!(
+                        "signature/certificate asset '{name}' of crate '{}' FAILED \
+                         cryptographic verification: {reason} — the signature does not \
+                         verify against the artifact it signs",
+                        crate_cfg.name
+                    ));
+                    summary.issue_count += 1;
+                }
+                None => {
+                    log.verbose(&format!(
+                        "asset '{name}' is a signature/certificate — present and non-empty, \
+                         digest comparison exempted (no cryptographic verdict was derivable: \
+                         the verifier tool, key material, or producing sign config is \
+                         unavailable in this environment)"
+                    ));
+                }
             }
             continue;
         }
@@ -781,12 +847,63 @@ fn verify_published_contents(
     summary
 }
 
-/// Download a release asset and return its sha256 hex, refusing to read more
-/// than `cap` bytes — the digest fallback must never turn into an unbounded
-/// re-download.
-fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
-    use sha2::{Digest as _, Sha256};
-    use std::io::Read as _;
+/// Size ceiling for downloading a published signature / certificate asset:
+/// detached signatures, sigstore bundles, and PEM certificates are all far
+/// below this; anything larger is not a signature worth pulling.
+const SIGNATURE_DOWNLOAD_CAP: u64 = 4 * 1024 * 1024;
+
+/// Build the published-bytes view the signature crypto check consumes: the
+/// upload name each renamed local signature file maps to, plus a downloaded
+/// copy of each present published signature asset. Any per-asset download
+/// shortfall leaves the asset out of `downloaded` (its locally-produced
+/// bytes are verified instead) with a verbose notice — never an issue.
+fn published_signature_source(
+    local: &std::collections::BTreeMap<String, (std::path::PathBuf, Option<String>, ArtifactKind)>,
+    published: &[anodizer_stage_release::PublishedAsset],
+    expected: &[String],
+    is_signature: &dyn Fn(&str) -> bool,
+    token: Option<&str>,
+    download_dir: &std::path::Path,
+    log: &StageLogger,
+) -> anodizer_stage_sign::PublishedSignatureSource {
+    let mut source = anodizer_stage_sign::PublishedSignatureSource::default();
+    for (name, (path, _sha, kind)) in local {
+        if matches!(kind, ArtifactKind::Signature | ArtifactKind::Certificate)
+            && path.file_name().and_then(|n| n.to_str()) != Some(name.as_str())
+        {
+            source.uploaded_names.insert(path.clone(), name.clone());
+        }
+    }
+    for (idx, name) in expected.iter().enumerate() {
+        if !is_signature(name) {
+            continue;
+        }
+        let Some(asset) = published.iter().find(|p| &p.name == name) else {
+            continue;
+        };
+        if asset.size == 0 || asset.size > SIGNATURE_DOWNLOAD_CAP {
+            continue;
+        }
+        // An index-derived filename, because the asset name is
+        // remote-controlled data and must never influence the local path.
+        let dest = download_dir.join(format!("published-{idx}"));
+        match download_to_file(&asset.download_url, token, SIGNATURE_DOWNLOAD_CAP, &dest) {
+            Ok(()) => {
+                source.downloaded.insert(name.clone(), dest);
+            }
+            Err(e) => log.verbose(&format!(
+                "could not download published signature asset '{name}' for \
+                 cryptographic verification ({e:#}) — verifying the \
+                 locally-produced bytes instead"
+            )),
+        }
+    }
+    source
+}
+
+/// Open an authenticated GET stream to a release asset, failing on any
+/// non-success HTTP status.
+fn asset_response(url: &str, token: Option<&str>) -> Result<reqwest::blocking::Response> {
     let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(120))?;
     let mut req = client.get(url).header("Accept", "application/octet-stream");
     if let Some(token) = token {
@@ -800,6 +917,34 @@ fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
     if !status.is_success() {
         anyhow::bail!("GET {url} returned HTTP {status}");
     }
+    Ok(resp)
+}
+
+/// Download a release asset into `dest`, refusing to write more than `cap`
+/// bytes.
+fn download_to_file(
+    url: &str,
+    token: Option<&str>,
+    cap: u64,
+    dest: &std::path::Path,
+) -> Result<()> {
+    use std::io::Read as _;
+    let mut reader = asset_response(url, token)?.take(cap + 1);
+    let mut out = std::fs::File::create(dest)?;
+    let copied = std::io::copy(&mut reader, &mut out)?;
+    if copied > cap {
+        anyhow::bail!("asset exceeds the {cap}-byte signature-download cap");
+    }
+    Ok(())
+}
+
+/// Download a release asset and return its sha256 hex, refusing to read more
+/// than `cap` bytes — the digest fallback must never turn into an unbounded
+/// re-download.
+fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+    let resp = asset_response(url, token)?;
     let mut hasher = Sha256::new();
     let mut reader = resp.take(cap + 1);
     let mut buf = [0u8; 64 * 1024];
@@ -1196,8 +1341,8 @@ fn linux_packages(
 /// `.deb` (ar + `data.tar.{gz,xz,zst}`), `.rpm` (lead + headers + compressed
 /// cpio newc payload), or `.apk` (gzipped tar).
 ///
-/// The shipped binary lives under `usr/bin/` (or similar). We pick the
-/// largest ELF member as the binary to glibc-check — the common
+/// The shipped binary lives under `usr/bin/` (or similar). The largest
+/// ELF member is picked as the binary to glibc-check — the common
 /// single-binary case. Returns `Ok(None)` when no ELF is found (e.g. a
 /// data-only package).
 ///

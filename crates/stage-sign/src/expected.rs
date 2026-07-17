@@ -135,6 +135,24 @@ fn expected_output_names(
     artifact_metadata: &HashMap<String, String>,
     ctx: &Context,
 ) -> Result<(String, Option<String>)> {
+    let (sig_path, cert_path) = expected_output_paths(cfg, artifact_path, artifact_metadata, ctx)?;
+    Ok((
+        basename_of(&sig_path),
+        cert_path.as_deref().map(basename_of),
+    ))
+}
+
+/// Resolve the (signature, optional certificate) output PATHS one sign config
+/// produces for one artifact — the dist-joined locations the sign stage
+/// writes to. Shared naming source for [`expected_output_names`] (which takes
+/// the basenames) and the standalone re-verification path (which needs the
+/// on-disk files), so the two can never drift.
+pub(crate) fn expected_output_paths(
+    cfg: &SignConfig,
+    artifact_path: &std::path::Path,
+    artifact_metadata: &HashMap<String, String>,
+    ctx: &Context,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
     use anyhow::Context as _;
 
     let artifact_str = artifact_path.to_string_lossy();
@@ -190,26 +208,27 @@ fn expected_output_names(
     let certificate_str = certificate_str.map(|c| expand_shell_vars(&c, &shell_vars));
 
     let dist = &ctx.config.dist;
-    let sig_name = basename_under_dist(dist, &signature_str);
-    let cert_name = certificate_str
-        .as_deref()
-        .map(|c| basename_under_dist(dist, c));
-    Ok((sig_name, cert_name))
+    let sig_path = dist_joined(dist, &signature_str);
+    let cert_path = certificate_str.as_deref().map(|c| dist_joined(dist, c));
+    Ok((sig_path, cert_path))
 }
 
-/// Dist-join a rendered output path the way the sign stage registers it, then
-/// take the asset basename (the name the release upload uses).
-fn basename_under_dist(dist: &std::path::Path, rendered: &str) -> String {
+/// Dist-join a rendered output path the way the sign stage registers it.
+fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::PathBuf {
     let resolved = std::path::PathBuf::from(rendered);
-    let joined = if !resolved.starts_with(dist) {
+    if !resolved.starts_with(dist) {
         dist.join(&resolved)
     } else {
         resolved
-    };
-    joined
-        .file_name()
+    }
+}
+
+/// The asset basename of a resolved output path (the name the release
+/// upload uses).
+fn basename_of(path: &std::path::Path) -> String {
+    path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| joined.display().to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[cfg(test)]
