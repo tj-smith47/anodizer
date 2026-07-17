@@ -100,3 +100,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # pypis.auth: auto prefers this token when set (needed for the FIRST
+          # publish — TP cannot create a not-yet-existing project); drop the
+          # secret later to let `auto` fall through to Trusted Publishing.
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
