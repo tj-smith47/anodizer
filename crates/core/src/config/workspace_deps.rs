@@ -63,7 +63,11 @@ fn expand_glob(root: &Path, pattern: &str) -> Vec<String> {
                     e.path()
                         .strip_prefix(root)
                         .ok()
-                        .map(|p| p.to_string_lossy().to_string())
+                        // Cargo member/exclude patterns are always
+                        // forward-slashed; normalize the walked path (which
+                        // uses `\` on Windows) so an `exclude = ["crates/x"]`
+                        // entry matches the discovered `crates\x` member.
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
                 })
                 .collect();
         }
