@@ -4,7 +4,7 @@ use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn run(
     config_override: Option<&Path>,
@@ -29,7 +29,7 @@ pub fn run(
     // workspace's error (out of this run's scope) never fails it.
     if workspace.is_none() {
         log.status("validating configuration");
-        run_checks(&config, true, &log)?;
+        run_checks(&config, true, &log, Path::new("."))?;
     }
 
     // Resolve the overlaid config ONCE when `--workspace` is given: both the
@@ -75,15 +75,23 @@ pub fn run(
             "validating resolved config for workspace '{}'",
             ws_name
         ));
-        run_checks(resolved, true, &log)?;
+        run_checks(resolved, true, &log, Path::new("."))?;
     }
 
     Ok(())
 }
 
 /// Core validation logic. `check_env` controls whether env/tool checks are run
-/// (so tests can skip them).
-pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result<()> {
+/// (so tests can skip them). `base_dir` is the on-disk root the Cargo
+/// workspace membership guard ([`check_workspace_membership`]) reads from;
+/// production callers pass `Path::new(".")`, tests pass a hermetic tempdir
+/// (or a sentinel path with no `Cargo.toml`, which no-ops the guard).
+pub fn run_checks(
+    config: &Config,
+    check_env: bool,
+    log: &StageLogger,
+    base_dir: &Path,
+) -> Result<()> {
     let mut errors: Vec<String> = vec![];
     let mut warnings: Vec<String> = vec![];
 
@@ -100,6 +108,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     check_announce_secret_exposure(config, &mut warnings);
     check_checksum_skip_conflicts(config, &mut warnings);
     check_crate_paths(config, &mut errors);
+    check_workspace_membership(config, base_dir, &all_crate_names, &mut errors);
     check_sign_artifact_filters(config, &mut warnings);
     check_checksum_algorithms(config, &mut warnings);
     check_source_format(config, &mut errors);
@@ -160,7 +169,7 @@ fn check_workspaces(config: &Config, all_crate_names: &HashSet<&str>, errors: &m
         }
         for c in &ws.crates {
             validate_tag_template(
-                &c.tag_template,
+                c.tag_template.as_deref().unwrap_or(""),
                 &format!("workspace '{}': crate '{}'", ws.name, c.name),
                 errors,
             );
@@ -235,7 +244,11 @@ fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<String>) {
     // validated, including one the walker's dedup would shadow. Workspace
     // crates' tag templates get the same check from `check_workspaces`.
     for c in &config.crates {
-        validate_tag_template(&c.tag_template, &format!("crate '{}'", c.name), errors);
+        validate_tag_template(
+            c.tag_template.as_deref().unwrap_or(""),
+            &format!("crate '{}'", c.name),
+            errors,
+        );
     }
 }
 
@@ -598,6 +611,121 @@ fn check_crate_paths(config: &Config, errors: &mut Vec<String>) {
                 errors.push(format!(
                     "crate '{}': path '{}' does not exist",
                     c.name, c.path
+                ));
+            }
+        }
+    }
+}
+
+/// Whether `c` actually publishes to crates.io: `publish.cargo` presence
+/// opts a crate in; `cargo: { skip: true }` opts back out. A crate with no
+/// active cargo publisher never runs `cargo publish`, so a missing
+/// intra-workspace dependency can never break its publish — mirrored by
+/// `crate_has_active_cargo_publisher`'s use as the membership-check gate.
+fn crate_has_active_cargo_publisher(c: &CrateConfig) -> bool {
+    c.publish
+        .as_ref()
+        .and_then(|p| p.cargo.as_ref())
+        .is_some_and(|cargo| !cargo.skip.as_ref().is_some_and(|s| s.as_bool()))
+}
+
+/// Walk up from `start_dir` to find the nearest ancestor whose `Cargo.toml`
+/// declares a `[workspace]` table — the same directory-climbing resolution
+/// `cargo` itself uses to locate a member's workspace root. Falls back to
+/// `start_dir` when no ancestor `Cargo.toml` declares one (e.g. the crate is
+/// a standalone package, or `start_dir` doesn't exist).
+///
+/// Deliberately unbounded, mirroring cargo: cargo's own workspace-root
+/// resolution climbs to the filesystem root with no depth limit, and a
+/// nested workspace (a sub-crate's ancestor Cargo.toml declaring its OWN
+/// `[workspace]` closer than the outer one) is a real, supported layout —
+/// capping the climb here would find the wrong root and silently diverge
+/// from what `cargo publish` itself would resolve. Every `read_to_string` /
+/// `toml::from_str` failure along the way is `.ok()`-swallowed rather than
+/// surfaced: this function only READS candidate `Cargo.toml`s to test for a
+/// `[workspace]` table, so a missing or malformed file at any ancestor is
+/// just "not a workspace root here" — never a mutation, never unsafe to
+/// ignore.
+fn find_cargo_workspace_root(start_dir: &Path) -> PathBuf {
+    let mut dir = start_dir;
+    loop {
+        let content = std::fs::read_to_string(dir.join("Cargo.toml")).ok();
+        let parsed = content.and_then(|s| toml::from_str::<toml::Value>(&s).ok());
+        let has_workspace_table = parsed.is_some_and(|doc| {
+            doc.get("workspace")
+                .and_then(toml::Value::as_table)
+                .is_some()
+        });
+        if has_workspace_table {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return start_dir.to_path_buf(),
+        }
+    }
+}
+
+/// FAILS when a real on-disk Cargo workspace member is an intra-workspace
+/// dependency (per its `Cargo.toml [dependencies]`) of a crate in `crates:`,
+/// but is itself absent from `crates:` — the exact v0.19.0 class of failure
+/// (`anodizer-stage-install-script` was a CLI dependency on disk but missing
+/// from `crates:`, so cargo failed the CLI's publish upload with "no
+/// matching package named ... found"). Also FAILS when the dependency IS
+/// present in `crates:` but has no active cargo publisher itself (skipped or
+/// never configured) — cargo will still fail the dependent's publish because
+/// the dependency is never uploaded to the registry.
+///
+/// Gated on the dependent crate actually having an active cargo publisher:
+/// a crate that never runs `cargo publish` can't be broken by a missing
+/// workspace dependency, so it must not raise a false-positive error.
+///
+/// Each crate's own on-disk Cargo workspace root is resolved independently
+/// (directory-climbing from the crate's path, cached per root) rather than
+/// assumed to be `base_dir` — a `workspaces:` (multi-cargo-workspace) config
+/// commonly spans several distinct physical Cargo workspaces below the
+/// anodizer config root, and reading only `base_dir`'s `Cargo.toml` would
+/// silently derive an empty member set for every crate that lives in a
+/// sub-workspace.
+fn check_workspace_membership(
+    config: &Config,
+    base_dir: &Path,
+    all_crate_names: &HashSet<&str>,
+    errors: &mut Vec<String>,
+) {
+    let mut member_cache: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+
+    for c in config.crate_universe() {
+        if c.path.is_empty() || !crate_has_active_cargo_publisher(c) {
+            continue;
+        }
+        let crate_dir = base_dir.join(&c.path);
+        let root = find_cargo_workspace_root(&crate_dir);
+        let member_names = member_cache
+            .entry(root.clone())
+            .or_insert_with(|| anodizer_core::config::discover_cargo_workspace_member_names(&root));
+        if member_names.is_empty() {
+            continue;
+        }
+        let deps =
+            anodizer_core::config::derive_depends_on_from_cargo_toml(&crate_dir, member_names);
+        for dep in deps {
+            if !all_crate_names.contains(dep.as_str()) {
+                errors.push(format!(
+                    "crate '{dep}' is a workspace member and an intra-workspace \
+                     dependency of published crate '{}', but is absent from \
+                     `crates:` (cargo will fail publishing '{}')",
+                    c.name, c.name
+                ));
+            } else if let Some(dep_cfg) = config.find_crate(dep.as_str())
+                && !crate_has_active_cargo_publisher(dep_cfg)
+            {
+                errors.push(format!(
+                    "crate '{dep}' is an intra-workspace dependency of published \
+                     crate '{}' but has no active cargo publisher (skipped or \
+                     never configured for crates.io) — cargo will fail publishing \
+                     '{}' because '{dep}' is never uploaded to the registry",
+                    c.name, c.name
                 ));
             }
         }
@@ -995,12 +1123,14 @@ fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<Str
 mod tests {
     use super::*;
     use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+    use std::fs;
+    use tempfile::tempdir;
 
     fn make_crate(name: &str, tag_template: &str, depends_on: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             depends_on: depends_on.map(|d| d.iter().map(|s| s.to_string()).collect()),
             ..Default::default()
         }
@@ -1016,6 +1146,459 @@ mod tests {
 
     fn test_logger() -> StageLogger {
         StageLogger::new("check", Verbosity::Quiet)
+    }
+
+    /// A guaranteed-nonexistent directory: `discover_cargo_workspace_member_names`
+    /// finds no `Cargo.toml` there, so [`check_workspace_membership`] no-ops —
+    /// keeping every other test in this module independent of the
+    /// workspace-membership guard, which has its own dedicated tests below.
+    const NO_WORKSPACE_BASE: &str = "/nonexistent/anodizer-check-config-test-base";
+
+    /// Write a hermetic on-disk Cargo workspace at `root`: a root
+    /// `Cargo.toml` declaring `members`, and each `(member_path, package_name,
+    /// intra_workspace_deps)` tuple's own `Cargo.toml`, with each dep written
+    /// as `dep.workspace = true` (this repo's own dependency shape).
+    fn write_disk_workspace(root: &std::path::Path, members: &[(&str, &str, &[&str])]) {
+        fs::create_dir_all(root).unwrap();
+        let member_list = members
+            .iter()
+            .map(|(path, _, _)| format!("\"{path}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fs::write(
+            root.join("Cargo.toml"),
+            format!("[workspace]\nmembers = [{member_list}]\n"),
+        )
+        .unwrap();
+        for (path, name, deps) in members {
+            let dir = root.join(path);
+            fs::create_dir_all(&dir).unwrap();
+            let mut body = format!("[package]\nname = \"{name}\"\n");
+            if !deps.is_empty() {
+                body.push_str("[dependencies]\n");
+                for dep in *deps {
+                    body.push_str(&format!("{dep}.workspace = true\n"));
+                }
+            }
+            fs::write(dir.join("Cargo.toml"), body).unwrap();
+        }
+    }
+
+    /// `check_crate_paths` resolves `CrateConfig.path` against the PROCESS
+    /// cwd, not `base_dir` — so fixture crate paths must be absolute
+    /// (`base_dir.join(rel)`) to exist regardless of where `cargo test` runs
+    /// from. `Path::join` with an absolute `path` (as `check_workspace_membership`
+    /// does via `base_dir.join(&c.path)`) discards `base_dir` and returns the
+    /// absolute path unchanged, so this also resolves correctly there.
+    fn p(root: &std::path::Path, rel: &str) -> String {
+        root.join(rel).to_string_lossy().to_string()
+    }
+
+    /// Opt a fixture crate into an active cargo publisher — the gate
+    /// `check_workspace_membership` requires before it will raise a
+    /// missing-dependency error for that crate.
+    fn with_active_cargo_publisher(mut c: CrateConfig) -> CrateConfig {
+        c.publish = Some(anodizer_core::config::PublishConfig {
+            cargo: Some(anodizer_core::config::CargoPublishConfig::default()),
+            ..Default::default()
+        });
+        c
+    }
+
+    #[test]
+    fn check_workspace_membership_direct_missing_dep_names_both_crates() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/main", "main", &["helper"]),
+                ("crates/helper", "helper", &[]),
+            ],
+        );
+        let config = make_config(vec![with_active_cargo_publisher(CrateConfig {
+            name: "main".to_string(),
+            path: p(root, "crates/main"),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        })]);
+        let all_names = flatten_crate_names(&config);
+        let mut errors = vec![];
+        check_workspace_membership(&config, root, &all_names, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one missing-membership error: {errors:?}"
+        );
+        assert!(
+            errors[0].contains("helper"),
+            "error should name the missing crate: {}",
+            errors[0]
+        );
+        assert!(
+            errors[0].contains("main"),
+            "error should name the dependent crate: {}",
+            errors[0]
+        );
+    }
+
+    // ---- single-crate mode: exactly one top-level `crates:` entry ----
+
+    #[test]
+    fn check_workspace_membership_single_crate_mode_missing_dep_fails() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/main", "main", &["helper"]),
+                ("crates/helper", "helper", &[]),
+            ],
+        );
+        let config = make_config(vec![with_active_cargo_publisher(CrateConfig {
+            name: "main".to_string(),
+            path: p(root, "crates/main"),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        })]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_err(),
+            "single-crate config missing an on-disk workspace dep should fail"
+        );
+    }
+
+    #[test]
+    fn check_workspace_membership_single_crate_mode_complete_passes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/main", "main", &["helper"]),
+                ("crates/helper", "helper", &[]),
+            ],
+        );
+        let config = make_config(vec![
+            with_active_cargo_publisher(CrateConfig {
+                name: "main".to_string(),
+                path: p(root, "crates/main"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                depends_on: Some(vec!["helper".to_string()]),
+                ..Default::default()
+            }),
+            with_active_cargo_publisher(CrateConfig {
+                name: "helper".to_string(),
+                path: p(root, "crates/helper"),
+                tag_template: Some("helper-v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+        ]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_ok(),
+            "complete single-crate-mode membership should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // ---- lockstep mode: multiple top-level `crates:` entries, one version ----
+
+    #[test]
+    fn check_workspace_membership_lockstep_multi_crate_missing_dep_fails() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/api", "api", &["shared"]),
+                ("crates/cli", "cli", &["shared"]),
+                ("crates/shared", "shared", &[]),
+            ],
+        );
+        let config = make_config(vec![
+            with_active_cargo_publisher(CrateConfig {
+                name: "api".to_string(),
+                path: p(root, "crates/api"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+            with_active_cargo_publisher(CrateConfig {
+                name: "cli".to_string(),
+                path: p(root, "crates/cli"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+        ]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_err(),
+            "lockstep config missing an on-disk workspace dep should fail"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("2 error(s)"),
+            "expected one error per dependent crate referencing 'shared': {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn check_workspace_membership_lockstep_multi_crate_complete_passes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/api", "api", &["shared"]),
+                ("crates/cli", "cli", &["shared"]),
+                ("crates/shared", "shared", &[]),
+            ],
+        );
+        let config = make_config(vec![
+            with_active_cargo_publisher(CrateConfig {
+                name: "api".to_string(),
+                path: p(root, "crates/api"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                depends_on: Some(vec!["shared".to_string()]),
+                ..Default::default()
+            }),
+            with_active_cargo_publisher(CrateConfig {
+                name: "cli".to_string(),
+                path: p(root, "crates/cli"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                depends_on: Some(vec!["shared".to_string()]),
+                ..Default::default()
+            }),
+            with_active_cargo_publisher(CrateConfig {
+                name: "shared".to_string(),
+                path: p(root, "crates/shared"),
+                tag_template: Some("shared-v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+        ]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_ok(),
+            "complete lockstep membership should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // ---- per-crate mode: nested `workspaces:` groups, independent cadence ----
+
+    #[test]
+    fn check_workspace_membership_per_crate_workspace_missing_dep_fails() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/frontend", "frontend", &["util"]),
+                ("crates/util", "util", &[]),
+            ],
+        );
+        let mut config = make_config(vec![]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "web".to_string(),
+            crates: vec![with_active_cargo_publisher(CrateConfig {
+                name: "frontend".to_string(),
+                path: p(root, "crates/frontend"),
+                tag_template: Some("frontend-v{{ .Version }}".to_string()),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_err(),
+            "per-crate workspace config missing an on-disk dep should fail"
+        );
+    }
+
+    #[test]
+    fn check_workspace_membership_per_crate_workspace_complete_passes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/frontend", "frontend", &["util"]),
+                ("crates/util", "util", &[]),
+            ],
+        );
+        let mut config = make_config(vec![]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "web".to_string(),
+            crates: vec![
+                with_active_cargo_publisher(CrateConfig {
+                    name: "frontend".to_string(),
+                    path: p(root, "crates/frontend"),
+                    tag_template: Some("frontend-v{{ .Version }}".to_string()),
+                    depends_on: Some(vec!["util".to_string()]),
+                    ..Default::default()
+                }),
+                with_active_cargo_publisher(CrateConfig {
+                    name: "util".to_string(),
+                    path: p(root, "crates/util"),
+                    tag_template: Some("util-v{{ .Version }}".to_string()),
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger(), root);
+        assert!(
+            result.is_ok(),
+            "complete per-crate workspace membership should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // ---- publisher-gating: only crates with an active cargo publisher are checked ----
+
+    #[test]
+    fn check_workspace_membership_no_active_publisher_skips_check() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/main", "main", &["helper"]),
+                ("crates/helper", "helper", &[]),
+            ],
+        );
+        // `main` has a genuine missing on-disk dep ("helper"), but no active
+        // cargo publisher — the check must not flag it (nothing will ever be
+        // `cargo publish`ed, so a missing crates: entry for its dep is moot).
+        let config = make_config(vec![CrateConfig {
+            name: "main".to_string(),
+            path: p(root, "crates/main"),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        }]);
+        let all_names = flatten_crate_names(&config);
+        let mut errors = vec![];
+        check_workspace_membership(&config, root, &all_names, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "crate with no active cargo publisher must not be checked for workspace membership: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_workspace_membership_dep_with_cargo_skip_still_errors() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_disk_workspace(
+            root,
+            &[
+                ("crates/main", "main", &["helper"]),
+                ("crates/helper", "helper", &[]),
+            ],
+        );
+        // "helper" IS present in `crates:`, but its cargo publisher is
+        // explicitly skipped — `main` publishing to crates.io would still
+        // fail because "helper" is never uploaded to the registry.
+        let mut helper = CrateConfig {
+            name: "helper".to_string(),
+            path: p(root, "crates/helper"),
+            tag_template: Some("helper-v{{ .Version }}".to_string()),
+            ..Default::default()
+        };
+        helper.publish = Some(anodizer_core::config::PublishConfig {
+            cargo: Some(anodizer_core::config::CargoPublishConfig {
+                skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let config = make_config(vec![
+            with_active_cargo_publisher(CrateConfig {
+                name: "main".to_string(),
+                path: p(root, "crates/main"),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                depends_on: Some(vec!["helper".to_string()]),
+                ..Default::default()
+            }),
+            helper,
+        ]);
+        let all_names = flatten_crate_names(&config);
+        let mut errors = vec![];
+        check_workspace_membership(&config, root, &all_names, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "dependency with publish.cargo.skip=true should still fail the membership check: {errors:?}"
+        );
+        assert!(
+            errors[0].contains("no active cargo publisher"),
+            "error should explain the skipped publisher, got: {}",
+            errors[0]
+        );
+    }
+
+    // ---- multi-root: `workspaces:` spanning distinct physical Cargo workspaces ----
+
+    #[test]
+    fn check_workspace_membership_discriminates_distinct_cargo_workspace_roots() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        // Two SEPARATE physical Cargo workspaces, each rooted below `root`
+        // (no Cargo.toml at `root` itself) — proves `find_cargo_workspace_root`
+        // climbs per-crate rather than coincidentally landing on `base_dir`,
+        // and that `member_cache` keys on the resolved root without
+        // cross-contaminating the two workspaces' member sets.
+        write_disk_workspace(
+            &root.join("ws-a"),
+            &[
+                ("crates/frontend", "frontend", &["util"]),
+                ("crates/util", "util", &[]),
+            ],
+        );
+        write_disk_workspace(
+            &root.join("ws-b"),
+            &[
+                ("crates/backend", "backend", &["dbutil"]),
+                ("crates/dbutil", "dbutil", &[]),
+            ],
+        );
+        let config = make_config(vec![
+            // ws-a: "frontend" omits depends_on for its genuine dep "util" — expect an error.
+            with_active_cargo_publisher(CrateConfig {
+                name: "frontend".to_string(),
+                path: p(root, "ws-a/crates/frontend"),
+                tag_template: Some("frontend-v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+            // ws-b: "backend" correctly declares depends_on for its genuine dep "dbutil" — expect none.
+            with_active_cargo_publisher(CrateConfig {
+                name: "backend".to_string(),
+                path: p(root, "ws-b/crates/backend"),
+                tag_template: Some("backend-v{{ .Version }}".to_string()),
+                depends_on: Some(vec!["dbutil".to_string()]),
+                ..Default::default()
+            }),
+            with_active_cargo_publisher(CrateConfig {
+                name: "dbutil".to_string(),
+                path: p(root, "ws-b/crates/dbutil"),
+                tag_template: Some("dbutil-v{{ .Version }}".to_string()),
+                ..Default::default()
+            }),
+        ]);
+        let all_names = flatten_crate_names(&config);
+        let mut errors = vec![];
+        check_workspace_membership(&config, root, &all_names, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "only ws-a's frontend/util gap should error; ws-b's backend/dbutil is complete: {errors:?}"
+        );
+        assert!(
+            errors[0].contains("util") && errors[0].contains("frontend"),
+            "error should name ws-a's missing dep, got: {}",
+            errors[0]
+        );
     }
 
     /// `check config --workspace X` validates X's resolved config only: a
@@ -1045,15 +1628,20 @@ mod tests {
         };
         // The raw (un-overlaid) config fails on ws-b's cycle.
         assert!(
-            run_checks(&config, false, &test_logger()).is_err(),
+            run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_err(),
             "raw config must fail on the sibling's cycle"
         );
         // The ws-a-resolved config must pass — the sibling is out of scope.
         let ws = config.workspaces.as_ref().unwrap()[0].clone();
         let mut resolved = config.clone();
         helpers::apply_workspace_overlay(&mut resolved, &ws);
-        run_checks(&resolved, false, &test_logger())
-            .expect("workspace-scoped validation must ignore sibling workspace errors");
+        run_checks(
+            &resolved,
+            false,
+            &test_logger(),
+            Path::new(NO_WORKSPACE_BASE),
+        )
+        .expect("workspace-scoped validation must ignore sibling workspace errors");
     }
 
     /// The COMMAND path of the sibling-isolation rule: `check config
@@ -1148,13 +1736,13 @@ workspaces:
     #[test]
     fn test_tag_template_valid() {
         let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
     fn test_tag_template_missing_version() {
         let config = make_config(vec![make_crate("a", "release-tag", None)]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1164,7 +1752,7 @@ workspaces:
     fn test_tag_template_empty_skipped() {
         // Empty tag_template should not trigger the error (it's just unconfigured)
         let config = make_config(vec![make_crate("a", "", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     // ---- depends_on reference tests ----
@@ -1176,7 +1764,7 @@ workspaces:
             "a-v{{ .Version }}",
             Some(vec!["nonexistent"]),
         )]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1189,7 +1777,7 @@ workspaces:
             make_crate("b", "b-v{{ .Version }}", Some(vec!["a"])),
         ];
         let config = make_config(crates);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err());
     }
 
@@ -1211,7 +1799,7 @@ workspaces:
             },
         ]);
         let config = make_config(vec![c]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
@@ -1224,7 +1812,7 @@ workspaces:
             ..Default::default()
         }]);
         let config = make_config(vec![c]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err());
     }
 
@@ -1249,7 +1837,7 @@ workspaces:
             ..Default::default()
         });
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
@@ -1265,7 +1853,7 @@ workspaces:
             ..Default::default()
         });
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     // ---- Empty crate name validation tests ----
@@ -1273,7 +1861,7 @@ workspaces:
     #[test]
     fn test_empty_crate_name_fails() {
         let config = make_config(vec![make_crate("", "v{{ .Version }}", None)]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "empty crate name should fail validation");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1282,7 +1870,7 @@ workspaces:
     #[test]
     fn test_whitespace_only_crate_name_fails() {
         let config = make_config(vec![make_crate("  ", "v{{ .Version }}", None)]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(
             result.is_err(),
             "whitespace-only crate name should fail validation"
@@ -1300,28 +1888,28 @@ workspaces:
     fn test_tag_template_compact_version_accepted() {
         // {{.Version}} without spaces should also be accepted
         let config = make_config(vec![make_crate("a", "v{{.Version}}", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
     fn test_tag_template_tera_native_version_accepted() {
         // {{ Version }} (Tera-native, no dot) should also be accepted
         let config = make_config(vec![make_crate("a", "v{{ Version }}", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
     fn test_tag_template_tera_native_compact_version_accepted() {
         // {{Version}} (Tera-native, no dot, no spaces) should also be accepted
         let config = make_config(vec![make_crate("a", "v{{Version}}", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
     fn test_tag_template_missing_version_with_other_placeholder() {
         // Has a placeholder but not {{ .Version }}
         let config = make_config(vec![make_crate("a", "{{ .Tag }}-release", None)]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(
             result.is_err(),
             "tag_template without Version placeholder should fail"
@@ -1342,7 +1930,7 @@ workspaces:
             make_crate("b", "bad-tag", Some(vec!["nonexistent"])), // missing dep + bad template
         ];
         let config = make_config(crates);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         // Should report exactly 3 errors: empty name, missing dep, bad tag_template
@@ -1365,7 +1953,7 @@ workspaces:
         });
         let config = make_config(vec![c]);
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     // ---- Workspace validation tests ----
@@ -1408,7 +1996,7 @@ workspaces:
                 ..Default::default()
             },
         ]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
@@ -1426,7 +2014,7 @@ workspaces:
                 ..Default::default()
             },
         ]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "duplicate workspace names should fail");
     }
 
@@ -1438,7 +2026,7 @@ workspaces:
             crates: vec![make_crate("x", "x-v{{ .Version }}", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "empty workspace name should fail");
     }
 
@@ -1450,7 +2038,7 @@ workspaces:
             crates: vec![make_crate("", "v{{ .Version }}", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "empty crate name in workspace should fail");
     }
 
@@ -1462,7 +2050,7 @@ workspaces:
             crates: vec![make_crate("x", "no-version-here", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(
             result.is_err(),
             "bad tag_template in workspace crate should fail"
@@ -1472,7 +2060,7 @@ workspaces:
     #[test]
     fn test_no_workspaces_passes() {
         let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-        assert!(run_checks(&config, false, &test_logger()).is_ok());
+        assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
     }
 
     #[test]
@@ -1486,7 +2074,7 @@ workspaces:
             ],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(
             result.is_err(),
             "duplicate crate names within a workspace should fail"
@@ -1511,7 +2099,7 @@ workspaces:
             )],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(
             result.is_err(),
             "workspace crate with missing depends_on should fail"
@@ -1546,7 +2134,7 @@ workspaces:
             ..Default::default()
         };
         assert!(
-            run_checks(&config, false, &test_logger()).is_ok(),
+            run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok(),
             "cross-workspace depends_on should be accepted"
         );
     }
@@ -1563,7 +2151,7 @@ workspaces:
             ..Default::default()
         }]);
         assert!(
-            run_checks(&config, false, &test_logger()).is_ok(),
+            run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok(),
             "valid depends_on within workspace should pass"
         );
     }
@@ -1581,7 +2169,7 @@ workspaces:
             prefix_template: None,
             files: vec![],
         });
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "invalid source format should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1600,7 +2188,7 @@ workspaces:
                 files: vec![],
             });
             assert!(
-                run_checks(&config, false, &test_logger()).is_ok(),
+                run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok(),
                 "source format '{}' should pass",
                 fmt
             );
@@ -1615,7 +2203,7 @@ workspaces:
             artifacts: Some("invalid".to_string()),
             ..Default::default()
         }];
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "invalid sbom artifacts should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1639,7 +2227,7 @@ workspaces:
                 ..Default::default()
             }];
             assert!(
-                run_checks(&config, false, &test_logger()).is_ok(),
+                run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok(),
                 "sbom artifacts '{}' should pass",
                 art
             );
@@ -1661,7 +2249,7 @@ workspaces:
                 ..Default::default()
             }]);
             assert!(
-                run_checks(&config, false, &test_logger()).is_ok(),
+                run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok(),
                 "blob provider '{}' should pass",
                 provider
             );
@@ -1677,7 +2265,7 @@ workspaces:
             bucket: "b".to_string(),
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "invalid blob provider should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1692,7 +2280,7 @@ workspaces:
             bucket: "b".to_string(),
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "empty blob provider should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1707,7 +2295,7 @@ workspaces:
             bucket: String::new(),
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "empty blob bucket should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1723,7 +2311,7 @@ workspaces:
             bucket: "b".to_string(),
             ..Default::default()
         }]);
-        let result = run_checks(&config, false, &test_logger());
+        let result = run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE));
         assert!(result.is_err(), "invalid provider with id should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);

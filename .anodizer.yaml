@@ -110,6 +110,10 @@ defaults:
         - "echo packed {{ ProjectName }} {{ Tag }} format={{ Format }}"
   checksum:
     algorithm: sha256
+  # Every crate below shares this tag template; a crate can still override it
+  # via its own `tag_template:` when it needs a distinct one.
+  crates:
+    tag_template: "v{{ Version }}"
   # Publisher inheritance: `cargo: {}` opts every crate into crates.io
   # publishing. Per-crate `publish.cargo: { skip: true }` suppresses inheritance
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
@@ -197,174 +201,81 @@ install_scripts:
   binaries: [anodizer]
 
 crates:
+  # No per-crate `depends_on` is listed: anodizer derives the cargo publish
+  # order from each crate's Cargo.toml (dependencies + build-dependencies +
+  # target deps, dev-deps excluded). A hand-maintained list drifts and silently
+  # breaks the topological publish order; derivation cannot omit an edge.
   # --- Tier 1: core (no workspace deps) ---
   - name: anodizer-core
     path: crates/core
-    tag_template: "v{{ Version }}"
 
   # --- Tier 2: stage crates (depend on core) ---
   # All inherit defaults.publish.cargo = {} (DEC-9). No per-crate publish block
   # required — each opts in via the inherited cargo publisher slot.
   - name: anodizer-stage-build
     path: crates/stage-build
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-archive
     path: crates/stage-archive
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-nfpm
     path: crates/stage-nfpm
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-checksum
     path: crates/stage-checksum
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-install-script
     path: crates/stage-install-script
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-changelog
     path: crates/stage-changelog
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-release
     path: crates/stage-release
-    tag_template: "v{{ Version }}"
-    # Real Cargo.toml deps: anodizer-core, anodizer-stage-checksum.
-    # Anodizer's cargo publisher topologically sorts on this list, so
-    # missing entries cause "no matching package" failures when an
-    # alphabetically-earlier crate is published before its dep.
-    depends_on: [anodizer-core, anodizer-stage-checksum]
   - name: anodizer-stage-publish
     path: crates/stage-publish
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core, anodizer-stage-release]
   - name: anodizer-stage-docker
     path: crates/stage-docker
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-sign
     path: crates/stage-sign
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-announce
     path: crates/stage-announce
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core, anodizer-stage-publish]
   - name: anodizer-stage-source
     path: crates/stage-source
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-upx
     path: crates/stage-upx
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-snapcraft
     path: crates/stage-snapcraft
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-dmg
     path: crates/stage-dmg
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-msi
     path: crates/stage-msi
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-pkg
     path: crates/stage-pkg
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-blob
     path: crates/stage-blob
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-nsis
     path: crates/stage-nsis
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-appbundle
     path: crates/stage-appbundle
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-flatpak
     path: crates/stage-flatpak
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-notarize
     path: crates/stage-notarize
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-templatefiles
     path: crates/stage-templatefiles
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-makeself
     path: crates/stage-makeself
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-srpm
     path: crates/stage-srpm
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-sbom
     path: crates/stage-sbom
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-attest
     path: crates/stage-attest
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core, anodizer-stage-checksum, anodizer-stage-sign]
   - name: anodizer-stage-appimage
     path: crates/stage-appimage
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
   - name: anodizer-stage-verify-release
     path: crates/stage-verify-release
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core, anodizer-stage-release]
   - name: anodizer-stage-prepublish-guard
     path: crates/stage-prepublish-guard
-    tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core, anodizer-stage-publish, anodizer-stage-announce]
 
   # --- Tier 3: CLI binary (depends on all stages) ---
   - name: anodizer
     path: crates/cli
-    tag_template: "v{{ Version }}"
-    depends_on:
-      - anodizer-core
-      - anodizer-stage-build
-      - anodizer-stage-archive
-      - anodizer-stage-nfpm
-      - anodizer-stage-checksum
-      - anodizer-stage-changelog
-      - anodizer-stage-release
-      - anodizer-stage-publish
-      - anodizer-stage-docker
-      - anodizer-stage-sign
-      - anodizer-stage-announce
-      - anodizer-stage-source
-      - anodizer-stage-upx
-      - anodizer-stage-snapcraft
-      - anodizer-stage-dmg
-      - anodizer-stage-msi
-      - anodizer-stage-pkg
-      - anodizer-stage-blob
-      - anodizer-stage-nsis
-      - anodizer-stage-appbundle
-      - anodizer-stage-flatpak
-      - anodizer-stage-notarize
-      - anodizer-stage-templatefiles
-      - anodizer-stage-makeself
-      - anodizer-stage-srpm
-      - anodizer-stage-sbom
-      - anodizer-stage-attest
-      - anodizer-stage-appimage
-      - anodizer-stage-verify-release
-      - anodizer-stage-prepublish-guard
     builds:
       # GNU build — feeds archives + deb + rpm. Inherits defaults.targets
       # (the six gnu/darwin/msvc triples). The hermetic glibc floor

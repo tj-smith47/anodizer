@@ -27,6 +27,63 @@ for the changelog side, including the flat-aggregate
 [coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)
 (all members of a shared-prefix list must agree on `[package].version`).
 
+## Crate-level defaults
+
+`CrateConfig.tag_template` is optional. Anodizer resolves each crate's
+effective tag template with this precedence:
+
+```
+crate's own tag_template  →  defaults.crates.tag_template  →  built-in "v{{ Version }}"
+```
+
+For a workspace where every crate uses the same tag template, set it once
+under `defaults.crates:` instead of repeating it on every entry:
+
+```yaml
+# Before — 32 crates, the same line repeated 32 times
+crates:
+  - { name: core, path: crates/core, tag_template: "v{{ Version }}" }
+  - { name: cli, path: crates/cli, tag_template: "v{{ Version }}" }
+  - { name: macros, path: crates/macros, tag_template: "v{{ Version }}" }
+  # ... 29 more, each restating the identical tag_template
+```
+
+```yaml
+# After — one default, 32 crates just name + path
+defaults:
+  crates:
+    tag_template: "v{{ Version }}"
+
+crates:
+  - { name: core, path: crates/core }
+  - { name: cli, path: crates/cli }
+  - { name: macros, path: crates/macros }
+  # ... 29 more
+```
+
+A crate's own `tag_template` always wins when set — `defaults.crates.tag_template`
+only fills the gap for crates that omit it.
+
+**Correctness note — this touches repo-shape detection.** Shape detection
+(the table above) reads each crate's raw `tag_template` field to group crates
+by extracted tag prefix — the [Flat-aggregate](#workspace-shapes) shape
+requires the *whole* `crates:` list to share one explicit prefix. If you
+delete a workspace's repeated `tag_template: "v{{ Version }}"` lines
+**without** adding `defaults.crates.tag_template: "v{{ Version }}"`, every
+crate's raw field goes from an identical explicit string to `None` — shape
+detection then sees no extractable shared prefix and falls back to
+`PerCrate` (independent singleton tracks) instead of `Flat-aggregate` (one
+shared tag). The built-in `"v{{ Version }}"` fallback only applies when
+*reading* a crate's tag template for tagging/dispatch, not when *grouping*
+crates for shape detection — so a genuine flat-aggregate/lockstep-style
+workspace whose crates omit `tag_template` still needs
+`defaults.crates.tag_template` set explicitly for shape detection to keep
+seeing them as one group.
+
+`defaults.crates:` (and this precedence) only applies when the top-level
+`crates:` list is non-empty — a single-crate config with no `crates:` block
+has nothing to default.
+
 ## Flat crates config
 
 For a single Cargo workspace where the crates release on **distinct** tag
@@ -120,6 +177,68 @@ workspace manifests — you do not set `paths:`. See
 ### Dependency ordering
 
 Use `depends_on` to ensure crates are released in the right order. Anodizer performs topological sorting — if `my-cli` depends on `my-core`, `my-core` is always released first.
+
+`depends_on` is optional. When a crate omits it, anodizer derives it at
+config-load time straight from that crate's `Cargo.toml` — reading
+`[dependencies]`, `[build-dependencies]`, and every
+`[target.'cfg(...)'.dependencies]` table (`[dev-dependencies]` is excluded,
+since it's never resolved for a `cargo publish` upload) and keeping the
+intra-workspace subset:
+
+```yaml
+crates:
+  - name: my-core
+    path: crates/my-core
+    tag_template: "core-v{{ Version }}"
+    # depends_on omitted — derived from crates/my-core/Cargo.toml
+
+  - name: my-cli
+    path: crates/my-cli
+    tag_template: "v{{ Version }}"
+    # depends_on omitted — derived as [my-core] because
+    # crates/my-cli/Cargo.toml has `my-core = { path = "../my-core" }`
+```
+
+An explicit `depends_on:` (as in the earlier examples on this page) is
+still honored and always wins — the derivation only fills crates that omit
+the field entirely. `anodizer init` scaffolds the same complete
+`depends_on:` set explicitly (it writes what it derives, rather than
+omitting it), so a freshly generated config and a hand-trimmed one resolve
+identically. This only matters once a project has more than one crate under
+`crates:` — a single-crate config has no intra-workspace dependency to
+order.
+
+### Workspace-membership guard
+
+`anodizer check config` fails when a crate in `crates:` has an active cargo
+publisher (`publish.cargo` configured and not skipped) and its `Cargo.toml`
+names an intra-workspace dependency — via the same `[dependencies]` /
+`[build-dependencies]` / `[target.'cfg(...)'.dependencies]` scan the
+`depends_on` derivation above uses — that is itself **absent from
+`crates:`**. This catches the class of failure where a crate is a real
+publish-order requirement on disk but missing from the config entirely,
+which would otherwise only surface late, mid-`cargo publish`, as a
+registry-side "no matching package named ... found":
+
+```text
+$ anodizer check config
+Error: crate 'anodizer-stage-install-script' is a workspace member and an
+intra-workspace dependency of published crate 'anodizer', but is absent
+from `crates:` (cargo will fail publishing 'anodizer')
+```
+
+The check also fires when the dependency crate IS listed in `crates:` but
+has no active cargo publisher itself (skipped, or never configured for
+crates.io) — cargo still fails the dependent's publish because the
+dependency is never uploaded to the registry first.
+
+It applies across every multi-crate shape on this page (lockstep-with-a-
+`crates:`-list, flat-aggregate, and multi-track/per-crate) since all of them
+funnel through the same crate universe; a crate with no active cargo
+publisher is never checked, since a missing workspace dependency can't break
+a publish that never runs. See [Release Resilience → workspace-membership
+guard](@/docs/advanced/release-resilience.md#static-check-workspace-membership-guard)
+for how this fits alongside `check config`'s other static lints.
 
 ### version_sync
 

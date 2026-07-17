@@ -317,7 +317,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `publish` | PublishConfig | — | Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate. |
 | `release` | ReleaseConfig | — | GitHub release configuration for this crate. |
 | `snapcrafts` | list of SnapcraftConfig | — | Snapcraft package configurations for this crate. |
-| `tag_template` | string | — | Git tag template used to tag and identify releases (supports templates). |
+| `tag_template` | string | — | Git tag template used to tag and identify releases (supports templates). Overrides `defaults.crates.tag_template`. When both are unset, resolves to `CrateConfig::DEFAULT_TAG_TEMPLATE` — use `resolved_tag_template()` rather than reading this field directly. |
 | `universal_binaries` | list of UniversalBinaryConfig | — | macOS universal binary (fat binary) configurations for this crate. |
 | `version` | string | — | Pinned semver version. When set, `anodizer bump --strict` refuses to edit this crate's `Cargo.toml` to anything other than this value; without `--strict`, the bump proceeds with a warning. Lets a release captain freeze a crate's version while still running broad `--workspace` bumps. |
 | `version_files` | list of string | — | Repo-committed files that embed this crate's release version outside `Cargo.toml` (repo-root-relative path strings). At `tag` time each file has its occurrences of the old version rewritten to the new version — both bare and `v`-prefixed forms, word-boundary anchored — and is staged into the same bump commit as this crate's `Cargo.toml`. Overrides the workspace-level `defaults.version_files`. |

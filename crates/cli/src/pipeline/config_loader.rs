@@ -313,6 +313,12 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // build/binstall stages read `<crate.path>/Cargo.toml`).
     config.populate_derived_metadata(Path::new("."));
 
+    // Derive `depends_on` for any crate entry that OMITS it, from the same
+    // on-disk `Cargo.toml [dependencies]` used by `anodizer init`'s
+    // scaffold-time generation. An explicit `depends_on` in config is an
+    // override and is never touched.
+    config.populate_derived_depends_on(Path::new("."));
+
     Ok(config)
 }
 

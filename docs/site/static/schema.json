@@ -4749,9 +4749,12 @@
           }
         },
         "tag_template": {
-          "description": "Git tag template used to tag and identify releases (supports templates).",
-          "default": "",
-          "type": "string"
+          "description": "Git tag template used to tag and identify releases (supports templates). Overrides `defaults.crates.tag_template`. When both are unset, resolves to `CrateConfig::DEFAULT_TAG_TEMPLATE` — use `resolved_tag_template()` rather than reading this field directly.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "universal_binaries": {
           "description": "macOS universal binary (fat binary) configurations for this crate.",
@@ -5160,8 +5163,18 @@
       "additionalProperties": false
     },
     "DefaultsCrateBlock": {
-      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.\n\n`deny_unknown_fields` so that typing `defaults.crates: { foo: bar }` surfaces as a parse error rather than silently being accepted — without it, the empty struct is a sink that swallows arbitrary keys.",
+      "description": "Block under `defaults.crates:` that supplies workspace-wide fallbacks for per-crate fields. Also drives the axis-mismatch validator (present only when top-level `crates:` is non-empty).\n\n`deny_unknown_fields` so that typing `defaults.crates: { foo: bar }` surfaces as a parse error rather than silently being accepted.",
       "type": "object",
+      "properties": {
+        "tag_template": {
+          "description": "Git tag template applied to any crate that omits its own `tag_template`. Overridden by a crate's own `tag_template` when set; falls back to `CrateConfig::DEFAULT_TAG_TEMPLATE` when neither is set.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "additionalProperties": false
     },
     "DefaultsWorkspaceBlock": {
@@ -15062,6 +15075,14 @@
         },
         "replace": {
           "description": "Remove source archives from artifacts, keeping only snap.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "When `true`, a failed snap upload counts as a required-publisher failure: trips the submitter gate and surfaces in `report.required_failures()` so the CLI exits non-zero.\n\nDefault: `false` — a failed snap upload does not abort the pipeline. It is still reported as a post-publish landing issue by `verify-release` regardless of this setting: `required` governs only whether the run ABORTS mid-pipeline, never whether an attempted failure gets certified as a clean release.\n\nWhen multiple snapcraft configs exist, the stage records ONE aggregated `PublisherResult`: `required = true` if ANY config opted in.",
           "default": null,
           "type": [
             "boolean",
