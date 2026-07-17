@@ -615,7 +615,7 @@ fn demo_crate(name: &str, path: &str) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }
 }
@@ -1542,6 +1542,26 @@ fn preflight_warns_when_version_already_current() {
         PreflightCheck::Warning(m) => assert!(m.contains("already at"), "{m}"),
         other => panic!("expected Warning, got {other:?}"),
     }
+}
+
+// =============================================================================
+// config_fully_inactive
+// =============================================================================
+
+/// Empty `--crate` selection means "all crates" — an active
+/// `homebrew_cores[]` entry must keep the publisher live even with no
+/// `--crate` filter applied. `homebrew_cores` is a top-level list, not
+/// itself crate-scoped, so this also guards a future refactor from
+/// accidentally wiring it to `selected_crates` and dropping entries.
+#[test]
+fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.homebrew_cores = Some(vec![HomebrewCoreConfig::default()]);
+
+    assert!(
+        !HomebrewCorePublisher::new().config_fully_inactive(&ctx),
+        "an active homebrew_cores[] entry must keep the publisher live"
+    );
 }
 
 // =============================================================================

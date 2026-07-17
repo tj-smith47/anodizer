@@ -42,6 +42,12 @@ pub struct FakePublisher {
     /// Mirrors [`Publisher::skips_on_nightly`]. When `true`, the dispatch
     /// loop records `Skipped(Nightly)` without invoking `run`.
     pub skips_on_nightly: bool,
+    /// Mirrors [`Publisher::config_fully_inactive`]. When `true`, the
+    /// dispatch chokepoint records `Skipped(ConfigSkipped)` without
+    /// invoking `run` — used to prove a publisher whose `run()` would
+    /// unconditionally succeed is never reached once every entry is
+    /// skip-inactive.
+    pub config_fully_inactive: bool,
 }
 
 impl Publisher for FakePublisher {
@@ -56,6 +62,9 @@ impl Publisher for FakePublisher {
     }
     fn skips_on_nightly(&self) -> bool {
         self.skips_on_nightly
+    }
+    fn config_fully_inactive(&self, _ctx: &Context) -> bool {
+        self.config_fully_inactive
     }
     fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
         match &self.outcome {
@@ -92,6 +101,7 @@ pub fn fake(
         rollback_outcome: FakeRollback::Succeed,
         rollback_scope: None,
         skips_on_nightly: false,
+        config_fully_inactive: false,
     })
 }
 
@@ -114,6 +124,7 @@ pub fn fake_with_rollback(
         rollback_outcome,
         rollback_scope: None,
         skips_on_nightly: false,
+        config_fully_inactive: false,
     })
 }
 
@@ -264,6 +275,7 @@ pub fn fake_with_scope(
         rollback_outcome: FakeRollback::Succeed,
         rollback_scope: Some(rollback_scope),
         skips_on_nightly: false,
+        config_fully_inactive: false,
     })
 }
 
@@ -283,6 +295,28 @@ pub fn fake_with_nightly_skip(
         rollback_outcome: FakeRollback::Succeed,
         rollback_scope: None,
         skips_on_nightly: true,
+        config_fully_inactive: false,
+    })
+}
+
+/// Like [`fake`] but sets `config_fully_inactive` to `true`. Use for
+/// dispatch-chokepoint tests proving `Skipped(ConfigSkipped)` is recorded
+/// WITHOUT `run()` ever firing — the fake's `run()` panics if invoked so
+/// the chokepoint's short-circuit is proven, not merely its outcome label.
+pub fn fake_config_fully_inactive(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+) -> Box<dyn Publisher> {
+    Box::new(FakePublisher {
+        name: name.to_string(),
+        group,
+        required,
+        outcome: FakeOutcome::Fail("run() must not be called when config_fully_inactive".into()),
+        rollback_outcome: FakeRollback::Succeed,
+        rollback_scope: None,
+        skips_on_nightly: false,
+        config_fully_inactive: true,
     })
 }
 

@@ -234,6 +234,52 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Per-crate `publish.homebrew` formula configs across the crate universe
+/// whose `skip_upload:`/`if:` evaluates active right now AND whose crate is
+/// in scope for `--crate` / `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names, so a selected-but-skipped
+/// crate cannot masquerade as active via an out-of-scope sibling). Shared by
+/// [`anodizer_core::Publisher::requirements`],
+/// [`anodizer_core::Publisher::advisory_requirements`], and
+/// [`anodizer_core::Publisher::config_fully_inactive`].
+fn active_homebrew_formula_configs(ctx: &Context) -> Vec<&anodizer_core::config::HomebrewConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
+        .filter(|h| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                None,
+                h.skip_upload.as_ref(),
+                h.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
+/// Top-level `homebrew_casks:` entries whose `skip_upload:`/`if:` evaluates
+/// active right now. Shared the same way as
+/// [`active_homebrew_formula_configs`].
+fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::HomebrewCaskConfig> {
+    ctx.config
+        .homebrew_casks
+        .iter()
+        .flatten()
+        .filter(|c| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                None,
+                c.skip_upload.as_ref(),
+                c.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for HomebrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -259,35 +305,18 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_homebrew_formula_configs(ctx).is_empty()
+            && active_homebrew_cask_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         let mut out = Vec::new();
-        let formula_repos = ctx
-            .config
-            .crate_universe()
+        let formula_repos = active_homebrew_formula_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
-            .filter(|h| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    h.skip_upload.as_ref(),
-                    h.if_condition.as_deref(),
-                )
-            })
             .map(|h| h.repository.as_ref());
-        let cask_repos = ctx
-            .config
-            .homebrew_casks
-            .iter()
-            .flatten()
-            .filter(|c| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    c.skip_upload.as_ref(),
-                    c.if_condition.as_deref(),
-                )
-            })
+        let cask_repos = active_homebrew_cask_configs(ctx)
+            .into_iter()
             .map(|c| c.repository.as_ref());
         for repo in formula_repos.chain(cask_repos) {
             out.extend(crate::publisher_helpers::git_repo_requirements(
@@ -305,33 +334,11 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         // pass over rendered formulas/casks warn+skips without ruby, and
         // `gh pr create` is the preferred PR transport with a full REST-API
         // fallback — so both are recommendations, never gate failures.
-        let formula_repos = ctx
-            .config
-            .crate_universe()
+        let formula_repos = active_homebrew_formula_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
-            .filter(|h| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    h.skip_upload.as_ref(),
-                    h.if_condition.as_deref(),
-                )
-            })
             .map(|h| h.repository.as_ref());
-        let cask_repos = ctx
-            .config
-            .homebrew_casks
-            .iter()
-            .flatten()
-            .filter(|c| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    c.skip_upload.as_ref(),
-                    c.if_condition.as_deref(),
-                )
-            })
+        let cask_repos = active_homebrew_cask_configs(ctx)
+            .into_iter()
             .map(|c| c.repository.as_ref());
         let repos: Vec<_> = formula_repos.chain(cask_repos).collect();
         if repos.is_empty() {
@@ -533,6 +540,7 @@ mod publisher_tests {
     use super::*;
     use anodizer_core::config::{
         CrateConfig, HomebrewCaskConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
+        StringOrBool,
     };
     use anodizer_core::log::{LogCapture, LogLevel};
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -542,7 +550,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(HomebrewConfig {
                     repository: Some(RepositoryConfig {
@@ -568,6 +576,42 @@ mod publisher_tests {
         assert_eq!(
             p.rollback_scope_needed(),
             Some("GITHUB_TOKEN contents:write")
+        );
+    }
+
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = homebrew_crate("x");
+        skipped
+            .publish
+            .as_mut()
+            .unwrap()
+            .homebrew
+            .as_mut()
+            .unwrap()
+            .skip_upload = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, homebrew_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+        assert!(
+            HomebrewPublisher::new().config_fully_inactive(&ctx),
+            "selecting a skipped crate must not be masked as active by an out-of-scope sibling"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active formula
+    /// entry with no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![homebrew_crate("x")])
+            .build();
+
+        assert!(
+            !HomebrewPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
         );
     }
 
@@ -671,7 +715,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "gamma".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -1001,7 +1045,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -1038,7 +1082,7 @@ mod publisher_tests {
             .crates(vec![CrateConfig {
                 name: "demo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig::default()),
                 ..Default::default()
             }])
@@ -1080,7 +1124,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },

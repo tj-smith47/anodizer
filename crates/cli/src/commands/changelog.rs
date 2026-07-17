@@ -230,7 +230,7 @@ fn resolve_start_bound(
 fn resolve_tag_owner(config: &Config, tag: &str) -> Result<(String, String)> {
     let mut best: Option<(&str, String)> = None;
     for c in config.crate_universe() {
-        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
+        let prefix = git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""));
         if let Some(remainder) = tag.strip_prefix(&prefix) {
             let is_version = remainder
                 .split('.')
@@ -298,7 +298,7 @@ fn select_crates(
     crate_filter: Option<&str>,
 ) -> Vec<(String, PathBuf, String)> {
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
-        git::per_crate_tag_prefix(&c.name, &c.tag_template)
+        git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""))
     };
     let global_prefix = global_tag_prefix(config);
     let entries: Vec<(String, PathBuf, String)> =
@@ -313,7 +313,7 @@ fn select_crates(
                     Some(c) => vec![(
                         c.name.clone(),
                         workspace_root.join(&c.path),
-                        git::extract_tag_prefix(&c.tag_template)
+                        git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
                             .unwrap_or_else(|| global_prefix.clone()),
                     )],
                     None => vec![(
@@ -480,7 +480,7 @@ fn materialize_release_notes_render_set(workspace_root: &Path, config: &mut Conf
         config.crates = vec![anodizer_core::config::CrateConfig {
             name: config.project_name.clone(),
             path: String::new(),
-            tag_template: format!("{}{{{{ Version }}}}", global_prefix),
+            tag_template: Some(format!("{}{{{{ Version }}}}", global_prefix)),
             ..Default::default()
         }];
         return Ok(());
@@ -750,7 +750,7 @@ mod tests {
     fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
         CrateConfig {
             name: name.to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             ..Default::default()
         }
     }

@@ -544,7 +544,7 @@ crates:
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.crates[0].tag_template,
-        "{{ crate_name }}/v{{ version }}"
+        Some("{{ crate_name }}/v{{ version }}".to_string())
     );
 }
 
@@ -558,7 +558,10 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].tag_template, "v{{ .Version }}");
+    assert_eq!(
+        config.crates[0].tag_template,
+        Some("v{{ .Version }}".to_string())
+    );
 }
 
 #[test]
@@ -571,7 +574,7 @@ crates:
     tag_template: ""
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].tag_template, "");
+    assert_eq!(config.crates[0].tag_template, Some(String::new()));
 }
 
 #[test]
@@ -583,8 +586,10 @@ crates:
     path: "."
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    // Default is empty string per CrateConfig::default()
-    assert_eq!(config.crates[0].tag_template, "");
+    // Omitted tag_template stays None on the raw field; resolution falls back
+    // to CrateConfig::DEFAULT_TAG_TEMPLATE via resolved_tag_template().
+    assert_eq!(config.crates[0].tag_template, None);
+    assert_eq!(config.crates[0].resolved_tag_template(), "v{{ Version }}");
 }
 
 #[test]
@@ -597,7 +602,10 @@ crates:
     tag_template: "my-crate/v{{ version }}"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].tag_template, "my-crate/v{{ version }}");
+    assert_eq!(
+        config.crates[0].tag_template,
+        Some("my-crate/v{{ version }}".to_string())
+    );
 }
 
 // ---- builds[].copy_from tests ----
@@ -3050,7 +3058,8 @@ fn test_crate_config_default_struct() {
     let config = CrateConfig::default();
     assert_eq!(config.name, "");
     assert_eq!(config.path, "");
-    assert_eq!(config.tag_template, "");
+    assert_eq!(config.tag_template, None);
+    assert_eq!(config.resolved_tag_template(), "v{{ Version }}");
     assert!(config.depends_on.is_none());
     assert!(config.builds.is_none());
     assert!(config.cross.is_none());
@@ -3328,7 +3337,10 @@ crates:
     tag_template: "{{ unclosed"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].tag_template, "{{ unclosed");
+    assert_eq!(
+        config.crates[0].tag_template,
+        Some("{{ unclosed".to_string())
+    );
     // Config parses but rendering would fail
 }
 
@@ -3342,7 +3354,7 @@ crates:
     tag_template: ""
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].tag_template, "");
+    assert_eq!(config.crates[0].tag_template, Some(String::new()));
 }
 
 // ---- depends_on edge cases (no validation at parse time; resolved later) ----

@@ -661,7 +661,7 @@ fn test_publish_to_nix_dry_run() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {
@@ -707,7 +707,7 @@ fn nix_ctx(
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(nix_cfg),
                 ..Default::default()
@@ -739,7 +739,7 @@ fn test_publish_to_nix_missing_config_errors() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }],
@@ -1063,7 +1063,7 @@ fn test_publish_to_nix_description_falls_back_to_project_metadata() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {
@@ -1210,7 +1210,7 @@ fn render_with_derived_license(spdx: &str) -> anyhow::Result<String> {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: "mytool".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {
@@ -1366,14 +1366,14 @@ fn per_crate_workspace_each_crate_derives_its_own_nix_license() {
             CrateConfig {
                 name: "alpha".to_string(),
                 path: "alpha".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: nix_cfg(),
                 ..Default::default()
             },
             CrateConfig {
                 name: "beta".to_string(),
                 path: "beta".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: nix_cfg(),
                 ..Default::default()
             },
@@ -1440,14 +1440,14 @@ fn lockstep_workspace_each_crate_derives_its_own_nix_license() {
             CrateConfig {
                 name: "alpha".to_string(),
                 path: "alpha".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: nix_cfg(),
                 ..Default::default()
             },
             CrateConfig {
                 name: "beta".to_string(),
                 path: "beta".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: nix_cfg(),
                 ..Default::default()
             },
@@ -1518,7 +1518,7 @@ fn render_single_crate(
     let mut crate_cfg = CrateConfig {
         name: "mytool".to_string(),
         path: "mytool".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             nix: Some(nix),
             ..Default::default()
@@ -1908,7 +1908,7 @@ fn per_crate_workspace_meta_fields_do_not_leak_across_crates() {
         CrateConfig {
             name: name.to_string(),
             path: name.to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 completions: Some(CompletionsConfig {
                     generate: Some("x".to_string()),

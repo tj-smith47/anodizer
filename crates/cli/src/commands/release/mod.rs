@@ -122,8 +122,12 @@ pub struct ReleaseOpts {
     /// `ContextOptions::skip_post_publish_poll`.
     pub no_post_publish_poll: bool,
     /// `--no-gate-submitter`: disable the Submitter gate so Submitter
-    /// publishers dispatch even when a required Assets/Manager
-    /// publisher failed. Plumbed into
+    /// publishers dispatch even when a required Assets/Manager publisher
+    /// failed, OR when the pre-submitter verify-release gate
+    /// (`ctx.verify_gate`, installed by this command) did not pass —
+    /// [`ensure_verify_gate_evaluated`](anodizer_core::publish_report::ensure_verify_gate_evaluated)
+    /// is only ever consulted when `gate_submitter` is true, so this one
+    /// flag disables both gates together. Plumbed into
     /// `ContextOptions::gate_submitter` as `Some(false)`. Default
     /// (`None`) means gate-on.
     pub no_gate_submitter: bool,
@@ -238,6 +242,18 @@ pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
     }
 }
 
+/// Installs the pre-submitter verify-release gate onto `ctx.verify_gate`.
+/// Extracted to a named seam (rather than an inline closure at the call
+/// site) so wiring — not just [`anodizer_stage_verify_release::run_asset_gate`]'s
+/// own behavior, which is unit-tested directly in that crate — has its own
+/// falsifiable test: deleting the call to this function, or swapping it for
+/// a decoy, must fail a test rather than silently pass the whole tree.
+pub(crate) fn install_verify_gate(ctx: &mut Context) {
+    ctx.verify_gate = Some(std::sync::Arc::new(|ctx: &mut Context| {
+        anodizer_stage_verify_release::run_asset_gate(ctx)
+    }));
+}
+
 pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     if opts.prepare {
         apply_prepare_mode_to_skip(&mut opts.skip);
@@ -349,6 +365,17 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             project_root,
         );
         ctx = Context::new(config.clone(), ctx_opts);
+        // Install the pre-submitter verify-release gate once, at the single
+        // production `Context::new` call site for the whole release
+        // pipeline. `publish_only::run` / `run_per_crate` and the full
+        // release path all dispatch from this same `ctx`, so installing
+        // here covers every config mode (single-crate, lockstep, per-crate)
+        // and both `release` / `release --publish-only` entry points for
+        // free — no separate install call needed at either path. The
+        // closure itself no-ops (`Ok(true)`) when `verify_release` is
+        // disabled or out of scope, so this is unconditional rather than a
+        // new config knob.
+        install_verify_gate(&mut ctx);
         // Surface the submitter moderation-queue advisories now that `ctx`
         // carries the resolved `--skip` / `--publishers` selection surface,
         // skipping any whose publisher this run deselected (a `--publishers npm`
@@ -864,7 +891,7 @@ pub(crate) fn resolve_tag_to_crates<'a>(
     let mut best_len: Option<usize> = None;
     let mut matched: Vec<(&CrateConfig, usize)> = Vec::new();
     for c in crates {
-        if let Some(prefix) = git::extract_tag_prefix(&c.tag_template)
+        if let Some(prefix) = git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
             && tag.starts_with(&prefix)
         {
             let remainder = &tag[prefix.len()..];
@@ -1732,7 +1759,7 @@ fn detect_changed_crates(
 
     for c in crates {
         let latest_tag = git::find_latest_tag_matching_with_prefix(
-            &c.tag_template,
+            c.resolved_tag_template(),
             git_config,
             None,
             monorepo_prefix,
@@ -1854,6 +1881,81 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 mod tests {
     use super::*;
     use anodizer_core::config::{CrateConfig, NightlyConfig, WorkspaceConfig};
+
+    // -----------------------------------------------------------------------
+    // install_verify_gate — proves `anodizer release` actually WIRES
+    // `run_asset_gate` into `ctx.verify_gate`, not just that
+    // `run_asset_gate` itself behaves correctly (already covered by
+    // stage-verify-release's own unit tests). Deleting the
+    // `install_verify_gate` call at the production call site, or swapping
+    // it for a decoy, must fail this test.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn install_verify_gate_delegates_to_the_real_asset_gate() {
+        use anodizer_core::config::{
+            GitHubUrlsConfig, HumanDuration, RetryConfig, VerifyReleaseConfig,
+        };
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder;
+
+        // A crate with a `release:` block but NO route served for it —
+        // every request 404s. If `install_verify_gate` did not wire the
+        // real `run_asset_gate` (deleted call, or a decoy always returning
+        // `Ok(true)`), this test would observe a passing gate instead of
+        // the real gate's `Ok(false)` on a missing release.
+        let (addr, _log) = spawn_scripted_responder(Vec::new());
+        let base = format!("http://{addr}");
+
+        let krate: CrateConfig = serde_yaml_ng::from_str(
+            "name: app\npath: .\ntag_template: \"v{{ .Version }}\"\n\
+             release:\n  github: { owner: me, name: repo }\n",
+        )
+        .expect("valid crate yaml");
+
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .token(Some("test-token".to_string()))
+            .env("ANODIZER_GITHUB_API_BASE", &base)
+            .crates(vec![krate])
+            .build();
+        ctx.config.github_urls = Some(GitHubUrlsConfig {
+            api: Some(base.clone()),
+            upload: Some(base.clone()),
+            download: Some(base),
+            skip_tls_verify: None,
+        });
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 1,
+            delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_elapsed: None,
+        });
+        ctx.config.verify_release = VerifyReleaseConfig {
+            assert_landing: true,
+            enabled: true,
+            assert_assets: true,
+            glibc_ceiling: None,
+            install_smoke: None,
+        };
+
+        assert!(
+            ctx.verify_gate.is_none(),
+            "baseline: no gate installed before install_verify_gate runs"
+        );
+        install_verify_gate(&mut ctx);
+        let gate = ctx
+            .verify_gate
+            .clone()
+            .expect("install_verify_gate must set ctx.verify_gate");
+
+        let passed = gate(&mut ctx).expect("run_asset_gate does not error on a missing release");
+        assert!(
+            !passed,
+            "a missing GitHub release must fail the real run_asset_gate, proving delegation \
+             rather than a stub"
+        );
+    }
 
     #[test]
     fn custom_publishers_honor_operator_selection() {
@@ -2026,7 +2128,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: format!("{}-v{{{{ .Version }}}}", name),
+            tag_template: Some(format!("{}-v{{{{ .Version }}}}", name)),
             depends_on: deps.map(|d| d.iter().map(|s| s.to_string()).collect()),
             ..Default::default()
         }
@@ -2050,7 +2152,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: Some(builds),
             ..Default::default()
         }
@@ -2375,7 +2477,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "lib".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -2921,6 +3023,44 @@ mod tests {
     }
 
     #[test]
+    fn release_exits_nonzero_when_required_publisher_blocked_by_verify_gate() {
+        use anodizer_core::publish_report::{PublisherOutcome, SkipReason};
+
+        // A transient verify-gate error/false-return blocks a REQUIRED
+        // submitter (e.g. cargo on the OIDC leg) before it ever dispatches.
+        // Skipped(_) is never is_required_release_failure(), so without the
+        // dedicated blocked-names check this would exit 0 on an unpublished
+        // required registry.
+        let ctx = ctx_with_report(
+            "cargo",
+            true,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+            ContextOptions::default(),
+        );
+        let err = gate_required_failures(&ctx)
+            .expect_err("a required publisher blocked by the verify gate must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("cargo"), "error names publisher: {msg}");
+        assert!(
+            msg.contains("verify-release"),
+            "error names the verify-release gate: {msg}"
+        );
+    }
+
+    #[test]
+    fn release_required_failures_ignores_optional_publisher_blocked_by_verify_gate() {
+        use anodizer_core::publish_report::{PublisherOutcome, SkipReason};
+
+        let ctx = ctx_with_report(
+            "chocolatey",
+            false,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+            ContextOptions::default(),
+        );
+        gate_required_failures(&ctx).expect("an optional blocked publisher must not gate");
+    }
+
+    #[test]
     fn release_required_failures_ignored_when_not_required() {
         use anodizer_core::publish_report::PublisherOutcome;
 
@@ -2940,6 +3080,25 @@ mod tests {
         // run, e.g. preflight-only) → gate is a no-op.
         let ctx = Context::new(Config::default(), ContextOptions::default());
         gate_required_failures(&ctx).expect("missing report must short-circuit");
+    }
+
+    #[test]
+    fn release_exits_nonzero_when_required_snapcraft_publish_failed() {
+        // A snapcraft config that opts in via `required: true` must abort
+        // the pipeline exit gate exactly like any other required publisher
+        // — the same generic mechanism `SnapcraftConfig.required` wires
+        // into via `derive_snapcraft_required`.
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        let ctx = ctx_with_report(
+            "snapcraft",
+            true,
+            PublisherOutcome::Failed("store rejected upload: dedup collision".into()),
+            ContextOptions::default(),
+        );
+        let err = gate_required_failures(&ctx).expect_err("must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("snapcraft"), "error names publisher: {msg}");
     }
 
     // ---- apply_nightly_template_vars ------------------------------------
@@ -3155,7 +3314,7 @@ mod tests {
             CrateConfig {
                 name: "cli".to_string(),
                 path: "crates/cli".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 depends_on: Some(vec!["core".to_string()]),
                 ..Default::default()
             },
@@ -3255,7 +3414,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: path.to_string(),
-            tag_template: template.to_string(),
+            tag_template: Some(template.to_string()),
             ..Default::default()
         }
     }
@@ -3570,7 +3729,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: template.to_string(),
+            tag_template: Some(template.to_string()),
             ..Default::default()
         }
     }

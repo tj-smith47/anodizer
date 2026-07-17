@@ -2013,7 +2013,7 @@ fn derive_blob_required_aggregates_any_true_across_configs() {
     let crate_cfg = anodizer_core::config::CrateConfig {
         name: "demo".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         blobs: Some(vec![
             BlobConfig {
                 provider: "s3".to_string(),
@@ -2049,7 +2049,7 @@ fn derive_blob_required_false_when_no_config_opts_in() {
     let crate_cfg = anodizer_core::config::CrateConfig {
         name: "demo".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         blobs: Some(vec![BlobConfig {
             provider: "s3".to_string(),
             bucket: "b1".to_string(),

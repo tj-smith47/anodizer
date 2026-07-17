@@ -28,6 +28,22 @@ pub fn gh_api_get_with_binary(
     endpoint: &str,
     token: Option<&str>,
 ) -> Result<serde_json::Value> {
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    gh_api_get_with_binary_with_env(gh_binary, endpoint, token, &env)
+}
+
+/// Env-injectable sibling of [`gh_api_get_with_binary`], mirroring the
+/// [`resolve_github_token`]/[`resolve_github_token_with_env`] split: `env`
+/// stands in for `std::env::vars()` when redacting the bailed error message,
+/// so a test asserting on the raw `gh` stderr text does not depend on the
+/// real ambient process environment (which may contain secret-suffixed
+/// values that happen to collide with the asserted substring).
+pub fn gh_api_get_with_binary_with_env(
+    gh_binary: &Path,
+    endpoint: &str,
+    token: Option<&str>,
+    env: &[(String, String)],
+) -> Result<serde_json::Value> {
     let mut cmd = Command::new(gh_binary);
     cmd.args(["api", endpoint]);
     if let Some(tok) = token {
@@ -41,7 +57,7 @@ pub fn gh_api_get_with_binary(
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
         let raw = format!("gh api GET {} failed: {}", endpoint, stderr_raw.trim());
-        bail!("{}", redact_gh_stderr(&raw, token));
+        bail!("{}", redact_gh_stderr_with_env(&raw, token, env));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).context("failed to parse gh api response")
@@ -223,7 +239,19 @@ pub fn resolve_github_token(explicit: Option<&str>) -> Option<String> {
 /// heuristics. Also strips inline URL credentials and any other secret
 /// env-var values reachable from the parent process env.
 fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {
-    let mut env: Vec<(String, String)> = std::env::vars().collect();
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    redact_gh_stderr_with_env(stderr, token, &env)
+}
+
+/// Env-injectable core of [`redact_gh_stderr`]; see
+/// [`gh_api_get_with_binary_with_env`] for why a caller would supply a
+/// sealed `env` instead of the real process environment.
+fn redact_gh_stderr_with_env(
+    stderr: &str,
+    token: Option<&str>,
+    env: &[(String, String)],
+) -> String {
+    let mut env: Vec<(String, String)> = env.to_vec();
     if let Some(tok) = token
         && !tok.is_empty()
     {
@@ -542,7 +570,10 @@ mod tests {
     fn redact_gh_stderr_replaces_token_value() {
         let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
         let stderr = format!("HTTP 401: token {secret} is invalid");
-        let redacted = redact_gh_stderr(&stderr, Some(secret));
+        // Sealed `&[]` env: the real process env may carry an unrelated
+        // secret-suffixed var whose value collides with a digit in "401",
+        // masking it and breaking this exact-output assertion.
+        let redacted = redact_gh_stderr_with_env(&stderr, Some(secret), &[]);
         // Exact-output, not absence-only: guards the env-value masking
         // layer — the token is replaced by its `$NAME` placeholder.
         assert_eq!(redacted, "HTTP 401: token $GITHUB_TOKEN is invalid");
@@ -553,7 +584,7 @@ mod tests {
         // Inline URL credentials must be redacted even with no explicit
         // token argument.
         let stderr = "auth failed: https://user:secret-pw@github.com/o/r.git rejected";
-        let redacted = redact_gh_stderr(stderr, None);
+        let redacted = redact_gh_stderr_with_env(stderr, None, &[]);
         // Exact-output, not absence-only: guards the inline URL-credential
         // stripping layer — userinfo becomes `<redacted>`.
         assert_eq!(
@@ -567,7 +598,7 @@ mod tests {
         // An empty Some("") token must not pollute the env vector with a
         // zero-length value (that would match every position in the string).
         let stderr = "plain error message without credentials";
-        let redacted = redact_gh_stderr(stderr, Some(""));
+        let redacted = redact_gh_stderr_with_env(stderr, Some(""), &[]);
         assert_eq!(redacted, stderr);
     }
 

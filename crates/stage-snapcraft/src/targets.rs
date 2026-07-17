@@ -137,7 +137,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![SnapcraftConfig {
                 name: package_name.map(|s| s.to_string()),
                 publish: Some(true),
@@ -290,7 +290,7 @@ mod tests {
         let krate = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![SnapcraftConfig {
                 name: Some("demo".to_string()),
                 publish: Some(false),

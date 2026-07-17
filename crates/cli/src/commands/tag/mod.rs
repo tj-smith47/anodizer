@@ -1665,7 +1665,7 @@ pub(crate) fn shared_root_aggregate_name<'a>(
 fn prefix_groups(crates: &[CrateConfig]) -> Vec<Vec<CrateConfig>> {
     let mut grouped: Vec<(Option<String>, Vec<CrateConfig>)> = Vec::new();
     for c in crates {
-        match git::extract_tag_prefix(&c.tag_template) {
+        match git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or("")) {
             Some(prefix) => {
                 if let Some((_, group)) = grouped
                     .iter_mut()
@@ -1692,9 +1692,9 @@ fn prefix_groups(crates: &[CrateConfig]) -> Vec<Vec<CrateConfig>> {
 /// since two crates without an explicit common prefix are independent tracks.
 fn shared_tag_prefix(crates: &[CrateConfig]) -> Option<String> {
     let mut iter = crates.iter();
-    let first = git::extract_tag_prefix(&iter.next()?.tag_template)?;
+    let first = git::extract_tag_prefix(iter.next()?.tag_template.as_deref().unwrap_or(""))?;
     for c in iter {
-        if git::extract_tag_prefix(&c.tag_template)? != first {
+        if git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))? != first {
             return None;
         }
     }
@@ -1933,8 +1933,8 @@ fn compute_per_crate_tags(
         }
 
         let first = &group[0];
-        let tag_prefix =
-            git::extract_tag_prefix(&first.tag_template).unwrap_or_else(|| cfg.tag_prefix.clone());
+        let tag_prefix = git::extract_tag_prefix(first.tag_template.as_deref().unwrap_or(""))
+            .unwrap_or_else(|| cfg.tag_prefix.clone());
 
         // Determine the previous tag for this group (use first crate's template).
         // Per-group only the tag_prefix (from this group's template) and
@@ -2033,8 +2033,9 @@ fn compute_per_crate_tags(
         let mut version_updates: Vec<(String, String)> = Vec::new();
         let mut crate_version_files: Vec<Vec<String>> = Vec::new();
         for crate_cfg in group {
-            let crate_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)
-                .unwrap_or_else(|| tag_prefix.clone());
+            let crate_prefix =
+                git::extract_tag_prefix(crate_cfg.tag_template.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|| tag_prefix.clone());
             let new_tag = format!("{}{}", crate_prefix, new_version);
             let message = format!("Release {}", new_tag);
             new_tags.push((new_tag, message));
@@ -2637,7 +2638,10 @@ fn load_crate_tag_info(
 ) -> Option<CrateTagInfo> {
     let crate_cfg = config.find_crate(crate_name)?;
 
-    let tag_prefix = git::per_crate_tag_prefix(&crate_cfg.name, &crate_cfg.tag_template);
+    let tag_prefix = git::per_crate_tag_prefix(
+        &crate_cfg.name,
+        crate_cfg.tag_template.as_deref().unwrap_or(""),
+    );
     let version_sync = crate_cfg
         .version_sync
         .as_ref()
@@ -4050,7 +4054,7 @@ tag_post_hooks:
         CrateConfig {
             name: name.to_string(),
             path: path.to_string(),
-            tag_template: template.to_string(),
+            tag_template: Some(template.to_string()),
             ..Default::default()
         }
     }

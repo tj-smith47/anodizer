@@ -903,6 +903,44 @@ mod tests {
         );
     }
 
+    /// A Tag template var that IS set but does not parse as a family+semver
+    /// (a fully custom, non-semver tag template) must be treated the same
+    /// as no Tag at all: `current_family` is `None` either way, so nothing
+    /// on disk can be proven to belong to a different release and every
+    /// summary — including a sibling per-crate burn — is kept.
+    #[test]
+    fn burn_evidence_keeps_sibling_with_unparseable_current_tag() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.config.dist = dist.path().to_path_buf();
+        ctx.template_vars_mut().set("Version", "2.5.0");
+        // Not a `<prefix->vX.Y.Z` shape `split_tag_family` can parse.
+        ctx.template_vars_mut().set("Tag", "release-of-the-week");
+
+        let mut report = PublishReport::default();
+        report.results.push(result(
+            "cargo",
+            PublisherGroup::Submitter,
+            PublisherOutcome::Succeeded,
+        ));
+        let mut sibling = RunSummary::from_context_with_report(&ctx, Some(&report));
+        sibling.tag = "a-v1.0.0".to_string();
+        let path = dist
+            .path()
+            .join("a")
+            .join("run-a-v1.0.0")
+            .join("summary.json");
+        write_summary_json(&sibling, &path).expect("write sibling summary");
+
+        let evidence = gather_burn_evidence(&ctx, &log);
+        assert!(
+            evidence.burned(),
+            "an unparseable current Tag must not disable the sibling-burn guard; got {evidence:?}"
+        );
+        assert_eq!(evidence.names, vec!["cargo".to_string()]);
+    }
+
     /// Mode gating: only the modes that reach upstream publishers are
     /// governed by the policy.
     #[test]

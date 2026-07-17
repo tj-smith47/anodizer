@@ -95,10 +95,12 @@ const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 ///
 /// Each check axis is additionally gated on ITS OWN publisher: the asset
 /// existence/content check consumes only github-release, each landing
-/// check fires only when its publisher's recorded outcome is `Succeeded`,
-/// and the OS-package axes gate on [`os_package_publisher_selected`] — so a
-/// `--publishers npm` run still verifies the npm landing while skipping
-/// the GitHub asset check and the package matrix.
+/// probe fires only when its publisher's recorded outcome is `Succeeded`
+/// (a `Failed` attempt is reported as an issue directly, without a probe —
+/// see [`landing`]), and the OS-package axes gate on
+/// [`os_package_publisher_selected`] — so a `--publishers npm` run still
+/// verifies the npm landing while skipping the GitHub asset check and the
+/// package matrix.
 pub fn verify_release_consumers() -> &'static [&'static str] {
     &[
         "github-release",
@@ -192,6 +194,8 @@ impl Stage for VerifyReleaseStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let cfg = ctx.config.verify_release.clone();
         if !cfg.enabled {
+            ctx.logger(STAGE_NAME)
+                .status("verify-release skipped: disabled by config");
             return Ok(());
         }
         if ctx.should_skip(STAGE_NAME) {
@@ -369,6 +373,99 @@ impl Stage for VerifyReleaseStage {
     }
 }
 
+/// Pre-submitter verify-release gate: the asset existence + content axis of
+/// this stage ([`verify_one_crate`]'s `github_selected` branch), runnable
+/// standalone against an already-published release, without the landing /
+/// smoke / libc axes (those verify a specific successful publisher's own
+/// landing, not the asset surface every one-way-door publisher depends on).
+///
+/// Installed once into [`Context::verify_gate`](anodizer_core::context::Context::verify_gate)
+/// by the CLI's pipeline-composition layer and invoked by `stage-publish`'s
+/// dispatcher immediately before the first Submitter-group (one-way-door)
+/// publisher would run. Returns `Ok(true)` when the check is out of scope
+/// (disabled, dry-run/snapshot, or no crate has a release block) or ran
+/// clean; `Ok(false)` when it ran and found asset-content defects — including
+/// a fetch failure (e.g. no GitHub release exists for the tag), which
+/// [`verify_one_crate`] records as an issue rather than propagating; `Err`
+/// only for an unrecoverable setup failure (e.g. the tokio runtime could not
+/// be created), which the dispatcher treats the same as `Ok(false)`: blocking
+/// rather than a pass.
+///
+/// Deliberately does NOT auto-pass when `github-release` is deselected from
+/// `--publishers` (e.g. the OIDC leg's `--publishers npm,pypi,cargo`): the
+/// release and its assets were already published by an earlier leg, and the
+/// immutable registries this gate guards depend on that content being
+/// correct regardless of which leg re-verifies it.
+///
+/// Deliberately reuses [`verify_one_crate`] rather than re-implementing the
+/// asset diff/content check: the same expected-vs-published/local-bytes
+/// comparison the terminal [`VerifyReleaseStage`] runs, called with an
+/// [`AxisScope`] that leaves the OS-package axes (libc-ceiling, install-smoke)
+/// out of scope — those verify a specific publisher's own package landing,
+/// not the asset surface every irreversible publisher depends on being
+/// correct before it commits to an immutable registry.
+///
+/// Deliberately does NOT consult [`Context::should_skip`](anodizer_core::context::Context::should_skip)
+/// for `verify-release`, unlike [`VerifyReleaseStage::run`]'s terminal-stage
+/// check. `--skip=verify-release` suppresses the terminal post-publish
+/// REPORT (nothing left to undo by then), but this gate runs BEFORE the
+/// first one-way-door publisher — honoring the same skip here would let
+/// `--skip=verify-release` silently reopen the burn-before-verify hole this
+/// gate exists to close. The sanctioned bypass for a recovery run that needs
+/// to proceed past a known-bad asset check is the explicit `--no-gate-submitter`
+/// flag, which disables the gate hook entirely
+/// ([`Context::verify_gate`](anodizer_core::context::Context::verify_gate) is
+/// never installed / never consulted) rather than being routed through this
+/// function's own skip handling.
+pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
+    let cfg = ctx.config.verify_release.clone();
+    if !cfg.enabled || !cfg.assert_assets_enabled() {
+        ctx.logger(STAGE_NAME)
+            .status("verify-release gate skipped: disabled by config");
+        return Ok(true);
+    }
+    if ctx.is_dry_run() || ctx.is_snapshot() {
+        ctx.logger(STAGE_NAME)
+            .status("(dry-run) would verify release content before one-way-door publishers");
+        return Ok(true);
+    }
+
+    let log = ctx.logger(STAGE_NAME);
+    let selected = ctx.options.selected_crates.clone();
+    let crates: Vec<CrateConfig> = ctx
+        .config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| c.release.is_some())
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .cloned()
+        .collect();
+    if crates.is_empty() {
+        return Ok(true);
+    }
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| anyhow::anyhow!("verify-release gate: create tokio runtime: {e}"))?;
+    let scope = AxisScope {
+        github_selected: true,
+        os_pkg_selected: false,
+        smoke_enabled: false,
+        docker_ok: false,
+    };
+    let mut run_state = VerifyRun::default();
+    for crate_cfg in &crates {
+        verify_one_crate(ctx, &log, &rt, &cfg, crate_cfg, &scope, &mut run_state)?;
+    }
+    if run_state.issues.is_empty() {
+        Ok(true)
+    } else {
+        for issue in &run_state.issues {
+            log.warn(&format!("verify-release gate: {issue}"));
+        }
+        Ok(false)
+    }
+}
+
 /// Resolve the binary name to version-check for a crate: the first build's
 /// `binary`, falling back to the crate name (mirrors BuildConfig's documented
 /// fallback).
@@ -483,14 +580,14 @@ fn local_asset_index(
     crate_name: &str,
     ids: Option<&[String]>,
     exclude: Option<&[String]>,
-) -> std::collections::BTreeMap<String, (std::path::PathBuf, Option<String>)> {
+) -> std::collections::BTreeMap<String, (std::path::PathBuf, Option<String>, ArtifactKind)> {
     let mut idx = std::collections::BTreeMap::new();
-    let sha_of = |path: &std::path::Path| {
+    let sha_and_kind_of = |path: &std::path::Path| {
         ctx.artifacts
             .all()
             .iter()
             .find(|a| a.path == path)
-            .and_then(|a| a.metadata.get("sha256").cloned())
+            .map(|a| (a.metadata.get("sha256").cloned(), a.kind))
     };
     for a in ctx
         .artifacts
@@ -499,14 +596,14 @@ fn local_asset_index(
         .filter(|a| a.crate_name == crate_name)
     {
         idx.entry(a.name.clone())
-            .or_insert_with(|| (a.path.clone(), a.metadata.get("sha256").cloned()));
+            .or_insert_with(|| (a.path.clone(), a.metadata.get("sha256").cloned(), a.kind));
     }
     for (path, custom_name) in anodizer_stage_release::collect_release_upload_candidates(
         ctx, crate_name, ids, exclude, false,
     ) {
         if let Some(name) = custom_name {
-            let sha = sha_of(&path);
-            idx.insert(name, (path, sha));
+            let (sha, kind) = sha_and_kind_of(&path).unwrap_or((None, ArtifactKind::Archive));
+            idx.insert(name, (path, sha, kind));
         }
     }
     idx
@@ -533,6 +630,7 @@ fn verify_published_contents(
         release_cfg.ids.as_deref(),
         release_cfg.exclude.as_deref(),
     );
+    let signature_suffixes = anodizer_core::signature_assets::signature_asset_suffixes(&ctx.config);
     let mut summary = ContentSummary {
         issue_count: 0,
         digest_unverified: 0,
@@ -541,7 +639,51 @@ fn verify_published_contents(
         let Some(asset) = published.iter().find(|p| &p.name == name) else {
             continue;
         };
-        let Some((path, meta_sha)) = local.get(name) else {
+        // A locally-registered asset is classified by its exact
+        // `ArtifactKind` (`Signature` / `Certificate`); an asset with no
+        // local entry (uploaded from a prior run, or produced outside this
+        // invocation) falls back to the suffix set, since no kind signal
+        // exists for it. The suffix set's dynamic-tail templates can
+        // false-fail this fallback, but a false digest-mismatch report is
+        // the safer failure mode than silently exempting real content.
+        let is_signature = match local.get(name) {
+            Some((_, _, kind)) => {
+                matches!(kind, ArtifactKind::Signature | ArtifactKind::Certificate)
+            }
+            None => anodizer_core::signature_assets::is_signature_asset(name, &signature_suffixes),
+        };
+        if is_signature {
+            // GPG/cosign signatures embed a timestamp or random nonce, so a
+            // resign of byte-identical input never reproduces the same
+            // bytes — a digest comparison would flag every re-published
+            // signature as "mismatched" even though nothing is wrong.
+            // Presence is still enforced upstream in the missing-asset
+            // diff; this only exempts the byte-level comparison.
+            // Cryptographic verification (`cosign verify-blob` /
+            // `gpg --verify`) needs key material whose access differs per
+            // environment, so this check is presence plus non-empty only.
+            // This is a DELIBERATE, narrower exemption than it looks: it
+            // applies only inside this `if is_signature` arm. Every other
+            // (payload) asset falls through to the digest/size comparison
+            // below — `is_signature_asset`/the exact `ArtifactKind` match
+            // above are the only gate, so a payload asset can never take
+            // this shortcut and skip its digest check.
+            if asset.size == 0 {
+                issues.push(format!(
+                    "signature/certificate asset '{name}' of crate '{}' is empty (0 bytes) — \
+                     the signing step likely failed silently",
+                    crate_cfg.name
+                ));
+                summary.issue_count += 1;
+            } else {
+                log.verbose(&format!(
+                    "asset '{name}' is a signature/certificate — present and non-empty, \
+                     digest comparison exempted"
+                ));
+            }
+            continue;
+        }
+        let Some((path, meta_sha, _kind)) = local.get(name) else {
             log.verbose(&format!(
                 "no local file registered for asset '{name}' — name-only check"
             ));

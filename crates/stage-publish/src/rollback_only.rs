@@ -960,6 +960,7 @@ mod tests {
             ),
             rollback_scope: Some("ROLLBACK_ONLY_SCOPE_GUARD_TOKEN write"),
             skips_on_nightly: false,
+            config_fully_inactive: false,
         })];
 
         let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");

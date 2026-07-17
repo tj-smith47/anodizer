@@ -28,7 +28,8 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
     // when one prefix is a substring of another (e.g. "v" vs "v2-").
     let mut best: Option<(&anodizer_core::config::CrateConfig, usize)> = None;
     for c in &all_crates {
-        if let Some(prefix) = anodizer_core::git::extract_tag_prefix(&c.tag_template)
+        if let Some(prefix) =
+            anodizer_core::git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
             && opts.tag.starts_with(&prefix)
         {
             let remainder = &opts.tag[prefix.len()..];

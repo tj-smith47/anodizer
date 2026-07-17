@@ -14,7 +14,7 @@ use anodizer_core::stage::Stage;
 use anodizer_core::template::assert_no_unrendered_logged;
 
 use crate::arch::{is_valid_snap_arch, triple_to_snap_arch};
-use crate::command::snapcraft_command;
+use crate::command::{first_channel_rejected_for_prerelease_snap, snapcraft_command};
 use crate::generate::generate_snap_yaml;
 use crate::yaml::DEFAULT_SNAP_NAME_TEMPLATE;
 
@@ -683,6 +683,43 @@ fn validate_and_check_skip(
                 other,
                 krate_name
             ),
+        }
+    }
+
+    // Confinement/grade vs. channel cross-check: the Snap Store rejects a
+    // devmode-confined or devel-grade snap ("not ready for general use")
+    // pushed to candidate/stable. Catch this at preflight, before any
+    // build/upload work, rather than surfacing it as an upload-time Store
+    // rejection. An unset `channel_templates` auto-populates to edge/beta
+    // for these snaps (see `resolve_effective_channels`) and never reaches
+    // this branch — only an explicit, conflicting channel is bailed on.
+    //
+    // This check runs against the RAW, unrendered `channel_templates` and
+    // `grade` strings, and only when the build stage itself executes — a
+    // template that resolves to a restricted channel only after rendering,
+    // or a `--publish-only` run (which skips the build stage entirely),
+    // never reaches it. `run_uploads` in `publish_stage.rs` re-runs the same
+    // classifier against the RENDERED values immediately before every
+    // upload, which is the only check both paths always hit.
+    let confinement_is_devmode = snap_cfg.confinement.as_deref() == Some("devmode");
+    let grade_is_devel = snap_cfg.grade.as_deref() == Some("devel");
+    if confinement_is_devmode || grade_is_devel {
+        if let Some(channels) = snap_cfg.channel_templates.as_deref() {
+            if let Some(rejected) = first_channel_rejected_for_prerelease_snap(channels) {
+                let reason = match (confinement_is_devmode, grade_is_devel) {
+                    (true, true) => "devmode confinement and devel grade",
+                    (true, false) => "devmode confinement",
+                    (false, true) => "devel grade",
+                    (false, false) => unreachable!("guarded by the outer if"),
+                };
+                anyhow::bail!(
+                    "snapcraft: crate '{krate_name}' configures {reason} together \
+                     with channel '{rejected}', which the Snap Store rejects — a \
+                     snap with {reason} may only be pushed to pre-release channels \
+                     (edge, beta). Remove '{rejected}' from channel_templates or \
+                     drop the setting that produces {reason}."
+                );
+            }
         }
     }
 

@@ -1103,7 +1103,8 @@ fn check_not_irreversibly_published(
     if unsummarized.is_empty() {
         return Ok(unsummarized);
     }
-    check_no_published_releases(cwd, gh_binary, &unsummarized, log)?;
+    let redact_env: Vec<(String, String)> = std::env::vars().collect();
+    check_no_published_releases(cwd, gh_binary, &unsummarized, log, &redact_env)?;
     Ok(unsummarized)
 }
 
@@ -1190,7 +1191,7 @@ fn crates_versioned_by_tag<'c>(
     };
     let mut out = Vec::new();
     for c in config.crate_universe() {
-        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
+        let prefix = git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""));
         let Some(version) = stripped.strip_prefix(&prefix) else {
             continue;
         };
@@ -1637,9 +1638,10 @@ fn probe_release_for_tag(
     owner: &str,
     repo: &str,
     tag: &str,
+    redact_env: &[(String, String)],
 ) -> ReleaseProbe {
     let endpoint = format!("/repos/{owner}/{repo}/releases/tags/{tag}");
-    match git::gh_api_get_with_binary(gh_binary, &endpoint, None) {
+    match git::gh_api_get_with_binary_with_env(gh_binary, &endpoint, None, redact_env) {
         // Missing `draft` counts as published: an API response that
         // omits the field gives no proof the release is reversible.
         Ok(v) => match v.get("draft").and_then(serde_json::Value::as_bool) {
@@ -1682,6 +1684,7 @@ fn check_no_published_releases(
     gh_binary: &std::path::Path,
     tags: &[String],
     log: &StageLogger,
+    redact_env: &[(String, String)],
 ) -> Result<()> {
     let (owner, repo) = match git::resolve_github_slug_in(None, None, cwd) {
         Ok(slug) => (slug.owner().to_string(), slug.name().to_string()),
@@ -1709,7 +1712,7 @@ fn check_no_published_releases(
     let mut published: Vec<&str> = Vec::new();
     let mut indeterminate: Vec<(&str, String)> = Vec::new();
     for tag in tags {
-        match probe_release_for_tag(gh_binary, &owner, &repo, tag) {
+        match probe_release_for_tag(gh_binary, &owner, &repo, tag, redact_env) {
             ReleaseProbe::Published => published.push(tag),
             ReleaseProbe::NotBlocking => {}
             ReleaseProbe::Indeterminate(msg) => indeterminate.push((tag, msg)),
@@ -2464,7 +2467,7 @@ mod tests {
         let mut config = anodizer_core::config::Config::default();
         config.crates = vec![anodizer_core::config::CrateConfig {
             name: crate_name.to_string(),
-            tag_template: tag_tmpl.to_string(),
+            tag_template: Some(tag_tmpl.to_string()),
             ..Default::default()
         }];
         config
@@ -2487,7 +2490,7 @@ mod tests {
             .iter()
             .map(|(name, tmpl)| anodizer_core::config::CrateConfig {
                 name: name.to_string(),
-                tag_template: tmpl.to_string(),
+                tag_template: Some(tmpl.to_string()),
                 publish: Some(anodizer_core::config::PublishConfig {
                     cargo: Some(anodizer_core::config::CargoPublishConfig::default()),
                     ..Default::default()
@@ -2505,9 +2508,14 @@ mod tests {
         init_github_origin_repo(tmp.path());
         let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
 
-        let err =
-            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-                .expect_err("published release must block rollback");
+        let err = check_no_published_releases(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+            &[],
+        )
+        .expect_err("published release must block rollback");
         let msg = err.to_string();
         assert!(msg.contains("refusing to roll back"), "got: {msg}");
         assert!(msg.contains("v1.0.0"), "must name the blocking tag: {msg}");
@@ -2532,7 +2540,7 @@ mod tests {
         init_github_origin_repo(tmp.path());
         let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": true}'"#);
 
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
             .expect("draft release is reversible; rollback may proceed");
     }
 
@@ -2543,9 +2551,14 @@ mod tests {
         init_github_origin_repo(tmp.path());
         let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1}'"#);
 
-        let err =
-            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-                .expect_err("a release whose draft state is unknown must block");
+        let err = check_no_published_releases(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+            &[],
+        )
+        .expect_err("a release whose draft state is unknown must block");
         assert!(err.to_string().contains("refusing to roll back"));
     }
 
@@ -2559,7 +2572,7 @@ mod tests {
             r#"echo 'gh: HTTP 404: Not Found (https://api.github.com/...)' >&2; exit 1"#,
         );
 
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
             .expect("404 means no release; rollback may proceed");
     }
 
@@ -2578,6 +2591,7 @@ mod tests {
             &missing,
             &["v1.0.0".to_string()],
             &quiet_log(),
+            &[],
         )
         .expect_err("indeterminate probe must fail closed");
         let msg = err.to_string();
@@ -2599,9 +2613,14 @@ mod tests {
         let _ = init_bump_repo(tmp.path(), 0);
         let gh = tmp.path().join("gh-never-spawned");
 
-        let err =
-            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-                .expect_err("unresolvable origin must fail closed");
+        let err = check_no_published_releases(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+            &[],
+        )
+        .expect_err("unresolvable origin must fail closed");
         let msg = err.to_string();
         assert!(msg.contains("refusing to roll back"), "got: {msg}");
         assert!(msg.contains("'origin'"), "must name the remote: {msg}");
@@ -2621,7 +2640,7 @@ mod tests {
         );
         let gh = tmp.path().join("gh-never-spawned");
 
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
             .expect("non-github.com origin carries no probe signal; rollback may proceed");
     }
 
@@ -2637,9 +2656,14 @@ mod tests {
             r#"echo 'gh: HTTP 401: Bad credentials' >&2; exit 1"#,
         );
 
-        let err =
-            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-                .expect_err("auth-failed probe must fail closed");
+        let err = check_no_published_releases(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+            &[],
+        )
+        .expect_err("auth-failed probe must fail closed");
         assert!(
             err.to_string().contains("401"),
             "must carry the probe error"
@@ -3849,7 +3873,7 @@ mod tests {
         let mut config = anodizer_core::config::Config::default();
         config.crates = vec![anodizer_core::config::CrateConfig {
             name: "mytool".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             publish: Some(anodizer_core::config::PublishConfig {
                 chocolatey: Some(anodizer_core::config::ChocolateyConfig {
                     name: choco_name.map(str::to_string),
@@ -3866,7 +3890,7 @@ mod tests {
         let mut config = anodizer_core::config::Config::default();
         config.crates = vec![anodizer_core::config::CrateConfig {
             name: "mytool".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             publish: Some(anodizer_core::config::PublishConfig {
                 winget: Some(anodizer_core::config::WingetConfig {
                     package_identifier: Some(package_identifier.to_string()),

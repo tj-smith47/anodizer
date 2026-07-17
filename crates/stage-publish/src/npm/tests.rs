@@ -2,7 +2,8 @@
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
-    Config, CrateConfig, MetadataConfig, NpmAuthMode, NpmConfig, NpmMode, StringOrBool,
+    BuildConfig, Config, CrateConfig, MetadataConfig, NpmAuthMode, NpmConfig, NpmMode,
+    StringOrBool, UniversalBinaryConfig,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
@@ -40,7 +41,7 @@ fn demo_crate() -> CrateConfig {
     CrateConfig {
         name: "demo".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }
 }
@@ -713,6 +714,120 @@ fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
     );
 }
 
+/// With `libc_aware: false`, a configured gnu+musl pair collapses into ONE
+/// `linux-x64` identity (the same identity a `platform_suffix` computation
+/// gives both triples). When both are CONFIGURED but only the musl shard
+/// actually built, the surviving musl artifact still maps to `linux-x64` and
+/// must not satisfy the identity on its own: the glibc/musl dedup elsewhere
+/// in this file always prefers glibc when both are present, so a config that
+/// names a glibc target promises glibc content — silently serving musl in
+/// its place is the same class of promise-breaking substitution a dropped
+/// shard causes.
+#[test]
+fn optional_deps_libc_aware_false_dropped_gnu_shard_not_satisfied_by_surviving_musl() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            binary: Some("demo".to_string()),
+            targets: Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-musl".to_string(),
+            ]),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // x86_64-unknown-linux-gnu is genuinely dropped; only the musl shard
+    // survives.
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+
+    let cfg = NpmConfig {
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect_err(
+            "a dropped glibc shard must not be silently satisfied by a surviving musl \
+             artifact backing the same collapsed linux-x64 identity",
+        );
+    let msg = err.to_string();
+    assert!(msg.contains("linux-x64"), "{msg}");
+    assert!(msg.contains("x86_64-unknown-linux-gnu"), "{msg}");
+}
+
+/// Regression guard: when both the gnu and musl shards for a collapsed
+/// identity actually build, the gate must pass — the dedup-winner check
+/// added above must not turn a genuinely complete build into a false
+/// failure.
+#[test]
+fn optional_deps_libc_aware_false_both_shards_present_satisfies_gate() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            binary: Some("demo".to_string()),
+            targets: Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-musl".to_string(),
+            ]),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+
+    let cfg = NpmConfig {
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect("both shards present must satisfy the collapsed linux-x64 identity");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["@anodize/demo-linux-x64"], "{names:?}");
+}
+
+/// Regression guard: when only musl is CONFIGURED (glibc was never a target
+/// at all), the musl artifact alone must satisfy its own identity — the
+/// dedup-winner check must only apply when a higher-ranked libc is actually
+/// among the configured triples for that identity.
+#[test]
+fn optional_deps_libc_aware_false_musl_only_configured_satisfied_by_musl_artifact() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            binary: Some("demo".to_string()),
+            targets: Some(vec!["x86_64-unknown-linux-musl".to_string()]),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+
+    let cfg = NpmConfig {
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect("a musl-only configured target must be satisfied by its own artifact");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["@anodize/demo-linux-x64"], "{names:?}");
+}
+
 #[test]
 fn optional_deps_bins_map_co_locates_all_command_binaries_per_platform() {
     // A multi-command `bins:` tool (e.g. hurl + hurlfmt) emits one binary
@@ -846,6 +961,656 @@ fn optional_deps_layout_is_deterministic() {
     let n1: Vec<&str> = l1.platforms.iter().map(|p| p.name.as_str()).collect();
     let n2: Vec<&str> = l2.platforms.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(n1, n2);
+}
+
+// -----------------------------------------------------------------------------
+// Completeness gate — a configured target with no matching artifact must
+// hard-error before any npm publish, not silently narrow optionalDependencies
+// (npm versions are immutable; a partial platform set at version X can never
+// be repaired at X).
+// -----------------------------------------------------------------------------
+
+/// The 8-target anodizer-shaped crate config: 6 targets on the first build
+/// (gnu/darwin/msvc) + 2 musl targets on a second build — mirrors anodizer's
+/// own `.anodizer.yaml`. `binary: Some(...)` bypasses the filesystem
+/// `crate_declares_bin` probe so the expected target set is deterministic in
+/// a unit test with no real Cargo.toml at `path: "."`.
+fn demo_crate_with_targets(defaults_targets: &[&str], musl_targets: &[&str]) -> CrateConfig {
+    CrateConfig {
+        builds: Some(vec![
+            BuildConfig {
+                binary: Some("demo".to_string()),
+                targets: Some(defaults_targets.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            },
+            BuildConfig {
+                binary: Some("demo".to_string()),
+                targets: Some(musl_targets.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            },
+        ]),
+        ..demo_crate()
+    }
+}
+
+const EIGHT_PLATFORM_DEFAULTS: &[&str] = &[
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+];
+const EIGHT_PLATFORM_MUSL: &[&str] = &["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+
+#[test]
+fn optional_deps_missing_expected_platform_errors_before_publish() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = demo_crate_with_targets(EIGHT_PLATFORM_DEFAULTS, EIGHT_PLATFORM_MUSL);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // Present for 7 of 8 configured targets — drop x86_64-unknown-linux-gnu
+    // (linux-x64-glibc), simulating a dist merge that dropped the shard.
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err("must error on missing platform, before any staging/publish");
+    let msg = err.to_string();
+    assert!(msg.contains("linux-x64-glibc"), "{msg}");
+    assert!(msg.contains("UploadableBinary"), "{msg}");
+}
+
+#[test]
+fn optional_deps_targets_allowlist_narrows_expected_set_no_false_positive() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = demo_crate_with_targets(EIGHT_PLATFORM_DEFAULTS, EIGHT_PLATFORM_MUSL);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // Only 2 of the 8 configured targets are present — but the entry's
+    // `targets:` allowlist narrows expectations to exactly those 2, so the
+    // other 6 (never in scope) must NOT be reported as missing.
+    add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+
+    let cfg = NpmConfig {
+        targets: Some(vec![
+            "x86_64-apple-darwin".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]),
+        ..opt_cfg()
+    };
+    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+        .expect("layout must succeed — allowlist narrows expected set to what's present");
+    assert_eq!(layout.platforms.len(), 2, "{:?}", layout.platforms);
+}
+
+#[test]
+fn optional_deps_all_expected_present_layout_unchanged() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = demo_crate_with_targets(EIGHT_PLATFORM_DEFAULTS, EIGHT_PLATFORM_MUSL);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    for t in EIGHT_PLATFORM_DEFAULTS.iter().chain(EIGHT_PLATFORM_MUSL) {
+        let basename = if t.contains("windows") {
+            "demo.exe"
+        } else {
+            "demo"
+        };
+        add_binary(&mut ctx, tmp.path(), t, basename);
+    }
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.len(), 8, "{names:?}");
+}
+
+/// `universal_binaries` with `replace: true` consumes the two
+/// darwin per-arch artifacts (lipo'd into one `darwin-universal` artifact,
+/// npm-unrecognized); the gate must not expect `darwin-x64`/`darwin-arm64`
+/// artifacts that this crate can never produce once replaced.
+#[test]
+fn optional_deps_universal_replace_true_excludes_darwin_per_arch_from_expected() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            replace: Some(true),
+            ..Default::default()
+        }]),
+        ..demo_crate_with_targets(EIGHT_PLATFORM_DEFAULTS, EIGHT_PLATFORM_MUSL)
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // No aarch64-apple-darwin / x86_64-apple-darwin artifacts — lipo consumed
+    // them. Present everything else, including the universal artifact under
+    // the npm-unrecognized "darwin-universal" target (contributes nothing).
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UniversalBinary,
+        path: tmp.path().join("demo-universal"),
+        name: "demo".to_string(),
+        target: Some("darwin-universal".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("replace:true must retire the darwin per-arch expectation, not false-abort");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.len(), 6, "{names:?}");
+}
+
+/// Regression guard: without `replace: true` (unset/false), the
+/// darwin per-arch targets remain fully expected; a missing per-arch artifact
+/// must still hard-error.
+#[test]
+fn optional_deps_universal_replace_false_still_expects_darwin_per_arch() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            replace: Some(false),
+            ..Default::default()
+        }]),
+        ..demo_crate_with_targets(EIGHT_PLATFORM_DEFAULTS, EIGHT_PLATFORM_MUSL)
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // Drop only x86_64-apple-darwin — replace:false must not subtract it.
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err("replace:false must not exempt darwin-x64 from the expected set");
+    assert!(err.to_string().contains("darwin-x64"), "{err}");
+}
+
+/// An `ids:`-narrowed `universal_binaries[]`
+/// entry that never reaches the darwin builds must NOT retire darwin from the
+/// expected set: `effective_ids` filters `by_kind_and_crate` down to only the
+/// matched builds before lipo's arm64/x86_64 search
+/// (`stage-build/src/universal.rs::build_universal_binary`), so when `ids:`
+/// names a non-darwin build, lipo's own both-required precondition can never
+/// be satisfied — it never runs, `replace` never fires, and the darwin
+/// per-arch artifacts ship completely normally. A gate that unconditionally
+/// subtracts on `replace: Some(true)` would silently narrow
+/// `optionalDependencies` here exactly like a dropped shard (the v0.19.0-class
+/// bug); this must still hard-error when a darwin artifact is missing.
+#[test]
+fn optional_deps_universal_ids_narrowed_to_non_darwin_build_still_expects_darwin_pair() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![
+            BuildConfig {
+                id: Some("linux-build".to_string()),
+                binary: Some("demo".to_string()),
+                targets: Some(
+                    EIGHT_PLATFORM_MUSL
+                        .iter()
+                        .chain(EIGHT_PLATFORM_DEFAULTS[4..].iter())
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+            BuildConfig {
+                binary: Some("demo".to_string()),
+                targets: Some(
+                    EIGHT_PLATFORM_DEFAULTS
+                        .iter()
+                        .take(4)
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        ]),
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            ids: Some(vec!["linux-build".to_string()]),
+            replace: Some(true),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // Every configured target present EXCEPT x86_64-apple-darwin — simulating
+    // exactly the dropped-shard scenario the completeness gate exists to catch.
+    // `ids: [linux-build]` never selects a darwin build, so lipo's
+    // both-required precondition is unreachable and `replace` never fires;
+    // the missing darwin artifact must still be reported.
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err(
+        "ids: narrowed to a non-darwin build must not retire darwin-x64 from the expected set",
+    );
+    assert!(err.to_string().contains("darwin-x64"), "{err}");
+}
+
+/// A crate whose target set names only ONE
+/// darwin triple can never satisfy lipo's both-required precondition
+/// (`build_universal_binary` early-returns, no-op, when either arm64/x86_64 is
+/// absent), so `replace` never fires and that one darwin package ships
+/// unexpected. The gate must not retire it from the expected set either.
+#[test]
+fn optional_deps_universal_only_one_darwin_triple_configured_still_expects_it() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            binary: Some("demo".to_string()),
+            // No x86_64-apple-darwin anywhere in this crate's target set.
+            targets: Some(
+                std::iter::once("aarch64-apple-darwin".to_string())
+                    .chain(EIGHT_PLATFORM_DEFAULTS[2..].iter().map(|s| s.to_string()))
+                    .chain(EIGHT_PLATFORM_MUSL.iter().map(|s| s.to_string()))
+                    .collect(),
+            ),
+            ..Default::default()
+        }]),
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            replace: Some(true),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // aarch64-apple-darwin (the crate's only configured darwin triple) is
+    // missing — the both-required floor can't be met (no x86_64-apple-darwin
+    // in the target set at all), so `replace` could never have fired; the
+    // gate must still expect and report it.
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err(
+        "a crate configured with only one darwin triple must still expect it — lipo's \
+         both-required precondition can never be met, so replace can never have fired",
+    );
+    assert!(err.to_string().contains("darwin-arm64"), "{err}");
+}
+
+/// A single explicit-id build (`id: cli`) paired with a `universal_binaries[]`
+/// entry that sets `replace: true` and leaves `ids:` unset: the default id
+/// resolution (mirroring `stage-build/src/universal.rs::resolve_default_unibin_ids`)
+/// falls through to the project/crate name, which matches no build's own id
+/// here — lipo's implicit `ids:` filter can never select this build, so its
+/// both-required precondition is unreachable and `replace` never actually
+/// fires. The gate must not retire the darwin pair from the expected set on
+/// this entry; a genuinely dropped darwin artifact must still hard-error.
+#[test]
+fn optional_deps_universal_default_ids_resolve_to_non_matching_build_still_expects_darwin_pair() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            id: Some("cli".to_string()),
+            binary: Some("demo".to_string()),
+            targets: Some(
+                EIGHT_PLATFORM_DEFAULTS
+                    .iter()
+                    .chain(EIGHT_PLATFORM_MUSL.iter())
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            ..Default::default()
+        }]),
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            replace: Some(true),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // x86_64-apple-darwin is genuinely dropped; every other configured target
+    // is present, including the OTHER darwin triple — lipo's own
+    // both-required precondition could never have retired it (see above), so
+    // the gate must still catch this exactly like any other dropped shard.
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err(
+        "an ids-unset universal_binaries entry whose default id matches no build must not \
+         retire the darwin pair from the expected set",
+    );
+    assert!(err.to_string().contains("darwin-x64"), "{err}");
+}
+
+/// A `build.id:` set to a template string is stamped RAW on the build's
+/// artifact metadata by `stage-build` (only the `binary`-fallback id is ever
+/// rendered); an `ids:` list naming the RENDERED form of that template can
+/// therefore never match this build in production, so lipo's `ids:`
+/// narrowing never selects it and `replace` never fires. The gate must
+/// compare the same raw string, not a rendered one, or it would retire the
+/// darwin pair on a match production itself can never make.
+#[test]
+fn optional_deps_universal_ids_compares_raw_explicit_build_id_not_rendered() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![BuildConfig {
+            id: Some("{{ .ProjectName }}-cli".to_string()),
+            binary: Some("demo".to_string()),
+            targets: Some(
+                EIGHT_PLATFORM_DEFAULTS
+                    .iter()
+                    .chain(EIGHT_PLATFORM_MUSL.iter())
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            ..Default::default()
+        }]),
+        universal_binaries: Some(vec![UniversalBinaryConfig {
+            // The RENDERED form of the build's templated id ("demo-cli") —
+            // never what production's raw artifact-metadata comparison
+            // actually sees ("{{ .ProjectName }}-cli").
+            ids: Some(vec!["demo-cli".to_string()]),
+            replace: Some(true),
+            ..Default::default()
+        }]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "aarch64-pc-windows-msvc", "demo.exe");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-unknown-linux-musl", "demo");
+
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err(
+        "ids: naming the rendered form of a templated build.id must not match the raw id, \
+         so the darwin pair must remain expected",
+    );
+    assert!(err.to_string().contains("darwin-x64"), "{err}");
+}
+
+/// `BuildConfig.skip: true` means stage-build never compiles that
+/// build's targets; the gate must not expect artifacts for them.
+#[test]
+fn optional_deps_skip_true_build_targets_not_expected() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = CrateConfig {
+        builds: Some(vec![
+            BuildConfig {
+                binary: Some("demo".to_string()),
+                targets: Some(vec![
+                    "aarch64-apple-darwin".to_string(),
+                    "x86_64-apple-darwin".to_string(),
+                ]),
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+            BuildConfig {
+                binary: Some("demo".to_string()),
+                targets: Some(
+                    EIGHT_PLATFORM_DEFAULTS[2..]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .chain(EIGHT_PLATFORM_MUSL.iter().map(|s| s.to_string()))
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        ]),
+        ..demo_crate()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    // No darwin artifacts at all — the skip:true build never produced them.
+    for t in EIGHT_PLATFORM_DEFAULTS[2..]
+        .iter()
+        .chain(EIGHT_PLATFORM_MUSL)
+    {
+        let basename = if t.contains("windows") {
+            "demo.exe"
+        } else {
+            "demo"
+        };
+        add_binary(&mut ctx, tmp.path(), t, basename);
+    }
+
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("skip:true build's targets must not be expected");
+    let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.len(), 6, "{names:?}");
+}
+
+// -----------------------------------------------------------------------------
+// Per-crate dispatch scope: `crate_universe()` returns every
+// configured crate, but a per-crate workspace run's `ctx.artifacts` only
+// carries the dispatched crate's binaries. An `npms[]` entry without `ids:`
+// must intersect its expected-crate scope with `ctx.options.selected_crates`
+// (the same field `publisher_helpers::effective_publish_crates` reads) so a
+// sibling crate outside this run's dispatch scope cannot inflate the
+// expected set. Proven across all three config modes: single-crate,
+// lockstep (multi-crate, implicit-all), per-crate (multi-crate,
+// `selected_crates` narrows to one).
+// -----------------------------------------------------------------------------
+
+fn sibling_crate(name: &str, targets: &[&str]) -> CrateConfig {
+    CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        builds: Some(vec![BuildConfig {
+            binary: Some(name.to_string()),
+            targets: Some(targets.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }
+}
+
+/// Single-crate mode (one crate configured, `selected_crates` empty):
+/// baseline already covered by the tests above, pinned here explicitly so
+/// the three-mode matrix is visible in one place.
+#[test]
+fn optional_deps_single_crate_mode_all_expected_present() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let krate = sibling_crate("demo", &["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"]);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![krate])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "demo");
+
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    assert_eq!(layout.platforms.len(), 2);
+}
+
+/// Lockstep mode (multiple crates, `selected_crates` empty — implicit-all):
+/// an `ids`-less entry expects the UNION of every crate's targets, so both
+/// crates' artifacts must be present.
+#[test]
+fn optional_deps_lockstep_mode_expects_union_across_crates() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let demo = sibling_crate("demo", &["x86_64-unknown-linux-gnu"]);
+    let sibling = sibling_crate("sibling", &["x86_64-apple-darwin"]);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo, sibling])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+    // Sibling crate's target intentionally absent — lockstep mode must
+    // report it, since every crate is in scope for an implicit-all entry.
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err("lockstep mode must expect the sibling crate's target too");
+    assert!(err.to_string().contains("darwin-x64"), "{err}");
+}
+
+/// Per-crate mode (multiple crates, `selected_crates` narrowed to one): an
+/// `ids`-less entry must NOT expect a sibling crate's targets when that
+/// sibling was never dispatched this run — it contributed no artifacts and
+/// was never going to.
+#[test]
+fn optional_deps_per_crate_mode_sibling_extra_target_not_false_abort() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let demo = sibling_crate("demo", &["x86_64-unknown-linux-gnu"]);
+    let sibling = sibling_crate("sibling", &["x86_64-apple-darwin"]);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo, sibling])
+        .selected_crates(vec!["demo".to_string()])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("per-crate dispatch scope must exclude the undispatched sibling's target");
+    assert_eq!(layout.platforms.len(), 1);
 }
 
 // -----------------------------------------------------------------------------
@@ -1246,7 +2011,7 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
             CrateConfig {
                 name: "other".to_string(),
                 path: "other".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             },
         ])
@@ -1405,7 +2170,7 @@ fn targets_allowlist_restricts_to_listed_lockstep_workspace() {
             CrateConfig {
                 name: "other".to_string(),
                 path: "other".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             },
         ])
@@ -1435,7 +2200,7 @@ fn targets_allowlist_restricts_to_listed_per_crate() {
         .crates(vec![CrateConfig {
             name: "git-cliff".to_string(),
             path: "git-cliff".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -1496,7 +2261,7 @@ fn targets_allowlist_unbuilt_triple_blocks() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: Some(vec![BuildConfig {
                 binary: Some("demo".into()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".into()]),
@@ -1537,7 +2302,7 @@ fn targets_allowlist_all_built_passes() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: Some(vec![BuildConfig {
                 binary: Some("demo".into()),
                 targets: Some(GIT_CLIFF_SIX.iter().map(|s| s.to_string()).collect()),
@@ -1582,7 +2347,7 @@ fn targets_allowlist_synthesized_default_build_passes() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: dir.path().to_str().unwrap().to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: None,
             ..Default::default()
         }])
@@ -2310,8 +3075,8 @@ fn probe_existence_transport_error_is_unknown() {
 #[test]
 fn probe_existence_url_encodes_scoped_name_on_the_wire() {
     // A scoped name's `/` must be `%2F` in the live URL path. The capturing
-    // responder records the request line so we can assert `encode_package_path`
-    // is wired into the GET, not just unit-tested in isolation.
+    // responder records the request line, proving `encode_package_path` is
+    // wired into the GET, not just unit-tested in isolation.
     let (addr, captured) =
         anodizer_core::test_helpers::responder::spawn_request_capturing_responder(
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
@@ -3176,7 +3941,7 @@ fn ctx_with_derived(crates: &[(&str, MetadataConfig)]) -> anodizer_core::context
             .map(|(name, _)| CrateConfig {
                 name: (*name).to_string(),
                 path: (*name).to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             })
             .collect(),

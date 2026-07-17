@@ -1885,7 +1885,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];
@@ -1912,7 +1912,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
                     repository: None, // Missing
@@ -2338,7 +2338,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
                     // repository intentionally None — would normally
@@ -2510,7 +2510,7 @@ mod tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -3964,6 +3964,33 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Krew entries across the crate universe whose `skip:`/`skip_upload:`/
+/// `if:` evaluates active right now AND whose crate is in scope for
+/// `--crate` / `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names, so a selected-but-skipped
+/// crate cannot masquerade as active via an out-of-scope sibling). Shared by
+/// [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge.
+fn active_krew_configs(ctx: &Context) -> Vec<&anodizer_core::config::KrewConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
+        .filter(|k| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                k.skip.as_ref(),
+                k.skip_upload.as_ref(),
+                k.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for KrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -3985,23 +4012,17 @@ impl anodizer_core::Publisher for KrewPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_krew_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Both krew flows need a token (PR-direct for the clone+PR, bot/auto
         // for the index probe + webhook), and the PR-direct flow clones
         // with git. `git` is declared unconditionally because `auto` mode
         // can resolve to PR-direct at run time.
-        ctx.config
-            .crate_universe()
+        active_krew_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
-            .filter(|k| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    k.skip.as_ref(),
-                    k.skip_upload.as_ref(),
-                    k.if_condition.as_deref(),
-                )
-            })
             .flat_map(|k| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,
@@ -4304,7 +4325,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
                     repository: Some(RepositoryConfig {
@@ -4331,6 +4352,46 @@ mod publisher_tests {
         assert_eq!(
             p.rollback_scope_needed(),
             Some("GITHUB_TOKEN pull_request:write")
+        );
+    }
+
+    /// `--crate x` selects only the skip:true entry; an active sibling `y`
+    /// outside the selection must not keep the publisher live.
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = krew_crate("x");
+        skipped
+            .publish
+            .as_mut()
+            .unwrap()
+            .krew
+            .as_mut()
+            .unwrap()
+            .skip = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, krew_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+
+        assert!(
+            KrewPublisher::new().config_fully_inactive(&ctx),
+            "--crate x selects only the skip:true entry; active sibling y is out of \
+             scope and must not keep the publisher live"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![krew_crate("x")])
+            .build();
+
+        assert!(
+            !KrewPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
         );
     }
 
@@ -4470,7 +4531,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "gamma".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -4616,7 +4677,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -4709,7 +4770,7 @@ mod publisher_tests {
             crates: vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     krew: Some(KrewConfig {
                         repository: Some(RepositoryConfig {
@@ -4787,7 +4848,7 @@ mod publisher_tests {
             crates: vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: "mytool".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     krew: Some(KrewConfig {
                         repository: Some(RepositoryConfig {

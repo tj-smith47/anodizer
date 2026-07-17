@@ -1782,7 +1782,7 @@ mod tests {
             .crates(vec![CrateConfig {
                 name: crate_name.to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }])
             .build();
@@ -1835,7 +1835,7 @@ mod tests {
             .crates(vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }])
             .build()
@@ -1848,7 +1848,7 @@ mod tests {
         CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }
     }
@@ -2036,7 +2036,7 @@ mod tests {
         CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: owner.to_string(),
@@ -2115,7 +2115,7 @@ mod tests {
         CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![archive]),
             ..Default::default()
         }
@@ -2267,7 +2267,7 @@ mod tests {
             .crates(vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     nix: Some(nix),
                     ..Default::default()
@@ -2358,7 +2358,7 @@ mod tests {
             .crates(vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig::default()),
                 ..Default::default()
             }])
@@ -2579,7 +2579,7 @@ mod tests {
                 .crates(vec![CrateConfig {
                     name: "mytool".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     release: Some(ReleaseConfig {
                         github: Some(anodizer_core::config::ScmRepoConfig {
                             owner: "myorg".to_string(),
@@ -3053,7 +3053,7 @@ mod tests {
                 .crates(vec![CrateConfig {
                     name: "mytool".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     release: Some(ReleaseConfig {
                         github: Some(anodizer_core::config::ScmRepoConfig {
                             owner: "myorg".to_string(),

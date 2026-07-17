@@ -538,7 +538,7 @@ fn archive_name_template_empty_bails_with_actionable_error() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some(String::new()),
                 formats: Some(vec!["tar.gz".to_string()]),
@@ -608,7 +608,7 @@ fn test_archive_stage_run() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -670,7 +670,7 @@ fn test_archive_stage_empty_archives_auto_injects_default() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             // Empty archives list — must auto-inject the default.
             archives: ArchivesConfig::Configs(vec![]),
             ..Default::default()
@@ -723,7 +723,7 @@ fn test_archive_stage_disabled() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Disabled,
             ..Default::default()
         }])
@@ -764,7 +764,7 @@ fn test_archive_stage_zip_for_windows() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -832,7 +832,7 @@ fn test_archive_stage_tar_xz_format() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -898,7 +898,7 @@ fn test_archive_stage_binary_format() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -1316,7 +1316,7 @@ fn test_archive_stage_multiple_binaries_per_archive() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -1411,7 +1411,7 @@ fn test_archive_stage_default_config_inheritance() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         // Use default archive config (no format_overrides set) — should inherit global
         archives: ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
         ..Default::default()
@@ -1479,7 +1479,7 @@ fn test_archive_stage_name_template_renders_all_variables() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}".to_string(),
@@ -1550,7 +1550,7 @@ fn test_archive_stage_files_included_alongside_binaries() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some("myapp-1.0.0-linux-amd64".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -1623,7 +1623,7 @@ fn test_archive_registers_correct_metadata() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["zip".to_string()]),
             ..Default::default()
@@ -1685,7 +1685,7 @@ fn test_archive_stage_wrap_in_directory_renders_template() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some("myapp-linux-amd64".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -1755,7 +1755,7 @@ fn test_missing_binary_artifact_errors_with_path() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: anodizer_core::config::ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
         ..Default::default()
     }];
@@ -1858,7 +1858,7 @@ fn test_archive_unsupported_format_returns_error() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: anodizer_core::config::ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["unsupported_format".to_string()]),
             ..Default::default()
@@ -2045,7 +2045,7 @@ fn test_archive_ids_filter_only_matching_builds() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 ids: Some(vec!["linux-build".to_string()]),
@@ -2114,7 +2114,7 @@ fn test_archive_ids_filter_excludes_all_when_no_match() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 ids: Some(vec!["nonexistent-id".to_string()]),
@@ -2168,7 +2168,7 @@ fn test_archive_ids_filter_none_includes_all() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 // ids is None (default) — all binaries should be included
@@ -2236,7 +2236,7 @@ fn test_archive_id_metadata_propagated() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 id: Some("linux-archive".to_string()),
                 formats: Some(vec!["tar.gz".to_string()]),
@@ -2286,7 +2286,7 @@ fn test_archive_id_metadata_absent_when_not_set() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 // id is None (default)
                 formats: Some(vec!["tar.gz".to_string()]),
@@ -2343,7 +2343,7 @@ fn test_archive_formats_plural_produces_multiple_archives() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
                 ..Default::default()
@@ -2422,7 +2422,7 @@ fn test_archive_formats_plural_ignores_singular_format() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
                 ..Default::default()
@@ -2503,7 +2503,7 @@ fn test_archive_stage_tgz_alias() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["tgz".to_string()]),
             ..Default::default()
@@ -2552,7 +2552,7 @@ fn test_archive_stage_txz_alias() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["txz".to_string()]),
             ..Default::default()
@@ -2601,7 +2601,7 @@ fn test_archive_stage_tzst_alias() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["tzst".to_string()]),
             ..Default::default()
@@ -2653,7 +2653,7 @@ fn test_archive_stage_uncompressed_tar() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["tar".to_string()]),
             ..Default::default()
@@ -2702,7 +2702,7 @@ fn test_archive_stage_unknown_format_errors() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["rar".to_string()]),
             ..Default::default()
@@ -3005,7 +3005,7 @@ fn test_archive_stage_xz_format_single_binary() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: crate_dir.to_string_lossy().to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["xz".to_string()]),
             ..Default::default()
@@ -3069,7 +3069,7 @@ fn test_archive_stage_xz_format_multi_file_errors() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: crate_dir.to_string_lossy().to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["xz".to_string()]),
             // Adding an extra file forces a multi-file payload, which xz
@@ -3124,7 +3124,7 @@ fn test_archive_stage_gz_format() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["gz".to_string()]),
             ..Default::default()
@@ -3185,7 +3185,7 @@ fn test_archive_stage_meta_no_binaries() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             meta: Some(true),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -3346,7 +3346,7 @@ fn test_allow_different_binary_count_default_errors_on_mismatch() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 // allow_different_binary_count is None (default false) - should error
@@ -3427,7 +3427,7 @@ fn test_binary_format_plural_exempts_different_binary_count_check() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 // plural-only `formats` — the old bug would miss this
                 // because the exemption checked only `format`.
@@ -3496,7 +3496,7 @@ fn test_strip_binary_directory_metadata() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 strip_binary_directory: Some(true),
@@ -3996,7 +3996,7 @@ fn test_archive_stage_binaries_filter() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some("filtered-archive".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -4118,7 +4118,7 @@ fn test_archive_binary_format_windows_appends_exe() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -4176,7 +4176,7 @@ fn test_archive_meta_empty_files_hard_errors() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some("{{ .ProjectName }}-meta".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -4219,7 +4219,7 @@ fn test_archive_binary_format_linux_keeps_no_extension() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             name_template: Some(
                 "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -4281,7 +4281,7 @@ fn test_archive_multi_crate_default_template_uses_crate_name() {
     let mk_crate = |name: &str| CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["tar.gz".to_string()]),
             ..Default::default()
@@ -4353,7 +4353,7 @@ fn test_archive_single_crate_keeps_project_name_default() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![ArchiveConfig {
             formats: Some(vec!["tar.gz".to_string()]),
             ..Default::default()
@@ -4425,7 +4425,7 @@ fn test_archive_dynlink_propagation_uses_canonical_key() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
@@ -4481,7 +4481,7 @@ fn test_archive_amd64_variant_propagated_from_first_binary() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
@@ -4545,7 +4545,7 @@ fn test_archive_default_name_renders_group_amd64_variant_suffix() {
             .crates(vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                     formats: Some(vec!["tar.gz".to_string()]),
                     ..Default::default()
@@ -4600,7 +4600,7 @@ fn test_archive_user_template_amd64_var_renders_group_variant() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 name_template: Some("{{ .ProjectName }}_{{ Amd64 }}".to_string()),
@@ -4659,7 +4659,7 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
             CrateConfig {
                 name: "crate-a".to_string(),
                 path: "crate-a".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                     name_template: Some(
                         "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -4672,7 +4672,7 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
             CrateConfig {
                 name: "crate-b".to_string(),
                 path: "crate-b".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                     name_template: Some(
                         "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -4852,7 +4852,7 @@ fn run_with_hook_sentinels(
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 id: Some("default".to_string()),
                 name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
@@ -4971,7 +4971,7 @@ fn archive_after_hook_sees_artifact_path() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 id: Some("default".to_string()),
                 name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
@@ -5042,7 +5042,7 @@ fn archive_before_hook_sees_artifact_name() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 id: Some("default".to_string()),
                 name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
@@ -5120,7 +5120,7 @@ fn test_archive_templated_files_per_format() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
@@ -5250,7 +5250,7 @@ fn host_completion_ctx(
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![archive]),
         ..Default::default()
     };
@@ -5491,7 +5491,7 @@ fn mode_a_no_host_native_artifact_errors() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![archive]),
         ..Default::default()
     };
@@ -5557,7 +5557,7 @@ fn workspace_per_crate_completions_resolve_per_crate() {
     let mk_crate = |name: &str| CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![anodizer_core::config::ArchiveConfig {
             name_template: Some("{{ .CrateName }}-{{ .Os }}-{{ .Arch }}".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),

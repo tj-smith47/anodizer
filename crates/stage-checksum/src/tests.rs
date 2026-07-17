@@ -384,7 +384,7 @@ fn test_checksum_stage_run() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -452,7 +452,7 @@ fn test_checksum_stage_skips_appbundle_directory() {
         .crates(vec![CrateConfig {
             name: "anodizer".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -513,7 +513,7 @@ fn test_checksum_stage_dry_run() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -561,7 +561,7 @@ fn test_checksum_stage_sha512() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha512".to_string()),
                 ..Default::default()
@@ -613,7 +613,7 @@ fn test_checksum_stage_no_artifacts_skips() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -652,7 +652,7 @@ fn test_checksum_stage_global_disable() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -693,7 +693,7 @@ fn test_checksum_stage_per_crate_disable() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         checksum: Some(ChecksumConfig {
             algorithm: Some("sha256".to_string()),
             skip: Some(StringOrBool::Bool(true)),
@@ -748,7 +748,7 @@ fn test_checksum_stage_with_extra_files() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         checksum: Some(ChecksumConfig {
             extra_files: Some(vec![ExtraFileSpec::Glob(glob_pattern)]),
             ..Default::default()
@@ -805,7 +805,7 @@ fn test_checksum_stage_with_ids_filter() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         checksum: Some(ChecksumConfig {
             ids: Some(vec!["linux-amd64".to_string()]),
             ..Default::default()
@@ -888,7 +888,7 @@ fn test_integration_checksum_file_format_and_correctness() {
         crates: vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -983,7 +983,7 @@ fn test_integration_checksum_hash_independently_verifiable() {
         crates: vec![CrateConfig {
             name: "fox".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1042,7 +1042,7 @@ fn test_integration_checksum_multiple_algorithms_produce_correct_lengths() {
         crates: vec![CrateConfig {
             name: "pkg".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha512".to_string()),
                 ..Default::default()
@@ -1104,7 +1104,7 @@ fn test_checksum_of_fake_binary_via_builder() {
         .crates(vec![anodizer_core::config::CrateConfig {
             name: "checksum-test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -1183,7 +1183,7 @@ fn test_checksum_file_registered_as_checksum_artifact() {
         crates: vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1245,7 +1245,7 @@ fn test_checksum_missing_file_errors() {
         crates: vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1297,7 +1297,7 @@ fn test_extra_files_appear_in_combined_checksum() {
         crates: vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 extra_files: Some(vec![ExtraFileSpec::Glob(glob_pattern)]),
                 ..Default::default()
@@ -1360,7 +1360,7 @@ fn test_extra_files_name_template_exposes_algorithm_var() {
         crates: vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha256".to_string()),
                 extra_files: Some(vec![ExtraFileSpec::Detailed {
@@ -1419,7 +1419,7 @@ fn test_ids_filter_excludes_unmatched_artifacts() {
         crates: vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 ids: Some(vec!["linux".to_string(), "darwin".to_string()]),
                 ..Default::default()
@@ -1620,7 +1620,7 @@ fn test_checksum_stage_split_true_no_combined_file() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 split: Some(true),
                 ..Default::default()
@@ -1691,7 +1691,7 @@ fn test_checksum_stage_split_format_coreutils_writes_hash_and_filename() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 split: Some(true),
                 split_format: Some(ChecksumSplitFormat::Coreutils),
@@ -1753,7 +1753,7 @@ fn test_checksum_stage_split_false_only_combined() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 split: Some(false),
                 ..Default::default()
@@ -1817,7 +1817,7 @@ fn test_checksum_stage_default_split_only_combined() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -1871,7 +1871,7 @@ fn test_checksum_stage_global_split_cascades_to_crate() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             // No per-crate checksum config — should inherit global split: true
             ..Default::default()
         }])
@@ -1919,7 +1919,7 @@ fn test_default_checksum_filename_uses_project_name_and_version() {
         .crates(vec![CrateConfig {
             name: "coolapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -2060,7 +2060,7 @@ fn test_nonsplit_mode_does_not_create_sidecars() {
         .crates(vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -2127,7 +2127,7 @@ fn test_split_mode_creates_sidecars_no_combined() {
         .crates(vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 split: Some(true),
                 ..Default::default()
@@ -2198,7 +2198,7 @@ fn test_split_mode_with_name_template() {
         .crates(vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 split: Some(true),
                 name_template: Some("{{ .ArtifactName }}.checksumfile".to_string()),
@@ -2266,7 +2266,7 @@ fn test_disable_template_string_skips_when_true() {
         .crates(vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 skip: Some(StringOrBool::String("true".to_string())),
                 ..Default::default()
@@ -2321,7 +2321,7 @@ fn test_extra_file_detailed_name_template_combined_mode() {
         crates: vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 // split defaults to false — combined mode
                 extra_files: Some(vec![ExtraFileSpec::Detailed {
@@ -2404,7 +2404,7 @@ fn test_checksum_stage_with_templated_extra_files() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             checksum: Some(ChecksumConfig {
                 templated_extra_files: Some(vec![TemplatedExtraFile {
                     src: tpl_src.to_string_lossy().to_string(),
@@ -2508,7 +2508,7 @@ fn test_checksum_source_list_is_primary_subject_kinds() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -2586,7 +2586,7 @@ fn checksum_stage_never_produces_recursive_sidecar_chains() {
         .crates(vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();

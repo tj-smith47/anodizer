@@ -1185,7 +1185,7 @@ mod tests {
             .crates(vec![CrateConfig {
                 name: "mytool".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 release: Some(ReleaseConfig {
                     github: Some(anodizer_core::config::ScmRepoConfig {
                         owner: "myorg".to_string(),
@@ -1744,7 +1744,7 @@ mod tests {
                 crates: vec![CrateConfig {
                     name: "mytool".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig {
                         homebrew: Some(hb),
                         ..Default::default()
@@ -1788,7 +1788,7 @@ mod tests {
         let crate_with = |name: &str, hb: HomebrewConfig| CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(hb),
                 ..Default::default()
@@ -2284,7 +2284,7 @@ mod tests {
         let crate_with = |name: &str, hb: HomebrewConfig| CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(hb),
                 ..Default::default()

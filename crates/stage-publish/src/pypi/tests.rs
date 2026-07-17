@@ -582,7 +582,7 @@ fn demo_crate(name: &str, path: &str) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }
 }
@@ -1881,7 +1881,7 @@ fn crate_with_targets(name: &str, path: &str, targets: &[&str]) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some(name.to_string()),
             targets: Some(targets.iter().map(|t| t.to_string()).collect()),
@@ -2223,7 +2223,7 @@ fn targets_allowlist_unbuilt_triple_blocks() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: Some(vec![BuildConfig {
                 binary: Some("demo".into()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".into()]),
@@ -2278,7 +2278,7 @@ fn targets_allowlist_synthesized_default_build_passes() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: dir.path().to_str().unwrap().to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: None,
             ..Default::default()
         }])

@@ -51,7 +51,7 @@ fn install_ctx_with(
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: "crates/cli".to_string(),
-        tag_template: tag_template.to_string(),
+        tag_template: Some(tag_template.to_string()),
         builds: Some(vec![BuildConfig {
             id: Some("myapp".to_string()),
             binary: Some("myapp".to_string()),
@@ -337,7 +337,7 @@ fn no_flagship_crate_skips_with_status() {
         crates: vec![CrateConfig {
             name: "myapp-core".to_string(),
             path: "crates/core".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()

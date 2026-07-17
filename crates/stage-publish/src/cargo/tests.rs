@@ -2754,7 +2754,7 @@ fn cargo_crate(name: &str, deps: &[&str]) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         publish: Some(PublishConfig {
             cargo: Some(CargoPublishConfig::default()),
@@ -2770,7 +2770,7 @@ fn cargo_crate_with_cfg(name: &str, deps: &[&str], cfg: CargoPublishConfig) -> C
     CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         publish: Some(PublishConfig {
             cargo: Some(cfg),
@@ -2786,7 +2786,7 @@ fn plain_crate(name: &str, deps: &[&str]) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         ..Default::default()
     }
@@ -2958,6 +2958,36 @@ fn resolve_no_active_cargo_config_returns_none() {
     )
     .expect("no active cargo config never errors");
     assert_eq!(got, None);
+}
+
+/// `release --crate x`: `x` is `auth: token` (ambient token present), a
+/// DESELECTED sibling `y` is `auth: oidc` with no OIDC context available.
+/// The resolver must apply the same `selected_crates` scoping as
+/// `active_cargo_configs` and never even look at `y` — Ok(None) via the
+/// token path, no mint attempt and no error attributable to the
+/// out-of-scope sibling.
+#[test]
+fn resolve_ignores_deselected_sibling_oidc_block() {
+    use anodizer_core::config::CargoAuthMode;
+    let x = cargo_auth_crate("x", Some(CargoAuthMode::Token), None);
+    let y = cargo_auth_crate("y", Some(CargoAuthMode::Oidc), None);
+    let ctx = TestContextBuilder::new()
+        .crates(vec![x, y])
+        .selected_crates(vec!["x".to_string()])
+        .sealed_env()
+        .env("CARGO_REGISTRY_TOKEN", "deadbeef")
+        .build();
+    let got = resolve_workspace_cargo_token(
+        &ctx,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        &quiet_log(),
+    )
+    .expect("deselected y's auth:oidc must not be considered; x's ambient token resolves cleanly");
+    assert_eq!(
+        got, None,
+        "x is auth:token with an ambient token present; the resolver must take the token path, \
+         not mint against y's out-of-scope oidc block"
+    );
 }
 
 /// `auth: auto` with NO ambient token but a PRESENT OIDC context routes to the
@@ -3256,7 +3286,7 @@ fn disk_crate(
     CrateConfig {
         name: name.to_string(),
         path: dir.display().to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         publish: Some(PublishConfig {
             cargo: Some(cfg),

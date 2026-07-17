@@ -509,12 +509,30 @@ Per-publisher `outcome` in the report uses this fixed set:
 
 ```
 Succeeded
-Skipped(SubmitterGated | NotConfigured | Snapshot | DryRun)
+Skipped(SubmitterGated | NotConfigured | Snapshot | DryRun | ConfigSkipped | VerifyGateBlocked)
 Failed(<message>)
 RolledBack
 RollbackFailed(<message>)
 RollbackSkippedNoScope
 ```
+
+`ConfigSkipped` (`skipped-config` in the run summary and `--summary-json`
+output) fires when a publisher's config block exists but every entry
+evaluates skip-inactive right now — `skip:`/`skip_upload:` truthy or `if:`
+falsy on all of them, including with `--crate <name>` selection narrowed to
+one of those inactive entries. Distinct from `NotConfigured` (the block is
+absent entirely): a `ConfigSkipped` publisher was registered but had nothing
+active to publish, so it is recorded and never reaches `run()` — never
+reported as `Succeeded` for work it never did.
+
+`VerifyGateBlocked` (`skipped-verify-gate-blocked` in the run summary and
+`--summary-json` output) fires when the pre-submitter verify-release gate
+held a one-way-door publisher: after the reversible Assets and Manager
+groups have already dispatched, the gate checks the just-published release's
+asset content before any Submitter-group publisher (cargo, npm, PyPI,
+chocolatey, winget, …) is allowed to run. A failed check, or the check
+itself erroring, blocks every Submitter-group publisher this run — never
+selectively.
 
 Stage-level statuses on the run summary (printed at end-of-pipeline):
 
@@ -894,6 +912,44 @@ The lint is **warning-only** and surgical about what it flags. It does
 **not** fire on `{{ Tag }}`, on a normal env var such as `{{ Env.HOME }}`,
 on a missing `--raw`, or on bare prose without `{{ }}` braces — only on a
 secret-named env var inside a template block in an announce content field.
+
+### Static check — workspace-membership guard
+
+`anodizer check config` also **fails** (a hard error, not a warning) when a
+crate that is a real on-disk Cargo dependency of a published crate is
+missing from `crates:` entirely. It catches the class of failure where a
+crate is a publish-order requirement on disk but absent from the config —
+which would otherwise only surface late, mid-`cargo publish`, as a
+registry-side "no matching package named ... found":
+
+```text
+$ anodizer check config
+Error: crate 'anodizer-stage-install-script' is a workspace member and an
+intra-workspace dependency of published crate 'anodizer', but is absent
+from `crates:` (cargo will fail publishing 'anodizer')
+```
+
+It also fails when the dependency IS listed in `crates:` but has no active
+cargo publisher of its own (skipped, or never configured for crates.io) —
+cargo would still fail the dependent's publish because the dependency is
+never uploaded to the registry first:
+
+```text
+$ anodizer check config
+Error: crate 'anodizer-core' is an intra-workspace dependency of published
+crate 'anodizer' but has no active cargo publisher (skipped or never
+configured for crates.io) — cargo will fail publishing 'anodizer' because
+'anodizer-core' is never uploaded to the registry
+```
+
+The guard reads the same `[dependencies]` / `[build-dependencies]` /
+`[target.'cfg(...)'.dependencies]` scan anodizer uses to auto-derive
+`depends_on` (see [Monorepo → Dependency
+ordering](@/docs/advanced/monorepo.md#dependency-ordering)), so both stay in
+sync with the same on-disk source of truth. It only fires for crates with an
+active cargo publisher (`publish.cargo` configured and not skipped) — a
+crate that never runs `cargo publish` can't be broken by a missing
+workspace dependency, so it is never checked.
 
 See also:
 

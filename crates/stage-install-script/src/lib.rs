@@ -310,8 +310,7 @@ fn resolve_tag_prefix(ctx: &mut Context, crate_cfg: &CrateConfig) -> Result<Stri
         .as_ref()
         .and_then(|r| r.tag.clone())
         .filter(|t| !t.is_empty())
-        .or_else(|| Some(crate_cfg.tag_template.clone()).filter(|t| !t.is_empty()))
-        .unwrap_or_else(|| "v{{ Version }}".to_string());
+        .unwrap_or_else(|| crate_cfg.resolved_tag_template().to_string());
 
     let rendered = ctx
         .render_template(&template)

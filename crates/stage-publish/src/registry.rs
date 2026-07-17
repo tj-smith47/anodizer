@@ -911,7 +911,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -968,7 +968,7 @@ mod tests {
         let ws_crate = CrateConfig {
             name: "ws-only".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             blobs: Some(vec![anodizer_core::config::BlobConfig {
                 provider: "s3".to_string(),
                 bucket: "ws-releases".to_string(),
@@ -996,7 +996,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -1031,7 +1031,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             blobs: Some(vec![BlobConfig {
                 provider: "s3".to_string(),
                 bucket: "my-bucket".to_string(),
@@ -1099,7 +1099,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(HomebrewConfig {
                     repository: Some(RepositoryConfig {
@@ -1165,7 +1165,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
                     repository: Some(RepositoryConfig {
@@ -1230,7 +1230,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -1267,7 +1267,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -1319,7 +1319,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("demo".to_string()),
@@ -1393,7 +1393,7 @@ mod tests {
             let demo = CrateConfig {
                 name: "demo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 snapcrafts: Some(vec![SnapcraftConfig {
                     name: Some("demo".to_string()),
                     publish: publish_flag,
@@ -1422,7 +1422,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(HomebrewConfig {
                     repository: Some(RepositoryConfig {
@@ -1455,7 +1455,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(HomebrewConfig {
                     repository: Some(RepositoryConfig {
@@ -1488,7 +1488,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("demo".to_string()),
@@ -1516,7 +1516,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig {
                     required: Some(false),
@@ -1543,7 +1543,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -1571,7 +1571,7 @@ mod tests {
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         };
         let mut ctx = TestContextBuilder::new().crates(vec![demo]).build();
@@ -1618,7 +1618,7 @@ mod tests {
         let alpha = CrateConfig {
             name: "alpha".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: homebrew(false),
                 ..Default::default()
@@ -1628,7 +1628,7 @@ mod tests {
         let beta = CrateConfig {
             name: "beta".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: homebrew(true),
                 ..Default::default()
@@ -1737,7 +1737,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -1770,7 +1770,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -1812,7 +1812,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -1845,7 +1845,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -2002,7 +2002,7 @@ mod tests {
         let ws_crate = CrateConfig {
             name: "ws-only".to_string(),
             path: "crates/ws-only".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 scoop: Some(ScoopConfig::default()),
                 ..Default::default()
@@ -2036,7 +2036,7 @@ mod tests {
         let top = CrateConfig {
             name: "top".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig::default()),
                 ..Default::default()
@@ -2046,7 +2046,7 @@ mod tests {
         let ws_crate = CrateConfig {
             name: "ws-required".to_string(),
             path: "crates/ws-required".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
                     required: Some(true),

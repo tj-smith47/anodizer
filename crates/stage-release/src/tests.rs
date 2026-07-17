@@ -793,7 +793,7 @@ fn test_skip_upload_dry_run_message() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::Bool(true)),
                 draft: Some(false),
@@ -839,7 +839,7 @@ fn test_dry_run_with_extra_files() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 extra_files: Some(vec![ExtraFileSpec::Glob(pattern)]),
                 ..Default::default()
@@ -861,7 +861,7 @@ fn test_dry_run_with_header_footer_in_changelog() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 header: Some(ContentSource::Inline("# Custom Header".to_string())),
                 footer: Some(ContentSource::Inline("Custom Footer".to_string())),
@@ -885,7 +885,7 @@ fn test_dry_run_with_make_latest() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 make_latest: Some(MakeLatestConfig::Bool(true)),
                 ..Default::default()
@@ -1006,7 +1006,7 @@ fn test_release_missing_token_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(GitHubConfig {
                     owner: "testowner".to_string(),
@@ -1043,7 +1043,7 @@ fn test_release_no_github_config_skips_silently() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 github: None, // no github config
                 ..Default::default()
@@ -1259,7 +1259,7 @@ fn test_dry_run_changelog_header_falls_through_to_release() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -1306,7 +1306,7 @@ fn test_skip_upload_prevents_dry_run_upload_messages() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::Bool(true)),
                 ..Default::default()
@@ -1507,7 +1507,7 @@ fn test_release_missing_token_error_message_is_actionable() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(GitHubConfig {
                     owner: "testowner".to_string(),
@@ -1687,7 +1687,7 @@ fn test_dry_run_with_draft_release() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 draft: Some(true),
                 prerelease: Some(PrereleaseConfig::Auto),
@@ -1712,7 +1712,7 @@ fn test_conflicting_replace_and_use_existing_draft_fails() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_draft: Some(true),
                 use_existing_draft: Some(true),
@@ -1740,7 +1740,7 @@ fn test_replace_existing_draft_alone_ok() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_draft: Some(true),
                 use_existing_draft: Some(false),
@@ -1762,7 +1762,7 @@ fn test_use_existing_draft_alone_ok() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_draft: Some(false),
                 use_existing_draft: Some(true),
@@ -1830,7 +1830,7 @@ fn test_release_stage_skipped_when_disabled() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::Bool(true)),
                 ..Default::default()
@@ -1852,7 +1852,7 @@ fn test_release_stage_not_skipped_when_disable_false() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::Bool(false)),
                 ..Default::default()
@@ -1908,7 +1908,7 @@ fn test_dry_run_logs_release_mode() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 mode: Some("append".to_string()),
                 ..Default::default()
@@ -1930,7 +1930,7 @@ fn test_invalid_release_mode_fails_stage() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 mode: Some("bogus".to_string()),
                 ..Default::default()
@@ -1963,7 +1963,7 @@ fn test_ids_filter_includes_matching_artifacts() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 ids: Some(vec!["linux-amd64".to_string()]),
                 ..Default::default()
@@ -2011,7 +2011,7 @@ fn test_ids_filter_none_includes_all_artifacts() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 ids: None, // no filter
                 ..Default::default()
@@ -2168,7 +2168,7 @@ fn test_ids_and_mode_combined_dry_run() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 mode: Some("prepend".to_string()),
                 ids: Some(vec!["linux-amd64".to_string()]),
@@ -2215,7 +2215,7 @@ fn test_release_collects_all_uploadable_artifact_kinds() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 ..Default::default()
             }),
@@ -2613,7 +2613,7 @@ fn test_dry_run_with_target_commitish() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 target_commitish: Some("main".to_string()),
                 ..Default::default()
@@ -2633,7 +2633,7 @@ fn test_dry_run_with_discussion_category_name() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 discussion_category_name: Some("Releases".to_string()),
                 ..Default::default()
@@ -2653,7 +2653,7 @@ fn test_dry_run_with_include_meta() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 include_meta: Some(true),
                 ..Default::default()
@@ -2673,7 +2673,7 @@ fn test_dry_run_with_use_existing_draft() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 use_existing_draft: Some(true),
                 ..Default::default()
@@ -2700,7 +2700,7 @@ fn test_dry_run_with_all_new_fields() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 header: Some(ContentSource::Inline("# Header".to_string())),
                 footer: Some(ContentSource::Inline("Footer".to_string())),
@@ -2738,7 +2738,7 @@ fn test_dry_run_with_header_from_file() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 header: Some(ContentSource::FromFile {
                     from_file: header_path.to_string_lossy().into_owned(),
@@ -2767,7 +2767,7 @@ fn test_include_meta_collects_dist_files() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 include_meta: Some(true),
                 ..Default::default()
@@ -2968,7 +2968,7 @@ fn test_dry_run_with_templated_extra_files() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 templated_extra_files: Some(vec![TemplatedExtraFile {
                     src: tpl_src.to_string_lossy().to_string(),
@@ -3117,7 +3117,7 @@ fn test_dry_run_logs_github_enterprise_urls() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -3145,7 +3145,7 @@ fn test_dry_run_without_github_urls_still_works() {
         .crates(vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -3170,7 +3170,7 @@ fn test_dry_run_gitlab_token_type_shows_gitlab_release() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "mygroup".to_string(),
@@ -3200,7 +3200,7 @@ fn test_dry_run_gitlab_with_custom_urls() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "corp".to_string(),
@@ -3236,7 +3236,7 @@ fn test_gitlab_backend_skips_when_no_gitlab_config() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // No gitlab config, no github config either.
                 ..Default::default()
@@ -3262,7 +3262,7 @@ fn test_gitlab_backend_falls_back_to_github_config() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // Only github config set, no gitlab-specific config.
                 github: Some(ScmRepoConfig {
@@ -3295,7 +3295,7 @@ fn test_gitea_dry_run_with_gitea_config() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -3324,7 +3324,7 @@ fn test_gitea_backend_skips_when_no_gitea_config() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // No gitea config, no github config either.
                 ..Default::default()
@@ -3350,7 +3350,7 @@ fn test_gitea_backend_falls_back_to_github_config() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // Only github config set, no gitea-specific config.
                 github: Some(ScmRepoConfig {
@@ -3381,7 +3381,7 @@ fn test_gitea_missing_token_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -3958,7 +3958,7 @@ fn test_release_skip_template_renders_to_true_skips_crate() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::String(
                     "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
@@ -3993,7 +3993,7 @@ fn test_release_skip_template_renders_to_false_proceeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::String(
                     "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
@@ -4031,7 +4031,7 @@ fn test_skip_upload_string_auto_in_snapshot_succeeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String("auto".to_string())),
                 ..Default::default()
@@ -4057,7 +4057,7 @@ fn test_snapshot_without_dry_run_does_not_reach_live_backend() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "octocat".to_string(),
@@ -4085,7 +4085,7 @@ fn test_skip_upload_string_zero_and_one_are_valid() {
             .crates(vec![CrateConfig {
                 name: "testcrate".to_string(),
                 path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
+                tag_template: Some("v1.0.0".to_string()),
                 release: Some(ReleaseConfig {
                     skip_upload: Some(StringOrBool::String(value.to_string())),
                     ..Default::default()
@@ -4108,7 +4108,7 @@ fn test_skip_upload_invalid_string_bails() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String("maybe".to_string())),
                 ..Default::default()
@@ -4135,7 +4135,7 @@ fn test_skip_upload_template_renders_to_true_then_validates() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String(
                     "{% if IsSnapshot %}true{% else %}maybe{% endif %}".to_string(),
@@ -4158,7 +4158,7 @@ fn test_skip_upload_template_renders_to_invalid_bails() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String(
                     "{% if IsSnapshot %}true{% else %}maybe{% endif %}".to_string(),
@@ -4191,7 +4191,7 @@ fn test_selected_crates_filter_excludes_unlisted_crate() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // Would bail if processed — filter must exclude us first.
                 replace_existing_draft: Some(true),
@@ -4216,7 +4216,7 @@ fn test_selected_crates_filter_includes_listed_crate() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // Same poison pill — but now the crate IS listed, so the
                 // bail SHOULD fire and prove the include-path was taken.
@@ -4249,7 +4249,7 @@ fn test_include_meta_missing_metadata_json_warns_in_non_strict() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 include_meta: Some(true),
                 ..Default::default()
@@ -4276,7 +4276,7 @@ fn test_include_meta_missing_metadata_json_bails_in_strict_mode() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 include_meta: Some(true),
                 ..Default::default()
@@ -4312,7 +4312,7 @@ fn test_release_tag_override_drifts_from_pushed_tag_does_not_fail() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v9.9.9".to_string(),
+            tag_template: Some("v9.9.9".to_string()),
             release: Some(ReleaseConfig {
                 // Override differs from pushed Tag — should warn + proceed.
                 tag: Some("v0.0.0-override".to_string()),
@@ -4355,7 +4355,7 @@ fn test_replace_existing_artifacts_cli_override_drives_stage() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // config flag NOT set; only the CLI override is enabled.
                 ..Default::default()
@@ -4384,7 +4384,7 @@ fn test_ids_filter_zero_match_warns_and_proceeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 ids: Some(vec!["nonexistent-id".to_string()]),
                 github: Some(ScmRepoConfig {
@@ -4426,7 +4426,7 @@ fn test_release_with_exemptions_and_empty_changelog_succeeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -4447,7 +4447,7 @@ fn test_release_with_exemptions_and_changelog_joins_both() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -4478,7 +4478,7 @@ fn test_gitea_dry_run_derives_download_url_from_api_url() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -4834,7 +4834,7 @@ fn test_release_conflicting_draft_options_bails_direct() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_draft: Some(true),
                 use_existing_draft: Some(true),
@@ -4864,7 +4864,7 @@ fn test_release_header_invalid_template_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 // Unterminated tag → Tera parse error.
                 header: Some(ContentSource::Inline("{{ unterminated".to_string())),
@@ -4891,7 +4891,7 @@ fn test_release_footer_invalid_template_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 footer: Some(ContentSource::Inline("{{ broken".to_string())),
                 ..Default::default()
@@ -4917,7 +4917,7 @@ fn test_release_name_template_invalid_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 name_template: Some("{{ broken".to_string()),
                 ..Default::default()
@@ -4943,7 +4943,7 @@ fn test_release_target_commitish_invalid_template_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 target_commitish: Some("{{ unterminated".to_string()),
                 ..Default::default()
@@ -4972,7 +4972,7 @@ fn test_release_skip_invalid_template_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::String("{{ unterminated".to_string())),
                 ..Default::default()
@@ -5005,7 +5005,7 @@ fn test_release_tag_override_matches_pushed_tag_no_drift() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.2.3".to_string(),
+            tag_template: Some("v1.2.3".to_string()),
             release: Some(ReleaseConfig {
                 tag: Some("v1.2.3".to_string()),
                 github: Some(ScmRepoConfig {
@@ -5049,7 +5049,7 @@ fn test_selected_crates_excludes_other_release_configured_crate() {
             CrateConfig {
                 name: "keep".to_string(),
                 path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
+                tag_template: Some("v1.0.0".to_string()),
                 release: Some(ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
@@ -5063,7 +5063,7 @@ fn test_selected_crates_excludes_other_release_configured_crate() {
             CrateConfig {
                 name: "drop".to_string(),
                 path: ".".to_string(),
-                tag_template: "v2.0.0".to_string(),
+                tag_template: Some("v2.0.0".to_string()),
                 release: Some(ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
@@ -5109,14 +5109,14 @@ fn test_release_stage_filters_crates_without_release_block() {
             CrateConfig {
                 name: "without".to_string(),
                 path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
+                tag_template: Some("v1.0.0".to_string()),
                 release: None,
                 ..Default::default()
             },
             CrateConfig {
                 name: "with".to_string(),
                 path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
+                tag_template: Some("v1.0.0".to_string()),
                 release: Some(ReleaseConfig::default()),
                 ..Default::default()
             },
@@ -5140,7 +5140,7 @@ fn test_release_skip_plain_bool_true_skips_silently() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip: Some(StringOrBool::Bool(true)),
                 // Conflicting draft options would normally bail, but
@@ -5171,7 +5171,7 @@ fn test_gitlab_missing_token_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -5208,7 +5208,7 @@ fn test_gitea_dry_run_default_urls() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -5257,7 +5257,7 @@ fn test_dry_run_skip_upload_with_extra_files_succeeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::Bool(true)),
                 extra_files: Some(vec![ExtraFileSpec::Glob(pattern)]),
@@ -5289,7 +5289,7 @@ fn test_dry_run_include_meta_with_existing_metadata_json() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 include_meta: Some(true),
                 ..Default::default()
@@ -5315,7 +5315,7 @@ fn test_dry_run_no_repo_config_does_not_set_release_url() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             // No github/gitlab/gitea block.
             release: Some(ReleaseConfig::default()),
             ..Default::default()
@@ -5350,7 +5350,7 @@ fn test_skip_upload_template_renders_false_in_non_snapshot() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
                 ..Default::default()
@@ -5372,7 +5372,7 @@ fn test_release_tag_override_invalid_template_errors() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 tag: Some("{{ unterminated".to_string()),
                 ..Default::default()
@@ -5401,7 +5401,7 @@ fn test_dry_run_gitea_skip_tls_verify_true_logs() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitea: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -5433,7 +5433,7 @@ fn test_dry_run_gitlab_use_job_token_logs() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "g".to_string(),
@@ -5470,7 +5470,7 @@ fn test_release_tag_override_with_empty_pushed_tag_no_warn() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 tag: Some("v-override".to_string()),
                 github: Some(ScmRepoConfig {
@@ -5511,7 +5511,7 @@ fn test_release_stage_multiple_crates_processed_independently() {
             CrateConfig {
                 name: "c1".to_string(),
                 path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
+                tag_template: Some("v1.0.0".to_string()),
                 release: Some(ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
@@ -5525,7 +5525,7 @@ fn test_release_stage_multiple_crates_processed_independently() {
             CrateConfig {
                 name: "c2".to_string(),
                 path: ".".to_string(),
-                tag_template: "v2.0.0".to_string(),
+                tag_template: Some("v2.0.0".to_string()),
                 release: Some(ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: "o".to_string(),
@@ -5564,7 +5564,7 @@ fn test_release_with_exemptions_overlay_in_runtime_allowlist() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -5590,7 +5590,7 @@ fn test_dry_run_with_release_header_template_renders() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 header: Some(ContentSource::Inline(
                     "# {{ .ProjectName }} {{ .Tag }}".to_string(),
@@ -5614,7 +5614,7 @@ fn test_dry_run_with_release_footer_template_renders() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 footer: Some(ContentSource::Inline("End {{ .Version }}".to_string())),
                 ..Default::default()
@@ -5637,7 +5637,7 @@ fn test_dry_run_combines_exemptions_with_header_and_footer() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 header: Some(ContentSource::Inline("H".to_string())),
                 footer: Some(ContentSource::Inline("F".to_string())),
@@ -5667,7 +5667,7 @@ fn test_dry_run_with_replace_existing_artifacts_config_flag() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_artifacts: Some(true),
                 ..Default::default()
@@ -5688,7 +5688,7 @@ fn test_release_no_crates_with_release_block_silently_succeeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: None,
             ..Default::default()
         }])
@@ -5709,7 +5709,7 @@ fn test_dry_run_with_make_latest_template_string() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 make_latest: Some(MakeLatestConfig::String(
                     "{% if IsSnapshot %}false{% else %}true{% endif %}".to_string(),
@@ -5738,7 +5738,7 @@ fn test_dry_run_target_commitish_template_renders() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 target_commitish: Some("release/{{ .Tag }}".to_string()),
                 github: Some(ScmRepoConfig {
@@ -5768,7 +5768,7 @@ fn test_dry_run_skip_upload_zero_falsy_proceeds_to_uploads() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 skip_upload: Some(StringOrBool::String("0".to_string())),
                 ..Default::default()
@@ -5790,7 +5790,7 @@ fn test_dry_run_gitlab_skip_tls_verify_and_use_package_registry_logs() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 gitlab: Some(ScmRepoConfig {
                     owner: "g".to_string(),
@@ -5831,7 +5831,7 @@ fn test_dry_run_release_with_dist_dir_set_succeeds() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }])
@@ -5860,7 +5860,7 @@ fn test_dry_run_with_artifacts_present_lists_uploads() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "o".to_string(),
@@ -5900,7 +5900,7 @@ fn test_dry_run_replace_existing_artifacts_cli_or_config_or() {
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
                 replace_existing_artifacts: Some(true),
                 ..Default::default()

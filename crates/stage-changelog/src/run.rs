@@ -673,7 +673,7 @@ fn resolve_prev_tag(
             Some(from.to_string())
         }
         _ => find_latest_tag_matching_with_prefix(
-            &crate_cfg.tag_template,
+            crate_cfg.resolved_tag_template(),
             ctx.config.git.as_ref(),
             Some(ctx.template_vars()),
             monorepo_prefix,
@@ -1172,7 +1172,7 @@ mod login_enricher_gating_tests {
             .crates(vec![CrateConfig {
                 name: "mylib".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 release: github.map(|(owner, name)| ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: owner.to_string(),

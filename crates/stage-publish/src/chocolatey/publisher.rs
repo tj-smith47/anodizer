@@ -127,6 +127,34 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Chocolatey entries across the crate universe whose `skip:`/`if:`
+/// evaluates active right now AND whose crate is in scope for `--crate` /
+/// `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names). Shared by
+/// [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge, and so a selected-but-skipped crate cannot masquerade as active
+/// via an out-of-scope sibling. `preflight` keeps its own loop (it needs
+/// per-entry feed-URL resolution alongside the filter, not just a boolean).
+fn active_chocolatey_configs(ctx: &Context) -> Vec<&anodizer_core::config::ChocolateyConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
+        .filter(|ch| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                ch.skip.as_ref(),
+                None,
+                ch.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for ChocolateyPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -145,23 +173,17 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         true
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_chocolatey_configs(ctx).is_empty()
+    }
+
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        ctx.config
-            .crate_universe()
+        active_chocolatey_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
-            .filter(|ch| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    ch.skip.as_ref(),
-                    None,
-                    ch.if_condition.as_deref(),
-                )
-            })
             .flat_map(|ch| {
                 // `xmllint` is MANDATORY at gate time: the strict pre-publish
                 // schema floor runs `xmllint --schema` against the rendered
@@ -523,7 +545,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     source_repo: Some(source.to_string()),
@@ -549,7 +571,7 @@ mod publisher_tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: package_name.map(|s| s.to_string()),
@@ -568,6 +590,42 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Submitter);
         assert!(!p.required());
         assert_eq!(p.rollback_scope_needed(), None);
+    }
+
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = choco_crate("x", None);
+        skipped
+            .publish
+            .as_mut()
+            .unwrap()
+            .chocolatey
+            .as_mut()
+            .unwrap()
+            .skip = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, choco_crate("y", None)])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+        assert!(
+            ChocolateyPublisher::new().config_fully_inactive(&ctx),
+            "selecting a skipped crate must not be masked as active by an out-of-scope sibling"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate("x", None)])
+            .build();
+
+        assert!(
+            !ChocolateyPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
+        );
     }
 
     #[test]
@@ -1011,7 +1069,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -1075,7 +1133,7 @@ mod publisher_tests {
             .crates(vec![CrateConfig {
                 name: "other".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig::default()),
                 ..Default::default()
             }])

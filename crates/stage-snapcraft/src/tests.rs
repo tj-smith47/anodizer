@@ -15,8 +15,9 @@ use tempfile::TempDir;
 
 use crate::build_stage::copy_snap_icon;
 use crate::command::{
-    is_retriable_snap_push, resolve_effective_channels, snap_revision_exists_in_output,
-    snapcraft_command, snapcraft_list_revisions_command, snapcraft_upload_command,
+    first_channel_rejected_for_prerelease_snap, is_content_dedup_rejection, is_retriable_snap_push,
+    missing_channels_for_version, resolve_effective_channels, snapcraft_command,
+    snapcraft_list_revisions_command, snapcraft_upload_command,
 };
 use crate::generate::generate_snap_yaml;
 use crate::{SnapcraftPublishStage, SnapcraftStage};
@@ -565,7 +566,7 @@ fn test_stage_icon_unsupported_extension_errors_before_pack() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -630,7 +631,7 @@ fn test_stage_icon_extensionless_source_errors_before_pack() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -683,7 +684,7 @@ fn test_stage_icon_missing_source_errors_before_pack() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -740,7 +741,7 @@ fn test_stage_icon_not_set_is_noop() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -906,7 +907,7 @@ fn test_snapcraft_list_revisions_command() {
 }
 
 #[test]
-fn snap_revision_exists_matches_published_version_only() {
+fn missing_channels_for_version_matches_published_version_only() {
     // Real-ish `snapcraft list-revisions` table.
     let output = "\
 Rev    Uploaded              Arches  Version  Channels
@@ -914,30 +915,42 @@ Rev    Uploaded              Arches  Version  Channels
 2      2024-05-01T10:00:00Z  amd64   1.1.0    -
 1      2024-04-01T10:00:00Z  amd64   1.0.0    -
 ";
+    let channels = vec!["stable".to_string()];
     // A version with an existing revision → present.
-    assert!(snap_revision_exists_in_output(output, "1.1.0"));
-    assert!(snap_revision_exists_in_output(output, "1.2.0"));
+    assert!(missing_channels_for_version(output, "1.1.0", "amd64", &channels).is_some());
+    assert!(missing_channels_for_version(output, "1.2.0", "amd64", &channels).is_some());
     // A never-published version → absent (genuine first publish).
-    assert!(!snap_revision_exists_in_output(output, "1.3.0"));
+    assert!(missing_channels_for_version(output, "1.3.0", "amd64", &channels).is_none());
     // Substring guard: "1.0.0" must not match "1.0.0-rc1" or vice-versa.
-    assert!(!snap_revision_exists_in_output(output, "1.0"));
-    assert!(!snap_revision_exists_in_output(output, "1.0.0-rc1"));
+    assert!(missing_channels_for_version(output, "1.0", "amd64", &channels).is_none());
+    assert!(missing_channels_for_version(output, "1.0.0-rc1", "amd64", &channels).is_none());
 }
 
 #[test]
-fn snap_revision_exists_empty_output_is_absent() {
+fn missing_channels_for_version_empty_output_is_absent() {
+    let channels = vec!["stable".to_string()];
     // No body / header-only → never falsely report present.
-    assert!(!snap_revision_exists_in_output("", "1.0.0"));
-    assert!(!snap_revision_exists_in_output(
-        "Rev  Uploaded  Arches  Version  Channels\n",
-        "1.0.0"
-    ));
+    assert!(missing_channels_for_version("", "1.0.0", "amd64", &channels).is_none());
+    assert!(
+        missing_channels_for_version(
+            "Rev  Uploaded  Arches  Version  Channels\n",
+            "1.0.0",
+            "amd64",
+            &channels
+        )
+        .is_none()
+    );
     // A snap literally named like a version must not false-positive on a
     // header/label row — only data rows are scanned.
-    assert!(!snap_revision_exists_in_output(
-        "No revisions available for this snap.\n",
-        "1.0.0"
-    ));
+    assert!(
+        missing_channels_for_version(
+            "No revisions available for this snap.\n",
+            "1.0.0",
+            "amd64",
+            &channels
+        )
+        .is_none()
+    );
 }
 
 /// Version-column isolation: tokens in the Rev, Arches, and Channels columns
@@ -945,7 +958,7 @@ fn snap_revision_exists_empty_output_is_absent() {
 /// string being searched for (e.g. version "3" matching revision "3", or
 /// version "amd64" matching the Arches column).
 #[test]
-fn snap_revision_exists_checks_version_column_only() {
+fn missing_channels_for_version_checks_version_column_only() {
     // Revision numbers are small integers; a bare-integer version collides.
     let output = "\
 Rev    Uploaded              Arches  Version  Channels
@@ -953,12 +966,13 @@ Rev    Uploaded              Arches  Version  Channels
 2      2024-05-01T10:00:00Z  amd64   1.1.0    -
 1      2024-04-01T10:00:00Z  amd64   1.0.0    -
 ";
+    let channels = vec!["stable".to_string()];
     // Rev "3" must not match version "3" — "3" is not in the Version column.
-    assert!(!snap_revision_exists_in_output(output, "3"));
+    assert!(missing_channels_for_version(output, "3", "amd64", &channels).is_none());
     // Arch string must not match — "amd64" appears in Arches, not Version.
-    assert!(!snap_revision_exists_in_output(output, "amd64"));
+    assert!(missing_channels_for_version(output, "amd64", "amd64", &channels).is_none());
     // A real version still resolves correctly through the column filter.
-    assert!(snap_revision_exists_in_output(output, "1.2.0"));
+    assert!(missing_channels_for_version(output, "1.2.0", "amd64", &channels).is_some());
 }
 
 // -----------------------------------------------------------------------
@@ -967,13 +981,13 @@ Rev    Uploaded              Arches  Version  Channels
 
 #[test]
 fn test_resolve_effective_channels_devel_grade() {
-    let channels = resolve_effective_channels(None, Some("devel"));
+    let channels = resolve_effective_channels(None, Some("devel"), None);
     assert_eq!(channels.unwrap(), vec!["edge", "beta"],);
 }
 
 #[test]
 fn test_resolve_effective_channels_stable_grade() {
-    let channels = resolve_effective_channels(None, Some("stable"));
+    let channels = resolve_effective_channels(None, Some("stable"), None);
     assert_eq!(
         channels.unwrap(),
         vec!["edge", "beta", "candidate", "stable"],
@@ -983,7 +997,7 @@ fn test_resolve_effective_channels_stable_grade() {
 #[test]
 fn test_resolve_effective_channels_default_grade_is_stable() {
     // When grade is None, default is "stable"
-    let channels = resolve_effective_channels(None, None);
+    let channels = resolve_effective_channels(None, None, None);
     assert_eq!(
         channels.unwrap(),
         vec!["edge", "beta", "candidate", "stable"],
@@ -993,7 +1007,7 @@ fn test_resolve_effective_channels_default_grade_is_stable() {
 #[test]
 fn test_resolve_effective_channels_explicit_overrides_grade() {
     let explicit = vec!["edge".to_string()];
-    let channels = resolve_effective_channels(Some(&explicit), Some("stable"));
+    let channels = resolve_effective_channels(Some(&explicit), Some("stable"), None);
     assert_eq!(
         channels.unwrap(),
         vec!["edge"],
@@ -1004,11 +1018,161 @@ fn test_resolve_effective_channels_explicit_overrides_grade() {
 #[test]
 fn test_resolve_effective_channels_empty_explicit_falls_through() {
     let empty: Vec<String> = Vec::new();
-    let channels = resolve_effective_channels(Some(&empty), Some("devel"));
+    let channels = resolve_effective_channels(Some(&empty), Some("devel"), None);
     assert_eq!(
         channels.unwrap(),
         vec!["edge", "beta"],
         "empty channel_templates should fall through to grade-based defaults"
+    );
+}
+
+// -----------------------------------------------------------------------
+// missing_channels_for_version — orphaned-revision detection
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_missing_channels_for_version_no_matching_revision_is_none() {
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   1    2024-01-01T00:00:00Z  amd64   0.9.0    stable\n";
+    let channels = vec!["stable".to_string()];
+    assert!(missing_channels_for_version(output, "1.0.0", "amd64", &channels).is_none());
+}
+
+#[test]
+fn test_missing_channels_for_version_fully_released_reports_no_gaps() {
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   7    2024-06-01T00:00:00Z  amd64   1.0.0    edge,beta,candidate,stable\n";
+    let channels = vec!["edge".to_string(), "stable".to_string()];
+    let (revision, missing) =
+        missing_channels_for_version(output, "1.0.0", "amd64", &channels).unwrap();
+    assert_eq!(revision, "7");
+    assert!(
+        missing.is_empty(),
+        "a revision already released to every requested channel has no gaps"
+    );
+}
+
+#[test]
+fn test_missing_channels_for_version_unreleased_revision_reports_all_channels_missing() {
+    // Channels column "-" is how snapcraft prints a revision uploaded but
+    // never released to any channel.
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   7    2024-06-01T00:00:00Z  amd64   1.0.0    -\n";
+    let channels = vec!["edge".to_string(), "beta".to_string()];
+    let (revision, missing) =
+        missing_channels_for_version(output, "1.0.0", "amd64", &channels).unwrap();
+    assert_eq!(revision, "7");
+    assert_eq!(missing, vec!["edge", "beta"]);
+}
+
+#[test]
+fn test_missing_channels_for_version_partially_released_reports_only_the_gap() {
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   7    2024-06-01T00:00:00Z  amd64   1.0.0    edge\n";
+    let channels = vec!["edge".to_string(), "stable".to_string()];
+    let (revision, missing) =
+        missing_channels_for_version(output, "1.0.0", "amd64", &channels).unwrap();
+    assert_eq!(revision, "7");
+    assert_eq!(
+        missing,
+        vec!["stable"],
+        "edge is already occupied — only the missing 'stable' channel should be reported"
+    );
+}
+
+#[test]
+fn missing_channels_for_version_matches_track_qualified_channel_argument() {
+    // anodizer's own release config: channel_templates: ["latest/beta"].
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   5    2026-07-01T00:00:00Z  amd64   1.0.0    latest/beta\n";
+    let channels = vec!["latest/beta".to_string()];
+    let (revision, missing) =
+        missing_channels_for_version(output, "1.0.0", "amd64", &channels).unwrap();
+    assert_eq!(revision, "5");
+    assert!(
+        missing.is_empty(),
+        "a track-qualified channel argument ('latest/beta') must match a row \
+         whose Channels cell prints the same track-qualified form, by \
+         comparing risk components rather than the whole unsplit string"
+    );
+}
+
+#[test]
+fn missing_channels_for_version_dual_arch_does_not_cross_report() {
+    // A dual-arch snap mints one revision per arch per version: amd64 has
+    // already been released to stable, arm64's own revision has not.
+    let output = "Rev  Uploaded              Arches  Version  Channels\n\
+                   6    2026-07-01T00:00:00Z  arm64   1.0.0    -\n\
+                   5    2026-07-01T00:00:00Z  amd64   1.0.0    stable\n";
+    let channels = vec!["stable".to_string()];
+
+    let (amd64_revision, amd64_missing) =
+        missing_channels_for_version(output, "1.0.0", "amd64", &channels).unwrap();
+    assert_eq!(amd64_revision, "5");
+    assert!(amd64_missing.is_empty());
+
+    let (arm64_revision, arm64_missing) =
+        missing_channels_for_version(output, "1.0.0", "arm64", &channels).unwrap();
+    assert_eq!(arm64_revision, "6");
+    assert_eq!(
+        arm64_missing,
+        vec!["stable"],
+        "matching on version alone would find amd64's already-released \
+         revision 5 and wrongly report arm64 as already occupying stable; \
+         arm64's own revision 6 must be reported as missing it"
+    );
+}
+
+// -----------------------------------------------------------------------
+// first_channel_rejected_for_prerelease_snap — devmode/devel preflight
+// -----------------------------------------------------------------------
+
+#[test]
+fn first_channel_rejected_for_prerelease_snap_detects_bare_restricted_risk() {
+    let channels = vec!["stable".to_string()];
+    assert_eq!(
+        first_channel_rejected_for_prerelease_snap(&channels),
+        Some("stable")
+    );
+}
+
+#[test]
+fn first_channel_rejected_for_prerelease_snap_allows_prerelease_risks() {
+    let channels = vec!["edge".to_string(), "beta".to_string()];
+    assert_eq!(first_channel_rejected_for_prerelease_snap(&channels), None);
+}
+
+#[test]
+fn first_channel_rejected_for_prerelease_snap_detects_branch_suffixed_channel() {
+    // The risk component sits in the middle of a branch-suffixed channel
+    // ("stable"), not at the end ("hotfix-1") — a positional last-segment
+    // extraction would miss this.
+    let channels = vec!["latest/stable/hotfix-1".to_string()];
+    assert_eq!(
+        first_channel_rejected_for_prerelease_snap(&channels),
+        Some("stable")
+    );
+}
+
+#[test]
+fn test_resolve_effective_channels_devmode_confinement_restricts_default() {
+    let channels = resolve_effective_channels(None, Some("stable"), Some("devmode"));
+    assert_eq!(
+        channels.unwrap(),
+        vec!["edge", "beta"],
+        "devmode confinement must restrict the default channel set to \
+         edge/beta even when grade is stable — the Store rejects devmode \
+         snaps in candidate/stable"
+    );
+}
+
+#[test]
+fn test_resolve_effective_channels_strict_confinement_stable_grade_gets_full_set() {
+    let channels = resolve_effective_channels(None, Some("stable"), Some("strict"));
+    assert_eq!(
+        channels.unwrap(),
+        vec!["edge", "beta", "candidate", "stable"],
+        "strict confinement with a stable grade is eligible for every channel"
     );
 }
 
@@ -1042,7 +1206,7 @@ fn test_stage_skips_when_disabled() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1082,7 +1246,7 @@ fn test_stage_dry_run_registers_artifacts() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1141,7 +1305,7 @@ fn test_stage_dry_run_with_name_template() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1200,7 +1364,7 @@ fn test_ids_filtering() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1266,7 +1430,7 @@ fn test_ids_filtering_by_name() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1333,7 +1497,7 @@ fn test_ids_filtering_empty_ids_includes_all() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1416,7 +1580,7 @@ fn test_artifact_metadata_includes_id() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1654,7 +1818,7 @@ fn test_invalid_name_template_errors() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1717,7 +1881,7 @@ fn test_stage_dry_run_multiple_configs() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg_strict, snap_cfg_classic]),
         ..Default::default()
     };
@@ -1786,7 +1950,7 @@ fn test_stage_only_selects_linux_binaries() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1855,7 +2019,7 @@ fn test_stage_dry_run_replace_removes_archives() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1938,7 +2102,7 @@ fn test_confinement_validation() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -1996,7 +2160,7 @@ fn test_no_linux_binaries_skips_snapcraft() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -2051,7 +2215,7 @@ fn test_publish_stage_skips_when_publish_false() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -2102,7 +2266,7 @@ fn test_publish_stage_dry_run_logs_upload() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -2153,7 +2317,7 @@ fn test_publish_stage_skips_disabled_config() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -2775,6 +2939,67 @@ fn snapcraft_non_5xx_classifies_unrecoverable() {
     }
 }
 
+#[test]
+fn snapcraft_5xx_classifier_is_case_insensitive() {
+    // The reason-text form must match regardless of the casing the Store
+    // (or a future snapcraft CLI version) happens to emit.
+    for combined in [
+        "snapcraft: store returned '500 internal server error'\n",
+        "SNAPCRAFT: STORE RETURNED '503 SERVICE UNAVAILABLE'\n",
+    ] {
+        assert!(
+            is_retriable_snap_push(combined),
+            "expected retriable regardless of case: {combined}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Content-dedup rejection classifier
+// -----------------------------------------------------------------------
+
+#[test]
+fn snapcraft_content_dedup_classifier_is_case_insensitive() {
+    for combined in [
+        "snapcraft: upload failed: ERROR CHECKING UPLOAD UNIQUENESS.\n",
+        "snapcraft: upload failed: A FILE WITH THIS EXACT SAME CONTENT HAS ALREADY BEEN UPLOADED\n",
+    ] {
+        assert!(
+            is_content_dedup_rejection(combined),
+            "expected content-dedup rejection regardless of case: {combined}"
+        );
+    }
+}
+
+#[test]
+fn snapcraft_content_dedup_classifies_both_message_shapes() {
+    for marker in [
+        "A file with this exact same content has already been uploaded",
+        "Error checking upload uniqueness.",
+    ] {
+        let combined = format!("snapcraft: upload failed: {marker}\n");
+        assert!(
+            is_content_dedup_rejection(&combined),
+            "expected content-dedup rejection for marker {marker}: {combined}"
+        );
+    }
+}
+
+#[test]
+fn snapcraft_content_dedup_does_not_match_unrelated_failures() {
+    for combined in [
+        "snapcraft: 401 Unauthorized — please run `snapcraft login`",
+        "[503] Service Unavailable",
+        "snapcraft: store returned '502 Bad Gateway'",
+        "could not parse snap.yaml",
+    ] {
+        assert!(
+            !is_content_dedup_rejection(combined),
+            "expected NOT a content-dedup rejection: {combined}"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // Branches not exercised above: grade validation, riscv64 skip,
 // ARM Arch/Arm template split, multi-binary grouping per target,
@@ -2795,7 +3020,7 @@ fn stage_ctx_with_binaries(
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -2856,6 +3081,110 @@ fn test_grade_validation_rejects_unknown_value() {
         msg.contains("invalid grade") && msg.contains("alpha"),
         "expected grade-validation error naming the bad value, got: {msg}"
     );
+}
+
+#[test]
+fn test_devmode_confinement_with_stable_channel_is_rejected_preflight() {
+    // The Snap Store rejects a devmode-confined snap released into
+    // candidate/stable ("not ready for general use"). This must be caught
+    // in validate_and_check_skip, before any build/upload work happens.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        confinement: Some("devmode".to_string()),
+        channel_templates: Some(vec!["stable".to_string()]),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("devmode") && msg.contains("stable"),
+        "expected a preflight error naming both the devmode confinement \
+         and the rejected 'stable' channel, got: {msg}"
+    );
+}
+
+#[test]
+fn test_devel_grade_with_candidate_channel_is_rejected_preflight() {
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        grade: Some("devel".to_string()),
+        channel_templates: Some(vec!["candidate".to_string()]),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("devel") && msg.contains("candidate"),
+        "expected a preflight error naming both the devel grade and the \
+         rejected 'candidate' channel, got: {msg}"
+    );
+}
+
+#[test]
+fn test_devmode_confinement_with_edge_channel_is_allowed_preflight() {
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        confinement: Some("devmode".to_string()),
+        channel_templates: Some(vec!["edge".to_string()]),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+
+    SnapcraftStage.run(&mut ctx).expect(
+        "devmode confinement combined with an eligible pre-release channel \
+         (edge) must not be rejected",
+    );
+}
+
+#[test]
+fn test_strict_confinement_with_stable_channel_is_allowed_preflight() {
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        confinement: Some("strict".to_string()),
+        channel_templates: Some(vec!["stable".to_string()]),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+
+    SnapcraftStage
+        .run(&mut ctx)
+        .expect("strict confinement is eligible for every channel, including stable");
 }
 
 #[test]
@@ -2968,7 +3297,7 @@ fn test_two_configs_same_default_name_bail_across_configs() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![make_cfg("first"), make_cfg("second")]),
         ..Default::default()
     };
@@ -3051,7 +3380,7 @@ fn test_project_root_resolves_relative_icon_path() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -3356,7 +3685,7 @@ fn test_selected_crates_filter_excludes_unmatched_crate() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -3474,7 +3803,7 @@ fn test_absolute_icon_path_resolves_directly() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -3634,7 +3963,7 @@ fn test_replace_false_does_not_remove_archives() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -3962,7 +4291,7 @@ fn test_guard_fires_in_strict_mode_on_unrendered_field() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -4016,7 +4345,7 @@ fn test_app_command_and_args_are_template_rendered() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };
@@ -4054,7 +4383,7 @@ fn test_guard_passes_clean_manifest_in_strict_mode() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         snapcrafts: Some(vec![snap_cfg]),
         ..Default::default()
     };

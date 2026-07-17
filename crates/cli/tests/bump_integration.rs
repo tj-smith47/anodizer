@@ -976,6 +976,66 @@ changelog:
     );
 }
 
+/// BLOCKER regression: an UNSET `tag_template` must resolve the SAME
+/// `{crate}-v` prefix family `tag`/`changelog` use — not silently collapse
+/// to the bare `v{{ Version }}` built-in default (`resolved_tag_template()`).
+/// Against the bug (`.map(|c| c.resolved_tag_template())`), the previous-tag
+/// lookup for prefix `v` misses `demo-v0.1.0`, `from_tag` is `None`, the
+/// changelog range spans all history, and the pre-tag commit leaks in.
+#[test]
+fn bump_changelog_unset_template_resolves_name_v_prefix_and_range() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"version: 2
+project_name: demo
+crates:
+  - name: demo
+    path: .
+changelog:
+  sort: asc
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "feat: pre-release groundwork");
+    run_git(tmp.path(), &["tag", "demo-v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "src/added.rs",
+        "pub fn g() {}",
+        "feat: shiny post-tag addition",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--commit", "--changelog", "-y"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bump --commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let cl = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
+    assert!(
+        cl.contains("## [0.1.1]"),
+        "expected a bare-version heading `## [0.1.1]`: {cl}"
+    );
+    assert!(
+        cl.contains("shiny post-tag addition"),
+        "post-tag feat must be in the section: {cl}"
+    );
+    assert!(
+        !cl.contains("pre-release groundwork"),
+        "pre-demo-v0.1.0 history must be excluded — an UNSET tag_template \
+         must resolve the {{name}}-v prefix family (matching tag/changelog), \
+         not silently collapse to the bare 'v' built-in default: {cl}"
+    );
+}
+
 /// `changelog: { skip: true }` suppresses the bundled CHANGELOG.md on
 /// `bump --commit --changelog` even with the refresh opted in (skip wins),
 /// matching how `tag` honors the same gate. The bump commit is still produced
@@ -1136,6 +1196,85 @@ crates:
     assert!(
         core_reason.contains("since core-v0.1.0"),
         "core reason must reference core-v0.1.0: {core_reason}"
+    );
+}
+
+/// Both crates leave `tag_template` UNSET — the workspace relies purely on
+/// the `{name}-v` convention default. `Positional::Infer` must derive that
+/// same `{name}-v` prefix family (matching tag/changelog), never silently
+/// collapse to the bare `v` built-in default from `resolved_tag_template()`.
+#[test]
+fn inference_unset_template_resolves_name_v_prefix_not_bare_v() {
+    let tmp = TempDir::new().unwrap();
+    two_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"version: 2
+project_name: tag-template-fixture
+crates:
+  - name: core
+    path: crates/core
+  - name: cli
+    path: crates/cli
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    // Tag with the `{name}-v` convention — the only family an UNSET
+    // tag_template must resolve to.
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "crates/core/feature.rs",
+        "pub fn f() {}",
+        "feat(core): add feature",
+    );
+    git_commit_empty_on_path(
+        tmp.path(),
+        "crates/cli/notes.rs",
+        "// notes",
+        "chore(cli): housekeeping",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "--workspace", "--dry-run", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "infer dry-run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let by_name: std::collections::HashMap<&str, &serde_json::Value> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["crate"].as_str().unwrap(), r))
+        .collect();
+    // With the bug (`.map(|c| c.resolved_tag_template())`), an UNSET
+    // template collapses to the bare `v` prefix — neither `core-v0.1.0` nor
+    // `cli-v0.1.0` matches, so both rows would scan full history (including
+    // the "initial" commit) instead of bounding at each crate's real tag.
+    assert_eq!(by_name["core"]["level"], "minor");
+    assert_eq!(by_name["core"]["next"], "0.2.0");
+    let core_reason = by_name["core"]["reason"].as_str().unwrap();
+    assert!(
+        core_reason.contains("since core-v0.1.0"),
+        "core reason must reference core-v0.1.0 (the {{name}}-v convention \
+         family), not fall back to a bare-v scan of full history: {core_reason}"
+    );
+    assert_eq!(
+        by_name["cli"]["level"], "skip",
+        "cli should skip — no feat/fix since cli-v0.1.0"
+    );
+    let cli_reason = by_name["cli"]["reason"].as_str().unwrap();
+    assert!(
+        cli_reason.contains("since cli-v0.1.0"),
+        "cli reason must reference cli-v0.1.0, not a bare-v fallback: {cli_reason}"
     );
 }
 

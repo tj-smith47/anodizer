@@ -169,7 +169,7 @@ pub fn build_plan(
                 let tag_template = anodizer_cfg
                     .as_ref()
                     .and_then(|cfg| find_crate_in_config(cfg, &m.name))
-                    .map(|c| c.tag_template.as_str())
+                    .and_then(|c| c.tag_template.as_deref())
                     .unwrap_or("");
                 let tag_prefix = anodizer_core::git::per_crate_tag_prefix(&m.name, tag_template);
                 let inferred = inference::infer_for_crate(workspace_root, m, &tag_prefix)?;

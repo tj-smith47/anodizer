@@ -126,26 +126,96 @@ pub fn build_produces(krate: &CrateConfig, build: &BuildConfig) -> bool {
         || crate_declares_bin(&krate.path, &krate.name)
 }
 
-/// The de-duplicated, order-preserving list of target triples a crate's builds
-/// will actually produce: planner synthesis ([`planned_builds`]) + the compile/
-/// artifact gate ([`build_produces`]) + per-build `targets:` override of
-/// `default_targets`. THE single source of truth for crate target enumeration.
-pub fn crate_target_list(krate: &CrateConfig, default_targets: &[String]) -> Vec<String> {
+/// A build entry's static id, tagged with whether the caller must render it
+/// before comparing against a configured id list.
+///
+/// Mirrors `stage-build::run_helpers::artifact_meta`'s exact precedence: an
+/// explicit `build.id` is stamped onto the `Binary` artifact's `id` metadata
+/// byte-for-byte (`run.rs` clones it raw, never through
+/// [`crate::context::Context::render_template`]); only the `binary`-fallback
+/// id (`build.binary`, or the crate name when `binary` is unset too) is ever
+/// rendered, once per target, before it becomes the artifact's `id`. A
+/// caller that renders an `Explicit` id anyway would match configured id
+/// lists production itself never matches — this module has no `Context` to
+/// render through, so the two cases are kept distinguishable rather than
+/// collapsed into one already-resolved string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildId {
+    /// `build.id` was set; compare this string verbatim, never rendered.
+    Explicit(String),
+    /// `build.id` was unset; this is the unrendered `binary`-fallback source
+    /// (`build.binary` or the crate name). Callers with a live `Context`
+    /// must render it the same way `stage-build::run.rs` renders
+    /// `binary_name` before comparing or displaying it.
+    BinaryFallback(String),
+}
+
+impl BuildId {
+    /// The raw string this variant carries, unrendered. Correct for
+    /// `Explicit` (which is never templated in production); a caller
+    /// needing the true resolved value of a `BinaryFallback` must render it
+    /// through a [`crate::context::Context`] first.
+    pub fn raw(&self) -> &str {
+        match self {
+            BuildId::Explicit(s) | BuildId::BinaryFallback(s) => s,
+        }
+    }
+}
+
+/// One planned build entry's static identity + the target triples it
+/// contributes, as resolved by [`crate_build_target_entries`].
+pub struct CrateBuildTargets {
+    pub id: BuildId,
+    pub targets: Vec<String>,
+}
+
+/// [`crate_target_list`], but callers can additionally veto a build entry
+/// (e.g. a truthy `BuildConfig.skip`) and get each surviving build's static
+/// id alongside its target triples, not just the flattened union. THE single
+/// source of truth for crate target enumeration — [`crate_target_list`] and
+/// `stage-publish::publisher_helpers::crate_build_targets` both compose this
+/// rather than re-deriving the synthesis rule, so they cannot drift.
+pub fn crate_build_target_entries(
+    krate: &CrateConfig,
+    default_targets: &[String],
+    mut is_skipped: impl FnMut(&BuildConfig) -> bool,
+) -> Vec<CrateBuildTargets> {
     let Some(builds) = planned_builds(krate) else {
         return Vec::new();
     };
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<CrateBuildTargets> = Vec::new();
     for build in &builds {
-        if !build_produces(krate, build) {
+        if !build_produces(krate, build) || is_skipped(build) {
             continue;
         }
         let chosen: &[String] = match build.targets.as_deref() {
             Some(ts) => ts,
             None => default_targets,
         };
-        for t in chosen {
-            if !out.contains(t) {
-                out.push(t.clone());
+        let id = match build.id.clone() {
+            Some(id) => BuildId::Explicit(id),
+            None => {
+                BuildId::BinaryFallback(build.binary.clone().unwrap_or_else(|| krate.name.clone()))
+            }
+        };
+        out.push(CrateBuildTargets {
+            id,
+            targets: chosen.to_vec(),
+        });
+    }
+    out
+}
+
+/// The de-duplicated, order-preserving list of target triples a crate's builds
+/// will actually produce: planner synthesis ([`planned_builds`]) + the compile/
+/// artifact gate ([`build_produces`]) + per-build `targets:` override of
+/// `default_targets`. THE single source of truth for crate target enumeration.
+pub fn crate_target_list(krate: &CrateConfig, default_targets: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in crate_build_target_entries(krate, default_targets, |_| false) {
+        for t in entry.targets {
+            if !out.contains(&t) {
+                out.push(t);
             }
         }
     }

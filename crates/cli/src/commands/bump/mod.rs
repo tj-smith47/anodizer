@@ -196,7 +196,7 @@ fn commit_plan(
         // `v{{ Version }}` / custom scheme.
         let tag_template = changelog_config
             .and_then(|cfg| plan::find_crate_in_config(cfg, &row.crate_name))
-            .map(|c| c.tag_template.as_str())
+            .and_then(|c| c.tag_template.as_deref())
             .unwrap_or("");
         let tag_prefix = anodizer_core::git::per_crate_tag_prefix(&row.crate_name, tag_template);
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;

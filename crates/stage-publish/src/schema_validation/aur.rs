@@ -444,7 +444,7 @@ mod tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -466,7 +466,7 @@ mod tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),

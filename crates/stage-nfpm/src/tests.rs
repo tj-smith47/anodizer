@@ -285,7 +285,7 @@ fn test_stage_dry_run_registers_artifacts() {
     let crate_cfg = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     };
@@ -802,7 +802,7 @@ fn test_multiple_formats_in_one_pass() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -854,7 +854,7 @@ fn test_file_name_template_rendering() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -903,7 +903,7 @@ fn test_artifact_registration_of_linux_package() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1001,7 +1001,7 @@ fn test_nfpm_missing_binary_produces_error_in_live_mode() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1102,7 +1102,7 @@ fn test_invalid_file_name_template_errors() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1150,7 +1150,7 @@ fn test_create_output_dir_failure_errors() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1202,7 +1202,7 @@ fn test_ids_filter_includes_matching_binaries_only() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1263,7 +1263,7 @@ fn test_ids_filter_no_match_produces_no_packages() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1317,7 +1317,7 @@ fn test_no_ids_includes_all_binaries() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1379,7 +1379,7 @@ fn test_id_metadata_set_on_created_artifacts() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1427,7 +1427,7 @@ fn test_no_id_means_no_id_in_metadata() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1474,7 +1474,7 @@ fn test_ids_filter_with_multiple_matching_ids() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -1562,7 +1562,7 @@ fn test_apk_binds_musl_build_deb_rpm_bind_gnu_build() {
     config.crates = vec![CrateConfig {
         name: "anodizer".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![default_cfg, apk_cfg]),
         ..Default::default()
     }];
@@ -2390,7 +2390,7 @@ fn test_termux_deb_format_produces_artifact() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -2441,7 +2441,7 @@ fn test_ipk_format_produces_artifact() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -2493,7 +2493,7 @@ fn ctx_with_single_binary(
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -2852,7 +2852,7 @@ fn test_termux_deb_yaml_and_filename_use_termux_arch() {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nfpms: Some(vec![nfpm_cfg.clone()]),
             ..Default::default()
         }];
@@ -3454,7 +3454,7 @@ fn test_default_filename_includes_arch() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3511,7 +3511,7 @@ fn test_default_filename_no_overwrite_multiple_arches() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3592,7 +3592,7 @@ fn test_conventional_filename_template_var() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3657,7 +3657,7 @@ fn test_conventional_extension_template_var() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3712,7 +3712,7 @@ fn test_format_template_var_set() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3764,7 +3764,7 @@ fn test_template_vars_cleared_after_stage() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -3814,7 +3814,7 @@ fn test_stage_rejects_unknown_format() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -4166,7 +4166,7 @@ fn test_release_template_var_in_file_name_template() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -4216,7 +4216,7 @@ fn test_epoch_template_var_in_file_name_template() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -4266,7 +4266,7 @@ fn test_release_and_epoch_default_to_empty_string() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -4316,7 +4316,7 @@ fn test_release_and_epoch_combined_in_file_name_template() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -4715,7 +4715,7 @@ fn test_owner_group_template_rendering_in_stage() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5028,7 +5028,7 @@ fn test_ipk_format_dry_run_produces_artifact() {
     config.crates = vec![CrateConfig {
         name: "openwrt-pkg".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5154,7 +5154,7 @@ fn test_template_rendering_in_nfpm_stage() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5347,7 +5347,7 @@ fn nfpm_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5446,7 +5446,7 @@ fn test_nfpm_templated_contents_renders_file_body() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5510,7 +5510,7 @@ fn test_nfpm_templated_scripts_renders_script_body() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5570,7 +5570,7 @@ fn test_nfpm_falls_back_to_project_metadata() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -5844,7 +5844,7 @@ fn nfpm_amd64_variant_test_ctx(
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -6017,7 +6017,7 @@ fn test_nfpm_two_configs_same_default_name_bail_across_configs() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![make_cfg("first"), make_cfg("second")]),
         ..Default::default()
     }];
@@ -6328,7 +6328,7 @@ fn test_nfpm_offline_yaml_seeds_amd64_field_like_live_build() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -6493,7 +6493,7 @@ fn maintainer_guard_ctx(
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![nfpm_cfg]),
         ..Default::default()
     }];
@@ -6599,7 +6599,7 @@ fn test_per_crate_mode_deb_maintainer_resolves_per_crate() {
     let crate_a = CrateConfig {
         name: "alpha".to_string(),
         path: "crates/alpha".to_string(),
-        tag_template: "alpha-v{{ .Version }}".to_string(),
+        tag_template: Some("alpha-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("alpha".to_string()),
             package_name: Some("alpha".to_string()),
@@ -6613,7 +6613,7 @@ fn test_per_crate_mode_deb_maintainer_resolves_per_crate() {
     let crate_b = CrateConfig {
         name: "beta".to_string(),
         path: "crates/beta".to_string(),
-        tag_template: "beta-v{{ .Version }}".to_string(),
+        tag_template: Some("beta-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("beta".to_string()),
             package_name: Some("beta".to_string()),
@@ -6665,7 +6665,7 @@ fn test_per_crate_mode_all_maintainers_resolve_succeeds() {
     let crate_a = CrateConfig {
         name: "alpha".to_string(),
         path: "crates/alpha".to_string(),
-        tag_template: "alpha-v{{ .Version }}".to_string(),
+        tag_template: Some("alpha-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("alpha".to_string()),
             package_name: Some("alpha".to_string()),
@@ -6678,7 +6678,7 @@ fn test_per_crate_mode_all_maintainers_resolve_succeeds() {
     let crate_b = CrateConfig {
         name: "beta".to_string(),
         path: "crates/beta".to_string(),
-        tag_template: "beta-v{{ .Version }}".to_string(),
+        tag_template: Some("beta-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("beta".to_string()),
             package_name: Some("beta".to_string()),
@@ -6729,7 +6729,7 @@ fn test_deb_arch_skipped_target_empty_maintainer_no_false_fail() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             package_name: Some("myapp".to_string()),
             // termux.deb requires a maintainer AND does not support s390x.
@@ -6783,7 +6783,7 @@ fn test_deb_buildable_target_empty_maintainer_still_fails() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["termux.deb".to_string()],
@@ -6833,7 +6833,7 @@ fn test_ipk_buildable_empty_maintainer_hard_fails() {
     config.crates = vec![CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["ipk".to_string()],
@@ -6884,7 +6884,7 @@ fn test_ipk_per_crate_mode_empty_maintainer_fails() {
     let crate_a = CrateConfig {
         name: "alpha".to_string(),
         path: "crates/alpha".to_string(),
-        tag_template: "alpha-v{{ .Version }}".to_string(),
+        tag_template: Some("alpha-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("alpha".to_string()),
             package_name: Some("alpha".to_string()),
@@ -6897,7 +6897,7 @@ fn test_ipk_per_crate_mode_empty_maintainer_fails() {
     let crate_b = CrateConfig {
         name: "beta".to_string(),
         path: "crates/beta".to_string(),
-        tag_template: "beta-v{{ .Version }}".to_string(),
+        tag_template: Some("beta-v{{ .Version }}".to_string()),
         nfpms: Some(vec![NfpmConfig {
             id: Some("beta".to_string()),
             package_name: Some("beta".to_string()),
@@ -6963,7 +6963,7 @@ fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nfpms: Some(vec![NfpmConfig {
                 package_name: Some("myapp".to_string()),
                 // No maintainer set anywhere, and none derivable.
@@ -7867,7 +7867,7 @@ mod amd64_variant {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         };
@@ -7917,7 +7917,7 @@ mod amd64_variant {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         };
@@ -7989,7 +7989,7 @@ mod vendor_derivation {
         config.crates = vec![CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         config.derived_metadata.insert(
@@ -8064,7 +8064,7 @@ mod vendor_derivation {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let vars = TemplateVars::new();
@@ -8089,13 +8089,13 @@ mod vendor_derivation {
             CrateConfig {
                 name: "alpha".to_string(),
                 path: "crates/alpha".to_string(),
-                tag_template: "alpha-v{{ .Version }}".to_string(),
+                tag_template: Some("alpha-v{{ .Version }}".to_string()),
                 ..Default::default()
             },
             CrateConfig {
                 name: "beta".to_string(),
                 path: "crates/beta".to_string(),
-                tag_template: "beta-v{{ .Version }}".to_string(),
+                tag_template: Some("beta-v{{ .Version }}".to_string()),
                 ..Default::default()
             },
         ];
@@ -8135,7 +8135,7 @@ fn advisory_env_requirements_track_configured_formats() {
         config.crates = vec![CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nfpms: Some(vec![NfpmConfig {
                 formats: formats.into_iter().map(str::to_string).collect(),
                 ..Default::default()

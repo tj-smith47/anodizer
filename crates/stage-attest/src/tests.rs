@@ -16,7 +16,7 @@ fn crate_cfg(name: &str) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }
 }

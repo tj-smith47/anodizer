@@ -206,6 +206,35 @@ impl Default for GithubReleasePublisher {
     }
 }
 
+/// Crates in scope for the current `--crate` selection whose `release`
+/// block is configured and not skip-inactive. Empty selection = every
+/// crate; non-empty = exactly those names — matching
+/// [`Publisher::config_fully_inactive`]'s chokepoint semantics so a
+/// `--crate` selection can never mask a skipped release as active via an
+/// out-of-scope sibling. Shared by target collection, the preflight probe,
+/// and `config_fully_inactive` so the three cannot drift.
+///
+/// [`Publisher::config_fully_inactive`]: anodizer_core::Publisher::config_fully_inactive
+fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| {
+            let Some(release_cfg) = c.release.as_ref() else {
+                return false;
+            };
+            !anodizer_core::env_preflight::entry_inactive(
+                ctx,
+                release_cfg.skip.as_ref(),
+                None,
+                None,
+            )
+        })
+        .collect()
+}
+
 /// Walk the crate universe (top-level `crates` plus every
 /// `workspaces[].crates` entry) and emit one [`GithubReleaseTarget`] per
 /// crate that has a `release.github` block (or falls back to the
@@ -219,29 +248,23 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
     use crate::release_body::resolve_release_tag;
     use crate::resolve_release_repo;
 
-    let selected = &ctx.options.selected_crates;
     let mut out: Vec<GithubReleaseTarget> = Vec::new();
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
-        let Some(release_cfg) = c.release.as_ref() else {
-            continue;
-        };
-        if let Some(ref d) = release_cfg.skip {
-            let off = d
-                .try_evaluates_to_true(|s| ctx.render_template(s))
-                .unwrap_or(false);
-            if off {
-                continue;
-            }
-        }
+    for c in active_release_configs(ctx) {
+        let release_cfg = c
+            .release
+            .as_ref()
+            .expect("filtered by active_release_configs");
         let Some(ScmRepoConfig { owner, name, .. }) =
             resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)?
         else {
             continue;
         };
-        let tag = resolve_release_tag(ctx, &c.tag_template, release_cfg.tag.as_deref(), &c.name)?;
+        let tag = resolve_release_tag(
+            ctx,
+            c.resolved_tag_template(),
+            release_cfg.tag.as_deref(),
+            &c.name,
+        )?;
         out.push(GithubReleaseTarget {
             crate_name: c.name.clone(),
             owner,
@@ -319,23 +342,12 @@ fn preflight_merge(
 /// on a version being stamped yet (preflight runs before the tag).
 fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
     use crate::resolve_release_repo;
-    let selected = &ctx.options.selected_crates;
     let mut out = Vec::new();
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
-        let Some(release_cfg) = c.release.as_ref() else {
-            continue;
-        };
-        if let Some(ref d) = release_cfg.skip {
-            let off = d
-                .try_evaluates_to_true(|s| ctx.render_template(s))
-                .unwrap_or(false);
-            if off {
-                continue;
-            }
-        }
+    for c in active_release_configs(ctx) {
+        let release_cfg = c
+            .release
+            .as_ref()
+            .expect("filtered by active_release_configs");
         if let Ok(Some(ScmRepoConfig { owner, name, .. })) =
             resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)
         {
@@ -477,6 +489,10 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
+    }
+
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_release_configs(ctx).is_empty()
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
@@ -802,7 +818,7 @@ mod publisher_tests {
     fn tlog() -> &'static anodizer_core::log::StageLogger {
         anodizer_core::test_helpers::test_logger()
     }
-    use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig};
+    use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig, StringOrBool};
     use anodizer_core::github_client::MockGitHubClient;
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
@@ -811,7 +827,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -851,6 +867,50 @@ mod publisher_tests {
             p.rollback_scope_needed(),
             Some("GITHUB_TOKEN contents:write")
         );
+    }
+
+    #[test]
+    fn config_fully_inactive_true_when_release_skip_true_on_every_crate() {
+        let mut skipped = github_release_crate("x");
+        skipped.release.as_mut().unwrap().skip = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new().crates(vec![skipped]).build();
+        assert!(
+            GithubReleasePublisher::new().config_fully_inactive(&ctx),
+            "every crate's release.skip is true; the publisher must not report Succeeded for a release it never created"
+        );
+    }
+
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_release_skip_sibling_active() {
+        let mut skipped = github_release_crate("x");
+        skipped.release.as_mut().unwrap().skip = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, github_release_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+        assert!(
+            GithubReleasePublisher::new().config_fully_inactive(&ctx),
+            "selecting a release.skip crate must not be masked as active by an out-of-scope sibling"
+        );
+    }
+
+    #[test]
+    fn config_fully_inactive_false_when_any_crate_release_is_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![github_release_crate("x")])
+            .build();
+        assert!(!GithubReleasePublisher::new().config_fully_inactive(&ctx));
+    }
+
+    #[test]
+    fn config_fully_inactive_true_when_no_release_block_configured() {
+        // The registry only pushes this publisher when
+        // `is_github_release_configured` already found a `release:` block
+        // somewhere, so this path is a defensive edge case, not a live one —
+        // but it must still agree with `active_release_configs`'s empty-set
+        // semantics rather than special-casing "never configured" as active.
+        let ctx = TestContextBuilder::new().build();
+        assert!(GithubReleasePublisher::new().config_fully_inactive(&ctx));
     }
 
     #[test]
@@ -1334,7 +1394,7 @@ mod publisher_tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             release: None,
             ..Default::default()
         };

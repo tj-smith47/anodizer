@@ -888,7 +888,7 @@ fn test_validate_on_failure_root_only_accepts_root_setting() {
         crates: vec![CrateConfig {
             name: "app".into(),
             path: ".".into(),
-            tag_template: "v{{ .Version }}".into(),
+            tag_template: Some("v{{ .Version }}".into()),
             release: Some(ReleaseConfig::default()),
             ..Default::default()
         }],
@@ -904,7 +904,7 @@ fn test_validate_on_failure_root_only_rejects_crate_level_setting() {
         crates: vec![CrateConfig {
             name: "app".into(),
             path: ".".into(),
-            tag_template: "v{{ .Version }}".into(),
+            tag_template: Some("v{{ .Version }}".into()),
             release: Some(ReleaseConfig {
                 on_failure: Some(OnFailureConfig::Hold),
                 ..Default::default()
@@ -929,7 +929,7 @@ fn test_validate_on_failure_root_only_rejects_workspace_crate_setting() {
             crates: vec![CrateConfig {
                 name: "ws-member".into(),
                 path: "crates/member".into(),
-                tag_template: "member-v{{ .Version }}".into(),
+                tag_template: Some("member-v{{ .Version }}".into()),
                 release: Some(ReleaseConfig {
                     on_failure: Some(OnFailureConfig::Rollback),
                     ..Default::default()
@@ -5144,7 +5144,7 @@ authors = ["Ada <ada@example.com>"]
         crates: vec![CrateConfig {
             name: "app".into(),
             path: "app".into(),
-            tag_template: "v{{ .Version }}".into(),
+            tag_template: Some("v{{ .Version }}".into()),
             ..Default::default()
         }],
         ..Default::default()
@@ -5194,7 +5194,7 @@ license = "MIT"
         crates: vec![CrateConfig {
             name: "app".into(),
             path: "app".into(),
-            tag_template: "v{{ .Version }}".into(),
+            tag_template: Some("v{{ .Version }}".into()),
             ..Default::default()
         }],
         ..Default::default()
@@ -5224,13 +5224,13 @@ fn per_crate_workspace_each_crate_gets_its_own_cargo_metadata() {
             CrateConfig {
                 name: "core".into(),
                 path: "core".into(),
-                tag_template: "v{{ .Version }}".into(),
+                tag_template: Some("v{{ .Version }}".into()),
                 ..Default::default()
             },
             CrateConfig {
                 name: "csi".into(),
                 path: "csi".into(),
-                tag_template: "csi-v{{ .Version }}".into(),
+                tag_template: Some("csi-v{{ .Version }}".into()),
                 ..Default::default()
             },
         ],
@@ -5264,7 +5264,7 @@ license-file = "LICENSE"
         crates: vec![CrateConfig {
             name: "app".into(),
             path: "app".into(),
-            tag_template: "v{{ .Version }}".into(),
+            tag_template: Some("v{{ .Version }}".into()),
             ..Default::default()
         }],
         ..Default::default()
@@ -5277,6 +5277,208 @@ license-file = "LICENSE"
         Some("has a license file, not an SPDX id")
     );
     assert!(config.meta_license_for("app").is_none());
+}
+
+// ---- `depends_on` derivation: config-load must derive it from Cargo.toml
+// for any crate entry that OMITS it, mirroring `anodizer init`'s scaffold-
+// time derivation, while an explicit `depends_on` stays a user override.
+
+fn write_workspace_root(base: &std::path::Path, members: &[&str]) {
+    let list = members
+        .iter()
+        .map(|m| format!("\"{m}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        base.join("Cargo.toml"),
+        format!("[workspace]\nmembers = [{list}]\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn depends_on_derives_from_cargo_toml_when_omitted() {
+    let base = tempfile::tempdir().unwrap();
+    write_workspace_root(base.path(), &["core", "cli"]);
+    let core_dir = base.path().join("core");
+    std::fs::create_dir_all(&core_dir).unwrap();
+    write_cargo(&core_dir, "[package]\nname = \"core\"\n");
+    let cli_dir = base.path().join("cli");
+    std::fs::create_dir_all(&cli_dir).unwrap();
+    write_cargo(
+        &cli_dir,
+        "[package]\nname = \"cli\"\n[dependencies]\ncore.workspace = true\n",
+    );
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![
+            CrateConfig {
+                name: "core".into(),
+                path: "core".into(),
+                tag_template: Some("v{{ .Version }}".into()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "cli".into(),
+                path: "cli".into(),
+                tag_template: Some("v{{ .Version }}".into()),
+                // depends_on OMITTED: must derive from Cargo.toml.
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_depends_on(base.path());
+
+    assert_eq!(
+        config
+            .crates
+            .iter()
+            .find(|c| c.name == "cli")
+            .unwrap()
+            .depends_on,
+        Some(vec!["core".to_string()]),
+        "cli's depends_on must be derived from its Cargo.toml intra-workspace dependency"
+    );
+    assert_eq!(
+        config
+            .crates
+            .iter()
+            .find(|c| c.name == "core")
+            .unwrap()
+            .depends_on,
+        Some(vec![]),
+        "core has no intra-workspace deps, so derivation fills an empty list"
+    );
+}
+
+#[test]
+fn explicit_depends_on_is_preserved_as_override() {
+    let base = tempfile::tempdir().unwrap();
+    write_workspace_root(base.path(), &["core", "cli"]);
+    let core_dir = base.path().join("core");
+    std::fs::create_dir_all(&core_dir).unwrap();
+    write_cargo(&core_dir, "[package]\nname = \"core\"\n");
+    let cli_dir = base.path().join("cli");
+    std::fs::create_dir_all(&cli_dir).unwrap();
+    write_cargo(
+        &cli_dir,
+        "[package]\nname = \"cli\"\n[dependencies]\ncore.workspace = true\n",
+    );
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![
+            CrateConfig {
+                name: "core".into(),
+                path: "core".into(),
+                tag_template: Some("v{{ .Version }}".into()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "cli".into(),
+                path: "cli".into(),
+                tag_template: Some("v{{ .Version }}".into()),
+                // Explicit override: operator deliberately wants no ordering
+                // dep, even though Cargo.toml says otherwise.
+                depends_on: Some(vec![]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_depends_on(base.path());
+
+    assert_eq!(
+        config
+            .crates
+            .iter()
+            .find(|c| c.name == "cli")
+            .unwrap()
+            .depends_on,
+        Some(vec![]),
+        "an explicit depends_on (even an empty override) must never be overwritten"
+    );
+}
+
+#[test]
+fn per_crate_workspace_derives_depends_on_independently() {
+    // Per-crate mode: each crate pins its OWN version (distinct from the
+    // shared-version lockstep shape above) — the derivation must not care.
+    let base = tempfile::tempdir().unwrap();
+    write_workspace_root(base.path(), &["core", "cli", "csi"]);
+    let core_dir = base.path().join("core");
+    std::fs::create_dir_all(&core_dir).unwrap();
+    write_cargo(&core_dir, "[package]\nname = \"core\"\n");
+    for (name, _version) in [("cli", "1.2.0"), ("csi", "0.9.0")] {
+        let dir = base.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_cargo(
+            &dir,
+            &format!("[package]\nname = \"{name}\"\n[dependencies]\ncore.workspace = true\n"),
+        );
+    }
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![
+            CrateConfig {
+                name: "core".into(),
+                path: "core".into(),
+                tag_template: Some("v{{ .Version }}".into()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "cli".into(),
+                path: "cli".into(),
+                tag_template: Some("cli-v{{ .Version }}".into()),
+                version: Some("1.2.0".into()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "csi".into(),
+                path: "csi".into(),
+                tag_template: Some("csi-v{{ .Version }}".into()),
+                version: Some("0.9.0".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_depends_on(base.path());
+
+    assert_eq!(
+        config
+            .crates
+            .iter()
+            .find(|c| c.name == "cli")
+            .unwrap()
+            .depends_on,
+        Some(vec!["core".to_string()])
+    );
+    assert_eq!(
+        config
+            .crates
+            .iter()
+            .find(|c| c.name == "csi")
+            .unwrap()
+            .depends_on,
+        Some(vec!["core".to_string()])
+    );
+}
+
+#[test]
+fn single_crate_mode_depends_on_derivation_is_noop() {
+    // Single-crate mode: no `crates:` list at all — nothing to derive, and
+    // the call must not panic even with no on-disk Cargo workspace.
+    let base = tempfile::tempdir().unwrap();
+    let mut config = Config {
+        project_name: "test".into(),
+        ..Default::default()
+    };
+    config.populate_derived_depends_on(base.path());
+    assert!(config.crates.is_empty());
 }
 
 // ---- SnapcraftConfig disable StringOrBool tests ----
@@ -6737,6 +6939,133 @@ crates: []
         msg.contains("unknown field"),
         "error should mention 'unknown field': {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// CrateConfig.tag_template resolution — crate override > defaults.crate >
+// built-in ("v{{ Version }}"), proven in all three config modes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolved_tag_template_default_when_unset() {
+    assert_eq!(
+        CrateConfig::default().resolved_tag_template(),
+        "v{{ Version }}"
+    );
+}
+
+#[test]
+fn test_resolved_tag_template_crate_value_wins() {
+    let cfg = CrateConfig {
+        tag_template: Some("core-v{{ Version }}".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(cfg.resolved_tag_template(), "core-v{{ Version }}");
+}
+
+#[test]
+fn test_tag_template_single_crate_mode_omitted_falls_back_to_built_in() {
+    let yaml = r#"
+project_name: solo
+crates:
+  - name: solo
+    path: "."
+"#;
+    let mut config: Config =
+        serde_yaml_ng::from_str(yaml).expect("single-crate config should parse");
+    crate::defaults_merge::apply_defaults(&mut config);
+    assert_eq!(config.crates.len(), 1);
+    assert_eq!(config.crates[0].resolved_tag_template(), "v{{ Version }}");
+}
+
+#[test]
+fn test_tag_template_lockstep_mode_omitted_falls_back_to_defaults_crate() {
+    let yaml = r#"
+project_name: lockstep-app
+defaults:
+  crates:
+    tag_template: "v{{ Version }}"
+crates:
+  - name: core
+    path: crates/core
+  - name: cli
+    path: crates/cli
+    depends_on: [core]
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("lockstep config should parse");
+    crate::defaults_merge::apply_defaults(&mut config);
+    assert_eq!(config.crates.len(), 2);
+    for c in &config.crates {
+        assert_eq!(
+            c.resolved_tag_template(),
+            "v{{ Version }}",
+            "crate '{}' should inherit defaults.crates.tag_template",
+            c.name
+        );
+    }
+}
+
+#[test]
+fn test_tag_template_per_crate_mode_override_beats_defaults_crate() {
+    let yaml = r#"
+project_name: multi-app
+defaults:
+  crates:
+    tag_template: "v{{ Version }}"
+crates:
+  - name: frontend
+    path: frontend
+    tag_template: "frontend-v{{ Version }}"
+  - name: backend
+    path: backend
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("per-crate config should parse");
+    crate::defaults_merge::apply_defaults(&mut config);
+    let frontend = config
+        .crates
+        .iter()
+        .find(|c| c.name == "frontend")
+        .expect("frontend crate entry");
+    let backend = config
+        .crates
+        .iter()
+        .find(|c| c.name == "backend")
+        .expect("backend crate entry");
+    assert_eq!(frontend.resolved_tag_template(), "frontend-v{{ Version }}");
+    assert_eq!(backend.resolved_tag_template(), "v{{ Version }}");
+}
+
+#[test]
+fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
+    // Load-bearing: the real workspace config, post-dedup, must resolve every
+    // crate to the identical tag_template it carried before the 32 repeated
+    // per-crate lines were collapsed into one `defaults.crates.tag_template`.
+    let yaml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.anodizer.yaml"));
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("parse real .anodizer.yaml");
+    crate::defaults_merge::apply_defaults(&mut config);
+
+    assert_eq!(
+        config.crates.len(),
+        32,
+        "expected all 32 anodizer workspace crate entries"
+    );
+    for c in &config.crates {
+        assert_eq!(
+            c.tag_template,
+            Some("v{{ Version }}".to_string()),
+            "crate '{}' raw tag_template should be filled in from \
+             `defaults.crates.tag_template` by apply_defaults, not left \
+             unset and merely coincide with the built-in default via \
+             resolved_tag_template()'s fallback",
+            c.name
+        );
+        assert_eq!(
+            c.resolved_tag_template(),
+            "v{{ Version }}",
+            "crate '{}' resolved a different tag_template after dedup",
+            c.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -219,7 +219,10 @@ fn resolve_revision(
         PromoteSelector::FromRun { report, .. } => Ok(recorded_revision(report, snap_name)),
         PromoteSelector::Version(version) => {
             let output = list_revisions(snap_name, log)?;
-            Ok(snap_revision_for_version(&output, version))
+            // `promote` operates store-wide with no per-artifact arch context,
+            // so it intentionally searches every architecture and returns
+            // whichever revision of `version` is numerically highest.
+            Ok(snap_revision_for_version(&output, version, None))
         }
         PromoteSelector::Newest => {
             let output = list_revisions(snap_name, log)?;
@@ -305,14 +308,17 @@ Rev    Uploaded              Arches  Version  Channels
         // Version 1.2.0 was uploaded twice (rev 3 then re-uploaded as rev 5);
         // the highest revision wins so a re-promotion targets the latest upload.
         assert_eq!(
-            snap_revision_for_version(LIST_REVISIONS, "1.2.0"),
+            snap_revision_for_version(LIST_REVISIONS, "1.2.0", None),
             Some("5".to_string())
         );
         assert_eq!(
-            snap_revision_for_version(LIST_REVISIONS, "1.0.0"),
+            snap_revision_for_version(LIST_REVISIONS, "1.0.0", None),
             Some("2".to_string())
         );
-        assert_eq!(snap_revision_for_version(LIST_REVISIONS, "9.9.9"), None);
+        assert_eq!(
+            snap_revision_for_version(LIST_REVISIONS, "9.9.9", None),
+            None
+        );
     }
 
     #[test]

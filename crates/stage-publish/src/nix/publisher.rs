@@ -153,6 +153,35 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Nix entries across the crate universe whose `skip:`/`skip_upload:`/
+/// `if:` evaluates active right now AND whose crate is in scope for
+/// `--crate` / `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names, so a selected-but-skipped
+/// crate cannot masquerade as active via an out-of-scope sibling). Shared by
+/// [`anodizer_core::Publisher::requirements`],
+/// [`anodizer_core::Publisher::advisory_requirements`],
+/// [`anodizer_core::Publisher::preflight`], and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the active-entry
+/// gate cannot diverge across the four call sites.
+fn active_nix_configs(ctx: &Context) -> Vec<&anodizer_core::config::NixConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
+        .filter(|n| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                n.skip.as_ref(),
+                n.skip_upload.as_ref(),
+                n.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for NixPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -170,23 +199,17 @@ impl anodizer_core::Publisher for NixPublisher {
         true
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_nix_configs(ctx).is_empty()
+    }
+
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        ctx.config
-            .crate_universe()
+        active_nix_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
-            .filter(|n| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    n.skip.as_ref(),
-                    n.skip_upload.as_ref(),
-                    n.if_condition.as_deref(),
-                )
-            })
             .flat_map(|n| {
                 let mut reqs = crate::publisher_helpers::git_repo_requirements(
                     ctx,
@@ -217,20 +240,7 @@ impl anodizer_core::Publisher for NixPublisher {
         // warn+skips without the tool, and `gh pr create` is the preferred
         // PR transport with a full REST-API fallback — recommendations,
         // never gate failures.
-        let active: Vec<_> = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
-            .filter(|n| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    n.skip.as_ref(),
-                    n.skip_upload.as_ref(),
-                    n.if_condition.as_deref(),
-                )
-            })
-            .collect();
+        let active = active_nix_configs(ctx);
         if active.is_empty() {
             return Vec::new();
         }
@@ -335,19 +345,8 @@ impl anodizer_core::Publisher for NixPublisher {
             ctx,
             &policy,
             "NIX_PKGS_TOKEN",
-            ctx.config
-                .crate_universe()
-                .into_iter()
-                .filter_map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref())),
-            |n| {
-                // Nix carries a `skip` field, unlike scoop/homebrew/winget.
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    n.skip.as_ref(),
-                    n.skip_upload.as_ref(),
-                    n.if_condition.as_deref(),
-                )
-            },
+            active_nix_configs(ctx).into_iter(),
+            |_n| true,
             |n| n.repository.as_ref(),
         ))
     }
@@ -356,7 +355,9 @@ impl anodizer_core::Publisher for NixPublisher {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::config::{
+        CrateConfig, NixConfig, PublishConfig, RepositoryConfig, StringOrBool,
+    };
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -364,7 +365,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {
@@ -390,6 +391,40 @@ mod publisher_tests {
         assert_eq!(
             p.rollback_scope_needed(),
             Some("GITHUB_TOKEN contents:write")
+        );
+    }
+
+    /// `--crate x` selects only the skip:true entry; an active sibling `y`
+    /// outside the selection must not keep the publisher live.
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = nix_crate("x");
+        skipped.publish.as_mut().unwrap().nix.as_mut().unwrap().skip =
+            Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, nix_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+
+        assert!(
+            NixPublisher::new().config_fully_inactive(&ctx),
+            "--crate x selects only the skip:true entry; active sibling y is out of \
+             scope and must not keep the publisher live"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate("x")])
+            .build();
+
+        assert!(
+            !NixPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
         );
     }
 
@@ -477,7 +512,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "gamma".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -739,7 +774,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },

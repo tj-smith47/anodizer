@@ -46,7 +46,8 @@ pub use github_api::{
     GITHUB_TOKEN_ENV_LADDER, commit_author_login, commit_author_login_with_binary,
     create_tag_via_github_api, create_tag_via_github_api_in, gh_api_delete_with_binary, gh_api_get,
     gh_api_get_paginated, gh_api_get_paginated_with_binary, gh_api_get_with_binary,
-    github_token_env_hint, github_token_hint, resolve_github_token, resolve_github_token_with_env,
+    gh_api_get_with_binary_with_env, github_token_env_hint, github_token_hint,
+    resolve_github_token, resolve_github_token_with_env,
 };
 pub use github_probe::{
     RepoAccessOutcomes, RepoProbe, github_repo_probe, github_repo_push_check, indeterminate_check,

@@ -94,6 +94,20 @@ pub struct SnapcraftConfig {
     /// `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a failed snap upload counts as a required-publisher
+    /// failure: trips the submitter gate and surfaces in
+    /// `report.required_failures()` so the CLI exits non-zero.
+    ///
+    /// Default: `false` — a failed snap upload does not abort the pipeline.
+    /// It is still reported as a post-publish landing issue by
+    /// `verify-release` regardless of this setting: `required` governs only
+    /// whether the run ABORTS mid-pipeline, never whether an attempted
+    /// failure gets certified as a clean release.
+    ///
+    /// When multiple snapcraft configs exist, the stage records ONE
+    /// aggregated `PublisherResult`: `required = true` if ANY config opted
+    /// in.
+    pub required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

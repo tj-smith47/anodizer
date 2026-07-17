@@ -1177,7 +1177,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "my-crate".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         };
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();

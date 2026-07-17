@@ -12,7 +12,6 @@ struct CargoToml {
     workspace: Option<CargoWorkspace>,
     package: Option<CargoPackage>,
     bin: Option<Vec<CargoBin>>,
-    dependencies: Option<toml::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -179,7 +178,10 @@ fn discover_workspace_crates(root: &str, ws: &CargoWorkspace) -> Result<Vec<Crat
                 let is_binary = cargo.bin.as_ref().map(|b| !b.is_empty()).unwrap_or(false)
                     || root_path.join(&member_path).join("src/main.rs").exists();
 
-                let depends_on = extract_workspace_deps(&cargo, &member_names);
+                let depends_on = anodizer_core::config::derive_depends_on_from_cargo_toml(
+                    &root_path.join(&member_path),
+                    &member_names,
+                );
 
                 crates.push(CrateInfo {
                     name,
@@ -216,31 +218,6 @@ fn expand_glob(root: &str, pattern: &str) -> Vec<String> {
     } else {
         vec![pattern.to_string()]
     }
-}
-
-/// Extract workspace-member dependencies from a crate's Cargo.toml.
-fn extract_workspace_deps(cargo: &CargoToml, member_names: &HashSet<String>) -> Vec<String> {
-    let mut deps = vec![];
-    if let Some(toml::Value::Table(table)) = &cargo.dependencies {
-        for (dep_name, val) in table {
-            // Check if it's a workspace dep (path = "..." or workspace = true pointing to a member)
-            let is_member = member_names.contains(dep_name) && {
-                match val {
-                    toml::Value::Table(t) => {
-                        t.contains_key("path")
-                            || t.get("workspace")
-                                .is_some_and(|v| v.as_bool() == Some(true))
-                    }
-                    _ => false,
-                }
-            };
-            if is_member {
-                deps.push(dep_name.clone());
-            }
-        }
-    }
-    deps.sort();
-    deps
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +936,68 @@ mylib = { path = "../mylib" }
         let mylib_pos = yaml.find("name: mylib").unwrap();
         let mybin_pos = yaml.find("name: mybin").unwrap();
         assert!(mylib_pos < mybin_pos, "mylib should appear before mybin");
+    }
+
+    #[test]
+    fn test_workspace_depends_on_includes_build_dependency_only_member() {
+        // A workspace member reachable ONLY via [build-dependencies] is an
+        // equally hard publish-order requirement (cargo resolves build-deps
+        // for `cargo publish` verification too) — init's scaffolded
+        // depends_on must not silently drop it, matching config-load's
+        // derive_depends_on_from_cargo_toml (the complete [dependencies] +
+        // [build-dependencies] + [target.*.dependencies] union).
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "Cargo.toml",
+            r#"
+[workspace]
+resolver = "2"
+members = ["crates/build-helper", "crates/mybin"]
+
+[workspace.package]
+name = "myproject"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        write_file(
+            tmp.path(),
+            "crates/build-helper/Cargo.toml",
+            r#"
+[package]
+name = "build-helper"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        write_file(
+            tmp.path(),
+            "crates/mybin/Cargo.toml",
+            r#"
+[package]
+name = "mybin"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "mybin"
+path = "src/main.rs"
+
+[build-dependencies]
+build-helper = { path = "../build-helper" }
+"#,
+        );
+
+        let yaml = generate_config(tmp.path().to_str().unwrap()).unwrap();
+        assert!(yaml.contains("depends_on:"));
+        assert!(yaml.contains("- build-helper"));
+        let helper_pos = yaml.find("name: build-helper").unwrap();
+        let mybin_pos = yaml.find("name: mybin").unwrap();
+        assert!(
+            helper_pos < mybin_pos,
+            "build-helper should appear before mybin (topological order)"
+        );
     }
 
     #[test]

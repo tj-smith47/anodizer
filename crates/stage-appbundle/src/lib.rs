@@ -997,7 +997,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1073,7 +1073,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -1134,7 +1134,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1195,7 +1195,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1252,7 +1252,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -1312,7 +1312,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -1379,7 +1379,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "coolapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -1432,7 +1432,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1522,7 +1522,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1586,7 +1586,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -1719,7 +1719,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg_1, bundle_cfg_2]),
             ..Default::default()
         };
@@ -1809,7 +1809,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![enabled_cfg, disabled_cfg]),
             ..Default::default()
         };
@@ -1919,7 +1919,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -2010,7 +2010,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -2076,7 +2076,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         };
@@ -2150,7 +2150,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -2254,7 +2254,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -2317,7 +2317,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -2477,7 +2477,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![bundle_cfg]),
             ..Default::default()
         }];
@@ -2540,7 +2540,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![make_cfg(), make_cfg()]),
             ..Default::default()
         };
@@ -2588,7 +2588,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             app_bundles: Some(vec![
                 AppBundleConfig {
                     bundle: Some("com.example.myapp".to_string()),

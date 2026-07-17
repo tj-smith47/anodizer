@@ -701,89 +701,37 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
     }
 }
 
-/// Extract the literal filename suffix a `signature:` template appends
-/// after the artifact reference — the text following the final `}}`
-/// template expansion (e.g. `{{ .Artifact }}.cosign.bundle` →
-/// `.cosign.bundle`, `{{ .Artifact }}.sig` → `.sig`).
-///
-/// Returns `None` when there is no usable dotted extension to anchor a
-/// `*.<ext>` allow-list pattern on (empty tail, a bare `.`, or a template
-/// that signs in place without adding an extension). The guard is
-/// load-bearing: a tail of `""` would yield a bare `*` (allow-listing every
-/// artifact) and a tail of `"."` would yield `*.` (matching any name ending
-/// in a dot) — both would silently suppress real drift. Require at least
-/// one extension character after the leading dot.
-///
-/// This also (correctly) returns `None` when the final path segment is
-/// itself an expansion — e.g. `{{ .Artifact }}.{{ .Format }}` or
-/// `sigs/{{ .ArtifactName }}`. There the text after the last `}}` is empty
-/// (or has no leading-dot literal), so no static suffix exists to anchor an
-/// allow-list pattern on. Such templates can't be reduced to a `*.<ext>`
-/// glob; the harness falls back to its other classification paths rather
-/// than minting a meaningless or over-broad entry.
-fn signature_suffix(template: &str) -> Option<String> {
-    let tail = match template.rfind("}}") {
-        Some(idx) => &template[idx + 2..],
-        None => template,
-    };
-    let tail = tail.trim();
-    if tail.len() < 2 || !tail.starts_with('.') {
-        return None;
-    }
-    Some(tail.to_string())
-}
-
-/// Derive allow-list entries for signature artifacts from the project's
-/// `signs:` / `binary_signs:` signature templates (top-level and per
-/// workspace).
+/// Derive allow-list entries for signature and keyless-certificate artifacts
+/// from the project's `signs:` / `binary_signs:` templates (top-level and
+/// per workspace), including the `certificate:` (cosign keyless mode)
+/// template alongside `signature:`.
 ///
 /// Signatures are non-reproducible by nature: cosign signs with a random
 /// ECDSA nonce, so its bundle/signature bytes differ on every signing of
-/// byte-identical input. `infer_stage_from_path` already classifies the
-/// default `.sig` / `.pem` / `.cert` suffixes as the `sign` stage (which
-/// the harness auto-allow-lists), but the `signature:` template is
+/// byte-identical input; a keyless certificate is equally per-invocation
+/// (Fulcio mints a fresh short-lived cert every sign). `infer_stage_from_path`
+/// already classifies the default `.sig` / `.pem` / `.cert` suffixes as the
+/// `sign` stage (which the harness auto-allow-lists), but both templates are
 /// user-configurable, so a custom suffix (cfgd's `.cosign.bundle`) would
-/// fall through to `unknown` and be counted as drift. Deriving the
-/// suffixes from config keeps the harness correct for any naming scheme.
+/// fall through to `unknown` and be counted as drift. Deriving the suffixes
+/// from config keeps the harness correct for any naming scheme.
 ///
-/// Pure: collect the
-/// distinct signature suffixes configured across top-level and per-
-/// workspace `signs:` / `binary_signs:`, and map each to a `*<suffix>`
-/// allow-list entry. Factored out so the suffix logic is unit-testable
-/// without the cwd-dependent config load.
+/// Delegates suffix collection to
+/// [`anodizer_core::signature_assets::signature_asset_suffixes`] — the
+/// single source of truth also consumed by release verification's digest
+/// exemption, so the two stay congruent by construction rather than by two
+/// hand-maintained copies of the same walk.
 fn signature_allowlist_entries_from_config(
     cfg: &anodizer_core::config::Config,
 ) -> Vec<AllowListEntry> {
-    use anodizer_core::config::SignConfig;
-
-    let mut suffixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut collect = |entries: &[SignConfig], default_tmpl: &str| {
-        for s in entries {
-            if let Some(suffix) = signature_suffix(s.resolved_signature_template(default_tmpl)) {
-                suffixes.insert(suffix);
-            }
-        }
-    };
-    collect(&cfg.signs, SignConfig::DEFAULT_SIGNATURE_TEMPLATE);
-    collect(
-        &cfg.binary_signs,
-        SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
-    );
-    for w in cfg.workspaces.iter().flatten() {
-        collect(&w.signs, SignConfig::DEFAULT_SIGNATURE_TEMPLATE);
-        collect(
-            &w.binary_signs,
-            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
-        );
-    }
-
-    suffixes
+    anodizer_core::signature_assets::signature_asset_suffixes(cfg)
         .into_iter()
         .map(|suffix| AllowListEntry {
             reason: format!(
-                "signature artifact ({suffix}): signature bytes vary by signer \
-                 (cosign signs with a random ECDSA nonce); validate cryptographically \
-                 via `cosign verify-blob` / `gpg --verify`, not byte-equality"
+                "signature/certificate artifact ({suffix}): bytes vary by signer \
+                 (cosign signs with a random ECDSA nonce / mints a fresh keyless cert); \
+                 validate cryptographically via `cosign verify-blob` / `gpg --verify`, \
+                 not byte-equality"
             ),
             artifact: format!("*{suffix}"),
         })
@@ -1131,7 +1079,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 msis: Some(vec![msi_cfg]),
                 ..Default::default()
             }],
@@ -1352,7 +1300,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "minimal".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1401,7 +1349,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "full".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 nfpms: Some(vec![NfpmConfig::default()]),
                 snapcrafts: Some(vec![SnapcraftConfig::default()]),
                 flatpaks: Some(vec![FlatpakConfig::default()]),
@@ -1452,7 +1400,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "full".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 dockers_v2: Some(vec![DockerV2Config {
                     // Unknown filter → hard render error regardless of strict mode.
                     dockerfile: "{{ Version | this_filter_does_not_exist }}".to_string(),
@@ -1485,7 +1433,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "full".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 dockers_v2: Some(vec![DockerV2Config {
                     dockerfile: "Dockerfile.release".to_string(),
                     skip: Some(StringOrBool::Bool(true)),
@@ -1984,33 +1932,6 @@ version = "0.0.1"
     }
 
     #[test]
-    fn signature_suffix_extracts_literal_tail_after_last_expansion() {
-        assert_eq!(
-            signature_suffix("{{ .Artifact }}.cosign.bundle").as_deref(),
-            Some(".cosign.bundle")
-        );
-        assert_eq!(
-            signature_suffix("{{ .Artifact }}.sig").as_deref(),
-            Some(".sig")
-        );
-        assert_eq!(
-            signature_suffix("{{ .Artifact }}.asc").as_deref(),
-            Some(".asc")
-        );
-    }
-
-    #[test]
-    fn signature_suffix_rejects_unanchorable_templates() {
-        // A bare-expansion template (sign in place, no new extension) must
-        // NOT yield a suffix — an empty tail would produce a `*` pattern
-        // that allow-lists every artifact and suppresses all drift.
-        assert_eq!(signature_suffix("{{ .Artifact }}"), None);
-        assert_eq!(signature_suffix("{{ .Artifact }}   "), None);
-        // Non-dotted tail can't anchor `*.<ext>`.
-        assert_eq!(signature_suffix("{{ .Artifact }}sig"), None);
-    }
-
-    #[test]
     fn signature_allowlist_derives_custom_cosign_bundle_suffix() {
         use anodizer_core::config::{Config, SignConfig};
         // Mirrors cfgd: a checksum-signing cosign entry with a custom
@@ -2035,6 +1956,27 @@ version = "0.0.1"
         // Every derived pattern is a concrete extension anchor, never a
         // bare `*` (which would suppress all drift).
         assert!(entries.iter().all(|e| e.artifact != "*"));
+    }
+
+    #[test]
+    fn signature_allowlist_derives_keyless_certificate_suffix() {
+        use anodizer_core::config::{Config, SignConfig};
+        // A cosign keyless-mode `certificate:` template is per-invocation
+        // (Fulcio mints a fresh short-lived cert every sign) just like the
+        // signature itself, so it must drift-allowlist the same way.
+        let cfg = Config {
+            signs: vec![SignConfig {
+                certificate: Some("{{ .Artifact }}.pem".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let entries = signature_allowlist_entries_from_config(&cfg);
+        let patterns: Vec<&str> = entries.iter().map(|e| e.artifact.as_str()).collect();
+        assert!(
+            patterns.contains(&"*.pem"),
+            "configured certificate suffix must be allow-listed, got {patterns:?}"
+        );
     }
 
     /// Regression for the cfgd v0.4.0 determinism failure: the build was

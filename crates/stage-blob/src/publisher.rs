@@ -570,7 +570,7 @@ mod publisher_tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             blobs: Some(vec![BlobConfig {
                 provider: "s3".to_string(),
                 bucket: "my-bucket".to_string(),
@@ -592,7 +592,7 @@ mod publisher_tests {
         let crate_cfg = CrateConfig {
             name: "ws-only".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             blobs: Some(vec![BlobConfig {
                 provider: "s3".to_string(),
                 bucket: "ws-bucket".to_string(),

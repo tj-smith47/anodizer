@@ -150,6 +150,22 @@ pub trait Publisher: Send + Sync {
         Vec::new()
     }
 
+    /// True when this publisher was registered (a config block exists) but
+    /// every configured entry evaluates skip-inactive under the CURRENT
+    /// config/env — `skip:`/`skip_upload:` truthy or `if:` falsy on all of
+    /// them. Checked at the dispatch chokepoint BEFORE [`Publisher::run`]
+    /// runs, so a `run()` that unconditionally returns `Ok(evidence)` even
+    /// with zero active entries is never recorded as `Succeeded`.
+    ///
+    /// Default `false`: publishers with no skip/enable knob need no
+    /// override. Publishers that do have one implement this by reusing the
+    /// exact active-entries predicate their [`Publisher::requirements`]
+    /// already applies — never a second, independently-derived skip check —
+    /// so the two cannot drift.
+    fn config_fully_inactive(&self, _ctx: &Context) -> bool {
+        false
+    }
+
     /// Whether this publisher opts out of nightly runs (the
     /// `customization/publish/nightlies.md` skip-list).
     ///
@@ -310,6 +326,13 @@ mod tests {
         let p = MinimalPublisher;
         let ctx = Context::test_fixture();
         assert!(p.requirements(&ctx).is_empty());
+    }
+
+    #[test]
+    fn config_fully_inactive_defaults_false() {
+        let p = MinimalPublisher;
+        let ctx = Context::test_fixture();
+        assert!(!p.config_fully_inactive(&ctx));
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub fn seed_missing_download_urls_for_crate(
     let tag_tmpl = release_cfg
         .tag
         .as_deref()
-        .unwrap_or(crate_cfg.tag_template.as_str());
+        .unwrap_or(crate_cfg.resolved_tag_template());
     let tag = match ctx.render_template(tag_tmpl) {
         Ok(t) if !t.is_empty() => t,
         _ => return Ok(None),
@@ -289,7 +289,7 @@ mod tests {
         CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "octocat".to_string(),

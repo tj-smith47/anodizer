@@ -191,7 +191,7 @@ fn cargo_crate(name: &str, path: &str, deps: &[&str], cfg: CargoPublishConfig) -
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         publish: Some(PublishConfig {
             cargo: Some(cfg),
@@ -819,7 +819,7 @@ fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
     let dep = CrateConfig {
         name: "dep-crate".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     };
     let mut ctx = TestContextBuilder::new()

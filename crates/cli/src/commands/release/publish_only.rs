@@ -700,10 +700,21 @@ fn peek_preserved_version(crate_dist: &Path) -> Option<String> {
 }
 
 fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log: &StageLogger) {
+    // The crate's own raw template if set, else the `{name}-v` convention
+    // (NOT `resolved_tag_template()`'s built-in `v{{ Version }}` default,
+    // which is the wrong family for per-crate `{name}-v` configs). The
+    // `crate_prefix` derived below extracts from this SAME resolved
+    // template, keeping the re-anchored `Tag` and `PreviousTag` in the
+    // same family.
     let tag_template = config
         .find_crate(crate_name)
-        .map(|c| c.tag_template.clone());
-    let Some(tag_template) = tag_template.filter(|t| !t.is_empty()) else {
+        .map(|c| {
+            c.tag_template
+                .clone()
+                .unwrap_or_else(|| format!("{crate_name}-v{{{{ Version }}}}"))
+        })
+        .filter(|t| !t.is_empty());
+    let Some(tag_template) = tag_template else {
         return;
     };
 
@@ -2550,7 +2561,7 @@ mod tests {
     fn released_crate_cfg(name: &str, tag_template: &str) -> anodizer_core::config::CrateConfig {
         anodizer_core::config::CrateConfig {
             name: name.to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             release: Some(anodizer_core::config::ReleaseConfig {
                 github: Some(anodizer_core::config::ScmRepoConfig {
                     owner: "acme".to_string(),
@@ -2914,7 +2925,7 @@ mod tests {
         fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
             CrateConfig {
                 name: name.to_string(),
-                tag_template: tag_template.to_string(),
+                tag_template: Some(tag_template.to_string()),
                 ..CrateConfig::default()
             }
         }
@@ -2963,6 +2974,38 @@ mod tests {
                         "crate '{crate_name}' must carry its own tag, not the global HEAD tag",
                     );
                 }
+            });
+        }
+
+        /// An UNSET `tag_template` in a `{name}-v`-convention per-crate
+        /// workspace must re-anchor `Tag` onto the crate's OWN family, not
+        /// the repo-level bare `v{version}` (`resolved_tag_template()`'s
+        /// built-in default — correct for lockstep/single, wrong family
+        /// here).
+        #[test]
+        #[serial(cwd)]
+        fn unset_tag_template_resolves_name_v_convention_not_bare_v() {
+            with_hermetic_git_cwd(|| {
+                let config = config_with_crates(vec![CrateConfig {
+                    name: "widget".to_string(),
+                    tag_template: None,
+                    ..CrateConfig::default()
+                }]);
+                let mut ctx = Context::new(config.clone(), ContextOptions::default());
+                ctx.template_vars_mut().set("Version", "0.4.0");
+                // The global HEAD-resolved tag from a sibling crate, which
+                // the per-crate re-anchor must overwrite.
+                ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+
+                apply_per_crate_tag(&mut ctx, &config, "widget", &quiet_log());
+
+                assert_eq!(
+                    ctx.template_vars().get("Tag").map(String::as_str),
+                    Some("widget-v0.4.0"),
+                    "an UNSET tag_template must resolve the crate's own \
+                     {{name}}-v convention family, not the repo-level bare-v \
+                     built-in default",
+                );
             });
         }
 
@@ -3387,7 +3430,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             before: before.map(mk),
             after: after.map(mk),
             ..Default::default()

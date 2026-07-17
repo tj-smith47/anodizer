@@ -1454,6 +1454,27 @@ simple_publisher!(
 // terse.
 use crate::util::ROLLBACK_PARALLELISM;
 
+/// Top-level `artifactories:` entries whose `skip:`/`if:` evaluates active
+/// right now. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge. `preflight` keeps its own loop (it needs per-entry credential
+/// resolution alongside the filter, not just a boolean).
+fn active_artifactory_configs(ctx: &Context) -> Vec<&anodizer_core::config::ArtifactoryConfig> {
+    ctx.config
+        .artifactories
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1471,20 +1492,16 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_artifactory_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Mirrors `resolve_http_credentials` (anonymous_ok = false): per
         // entry, each of username/password comes from the templated config
         // value or the `ARTIFACTORY_<NAME>_{USERNAME,SECRET}` env pair.
         let mut out = Vec::new();
-        for entry in ctx.config.artifactories.iter().flatten() {
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                entry.skip.as_ref(),
-                None,
-                entry.if_condition.as_deref(),
-            ) {
-                continue;
-            }
+        for entry in active_artifactory_configs(ctx) {
             let name_upper = entry
                 .name
                 .as_deref()

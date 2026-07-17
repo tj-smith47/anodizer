@@ -58,6 +58,7 @@ pub mod retry;
 pub mod run;
 pub mod scm;
 pub mod sde;
+pub mod signature_assets;
 pub mod signing;
 pub mod stage;
 pub mod stages;

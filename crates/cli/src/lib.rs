@@ -189,7 +189,7 @@ pub enum Commands {
         fail_fast: bool,
         #[arg(
             long = "no-gate-submitter",
-            help = "Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed"
+            help = "Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed, or when the pre-submitter verify-release check did not pass"
         )]
         no_gate_submitter: bool,
         #[arg(

@@ -882,7 +882,7 @@ mod source_mutation_tests {
         CrateConfig {
             name: name.to_string(),
             path: path.to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             version_sync: Some(VersionSyncConfig {
                 enabled: Some(true),
                 mode: None,
@@ -1597,7 +1597,7 @@ mod run_helpers_tests {
         let mut crate_cfg = CrateConfig {
             name: "solo".to_string(),
             path: dir.to_str().unwrap().to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             version_sync: Some(anodizer_core::config::VersionSyncConfig {
                 enabled: Some(true),
                 mode: None,
@@ -1670,7 +1670,7 @@ mod run_helpers_tests {
         let crate_cfg = CrateConfig {
             name: "solo".to_string(),
             path: dir.to_str().unwrap().to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             version_sync: Some(anodizer_core::config::VersionSyncConfig {
                 enabled: Some(true),
                 mode: None,
@@ -2077,7 +2077,7 @@ mod run_helpers_tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             universal_binaries: Some(vec![ub1, ub2]),
             ..Default::default()
         };
@@ -2161,7 +2161,7 @@ mod run_helpers_tests {
         let crate_cfg = CrateConfig {
             name: "core".to_string(),
             path: dir.to_str().unwrap().to_string(),
-            tag_template: "core-v{{ .Version }}".to_string(),
+            tag_template: Some("core-v{{ .Version }}".to_string()),
             version_sync: Some(anodizer_core::config::VersionSyncConfig {
                 enabled: Some(true),
                 mode: None,
@@ -2215,7 +2215,7 @@ mod run_helpers_tests {
         let crate_cfg = CrateConfig {
             name: "noop".to_string(),
             path: dir.to_str().unwrap().to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             version_sync: None,
             binstall: None,
             ..Default::default()
@@ -2888,7 +2888,7 @@ mod run_exec_tests {
         let crate_cfg = anodizer_core::config::CrateConfig {
             name: "myproj".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             universal_binaries: None,
             ..Default::default()
         };

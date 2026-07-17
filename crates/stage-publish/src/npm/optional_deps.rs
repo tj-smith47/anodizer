@@ -11,10 +11,11 @@
 //! under `optionalDependencies` and ships a `bin` shim that resolves the
 //! installed one via `require.resolve`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anodizer_core::artifact::ArtifactKind;
-use anodizer_core::config::NpmConfig;
+use anodizer_core::build_plan::crate_build_target_entries;
+use anodizer_core::config::{NpmConfig, UniversalBinaryConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
@@ -182,6 +183,207 @@ fn resolve_commands(cfg: &NpmConfig, metapackage: &str) -> Vec<MetaCommand> {
         .collect()
 }
 
+const DARWIN_ARM64: &str = "aarch64-apple-darwin";
+const DARWIN_X64: &str = "x86_64-apple-darwin";
+
+/// Statically mirror `universal::resolve_default_unibin_ids` for the case
+/// where a `universal_binaries[]` entry leaves `ids:` unset (or empty):
+/// `ub.id` if explicitly set; else `project_name` when some build entry for
+/// this crate resolves to that exact id; else the crate name. Production
+/// answers the middle branch by probing already-registered `Binary` artifact
+/// metadata; every input that probe reads is already known statically before
+/// any build runs — `ub.id`, `project_name`, and this crate's own per-build
+/// ids (`resolved_per_build`, already rendered where production would render
+/// them) — so the same three-way precedence is fully reproducible here.
+fn default_unibin_ids_static(
+    ub: &UniversalBinaryConfig,
+    crate_name: &str,
+    project_name: &str,
+    resolved_per_build: &[(String, BTreeSet<String>)],
+) -> Vec<String> {
+    if let Some(ref id) = ub.id {
+        return vec![id.clone()];
+    }
+    if !project_name.is_empty() && resolved_per_build.iter().any(|(id, _)| id == project_name) {
+        return vec![project_name.to_string()];
+    }
+    vec![crate_name.to_string()]
+}
+
+/// Whether a `universal_binaries[]` entry with `replace: true` retires
+/// `DARWIN_ARM64` + `DARWIN_X64` from `crate_targets` for THIS entry, mirroring
+/// `stage-build/src/universal.rs::build_universal_binary`'s own precondition
+/// for running lipo and removing the source artifacts.
+///
+/// Two static checks, both required, mirroring the real gate exactly:
+///
+/// 1. **Both-required precondition** (`build_universal_binary`'s early-return
+///    when either `arm64`/`x86_64` binary is absent): lipo is a no-op unless
+///    the crate's build plan produces BOTH darwin triples at all, so an entry
+///    can only retire them when `crate_targets` already contains both.
+/// 2. **`ids:` selection** (`effective_ids` filtering `by_kind_and_crate` down
+///    to the entry's chosen builds before the arm64/x86_64 search): the
+///    narrowing id list — an explicit, non-empty `ub.ids`, or else the
+///    statically-resolved default from [`default_unibin_ids_static`] — is
+///    matched against each surviving build's id in `resolved_per_build`
+///    (already resolved the same way `stage-build` resolves a `Binary`
+///    artifact's `id` metadata: an explicit `build.id` verbatim, or the
+///    rendered `binary`-fallback — see [`crate_build_target_entries`]'s
+///    doc). The pair is only retired when some combination of id-matched
+///    builds covers both triples. An explicit `ub.ids: []` is production's
+///    "no filter" case (`effective_ids.is_empty()` falls through to the
+///    default resolution), so it is treated identically to `None`.
+fn universal_replace_retires_darwin_pair(
+    ub: &UniversalBinaryConfig,
+    crate_name: &str,
+    project_name: &str,
+    crate_targets: &BTreeSet<String>,
+    resolved_per_build: &[(String, BTreeSet<String>)],
+) -> bool {
+    if ub.replace != Some(true) {
+        return false;
+    }
+    if !(crate_targets.contains(DARWIN_ARM64) && crate_targets.contains(DARWIN_X64)) {
+        return false;
+    }
+    let narrowing_ids: Vec<String> =
+        match ub.ids.as_deref().filter(|ids: &&[String]| !ids.is_empty()) {
+            Some(ids) => ids.to_vec(),
+            None => default_unibin_ids_static(ub, crate_name, project_name, resolved_per_build),
+        };
+    let (mut arm64_selected, mut x64_selected) = (false, false);
+    for (id, targets) in resolved_per_build {
+        if narrowing_ids.iter().any(|nid| nid == id) {
+            arm64_selected |= targets.contains(DARWIN_ARM64);
+            x64_selected |= targets.contains(DARWIN_X64);
+        }
+    }
+    arm64_selected && x64_selected
+}
+
+/// The npm platform identities (`platform_suffix` values, e.g.
+/// `linux-x64-glibc`) that a completeness gate REQUIRES an artifact for, each
+/// mapped to the source target triple(s) it was derived from (so an error
+/// message can point the user at the exact `targets:` self-service value).
+///
+/// Derived from the crate's CONFIGURED build targets — not from whatever
+/// binaries happen to be present in `ctx.artifacts` this run — via the same
+/// build-planning SSOT ([`crate_build_target_entries`],
+/// [`anodizer_core::build_plan::crate_target_list`]'s sibling) that
+/// `stage-publish::publisher_helpers::crate_build_targets` composes for every
+/// other per-target publisher's `targets:` allowlist check, plus this entry's
+/// own `BuildConfig.skip` veto (a skip-truthy build compiles nothing —
+/// `stage-build` honors `skip` before ever invoking cargo — so its targets
+/// must not be expected either; render failures fall back to "not skipped",
+/// matching `cross_requirements.rs`'s hint-over-reports-rather-than-drops
+/// posture). Mirrors the entry's own narrowing knobs exactly as
+/// [`generate_layout`]'s artifact loop applies them: `ids:` selects which
+/// crates' targets count, `targets:` further narrows the triples, and
+/// `libc_aware` decides whether a linux target's glibc/musl variant is a
+/// distinct platform identity. A triple with no npm os/cpu mapping
+/// (`npm_triple` returns `None`) contributes nothing — it is out of npm's
+/// scope entirely, not a missing platform.
+fn expected_platform_identities(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    libc_aware: bool,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let default_targets = ctx.config.effective_default_targets();
+    let mut targets: BTreeSet<String> = BTreeSet::new();
+    for c in ctx.config.crate_universe() {
+        let selected = match cfg.ids.as_ref() {
+            Some(ids) => ids.iter().any(|id| id == &c.name),
+            None => true,
+        };
+        if !selected {
+            continue;
+        }
+        // A per-crate workspace run only builds and stages artifacts for
+        // `ctx.options.selected_crates` (populated by `--crate`); a sibling
+        // crate that carries this npm entry via implicit-all (`ids` unset)
+        // but was never dispatched this run contributes no artifacts, so its
+        // targets must not inflate the expected set either. Empty
+        // `selected_crates` means "every crate is in scope" (single-crate and
+        // lockstep runs), mirroring `publisher_helpers::effective_publish_crates`.
+        if !ctx.options.selected_crates.is_empty() && !ctx.options.selected_crates.contains(&c.name)
+        {
+            continue;
+        }
+
+        let skip_evaluator = |build: &anodizer_core::config::BuildConfig| {
+            build
+                .skip
+                .as_ref()
+                .map(|s| {
+                    s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        };
+        let entries = crate_build_target_entries(c, &default_targets, skip_evaluator);
+
+        let mut crate_targets: BTreeSet<String> = BTreeSet::new();
+        let mut per_build: Vec<(String, BTreeSet<String>)> = Vec::new();
+        for entry in &entries {
+            let mut this_build_targets: BTreeSet<String> = BTreeSet::new();
+            for t in &entry.targets {
+                if crate::publisher_helpers::target_in_allowlist(cfg.targets.as_ref(), t) {
+                    crate_targets.insert(t.clone());
+                    this_build_targets.insert(t.clone());
+                }
+            }
+            // Resolved to the exact string `stage-build`'s `artifact_meta`
+            // would stamp on this build's `Binary` artifact: an explicit
+            // `build.id` verbatim, or the `binary`-fallback id rendered
+            // through the active context — only the fallback is ever
+            // templated in production, so an `Explicit` id must never be
+            // rendered here either.
+            let resolved_id = match &entry.id {
+                anodizer_core::build_plan::BuildId::Explicit(raw) => raw.clone(),
+                anodizer_core::build_plan::BuildId::BinaryFallback(raw) => {
+                    ctx.render_template(raw).unwrap_or_else(|_| raw.clone())
+                }
+            };
+            per_build.push((resolved_id, this_build_targets));
+        }
+
+        // A `universal_binaries[]` entry with `replace: true` runs `lipo` on
+        // the two darwin per-arch binaries and REMOVES them from the artifact
+        // registry (`stage-build/src/universal.rs::build_universal_binary`),
+        // leaving only a `UniversalBinary`-kind artifact whose target
+        // (`darwin-universal`) has no npm os/cpu mapping (`npm_triple`
+        // returns `None` for it). Retiring the pair from the expected set is
+        // gated by `universal_replace_retires_darwin_pair` mirroring lipo's
+        // own both-required + `ids:` preconditions — an entry that cannot
+        // possibly reach both darwin triples leaves them expected, since a
+        // genuinely dropped darwin shard must still fail the gate.
+        for ub in c.universal_binaries.iter().flatten() {
+            if universal_replace_retires_darwin_pair(
+                ub,
+                &c.name,
+                ctx.config.project_name.as_str(),
+                &crate_targets,
+                &per_build,
+            ) {
+                crate_targets.remove(DARWIN_ARM64);
+                crate_targets.remove(DARWIN_X64);
+            }
+        }
+
+        targets.extend(crate_targets);
+    }
+    let mut by_identity: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for t in targets {
+        if let Some(triple) = npm_triple(&t) {
+            by_identity
+                .entry(platform_suffix(&triple, libc_aware))
+                .or_default()
+                .insert(t);
+        }
+    }
+    by_identity
+}
+
 /// Tie-break rank for the not-libc-aware linux dedup: lower sorts first, and
 /// `dedup_by` keeps the first of each same-name run. glibc (rank 0) wins over
 /// musl (rank 1) so the retained single linux package is the broadest-
@@ -192,6 +394,18 @@ fn libc_dedup_rank(libc: &str) -> u8 {
         "musl" => 1,
         _ => 2,
     }
+}
+
+/// The libc selector of the dedup-preferred configured triple among the
+/// triples an identity maps to (mirrors the `!libc_aware` glibc/musl
+/// collapse's own tie-break: glibc wins over musl over anything else).
+/// `None` only when none of the triples resolve to a known npm libc, which
+/// cannot happen for triples already admitted into `expected_platform_identities`.
+fn expected_winning_libc(triples: &BTreeSet<String>) -> Option<String> {
+    triples
+        .iter()
+        .filter_map(|t| npm_triple(t).map(|nt| nt.libc))
+        .min_by_key(|libc| libc_dedup_rank(libc))
 }
 
 /// Build the per-platform package name suffix from a triple, honouring
@@ -611,8 +825,10 @@ pub(crate) fn generate_layout(
     // Source per-target binaries: prefer UploadableBinary (the
     // checksummed/signed/released build output), fall back to raw Binary.
     let mut binaries = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+    let mut kind_searched = ArtifactKind::UploadableBinary;
     if binaries.is_empty() {
         binaries = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        kind_searched = ArtifactKind::Binary;
     }
 
     let mut raws: Vec<RawPlatform> = Vec::new();
@@ -738,6 +954,69 @@ pub(crate) fn generate_layout(
         bail!(
             "npm: metapackage '{}' has no binary artifacts matching any npm platform; \
              nothing to publish (optional-deps mode requires per-target binaries)",
+            metapackage
+        );
+    }
+
+    // Completeness gate: every platform the crate's CONFIGURED targets expect
+    // must have a matching artifact, or the metapackage would publish with a
+    // narrower `optionalDependencies` than what the config promises — and npm
+    // versions are immutable, so a partial platform set at this version can
+    // never be repaired. Runs before any package.json is rendered or staged.
+    let expected = expected_platform_identities(ctx, cfg, libc_aware);
+    // `merged` is already collapsed to at most one entry per identity (the
+    // `!libc_aware` glibc/musl dedup above keeps the glibc entry when both
+    // are present), so this libc is whichever triple is actually backing the
+    // identity right now — not necessarily the one the config promises.
+    let actual_libc_by_identity: BTreeMap<String, String> = merged
+        .iter()
+        .map(|r| {
+            (
+                platform_suffix(&r.triple, libc_aware),
+                r.triple.libc.clone(),
+            )
+        })
+        .collect();
+    // An identity is a gap either when no artifact backs it at all, or when
+    // it maps more than one configured triple (the `!libc_aware` collapse)
+    // and the artifact actually present is not the dedup-preferred one — a
+    // dropped glibc shard backfilled by a surviving musl artifact for the
+    // same identity must still fail the gate, since the config's presence of
+    // a glibc target promises glibc content, and npm's immutable versions
+    // mean that promise can never be silently downgraded to musl.
+    let missing: Vec<(&String, &BTreeSet<String>)> = expected
+        .iter()
+        .filter(
+            |(identity, triples)| match actual_libc_by_identity.get(*identity) {
+                None => true,
+                Some(actual_libc) => expected_winning_libc(triples)
+                    .is_some_and(|winning_libc| *actual_libc != winning_libc),
+            },
+        )
+        .collect();
+    if !missing.is_empty() {
+        let list = missing
+            .iter()
+            .map(|(identity, triples)| {
+                let triple_list = triples
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                format!("{identity} ({triple_list})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "npm: metapackage '{}' is missing per-platform package(s) for the configured \
+             target(s) {list} — no matching artifact found under {kind_searched:?}. Possible \
+             causes: a dist merge dropped the shard; the build never produced it; a variant \
+             filter (upx/strip/etc.) excluded it; or the narrowing was intentional. If it was \
+             intentional, self-service by narrowing this npm entry's own `targets:` allowlist \
+             (using the triple(s) shown in parentheses above) or `ids:` crate list to match; \
+             refusing to publish a metapackage with incomplete optionalDependencies, since npm \
+             versions are immutable and a partial platform set can never be repaired at this \
+             version",
             metapackage
         );
     }

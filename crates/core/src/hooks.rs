@@ -1113,7 +1113,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             before_publish: Some(HooksConfig {
                 hooks: Some(vec![HookEntry::Simple(probe)]),
                 post: None,
@@ -1244,7 +1244,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "foo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1721,7 +1721,7 @@ mod tests {
         let mut c = CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         };
         if set_before {
@@ -2004,7 +2004,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "foo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()

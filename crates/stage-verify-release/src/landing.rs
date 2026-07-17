@@ -16,12 +16,20 @@
 //!   buckets rarely expose a public read URL, so this is the strongest
 //!   honest probe available.
 //!
-//! Only publishers whose recorded outcome is `Succeeded` are probed: a
-//! skipped / deselected / failed publisher landed nothing this run, so there
-//! is nothing to verify (and probing it would report defects the publish
-//! never claimed to avoid). A probe that cannot run — network failure, store
-//! build failure — is itself reported as an issue: this stage's whole job is
-//! verification, and an unverifiable landing is a finding, not a pass.
+//! Only publishers whose recorded outcome is `Succeeded` are PROBED: a
+//! skipped / deselected / rolled-back publisher landed nothing this run, so
+//! there is nothing to verify (and probing it would report defects the
+//! publish never claimed to avoid). A probe that cannot run — network
+//! failure, store build failure — is itself reported as an issue: this
+//! stage's whole job is verification, and an unverifiable landing is a
+//! finding, not a pass.
+//!
+//! A publisher that was ATTEMPTED and reported `Failed` is a different case:
+//! the run tried to ship it and did not. That is a landing defect on its own
+//! merits — reported as an issue without a network probe — so a `required:
+//! false` (advisory) publisher failing can never silently keep this gate
+//! green; `required` only controls whether the pipeline ABORTS mid-run, not
+//! whether a post-publish failure gets certified as success.
 //!
 //! The probes are injected as closures so the orchestration (report
 //! filtering, evidence decoding, issue wording) is unit-testable offline;
@@ -79,7 +87,20 @@ pub(crate) fn run_landing_checks(
     let mut probed_publishers = 0usize;
     for result in &report.results {
         if !matches!(result.outcome, PublisherOutcome::Succeeded) {
-            if matches!(result.name.as_str(), "cargo" | "npm" | "blob" | "snapcraft") {
+            if let PublisherOutcome::Failed(reason) = &result.outcome {
+                // A publisher this run actually attempted and failed is a
+                // landing defect on its own merits — every publisher, not
+                // just the four network-probed ones, since a `required:
+                // false` failure must never silently keep this gate green.
+                log.warn(&format!(
+                    "{} publish attempt failed this run — landing not verified: {reason}",
+                    result.name
+                ));
+                issues.push(format!(
+                    "{}: publish attempt failed this run — {reason}",
+                    result.name
+                ));
+            } else {
                 log.verbose(&format!(
                     "skipped {} landing check — publisher did not succeed this run ({:?})",
                     result.name, result.outcome
@@ -448,15 +469,11 @@ mod tests {
     }
 
     #[test]
-    fn non_succeeded_publishers_are_never_probed() {
-        // Failed / skipped / rolled-back publishers landed nothing — no probe.
+    fn skipped_and_rolled_back_publishers_are_never_probed_or_flagged() {
+        // Genuine skips / an intentionally-reverted publish landed nothing
+        // this run — no probe, no issue.
         let report = PublishReport {
             results: vec![
-                result_with(
-                    "cargo",
-                    PublisherOutcome::Failed("boom".into()),
-                    cargo_extra(&[("app", "1.0.0")]),
-                ),
                 result_with(
                     "npm",
                     PublisherOutcome::Skipped(SkipReason::Deselected),
@@ -464,6 +481,96 @@ mod tests {
                 ),
                 result_with("blob", PublisherOutcome::RolledBack, blob_extra(&["k"])),
             ],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn attempted_and_failed_publisher_is_reported_as_a_landing_issue() {
+        // A publisher the run actually tried to ship and failed is a landing
+        // defect on its own — no probe needed, and it must not be silently
+        // swallowed like a genuine skip.
+        let report = PublishReport {
+            results: vec![result_with(
+                "cargo",
+                PublisherOutcome::Failed("boom".into()),
+                cargo_extra(&[("app", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("cargo"));
+        assert!(issues[0].contains("boom"));
+    }
+
+    #[test]
+    fn failed_snapcraft_publish_is_reported_as_a_landing_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Failed("store rejected upload: dedup collision".into()),
+                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("snapcraft"));
+        assert!(issues[0].contains("dedup collision"));
+    }
+
+    #[test]
+    fn attempted_and_failed_homebrew_publisher_is_reported_as_a_landing_issue() {
+        // homebrew has no independently-probeable landing surface (no cargo
+        // index / npm registry / bucket / Snap Store equivalent), but a
+        // publisher this run actually attempted and failed is a landing
+        // defect on its own merits regardless of whether it's one of the
+        // four network-probed publishers — the name-list must not gate
+        // whether a failure gets surfaced.
+        let report = PublishReport {
+            results: vec![result_with(
+                "homebrew",
+                PublisherOutcome::Failed("tap push rejected: formula conflict".into()),
+                PublishEvidenceExtra::Empty,
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(
+            probed, 0,
+            "homebrew has no landing probe, only the issue report"
+        );
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("homebrew"));
+        assert!(issues[0].contains("formula conflict"));
+    }
+
+    #[test]
+    fn config_skipped_snapcraft_is_not_a_landing_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Skipped(SkipReason::NotConfigured),
+                snapcraft_extra(&[]),
+            )],
             ..Default::default()
         };
         let ctx = ctx_with_report(report);

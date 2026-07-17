@@ -217,7 +217,7 @@ fn release_one_crate(
 
     let tag = resolve_release_tag(
         ctx,
-        &crate_cfg.tag_template,
+        crate_cfg.resolved_tag_template(),
         release_cfg.tag.as_deref(),
         &crate_cfg.name,
     )?;

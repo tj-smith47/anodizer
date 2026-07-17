@@ -232,7 +232,7 @@ fn build_stage_appends_runtime_allowlist_to_determinism_state() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec![]),
@@ -301,7 +301,7 @@ fn test_build_stage_no_targets_skips_gracefully() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec![]), // explicitly empty targets
@@ -341,7 +341,7 @@ fn test_copy_from_nonexistent_binary_errors_with_paths() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: tmp_dir.to_string_lossy().into_owned(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
@@ -391,7 +391,7 @@ fn test_build_failure_nonzero_exit_produces_clear_error() {
     config.crates.push(CrateConfig {
         name: "no-such-bin".to_string(),
         path: tmp_dir.to_string_lossy().into_owned(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("this-binary-does-not-exist".to_string()),
             // Target the host-native triple so cargo actually runs and fails at
@@ -618,7 +618,7 @@ fn test_reproducible_build_sets_source_date_epoch_and_rustflags() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
@@ -663,7 +663,7 @@ fn test_reproducible_build_appends_to_existing_rustflags() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec!["x86_64-unknown-linux-musl".to_string()]),
@@ -697,7 +697,7 @@ fn test_reproducible_false_does_not_inject_env_vars() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
@@ -757,7 +757,7 @@ fn test_universal_binary_dry_run_registers_artifact() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         universal_binaries: Some(vec![UniversalBinaryConfig {
             id: None,
             name_template: None,
@@ -2406,7 +2406,7 @@ fn test_duplicate_build_id_validation() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![
             BuildConfig {
                 id: Some("dup".to_string()),
@@ -2449,7 +2449,7 @@ fn test_invalid_target_errors() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec!["this-is-not-a-valid-triple".to_string()]),
@@ -2483,7 +2483,7 @@ fn test_skip_build_with_string_or_bool() {
     config.crates.push(CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             binary: Some("myapp".to_string()),
             skip: Some(StringOrBool::Bool(true)),
@@ -2550,7 +2550,7 @@ edition = "2021"
     config.crates.push(CrateConfig {
         name: "mylib".to_string(),
         path: crate_dir.to_string_lossy().into_owned(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![BuildConfig {
             // Inherited from defaults.builds — binary intentionally None.
             binary: None,
@@ -2633,7 +2633,7 @@ path = "src/bin/gen.rs"
     config.crates.push(CrateConfig {
         name: "mylib".to_string(),
         path: crate_path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     });
 
@@ -3090,7 +3090,7 @@ fn test_universal_binary_default_id_matches_project_name() {
     config.crates.push(CrateConfig {
         name: "different-crate".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         universal_binaries: Some(vec![UniversalBinaryConfig::default()]),
         ..Default::default()
     });
@@ -3154,7 +3154,7 @@ fn test_universal_binary_default_id_falls_back_to_crate_name() {
     config.crates.push(CrateConfig {
         name: "crate-a".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         universal_binaries: Some(vec![UniversalBinaryConfig::default()]),
         ..Default::default()
     });
@@ -3428,7 +3428,7 @@ fn archive_group_first_binary_variant_agrees_with_projection() {
     let krate = CrateConfig {
         name: "myapp".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         builds: Some(vec![copy_build, compile_build]),
         ..Default::default()
     };

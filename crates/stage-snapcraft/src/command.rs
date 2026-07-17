@@ -33,48 +33,6 @@ pub fn snapcraft_list_revisions_command(snap_name: &str) -> Vec<String> {
     ]
 }
 
-/// Parse `snapcraft list-revisions` tabular output and report whether any
-/// listed revision carries `version`.
-///
-/// The command prints a header row (`Rev  Uploaded  Arches  Version  ...`)
-/// followed by one row per revision. We locate the `Version` column index
-/// from the header row, then compare only that column in each data row so
-/// tokens in other columns (Rev, Arches, Channels) cannot cause a false
-/// positive for versions that happen to look like revision numbers or arch
-/// strings (e.g. version `3` matching revision `3`). An empty / unparseable
-/// body or a missing `Version` header yields `false` — the caller treats
-/// "couldn't prove the revision exists" as "upload" so a genuine first
-/// publish is never skipped.
-pub fn snap_revision_exists_in_output(output: &str, version: &str) -> bool {
-    let mut lines = output.lines();
-    // Advance to the header row (contains "Rev").
-    let header = loop {
-        let Some(line) = lines.next() else {
-            return false;
-        };
-        if line
-            .split_whitespace()
-            .any(|c| c.eq_ignore_ascii_case("Rev"))
-        {
-            break line;
-        }
-    };
-    // Determine the 0-based column index for "Version".
-    let Some(version_col) = header
-        .split_whitespace()
-        .position(|h| h.eq_ignore_ascii_case("Version"))
-    else {
-        return false;
-    };
-    // Check data rows: only the Version column must equal the target version.
-    lines.any(|line| {
-        line.split_whitespace()
-            .nth(version_col)
-            .map(|v| v == version)
-            .unwrap_or(false)
-    })
-}
-
 /// Construct the snapcraft upload CLI command arguments.
 /// When `channels` is non-empty, adds `--release=<comma-separated channels>`.
 pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) -> Vec<String> {
@@ -142,14 +100,34 @@ fn revision_table_column(output: &str, column: &str) -> Option<(Vec<String>, usi
 /// wins so a re-promotion targets the latest upload of that version. Returns
 /// `None` when no row matches or the table is unparseable — the caller then
 /// reports "nothing to promote" rather than releasing a wrong revision.
-pub fn snap_revision_for_version(output: &str, version: &str) -> Option<String> {
+///
+/// `arch` narrows the search to rows whose `Arches` column matches (each row
+/// is minted by one architecture-specific `snapcraft upload`, so a dual-arch
+/// snap has one row per arch per version) — pass `Some(arch)` when the
+/// caller is scoped to a single build artifact. `None` searches every arch,
+/// which is the correct behavior for the store-wide `promote` verb: it has
+/// no artifact context to scope to and operates on whichever revision is
+/// numerically highest across every architecture.
+pub fn snap_revision_for_version(
+    output: &str,
+    version: &str,
+    arch: Option<&str>,
+) -> Option<String> {
     let (rows, version_col) = revision_table_column(output, "Version")?;
     let (_, rev_col) = revision_table_column(output, "Rev")?;
+    let arch_col = match arch {
+        Some(_) => Some(revision_table_column(output, "Arches")?.1),
+        None => None,
+    };
     rows.iter()
         .filter_map(|line| {
             let cols: Vec<&str> = line.split_whitespace().collect();
-            let matches_version = cols.get(version_col).is_some_and(|v| *v == version);
-            if !matches_version {
+            if !cols.get(version_col).is_some_and(|v| *v == version) {
+                return None;
+            }
+            if let (Some(a), Some(col)) = (arch, arch_col)
+                && !row_matches_arch(&cols, col, a)
+            {
                 return None;
             }
             cols.get(rev_col).and_then(|r| r.parse::<u64>().ok())
@@ -171,23 +149,108 @@ pub fn snap_newest_revision_in_channel(output: &str, channel: &str) -> Option<St
     rows.iter()
         .filter_map(|line| {
             let cols: Vec<&str> = line.split_whitespace().collect();
-            // The Channels column and everything after it may hold multiple
-            // channel tokens; scan from the Channels column to end of row.
-            let in_channel = cols.iter().skip(chan_col).any(|tok| {
-                tok.split([',', '/']).any(|risk| {
-                    // A progressive/follower channel carries a trailing marker
-                    // (`candidate*`); strip it before comparing the risk token.
-                    risk.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
-                        .eq_ignore_ascii_case(channel)
-                })
-            });
-            if !in_channel {
+            if !row_occupies_channel(&cols, chan_col, channel) {
                 return None;
             }
             cols.get(rev_col).and_then(|r| r.parse::<u64>().ok())
         })
         .max()
         .map(|r| r.to_string())
+}
+
+/// Snap Store risk levels, in ascending order of stability. A channel is
+/// `[track/]risk[/branch]`; the risk component is identified by matching
+/// against this fixed vocabulary rather than by position, since a branch
+/// suffix (`latest/stable/hotfix-1`) puts the risk in the middle, not last.
+const KNOWN_RISKS: &[&str] = &["stable", "candidate", "beta", "edge"];
+
+/// Resolve a `[track/]risk[/branch]` channel string to its risk component by
+/// finding the first `/`-separated segment that matches [`KNOWN_RISKS`].
+/// Falls back to the whole input when no known risk word is present, so an
+/// already-bare, non-standard value is never silently dropped.
+fn channel_risk(channel: &str) -> &str {
+    channel
+        .split('/')
+        .find(|segment| KNOWN_RISKS.iter().any(|r| r.eq_ignore_ascii_case(segment)))
+        .unwrap_or(channel)
+}
+
+/// Return `true` when a `list-revisions` data row's `Arches` column matches
+/// `arch` (case-insensitive, exact). Each row is minted by one
+/// architecture-specific `snapcraft upload`, so the column holds exactly one
+/// token per row — unlike `Channels`, no comma/slash splitting is needed.
+fn row_matches_arch(cols: &[&str], arch_col: usize, arch: &str) -> bool {
+    cols.get(arch_col)
+        .is_some_and(|a| a.eq_ignore_ascii_case(arch))
+}
+
+/// Return `true` when a `list-revisions` data row's `Channels` column (and
+/// everything after it — a channel list may hold multiple whitespace,
+/// comma, or slash-separated tokens) shows the row's revision released to
+/// `channel`.
+///
+/// A progressive/follower channel carries a trailing marker (`candidate*`),
+/// stripped before comparing the risk token. `channel` may itself be a bare
+/// risk (`stable`) or a full `[track/]risk[/branch]` string (`latest/stable`,
+/// `latest/stable/hotfix-1`) — [`channel_risk`] extracts its risk component
+/// before comparing against each row token's own risk component, so a
+/// track-qualified argument (e.g. `latest/beta`) still matches a row whose
+/// `Channels` cell prints the same track-qualified form.
+fn row_occupies_channel(cols: &[&str], chan_col: usize, channel: &str) -> bool {
+    let target_risk = channel_risk(channel);
+    cols.iter().skip(chan_col).any(|tok| {
+        tok.split([',', '/']).any(|risk| {
+            risk.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                .eq_ignore_ascii_case(target_risk)
+        })
+    })
+}
+
+/// For the numerically highest revision whose `Version` column equals
+/// `version` AND whose `Arches` column equals `arch`, report which of
+/// `channels` it is NOT currently released to.
+///
+/// `arch` scopes the match to one architecture-specific upload: a dual-arch
+/// snap mints one revision per arch per version, so matching on `version`
+/// alone would find an unrelated arch's revision and wrongly report the
+/// caller's own arch as already published.
+///
+/// Returns `None` when no revision matches both `version` and `arch` —
+/// nothing has been uploaded yet for this artifact, a genuine first
+/// publish. Returns `Some((revision, missing))` when a matching revision
+/// exists: `missing` is empty when the revision already occupies every
+/// requested channel (a true re-run at an already-published version), and
+/// non-empty when the revision was uploaded but never released to one or
+/// more of the requested channels — the signature of an orphaned upload
+/// from an interrupted prior run.
+pub fn missing_channels_for_version<'a>(
+    output: &str,
+    version: &str,
+    arch: &str,
+    channels: &'a [String],
+) -> Option<(String, Vec<&'a str>)> {
+    let (rows, version_col) = revision_table_column(output, "Version")?;
+    let (_, rev_col) = revision_table_column(output, "Rev")?;
+    let (_, chan_col) = revision_table_column(output, "Channels")?;
+    let (_, arch_col) = revision_table_column(output, "Arches")?;
+    let (rev, cols) = rows
+        .iter()
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let matches_version = cols.get(version_col).is_some_and(|v| *v == version);
+            if !matches_version || !row_matches_arch(&cols, arch_col, arch) {
+                return None;
+            }
+            let rev: u64 = cols.get(rev_col)?.parse().ok()?;
+            Some((rev, cols))
+        })
+        .max_by_key(|(rev, _)| *rev)?;
+    let missing: Vec<&str> = channels
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|channel| !row_occupies_channel(&cols, chan_col, channel))
+        .collect();
+    Some((rev.to_string(), missing))
 }
 
 // ---------------------------------------------------------------------------
@@ -197,20 +260,25 @@ pub fn snap_newest_revision_in_channel(output: &str, channel: &str) -> Option<St
 /// Resolve effective channels for snapcraft upload.
 ///
 /// If `channel_templates` is non-empty, returns it as-is. Otherwise,
-/// auto-populates channels based on the `grade` setting:
-/// - `"devel"` -> `["edge", "beta"]`
-/// - `"stable"` (default) -> `["edge", "beta", "candidate", "stable"]`
+/// auto-populates channels based on `grade` and `confinement`:
+/// - `grade == "devel"` OR `confinement == "devmode"` -> `["edge", "beta"]`
+/// - otherwise (default) -> `["edge", "beta", "candidate", "stable"]`
 ///
-/// transient push failures are retried.
+/// The Snap Store rejects `devmode`-confined and `devel`-grade snaps in
+/// `candidate`/`stable` (both are explicitly "not ready for general use"
+/// markers), so either one alone is enough to restrict the auto-populated
+/// default to the pre-release risk levels.
 pub fn resolve_effective_channels(
     channel_templates: Option<&[String]>,
     grade: Option<&str>,
+    confinement: Option<&str>,
 ) -> Option<Vec<String>> {
     if channel_templates.is_some_and(|v| !v.is_empty()) {
         return channel_templates.map(|v| v.to_vec());
     }
     let grade = grade.unwrap_or("stable");
-    Some(if grade == "devel" {
+    let restricted = grade == "devel" || confinement == Some("devmode");
+    Some(if restricted {
         vec!["edge".to_string(), "beta".to_string()]
     } else {
         vec![
@@ -222,8 +290,28 @@ pub fn resolve_effective_channels(
     })
 }
 
+/// Channels the Snap Store rejects for a `devmode`-confined or
+/// `devel`-grade snap (both mean "not ready for general use").
+const RESTRICTED_ONLY_CHANNELS: &[&str] = &["candidate", "stable"];
+
+/// Return the first configured channel (its risk component, identified via
+/// [`channel_risk`] rather than positionally — a branch-suffixed channel
+/// like `latest/stable/hotfix-1` carries its risk in the middle, not last)
+/// that a `devmode`-confined or `devel`-grade snap is not eligible for, so
+/// the caller can bail with a concrete channel name before ever invoking
+/// `snapcraft upload`.
+pub fn first_channel_rejected_for_prerelease_snap(channels: &[String]) -> Option<&str> {
+    channels.iter().find_map(|c| {
+        let risk = channel_risk(c);
+        RESTRICTED_ONLY_CHANNELS
+            .iter()
+            .find(|r| r.eq_ignore_ascii_case(risk))
+            .copied()
+    })
+}
+
 // ---------------------------------------------------------------------------
-// 5xx retry classifier — Q8.1
+// 5xx retry classifier
 // ---------------------------------------------------------------------------
 
 /// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
@@ -235,19 +323,58 @@ pub fn resolve_effective_channels(
 /// status markers (the format snapcraft itself prints when the Store
 /// returns a server error).
 ///
-/// We additionally accept the canonical `5xx <Reason>` text forms
-/// (`500 Internal Server Error`, `502 Bad Gateway`, `503 Service
-/// Unavailable`, `504 Gateway Timeout`) so a future change to snapcraft's
-/// error formatter that drops the `[NNN]` brackets does not silently
-/// regress retry coverage.
+/// Also accepts the canonical `5xx <Reason>` text forms (`500 Internal
+/// Server Error`, `502 Bad Gateway`, `503 Service Unavailable`, `504
+/// Gateway Timeout`) so a future change to snapcraft's error formatter that
+/// drops the `[NNN]` brackets does not silently regress retry coverage.
+///
+/// Matching is case-insensitive (the combined output is lowercased before
+/// scanning) so a differently-cased Store response never silently misses
+/// this check.
 pub fn is_retriable_snap_push(combined_output: &str) -> bool {
     const BRACKETED: &[&str] = &["[500]", "[502]", "[503]", "[504]"];
     const TEXT: &[&str] = &[
-        "500 Internal Server Error",
-        "502 Bad Gateway",
-        "503 Service Unavailable",
-        "504 Gateway Timeout",
+        "500 internal server error",
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway timeout",
     ];
-    BRACKETED.iter().any(|m| combined_output.contains(m))
-        || TEXT.iter().any(|m| combined_output.contains(m))
+    let lower = combined_output.to_ascii_lowercase();
+    BRACKETED.iter().any(|m| lower.contains(m)) || TEXT.iter().any(|m| lower.contains(m))
+}
+
+// ---------------------------------------------------------------------------
+// Content-dedup rejection classifier
+// ---------------------------------------------------------------------------
+
+/// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
+/// invocation shows the Snap Store rejecting the push because the uploaded
+/// `.snap`'s content hash (`binary_sha3_384`) already exists under a prior
+/// revision.
+///
+/// This rejection is permanent for the given bytes: the Store deduplicates
+/// on content, not on the caller-supplied version string, so no number of
+/// retries changes the outcome — the fix is a byte-different `.snap`, not a
+/// second attempt. Two message shapes are observed in the wild: the
+/// definitive form naming the cause, and an ambiguous form
+/// (`"Error checking upload uniqueness."`) that reads as transient but is
+/// empirically the same rejection with the Store declining to say so
+/// explicitly.
+///
+/// Matching is case-insensitive (the combined output is lowercased before
+/// scanning), same reasoning as [`is_retriable_snap_push`]. Callers must
+/// check [`is_retriable_snap_push`] FIRST: a response can carry both an
+/// ambiguous dedup marker and a genuine 5xx (observed in the wild — the
+/// Store returns a 503 on the attempt that actually landed the bytes, then
+/// rejects the client's automatic retry as a duplicate of what it already
+/// ingested) and the 5xx must win so the retry ladder gets a chance to
+/// resolve the transient failure before this permanent classification
+/// short-circuits it.
+pub fn is_content_dedup_rejection(combined_output: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "a file with this exact same content has already been uploaded",
+        "error checking upload uniqueness.",
+    ];
+    let lower = combined_output.to_ascii_lowercase();
+    MARKERS.iter().any(|m| lower.contains(m))
 }

@@ -137,6 +137,33 @@ fn disabled_is_noop() {
 }
 
 #[test]
+fn disabled_terminal_stage_emits_visible_status_line() {
+    // A config-disabled verify-release stage silently no-opping hides from the
+    // operator that the post-publish verification never ran — the same
+    // silent-disable defect the pre-publish gate was fixed for. Must be
+    // visible at default verbosity.
+    use anodizer_core::log::LogCapture;
+
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    assert!(!ctx.config.verify_release.enabled);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "myapp.tar.gz", "myapp");
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+
+    assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
+    assert_eq!(
+        cap.status_count(),
+        1,
+        "a config-disabled verify-release stage must emit exactly one \
+         default-visible status line: {:?}",
+        cap.all_messages()
+    );
+}
+
+#[test]
 fn enabled_but_dry_run_is_noop() {
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
@@ -2410,6 +2437,354 @@ fn content_check_prefers_checksum_stage_metadata_sha() {
     assert!(format!("{err:#}").contains("digest mismatch"), "{err:#}");
 }
 
+/// Release JSON serving multiple assets, each with an explicit `size` and
+/// optional `digest` — for content-check fixtures that need more than one
+/// published asset in the same release (e.g. a checksum file plus its
+/// signature).
+fn release_json_with_multi_content_assets(
+    addr: SocketAddr,
+    assets: &[(&str, u64, Option<&str>)],
+) -> String {
+    let asset_json: Vec<serde_json::Value> = assets
+        .iter()
+        .enumerate()
+        .map(|(i, (name, size, digest))| {
+            let mut asset = serde_json::json!({
+                "url": format!("http://{addr}/asset/{i}"),
+                "browser_download_url": format!("http://{addr}/dl/{name}"),
+                "id": i as u64 + 1,
+                "node_id": format!("RA_{i}"),
+                "name": name,
+                "label": null,
+                "state": "uploaded",
+                "content_type": "application/octet-stream",
+                "size": size,
+                "download_count": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "uploader": null,
+            });
+            if let Some(d) = digest {
+                asset["digest"] = serde_json::Value::String((*d).to_string());
+            }
+            asset
+        })
+        .collect();
+    serde_json::json!({
+        "id": 1,
+        "node_id": "RL_1",
+        "tag_name": "v1.0.0",
+        "target_commitish": "main",
+        "name": "v1.0.0",
+        "draft": false,
+        "prerelease": false,
+        "created_at": "2026-01-01T00:00:00Z",
+        "published_at": "2026-01-01T00:00:00Z",
+        "author": null,
+        "assets": asset_json,
+        "tarball_url": null,
+        "zipball_url": null,
+        "body": null,
+        "url": format!("http://{addr}/repos/me/repo/releases/1"),
+        "html_url": format!("http://{addr}/me/repo/releases/1"),
+        "assets_url": format!("http://{addr}/repos/me/repo/releases/1/assets"),
+        "upload_url": format!("http://{addr}/upload/1{{?name,label}}"),
+    })
+    .to_string()
+}
+
+/// Spawn a responder serving the tag-lookup route with multiple content
+/// assets (no per-asset byte download route — these tests always serve a
+/// digest so the download fallback is never exercised).
+fn spawn_multi_content_release_route(assets: &[(&str, u64, Option<&str>)]) -> SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let body = release_json_with_multi_content_assets(addr, assets);
+    let routes = vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/me/repo/releases/tags/v1.0.0",
+        response: http_ok(body),
+        times: None,
+    }];
+    let (bound, _log) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder_on(
+            listener,
+            move |_| routes.clone(),
+        );
+    bound
+}
+
+#[test]
+fn content_check_exempts_signature_assets_from_digest_comparison() {
+    let checksum_bytes = b"app.tar.gz  deadbeef";
+    let checksum_sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(checksum_bytes))
+    };
+    let sig_bytes = b"-----BEGIN PGP SIGNATURE-----local-----END-----";
+    let addr = spawn_multi_content_release_route(&[
+        (
+            "app_checksums.txt",
+            checksum_bytes.len() as u64,
+            Some(&format!("sha256:{checksum_sha}")),
+        ),
+        (
+            "app_checksums.txt.sig",
+            sig_bytes.len() as u64,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+    ]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    let checksum_path = dir.path().join("app_checksums.txt");
+    std::fs::write(&checksum_path, checksum_bytes).expect("write checksum fixture");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "app_checksums.txt".to_string(),
+        path: checksum_path,
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )]),
+        size: None,
+    });
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Signature,
+        "app_checksums.txt.sig",
+        "app",
+        sig_bytes,
+    );
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "a signature asset's differing digest must not fail the gate"
+    );
+}
+
+#[test]
+fn content_check_exempts_certificate_assets_from_digest_comparison() {
+    // The Certificate half of the Signature/Certificate exemption —
+    // `content_check_exempts_signature_assets_from_digest_comparison` above
+    // only exercises `ArtifactKind::Signature`. A keyless cosign certificate
+    // is equally per-invocation (Fulcio mints a fresh short-lived cert every
+    // sign), so it must be exempted from digest comparison the same way.
+    let checksum_bytes = b"app.tar.gz  deadbeef";
+    let checksum_sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(checksum_bytes))
+    };
+    let sig_bytes = b"-----BEGIN PGP SIGNATURE-----local-----END-----";
+    let pem_bytes = b"-----BEGIN CERTIFICATE-----local-fulcio-cert-----END CERTIFICATE-----";
+    let addr = spawn_multi_content_release_route(&[
+        (
+            "app_checksums.txt",
+            checksum_bytes.len() as u64,
+            Some(&format!("sha256:{checksum_sha}")),
+        ),
+        (
+            "app_checksums.txt.sig",
+            sig_bytes.len() as u64,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+        (
+            "app_checksums.txt.pem",
+            pem_bytes.len() as u64,
+            Some("sha256:1111111111111111111111111111111111111111111111111111111111111111"),
+        ),
+    ]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        certificate: Some("{{ .Artifact }}.pem".to_string()),
+        ..checksum_gpg_sign()
+    }];
+    let checksum_path = dir.path().join("app_checksums.txt");
+    std::fs::write(&checksum_path, checksum_bytes).expect("write checksum fixture");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "app_checksums.txt".to_string(),
+        path: checksum_path,
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )]),
+        size: None,
+    });
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Signature,
+        "app_checksums.txt.sig",
+        "app",
+        sig_bytes,
+    );
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Certificate,
+        "app_checksums.txt.pem",
+        "app",
+        pem_bytes,
+    );
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "a certificate asset's differing digest must not fail the gate"
+    );
+}
+
+#[test]
+fn content_check_flags_a_zero_byte_published_signature_as_a_silent_signing_failure() {
+    // The non-empty-residual guarantee in the signature/certificate
+    // exemption's rustdoc ("present and non-empty") is otherwise asserted in
+    // prose only — this pins the actual issue path: a 0-byte PUBLISHED
+    // signature must fail the gate, naming the exact asset, rather than
+    // silently passing because the digest comparison is exempted.
+    let checksum_bytes = b"app.tar.gz  deadbeef";
+    let checksum_sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(checksum_bytes))
+    };
+    let addr = spawn_multi_content_release_route(&[
+        (
+            "app_checksums.txt",
+            checksum_bytes.len() as u64,
+            Some(&format!("sha256:{checksum_sha}")),
+        ),
+        (
+            "app_checksums.txt.sig",
+            0,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+    ]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    let checksum_path = dir.path().join("app_checksums.txt");
+    std::fs::write(&checksum_path, checksum_bytes).expect("write checksum fixture");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "app_checksums.txt".to_string(),
+        path: checksum_path,
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )]),
+        size: None,
+    });
+    // Locally the signature IS non-empty (a real signing run always writes
+    // bytes) — the defect is on the PUBLISHED side, e.g. a truncated upload.
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Signature,
+        "app_checksums.txt.sig",
+        "app",
+        b"local-signature-bytes-nonempty",
+    );
+    let result = VerifyReleaseStage.run(&mut ctx);
+    let err = result.expect_err("a 0-byte published signature must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("app_checksums.txt.sig") && msg.contains("is empty (0 bytes)"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn content_check_exempts_remote_only_signature_via_suffix_fallback() {
+    // Every OTHER exemption test registers the signature/certificate LOCALLY
+    // (an `ArtifactKind::Signature`/`Certificate` entry in `ctx.artifacts`),
+    // so `is_signature_asset` (the suffix-set fallback for a name with no
+    // local kind signal) is never actually exercised through the stage. Here
+    // the checksum SUBJECT is registered (so the sig name is still derivable
+    // via the config-driven `signs:` expectation), but the signature asset
+    // itself has NO local registration — e.g. uploaded by a prior run. The
+    // classifier must fall back to the configured suffix set and still
+    // exempt it from digest comparison rather than flagging a false
+    // mismatch.
+    let checksum_bytes = b"app.tar.gz  deadbeef";
+    let checksum_sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(checksum_bytes))
+    };
+    let sig_bytes = b"-----BEGIN PGP SIGNATURE-----remote-only-----END-----";
+    let addr = spawn_multi_content_release_route(&[
+        (
+            "app_checksums.txt",
+            checksum_bytes.len() as u64,
+            Some(&format!("sha256:{checksum_sha}")),
+        ),
+        (
+            "app_checksums.txt.sig",
+            sig_bytes.len() as u64,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+    ]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    let checksum_path = dir.path().join("app_checksums.txt");
+    std::fs::write(&checksum_path, checksum_bytes).expect("write checksum fixture");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "app_checksums.txt".to_string(),
+        path: checksum_path,
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )]),
+        size: None,
+    });
+    // Deliberately no `add_file_artifact` call for "app_checksums.txt.sig" —
+    // it is remote-only from this run's perspective.
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "a remote-only signature asset (no local ArtifactKind) must still be \
+         exempted via the configured suffix fallback, not digest-compared"
+    );
+}
+
+#[test]
+fn content_check_does_not_exempt_non_signature_asset_with_signature_like_suffix() {
+    // A genuine content artifact that happens to be named "*.sig" (not
+    // registered with ArtifactKind::Signature) must still be digest-compared
+    // — the suffix-based exemption is only the remote-only fallback, not a
+    // blanket name match.
+    let local_bytes = b"actual firmware bytes";
+    let addr = spawn_multi_content_release_route(&[(
+        "firmware.img.sig",
+        local_bytes.len() as u64,
+        Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+    )]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "firmware.img.sig",
+        "app",
+        local_bytes,
+    );
+    let result = VerifyReleaseStage.run(&mut ctx);
+    assert!(
+        result.is_err(),
+        "a non-signature artifact ending in a signature suffix must still be \
+         digest-compared, not exempted: {result:?}"
+    );
+}
+
 // ===========================================================================
 // Publisher landing checks — stage-level wiring (real npm HTTP probe)
 // ===========================================================================
@@ -2490,4 +2865,189 @@ fn npm_landing_missing_version_bails_naming_the_package() {
         "{msg}"
     );
     assert!(msg.contains(PUBLISHED_NOTE), "{msg}");
+}
+
+// ===========================================================================
+// run_asset_gate — the pre-submitter gate installed into `ctx.verify_gate`
+// ===========================================================================
+
+#[test]
+fn run_asset_gate_passes_when_every_produced_asset_is_published() {
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "checksums.txt"]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    assert!(
+        run_asset_gate(&mut ctx).expect("gate must not error on a clean match"),
+        "every produced asset present => gate passes"
+    );
+}
+
+#[test]
+fn run_asset_gate_returns_ok_false_not_err_on_a_missing_asset() {
+    // The gate's contract is Ok(false) on a content defect (dispatch treats
+    // this as "blocked, try again later"), never Err (dispatch treats Err the
+    // same as false but logs it as an unrecoverable setup failure).
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    let result = run_asset_gate(&mut ctx).expect("a content defect is Ok(false), not Err");
+    assert!(!result, "missing produced asset must block the gate");
+}
+
+#[test]
+fn run_asset_gate_still_checks_assets_when_github_release_is_deselected() {
+    // The publish-oidc.yml leg runs `--publishers npm,pypi,cargo`, which
+    // deselects github-release. The immutable registries (npm/pypi/cargo)
+    // still depend on the release's asset content being correct, so the gate
+    // must keep checking instead of auto-passing on the deselect.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    let result = run_asset_gate(&mut ctx)
+        .expect("a content defect is Ok(false), not Err, even with github-release deselected");
+    assert!(
+        !result,
+        "github-release deselected must NOT auto-pass a real content defect"
+    );
+}
+
+#[test]
+fn run_asset_gate_blocks_when_the_release_is_missing_entirely() {
+    // A genuinely missing release (no release found for the tag) is recorded
+    // as an issue by verify_one_crate (matching the terminal stage's fetch
+    // path) rather than propagated as Err — so it must still resolve to
+    // Ok(false), which the dispatcher treats as blocking, never a silent pass.
+    // Even with github-release deselected (the OIDC leg), this must still
+    // block the immutable publishers.
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/me/repo/releases/tags/v1.0.0",
+        response: HTTP_404,
+        times: None,
+    }]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+
+    let result = run_asset_gate(&mut ctx)
+        .expect("a fetch failure is recorded as an issue, not propagated as Err");
+    assert!(!result, "a missing release must block, never silently pass");
+}
+
+#[test]
+fn run_asset_gate_disabled_makes_no_network_call() {
+    let (addr, log) = spawn_scripted_responder(vec![]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.verify_release.assert_assets = false;
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+
+    assert!(
+        run_asset_gate(&mut ctx).expect("disabled must not error"),
+        "disabled => gate auto-passes"
+    );
+    assert!(
+        log.lock().expect("log mutex").is_empty(),
+        "assert_assets=false => no live fetch"
+    );
+}
+
+#[test]
+fn run_asset_gate_config_disabled_emits_visible_status_line() {
+    // A config-disabled one-way-door gate auto-passing MUST be visible at
+    // default verbosity, not silent — an operator reading the log needs to
+    // know the pre-publish asset check never ran.
+    use anodizer_core::log::LogCapture;
+
+    let (addr, _log) = spawn_scripted_responder(vec![]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.verify_release.assert_assets = false;
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+
+    assert!(
+        run_asset_gate(&mut ctx).expect("disabled must not error"),
+        "disabled => gate auto-passes"
+    );
+    assert_eq!(
+        cap.status_count(),
+        1,
+        "a config-disabled gate must emit exactly one default-visible status line: {:?}",
+        cap.all_messages()
+    );
+}
+
+#[test]
+fn run_asset_gate_dry_run_makes_no_network_call_and_passes() {
+    let (addr, log) = spawn_scripted_responder(vec![]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.dry_run = true;
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+
+    assert!(
+        run_asset_gate(&mut ctx).expect("dry-run must not error"),
+        "dry-run => gate auto-passes"
+    );
+    assert!(
+        log.lock().expect("log mutex").is_empty(),
+        "dry-run => no live fetch"
+    );
+}
+
+#[test]
+fn run_asset_gate_scopes_to_the_selected_crate_in_a_multi_crate_workspace() {
+    // Workspace per-crate with --crate=crate-a selected: only crate-a's
+    // assets are checked; crate-b's (unrelated, unchecked) missing asset
+    // must not fail the gate.
+    let (addr, _log) = spawn_release_route(&["a.tar.gz"]);
+    let mut ctx = asset_ctx(
+        addr,
+        vec![
+            published_crate("crate-a", None),
+            published_crate("crate-b", None),
+        ],
+    );
+    ctx.options.selected_crates = vec!["crate-a".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "a.tar.gz", "crate-a");
+    add_artifact(&mut ctx, ArtifactKind::Archive, "b.tar.gz", "crate-b");
+
+    assert!(
+        run_asset_gate(&mut ctx).expect("only the selected crate is checked"),
+        "crate-b's missing asset is out of the selected scope"
+    );
+}
+
+#[test]
+fn run_asset_gate_ignores_skip_verify_release_and_still_blocks() {
+    // `--skip=verify-release` MUST NOT reopen the one-way-door safety gate —
+    // that is the whole point of the gate being a SEPARATE hook from the
+    // terminal stage's `run()`, which DOES honor `should_skip`. The only
+    // sanctioned bypass is `--no-gate-submitter` (never routed through this
+    // function at all). A missing produced asset must still block the gate
+    // even though the operator skipped the terminal `verify-release` stage.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.skip_stages = vec!["verify-release".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    assert!(
+        ctx.should_skip("verify-release"),
+        "sanity: the skip list must actually contain verify-release"
+    );
+    let result = run_asset_gate(&mut ctx)
+        .expect("a content defect is Ok(false), not Err, even with verify-release skipped");
+    assert!(
+        !result,
+        "--skip=verify-release must NOT bypass the pre-submitter asset gate"
+    );
 }

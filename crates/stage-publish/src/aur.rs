@@ -1519,6 +1519,34 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Aur (Manager-group) entries across the crate universe whose
+/// `skip:`/`skip_upload:`/`if:` evaluates active right now AND whose crate
+/// is in scope for `--crate` / `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names, so a selected-but-skipped
+/// crate cannot masquerade as active via an out-of-scope sibling). Shared by
+/// [`anodizer_core::Publisher::requirements`],
+/// [`anodizer_core::Publisher::advisory_requirements`], and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the active-entry
+/// gate cannot diverge across the three call sites.
+fn active_aur_configs(ctx: &Context) -> Vec<&anodizer_core::config::AurConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+        .filter(|a| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                a.skip.as_ref(),
+                a.skip_upload.as_ref(),
+                a.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for AurOurPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1540,19 +1568,13 @@ impl anodizer_core::Publisher for AurOurPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_aur_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        ctx.config
-            .crate_universe()
+        active_aur_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
-            .filter(|a| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    a.skip.as_ref(),
-                    a.skip_upload.as_ref(),
-                    a.if_condition.as_deref(),
-                )
-            })
             .flat_map(|a| {
                 crate::publisher_helpers::aur_ssh_requirements(
                     a.private_key.as_deref(),
@@ -1566,20 +1588,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
         // The schema floor's `bash -n` pass over the rendered PKGBUILD
         // warn+skips when bash is absent — a recommendation, never a gate
         // failure. Same active-entry gate as `requirements`.
-        let any_active = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
-            .any(|a| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    a.skip.as_ref(),
-                    a.skip_upload.as_ref(),
-                    a.if_condition.as_deref(),
-                )
-            });
-        if !any_active {
+        if active_aur_configs(ctx).is_empty() {
             return Vec::new();
         }
         vec![anodizer_core::EnvRequirement::Tool {
@@ -1781,7 +1790,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some(format!("ssh://aur@aur.archlinux.org/{name}-bin.git")),
@@ -1800,6 +1809,40 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Manager);
         assert!(!p.required());
         assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    /// `--crate x` selects only the skip:true entry; an active sibling `y`
+    /// outside the selection must not keep the publisher live.
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = aur_crate("x");
+        skipped.publish.as_mut().unwrap().aur.as_mut().unwrap().skip =
+            Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, aur_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+
+        assert!(
+            AurOurPublisher::new().config_fully_inactive(&ctx),
+            "--crate x selects only the skip:true entry; active sibling y is out of \
+             scope and must not keep the publisher live"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_crate("x")])
+            .build();
+
+        assert!(
+            !AurOurPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
+        );
     }
 
     #[test]
@@ -1903,7 +1946,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "gamma".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -2131,7 +2174,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -2740,7 +2783,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
@@ -2778,7 +2821,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
@@ -2827,7 +2870,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
@@ -2865,7 +2908,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];
@@ -3147,7 +3190,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
@@ -3371,7 +3414,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: if release_github {
                 Some(anodizer_core::config::ReleaseConfig {
                     github: Some(anodizer_core::config::ScmRepoConfig {
@@ -3433,7 +3476,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(aur),
                 ..Default::default()
@@ -3483,7 +3526,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(aur),
                 ..Default::default()
@@ -3556,7 +3599,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 completions: Some(CompletionsConfig {
                     generate: Some("{{ ArtifactPath }} completions {{ Shell }}".to_string()),
@@ -3639,7 +3682,7 @@ mod tests {
             CrateConfig {
                 name: "aa".to_string(),
                 path: "aa".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     aur: Some(aur_a),
                     ..Default::default()
@@ -3649,7 +3692,7 @@ mod tests {
             CrateConfig {
                 name: "bb".to_string(),
                 path: "bb".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     aur: Some(aur_b),
                     ..Default::default()
@@ -3959,7 +4002,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];
@@ -4009,14 +4052,14 @@ mod tests {
             CrateConfig {
                 name: "plain".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig::default()),
                 ..Default::default()
             },
             CrateConfig {
                 name: "withkey".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     aur: Some(AurConfig {
                         git_url: Some("ssh://aur@aur.archlinux.org/withkey.git".to_string()),
@@ -4150,7 +4193,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some(bare_url.to_string()),
@@ -4385,7 +4428,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),

@@ -48,7 +48,7 @@ fn ctx_with_packages() -> anodizer_core::context::Context {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -426,7 +426,7 @@ fn gemfury_publisher_run_with_no_entries_is_noop() {
         .crates(vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();

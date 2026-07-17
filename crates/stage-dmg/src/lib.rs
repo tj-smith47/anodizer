@@ -981,7 +981,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1030,7 +1030,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1102,7 +1102,7 @@ mod tests {
         let make_crate = |name: &str| CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![DmgConfig::default()]),
             ..Default::default()
         };
@@ -1181,7 +1181,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1238,7 +1238,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1394,7 +1394,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1461,7 +1461,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1547,7 +1547,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg_1, dmg_cfg_2]),
             ..Default::default()
         };
@@ -1625,7 +1625,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1697,7 +1697,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1763,7 +1763,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1826,7 +1826,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1881,7 +1881,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1935,7 +1935,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -1986,7 +1986,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -2042,7 +2042,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -2135,7 +2135,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         };
@@ -2193,7 +2193,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         }];
@@ -2275,7 +2275,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         }];
@@ -2387,7 +2387,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![DmgConfig::default()]),
             ..Default::default()
         }];
@@ -2547,7 +2547,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![dmg_cfg]),
             ..Default::default()
         }];
@@ -2604,7 +2604,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![DmgConfig::default()]),
             ..Default::default()
         }];
@@ -2866,7 +2866,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![DmgConfig::default(), DmgConfig::default()]),
             ..Default::default()
         };
@@ -2916,7 +2916,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             dmgs: Some(vec![
                 DmgConfig {
                     name: Some("{{ ProjectName }}-installer_{{ Arch }}.dmg".to_string()),

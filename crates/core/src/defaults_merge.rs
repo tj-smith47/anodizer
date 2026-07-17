@@ -214,6 +214,15 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
         crate_cfg.cross = defaults.cross.clone();
     }
+    if crate_cfg.tag_template.is_none() {
+        if let Some(tag_template) = defaults
+            .crates
+            .as_ref()
+            .and_then(|c| c.tag_template.clone())
+        {
+            crate_cfg.tag_template = Some(tag_template);
+        }
+    }
     // Override-not-append: a per-crate list wins outright; defaults supply the
     // whole list only when the crate declares none.
     if crate_cfg.version_files.is_none() && defaults.version_files.is_some() {
@@ -577,7 +586,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }
     }
@@ -785,6 +794,60 @@ mod tests {
         apply_to_crate(&defaults, &mut crate_cfg);
 
         assert_eq!(crate_cfg.cross, Some(CrossStrategy::Cross));
+    }
+
+    // --------------- (7) tag_template: crate > defaults.crate > built-in ---------------
+
+    #[test]
+    fn crate_tag_template_wins_over_defaults_crate() {
+        let defaults = Defaults {
+            crates: Some(crate::config::DefaultsCrateBlock {
+                tag_template: Some("v{{ .Version }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.tag_template = Some("core-v{{ .Version }}".to_string());
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        assert_eq!(
+            crate_cfg.tag_template,
+            Some("core-v{{ .Version }}".to_string())
+        );
+        assert_eq!(crate_cfg.resolved_tag_template(), "core-v{{ .Version }}");
+    }
+
+    #[test]
+    fn defaults_crate_tag_template_fills_when_crate_unset() {
+        let defaults = Defaults {
+            crates: Some(crate::config::DefaultsCrateBlock {
+                tag_template: Some("v{{ .Version }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.tag_template = None;
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        assert_eq!(crate_cfg.tag_template, Some("v{{ .Version }}".to_string()));
+        assert_eq!(crate_cfg.resolved_tag_template(), "v{{ .Version }}");
+    }
+
+    #[test]
+    fn tag_template_falls_back_to_built_in_when_nothing_set() {
+        // No defaults.crates block at all, and the crate itself omits
+        // tag_template — resolution must still land on the built-in default
+        // rather than an empty prefix.
+        let defaults = Defaults::default();
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.tag_template = None;
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        assert_eq!(crate_cfg.tag_template, None);
+        assert_eq!(crate_cfg.resolved_tag_template(), "v{{ Version }}");
     }
 
     // --------------- Apply-defaults entry point: idempotent ---------------

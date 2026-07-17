@@ -1653,7 +1653,7 @@ mod tests {
         anodizer_core::config::CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             ..Default::default()
         }
     }

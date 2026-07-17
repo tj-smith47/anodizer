@@ -167,6 +167,21 @@ fn rollback_one_target(
     }
 }
 
+/// `true` when the single top-level `mcp:` block is unnamed or
+/// skip-inactive. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge.
+fn mcp_config_inactive(ctx: &Context) -> bool {
+    let cfg = &ctx.config.mcp;
+    cfg.name.as_deref().unwrap_or("").is_empty()
+        || crate::publisher_helpers::entry_inactive(
+            ctx,
+            cfg.skip.as_ref(),
+            None,
+            cfg.if_condition.as_deref(),
+        )
+}
+
 impl anodizer_core::Publisher for McpPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -181,17 +196,14 @@ impl anodizer_core::Publisher for McpPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        mcp_config_inactive(ctx)
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         use anodizer_core::config::McpAuthMethod;
         let cfg = &ctx.config.mcp;
-        if cfg.name.as_deref().unwrap_or("").is_empty()
-            || crate::publisher_helpers::entry_inactive(
-                ctx,
-                cfg.skip.as_ref(),
-                None,
-                cfg.if_condition.as_deref(),
-            )
-        {
+        if mcp_config_inactive(ctx) {
             return Vec::new();
         }
         match cfg.auth.method {

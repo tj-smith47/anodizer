@@ -101,10 +101,14 @@ pub(crate) async fn delete_release_asset_by_name(
 /// being downloadable. The upload retry loop treats `uploaded: false`
 /// as "delete and retry" regardless of `replace_existing_artifacts`,
 /// because a partial is this run's own debris, not published content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteAssetProbe {
     pub(crate) size: u64,
     pub(crate) uploaded: bool,
+    /// GitHub's `sha256:<hex>` content digest, when the API serves one.
+    /// `None` on GHES versions / asset ages that predate digest exposure —
+    /// callers fall back to size-only comparison in that case.
+    pub(crate) digest: Option<String>,
 }
 
 /// Look up an existing release asset by name and return its byte size +
@@ -156,6 +160,7 @@ pub(crate) async fn find_release_asset_probe(
                 return Ok(Some(RemoteAssetProbe {
                     size: asset.size as u64,
                     uploaded: asset.state == "uploaded",
+                    digest: asset.digest.clone(),
                 }));
             }
         }
@@ -194,6 +199,20 @@ mod tests {
     }
 
     fn asset_json_with_state(name: &str, size: u64, id: u64, state: &str) -> String {
+        asset_json_with_digest(name, size, id, state, None)
+    }
+
+    fn asset_json_with_digest(
+        name: &str,
+        size: u64,
+        id: u64,
+        state: &str,
+        digest: Option<&str>,
+    ) -> String {
+        let digest_field = match digest {
+            Some(d) => format!("\"{d}\""),
+            None => "null".to_string(),
+        };
         format!(
             r#"{{
                 "url": "https://api.github.com/repos/o/r/releases/assets/{id}",
@@ -205,6 +224,7 @@ mod tests {
                 "state": "{state}",
                 "content_type": "application/gzip",
                 "size": {size},
+                "digest": {digest_field},
                 "download_count": 0,
                 "created_at": "2026-01-01T00:00:00Z",
                 "updated_at": "2026-01-01T00:00:00Z",
@@ -259,7 +279,8 @@ mod tests {
             got,
             Some(RemoteAssetProbe {
                 size: 4242,
-                uploaded: true
+                uploaded: true,
+                digest: None
             }),
             "must surface the matching asset's size and uploaded state"
         );
@@ -292,7 +313,8 @@ mod tests {
             got,
             Some(RemoteAssetProbe {
                 size: 5,
-                uploaded: false
+                uploaded: false,
+                digest: None
             }),
             "non-'uploaded' state must probe as uploaded: false"
         );
@@ -313,6 +335,40 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "empty page (< 100) must terminate pagination immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_surfaces_remote_digest_when_the_api_serves_one() {
+        // Digest-aware idempotency (upload.rs's classify_already_exists)
+        // needs the remote's `sha256:` digest, not just its size — this
+        // pins that the probe actually threads `Asset.digest` through.
+        let body = format!(
+            "[{}]",
+            asset_json_with_digest(
+                "app.tar.gz",
+                100,
+                7,
+                "uploaded",
+                Some("sha256:deadbeef00112233"),
+            )
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![ok_json(body)]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "app.tar.gz", &policy, None)
+            .await
+            .expect("call succeeds");
+
+        assert_eq!(
+            got,
+            Some(RemoteAssetProbe {
+                size: 100,
+                uploaded: true,
+                digest: Some("sha256:deadbeef00112233".to_string()),
+            }),
+            "the API-served digest must be surfaced on the probe"
         );
     }
 

@@ -27,7 +27,7 @@ fn ctx_with_artifacts(crate_name: &str, artifacts: Vec<(&str, &str, &str)>) -> C
     config.crates = vec![CrateConfig {
         name: crate_name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }];
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -282,7 +282,7 @@ fn artifact_to_os_artifact_bails_on_missing_sha256_key() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }];
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1035,7 +1035,7 @@ mod commit_opts_tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());

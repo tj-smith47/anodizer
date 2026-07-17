@@ -132,8 +132,11 @@ pub struct CrateConfig {
     pub name: String,
     /// Relative path to the crate directory from the project root.
     pub path: String,
-    /// Git tag template used to tag and identify releases (supports templates).
-    pub tag_template: String,
+    /// Git tag template used to tag and identify releases (supports
+    /// templates). Overrides `defaults.crates.tag_template`. When both are
+    /// unset, resolves to `CrateConfig::DEFAULT_TAG_TEMPLATE` — use
+    /// `resolved_tag_template()` rather than reading this field directly.
+    pub tag_template: Option<String>,
     /// Pinned semver version. When set, `anodizer bump --strict` refuses to
     /// edit this crate's `Cargo.toml` to anything other than this value;
     /// without `--strict`, the bump proceeds with a warning. Lets a release
@@ -252,7 +255,7 @@ impl Default for CrateConfig {
         CrateConfig {
             name: String::new(),
             path: String::new(),
-            tag_template: String::new(),
+            tag_template: None,
             version: None,
             depends_on: None,
             builds: None,
@@ -282,6 +285,23 @@ impl Default for CrateConfig {
             after: None,
             before_publish: None,
         }
+    }
+}
+
+impl CrateConfig {
+    /// Built-in fallback used when neither the crate nor
+    /// `defaults.crates.tag_template` supplies a value.
+    pub const DEFAULT_TAG_TEMPLATE: &'static str = "v{{ Version }}";
+
+    /// Resolves this crate's effective tag template: the crate's own value
+    /// if set, else the built-in default. `defaults_merge::apply_to_crate`
+    /// folds `defaults.crates.tag_template` into `self.tag_template` before
+    /// this is ever read, so this accessor only needs to know about the
+    /// crate-level field and the built-in fallback.
+    pub fn resolved_tag_template(&self) -> &str {
+        self.tag_template
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_TAG_TEMPLATE)
     }
 }
 

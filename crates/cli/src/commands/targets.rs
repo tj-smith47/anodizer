@@ -124,7 +124,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             builds: Some(vec![BuildConfig {
                 // An explicit `binary` clears the planner's compile/artifact
                 // gate (a bare path="." crate declares no matching `--bin`, so a

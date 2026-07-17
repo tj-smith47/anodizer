@@ -839,6 +839,27 @@ fn platform_tag_collision_check(ctx: &Context, cfg: &PypiConfig) -> anodizer_cor
     ))
 }
 
+/// Top-level `pypis:` entries whose `skip:`/`if:` evaluates active right
+/// now. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge. `preflight` keeps its own loop (it needs per-entry index-URL
+/// resolution alongside the filter, not just a boolean).
+fn active_pypi_configs(ctx: &Context) -> Vec<&anodizer_core::config::PypiConfig> {
+    ctx.config
+        .pypis
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for PypiPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -868,24 +889,15 @@ impl anodizer_core::Publisher for PypiPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_pypi_configs(ctx).is_empty()
+    }
+
     /// Per active entry: the upload token (a templated `cfg.token`'s env
     /// refs, else the `PYPI_TOKEN` / `MATURIN_PYPI_TOKEN` any-of fallback
     /// ladder), plus the `maturin` CLI when `sdist: true`.
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        let active: Vec<_> = ctx
-            .config
-            .pypis
-            .iter()
-            .flatten()
-            .filter(|entry| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    entry.skip.as_ref(),
-                    None,
-                    entry.if_condition.as_deref(),
-                )
-            })
-            .collect();
+        let active = active_pypi_configs(ctx);
         let mut out = Vec::new();
         if active.iter().any(|e| e.sdist) {
             out.push(anodizer_core::EnvRequirement::Tool {

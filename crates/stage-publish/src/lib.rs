@@ -988,8 +988,8 @@ impl PublishStage {
             .filter(|r| matches!(r.outcome, PublisherOutcome::Skipped(_)))
             .count();
         log.status(&format!(
-            "publish complete — {} succeeded, {} failed, {} skipped, submitter_gated={}",
-            succeeded, failed, skipped, report.submitter_gated,
+            "publish complete — {} succeeded, {} failed, {} skipped, submitter_gated={}, verify_gate_blocked={}",
+            succeeded, failed, skipped, report.submitter_gated, report.verify_gate_blocked,
         ));
         // Per-publisher failure detail — surface error strings so
         // operators see which publisher failed without re-reading the
@@ -999,6 +999,11 @@ impl PublishStage {
                 log.warn(&format!("publisher {} failed: {}", r.name, msg));
             } else if let PublisherOutcome::Skipped(SkipReason::SubmitterGated) = &r.outcome {
                 log.status(&format!("skipped {} via submitter-gate", r.name));
+            } else if let PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked) = &r.outcome {
+                log.status(&format!(
+                    "skipped {} — blocked by the pre-submitter verify-release gate",
+                    r.name
+                ));
             } else if let PublisherOutcome::Skipped(SkipReason::Deselected) = &r.outcome {
                 log.status(&deselected_skip_line(ctx, &r.name));
             }
@@ -1957,7 +1962,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -2001,7 +2006,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -2035,7 +2040,7 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "ws-only".to_string(),
                 path: "crates/ws-only".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     homebrew: Some(HomebrewConfig::default()),
                     ..Default::default()
@@ -2060,7 +2065,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "shared".to_string(),
             path: "top".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(HomebrewConfig::default()),
                 ..Default::default()
@@ -2073,7 +2078,7 @@ mod tests {
                 // Same name as the top-level — top-level must win.
                 name: "shared".to_string(),
                 path: "ws/shared".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: None,
                 ..Default::default()
             }],
@@ -2102,7 +2107,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "shared".to_string(),
             path: "top".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         config.workspaces = Some(vec![WorkspaceConfig {
@@ -2111,7 +2116,7 @@ mod tests {
                 // Same name, DIFFERENT path — the shape the warning flags.
                 name: "shared".to_string(),
                 path: "ws/shared".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -2155,7 +2160,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("mylib-choco".to_string()),
@@ -2234,7 +2239,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("mylib-choco".to_string()),
@@ -2304,7 +2309,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("mylib-choco".to_string()),
@@ -2378,7 +2383,7 @@ mod tests {
             CrateConfig {
                 name: "alpha".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     chocolatey: Some(ChocolateyConfig {
                         post_publish_poll: enabled(),
@@ -2396,7 +2401,7 @@ mod tests {
             CrateConfig {
                 name: "beta".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     chocolatey: Some(ChocolateyConfig {
                         post_publish_poll: disabled(),
@@ -2456,7 +2461,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
@@ -2479,7 +2484,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "nopub".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: None, // No publish config
             ..Default::default()
         }];
@@ -2514,7 +2519,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
@@ -2554,7 +2559,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
 
@@ -2572,7 +2577,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
 
@@ -3110,7 +3115,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {

@@ -139,7 +139,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jsonschema = "0.46"
+jsonschema = "0.47"
 serde_yaml_ng = "0.10"
 roxmltree = "0.21"
 toml = "1.1"
@@ -179,7 +179,7 @@ hyper-timeout = "0.5"
 # exercised at runtime — this swap is a pure dependency-graph change. `aws-lc-rs`
 # is already compiled (object_store pulls it), so backing JWT with it instead of
 # `rsa` adds no new toolchain. Mirrors octocrab's other default features.
-octocrab = { version = "0.53", default-features = false, features = [
+octocrab = { version = "0.54", default-features = false, features = [
     "follow-redirect",
     "retry",
     "rustls",

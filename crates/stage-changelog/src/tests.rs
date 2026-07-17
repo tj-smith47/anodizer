@@ -409,7 +409,7 @@ fn test_changelog_stage_disabled_skips() {
         .crates(vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -440,7 +440,7 @@ fn changelog_snapshot_test_config(snapshot_opt_in: Option<bool>) -> anodizer_cor
     config.crates = vec![CrateConfig {
         name: "test".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }];
     config
@@ -805,7 +805,7 @@ fn test_changelog_stage_github_native_dry_run_skips_api() {
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -853,7 +853,7 @@ fn test_changelog_stage_github_native_requires_token() {
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(ScmRepoConfig {
                     owner: "owner".to_string(),
@@ -889,7 +889,7 @@ fn test_changelog_stage_github_native_skips_when_no_repo_configured() {
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -915,7 +915,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     let mut crates: Vec<CrateConfig> = vec![CrateConfig {
         name: "core".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         release: Some(ReleaseConfig {
             github: Some(ScmRepoConfig {
                 owner: "owner".to_string(),
@@ -929,7 +929,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     crates.extend(["alpha", "beta", "gamma"].iter().map(|name| CrateConfig {
         name: name.to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     }));
 
@@ -1428,7 +1428,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
         crates: vec![CrateConfig {
             name: "test-project".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1546,7 +1546,7 @@ fn test_changelog_dist_write_gated_on_preview_flag() {
         crates: vec![CrateConfig {
             name: "test-project".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1724,7 +1724,7 @@ fn test_disable_skips_stage_entirely() {
         .crates(vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -1799,7 +1799,7 @@ fn test_changelog_written_to_correct_output_location() {
         crates: vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -1968,7 +1968,7 @@ fn test_changelog_create_dist_dir_failure() {
         crates: vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -2039,7 +2039,7 @@ fn test_changelog_write_failure_on_readonly_path() {
         crates: vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -2105,7 +2105,7 @@ fn test_changelog_dry_run_writes_file() {
         crates: vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -3120,7 +3120,7 @@ fn test_validation_rejects_unsupported_source() {
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -3155,7 +3155,7 @@ fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
         .crates(vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -3191,7 +3191,7 @@ fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
         .crates(vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();
@@ -3320,7 +3320,7 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
             // has none), so prev_tag will be None and pre-empt should
             // kick in.
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         // No token — if the API path were taken, fetch_github_commits
@@ -3416,7 +3416,7 @@ fn test_lockstep_resolves_prev_tag_once_not_full_history() {
     let lockstep_crate = |name: &str, path: &str| CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         ..Default::default()
     };
 
@@ -3473,7 +3473,7 @@ fn test_changelog_stage_unsupported_source_bails() {
         .crates(vec![CrateConfig {
             name: "test".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
         .build();

@@ -1135,7 +1135,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 chocolatey: Some(cfg),
                 ..Default::default()
@@ -1227,7 +1227,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let ctx = Context::new(config, ContextOptions::default());
@@ -1252,7 +1252,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let ctx = Context::new(config, ContextOptions::default());
@@ -1685,7 +1685,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1706,7 +1706,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1741,7 +1741,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1769,7 +1769,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1793,7 +1793,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1820,7 +1820,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1840,7 +1840,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1868,7 +1868,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let ctx = Context::new(config, ContextOptions::default());
@@ -1887,7 +1887,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());

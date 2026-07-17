@@ -18,7 +18,7 @@ readme = "README.md"
 # Enabled by this crate's own `[dev-dependencies]` so integration tests
 # under `tests/` can drive the same fakes that in-crate unit tests use.
 # NOT a stable public API — shape may change without notice.
-test-support = []
+test-support = ["anodizer-core/test-helpers"]
 
 [dependencies]
 anodizer-core.workspace = true

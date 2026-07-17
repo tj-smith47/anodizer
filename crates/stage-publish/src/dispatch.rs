@@ -167,6 +167,59 @@ pub fn dispatch(
                 continue;
             }
 
+            // Uniform operator-selection filter, evaluated at the single
+            // dispatch chokepoint so EVERY publisher honours `--skip` and
+            // `--publishers` — including non-stage publishers (npm,
+            // dockerhub, uploads, …) that no stage-skip token ever covered.
+            // `--skip` (denylist) always wins; a non-empty `--publishers`
+            // (allowlist) deselects everything not listed. Both are folded
+            // into `Context::publisher_deselected`. Recorded as
+            // `Skipped(Deselected)` so the run summary counts it; never
+            // silent (sibling skip branches also log + snapshot + continue).
+            //
+            // Checked BEFORE the config-inactive chokepoint below: an
+            // explicit operator `--skip` is the more specific, more
+            // deliberate signal, so a publisher that is BOTH deselected AND
+            // config-fully-inactive must report the operator's reason
+            // (`Deselected`), not a config-derived inference that would
+            // mask it.
+            if ctx.publisher_deselected(p.name()) {
+                let line = ctx.deselected_reason(p.name());
+                ctx.logger("publish").status(&line);
+                report.results.push(PublisherResult {
+                    name: p.name().into(),
+                    group,
+                    required: p.required(),
+                    outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
+                    evidence: None,
+                });
+                snapshot(ctx, &report);
+                continue;
+            }
+
+            // Config-inactive chokepoint: the publisher was registered (a
+            // config block exists) but every entry evaluates skip-inactive
+            // right now. Caught HERE, before `run()`, so a publisher whose
+            // `run()` unconditionally returns `Ok(evidence)` even with zero
+            // active entries can never be recorded as `Succeeded` — the
+            // failure mode that let a config-skipped cargo/winget count as a
+            // landed one-way-door publish and poison burn evidence.
+            if p.config_fully_inactive(ctx) {
+                ctx.logger("publish").status(&format!(
+                    "skipping {} — every configured entry is inactive (skip/if evaluates false)",
+                    p.name()
+                ));
+                report.results.push(PublisherResult {
+                    name: p.name().into(),
+                    group,
+                    required: p.required(),
+                    outcome: PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
+                    evidence: None,
+                });
+                snapshot(ctx, &report);
+                continue;
+            }
+
             // Nightly skip-list: publishers that opt out of `--nightly`
             // record `Skipped(Nightly)` and never invoke `run`. Matches
             // The documented nightlies skip set
@@ -189,24 +242,50 @@ pub fn dispatch(
                 continue;
             }
 
-            // Uniform operator-selection filter, evaluated at the single
-            // dispatch chokepoint so EVERY publisher honours `--skip` and
-            // `--publishers` — including non-stage publishers (npm,
-            // dockerhub, uploads, …) that no stage-skip token ever covered.
-            // `--skip` (denylist) always wins; a non-empty `--publishers`
-            // (allowlist) deselects everything not listed. Both are folded
-            // into `Context::publisher_deselected`. Recorded as
-            // `Skipped(Deselected)` so the run summary counts it; never
-            // silent (sibling skip branches above also log + snapshot +
-            // continue).
-            if ctx.publisher_deselected(p.name()) {
-                let line = ctx.deselected_reason(p.name());
-                ctx.logger("publish").status(&line);
+            // Pre-submitter verify-release gate, evaluated LAZILY via
+            // `ensure_verify_gate_evaluated`: the first time a
+            // Submitter-group publisher survives every skip filter above
+            // (required-failure gate, config-inactive, nightly, operator
+            // deselect), never before. Laziness matters for two reasons: a
+            // `--skip cargo,chocolatey,winget`-style run that deselects
+            // every Submitter publisher must never pay for a live network
+            // round-trip that would gate nothing, and an
+            // operator-deselected publisher must record `Skipped(Deselected)`
+            // — not `Skipped(VerifyGateBlocked)` — even when a sibling
+            // publisher already tripped the gate (the deselect check above
+            // always runs first). Evaluation is shared with
+            // `SnapcraftPublishStage` — which runs as its own pipeline stage
+            // after this dispatch loop and would otherwise never see a live
+            // Submitter-group publisher on a snapcraft-only release — via
+            // the `verify_gate_evaluated` bit persisted on `report` itself,
+            // not a loop-local flag.
+            if group == PublisherGroup::Submitter && opts.gate_submitter {
+                anodizer_core::publish_report::ensure_verify_gate_evaluated(
+                    ctx,
+                    &mut report,
+                    "publish",
+                );
+                snapshot(ctx, &report);
+            }
+
+            // Blocked by the pre-submitter verify-release gate (see above):
+            // distinct from the required-failure gate above it — no
+            // publisher failed, but the post-publish content check never
+            // cleared before this one-way door would have fired. Applies to
+            // this publisher (the one whose survival just triggered the
+            // lazy eval above) and every later Submitter-group publisher
+            // that also survives its own deselect/config-inactive/nightly
+            // checks.
+            if group == PublisherGroup::Submitter && report.verify_gate_blocked {
+                ctx.logger("publish").status(&format!(
+                    "skipping {} — blocked by the pre-submitter verify-release gate",
+                    p.name()
+                ));
                 report.results.push(PublisherResult {
                     name: p.name().into(),
                     group,
                     required: p.required(),
-                    outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
+                    outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
                     evidence: None,
                 });
                 snapshot(ctx, &report);
@@ -296,6 +375,57 @@ mod tests {
             .expect("dispatch returns Ok for empty input");
         assert!(report.results.is_empty());
         assert!(!report.submitter_gated);
+    }
+
+    /// A publisher reporting `config_fully_inactive() == true` must be
+    /// recorded as `Skipped(ConfigSkipped)` at the dispatch chokepoint
+    /// BEFORE `run()` is ever invoked. The fake's `run()` returns `Err`
+    /// (would fail the test via a surfaced dispatch error) if reached,
+    /// proving the short-circuit itself rather than only its label.
+    #[test]
+    fn config_fully_inactive_chokepoint_skips_before_run() {
+        let mut ctx = Context::test_fixture();
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake_config_fully_inactive(
+            "inert",
+            PublisherGroup::Manager,
+            false,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch does not surface the fake's run() error");
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].name, "inert");
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Skipped(SkipReason::ConfigSkipped)
+        ));
+    }
+
+    /// An operator `--skip` must win over a publisher's own
+    /// `config_fully_inactive()` reading: the run is recorded as
+    /// `Skipped(Deselected)` (the operator's explicit choice), never
+    /// `Skipped(ConfigSkipped)` (a config-derived inference that would
+    /// otherwise mask the real reason the publisher never ran).
+    #[test]
+    fn deselect_wins_over_config_fully_inactive() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.skip_stages = vec!["inert".to_string()];
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake_config_fully_inactive(
+            "inert",
+            PublisherGroup::Manager,
+            false,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch does not surface the fake's run() error");
+        assert_eq!(report.results.len(), 1);
+        assert!(
+            matches!(
+                report.results[0].outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "operator --skip must be recorded as Deselected even when the publisher is also \
+             config-fully-inactive, got {:?}",
+            report.results[0].outcome
+        );
     }
 
     /// Publisher whose `run()` proves the previous publisher's result was
@@ -1527,6 +1657,330 @@ mod tests {
         assert!(
             npm.evidence.is_none(),
             "a publisher that never ran has no evidence"
+        );
+    }
+
+    /// The pre-submitter verify-release gate blocks the irreversible
+    /// Submitter group when the installed `ctx.verify_gate` returns
+    /// `Ok(false)` — burn-before-verify made structurally unrepresentable:
+    /// no Submitter-group `run()` fires past a failed gate.
+    #[test]
+    fn verify_gate_blocks_submitter_when_gate_returns_false() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(false)));
+        let (publisher, run_calls) = fake_counting_runs("cargo", PublisherGroup::Submitter, false);
+        let publishers = vec![publisher];
+
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert_eq!(
+            run_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a Submitter blocked by the verify gate must never invoke run()",
+        );
+        assert!(
+            report.verify_gate_blocked,
+            "report must record that the verify gate blocked the run"
+        );
+        let cargo = &report.results[0];
+        assert!(
+            matches!(
+                cargo.outcome,
+                PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+            ),
+            "expected Skipped(VerifyGateBlocked), got {:?}",
+            cargo.outcome
+        );
+    }
+
+    /// The Submitter group dispatches normally when the verify gate
+    /// returns `Ok(true)` — the gate does not block a release whose
+    /// content passed verification.
+    #[test]
+    fn verify_gate_allows_submitter_when_gate_returns_true() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(true)));
+        let publishers = vec![fake(
+            "cargo",
+            PublisherGroup::Submitter,
+            false,
+            FakeOutcome::Succeed,
+        )];
+
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert!(!report.verify_gate_blocked);
+        let cargo = &report.results[0];
+        assert!(
+            matches!(cargo.outcome, PublisherOutcome::Succeeded),
+            "expected Succeeded once the verify gate clears, got {:?}",
+            cargo.outcome
+        );
+    }
+
+    /// An `Err` from the verify gate is treated as a block, not a pass —
+    /// the check could not run, so the dispatcher blocks as a precaution
+    /// rather than assuming the release is clean.
+    #[test]
+    fn verify_gate_error_blocks_submitter() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| {
+            anyhow::bail!("could not reach github to verify assets")
+        }));
+        let publishers = vec![fake(
+            "cargo",
+            PublisherGroup::Submitter,
+            false,
+            FakeOutcome::Succeed,
+        )];
+
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch itself still returns Ok — gate errors are per-run blocks, not fatal");
+
+        assert!(report.verify_gate_blocked);
+        let cargo = &report.results[0];
+        assert!(matches!(
+            cargo.outcome,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+        ));
+    }
+
+    /// A blocked verify gate leaves the reversible Assets group and the
+    /// required-failure-gated-but-otherwise-clean Manager group unaffected:
+    /// both dispatch and succeed normally, proving the verify gate is scoped
+    /// to Submitter only.
+    #[test]
+    fn verify_gate_block_does_not_affect_assets_or_manager() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(false)));
+        let publishers = vec![
+            fake(
+                "assets",
+                PublisherGroup::Assets,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "submitter",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let assets = report.results.iter().find(|r| r.name == "assets").unwrap();
+        let manager = report.results.iter().find(|r| r.name == "manager").unwrap();
+        let submitter = report
+            .results
+            .iter()
+            .find(|r| r.name == "submitter")
+            .unwrap();
+        assert!(matches!(assets.outcome, PublisherOutcome::Succeeded));
+        assert!(matches!(manager.outcome, PublisherOutcome::Succeeded));
+        assert!(matches!(
+            submitter.outcome,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+        ));
+    }
+
+    /// `verify_gate_blocked` and `SkipReason::VerifyGateBlocked` are
+    /// distinct from `submitter_gated` / `SkipReason::SubmitterGated`: a
+    /// required-failure gate closure must never be misreported as a
+    /// verify-gate block, and vice versa.
+    #[test]
+    fn verify_gate_blocked_status_distinct_from_submitter_gated() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(false)));
+        let publishers = vec![fake(
+            "submitter",
+            PublisherGroup::Submitter,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert!(report.verify_gate_blocked);
+        assert!(
+            !report.submitter_gated,
+            "a verify-gate block must not also flip submitter_gated — \
+             no publisher failed here"
+        );
+        assert!(report.one_way_door_gate_closed());
+    }
+
+    /// A `None` verify gate (no CLI pipeline installed one — bare
+    /// `dispatch()` callers, every other test in this module) never blocks:
+    /// backward compatibility with the rest of the Submitter-dispatch suite.
+    #[test]
+    fn no_verify_gate_installed_does_not_block_submitter() {
+        let mut ctx = Context::test_fixture();
+        assert!(ctx.verify_gate.is_none());
+        let publishers = vec![fake(
+            "submitter",
+            PublisherGroup::Submitter,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(!report.verify_gate_blocked);
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Succeeded
+        ));
+    }
+
+    /// The verify gate is skipped entirely (never invoked) when the
+    /// required-failure gate is already closed — a known-broken required
+    /// publisher makes the content check moot, and the dispatcher must not
+    /// waste a remote verify call on a run already gated shut.
+    #[test]
+    fn verify_gate_not_invoked_when_required_failure_already_gates() {
+        let mut ctx = Context::test_fixture();
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let invoked_clone = invoked.clone();
+        ctx.verify_gate = Some(std::sync::Arc::new(move |_ctx| {
+            invoked_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(true)
+        }));
+        let publishers = vec![
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+            fake(
+                "submitter",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert_eq!(
+            invoked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the verify gate must not be invoked once the required-failure gate is already closed"
+        );
+        assert!(report.submitter_gated);
+        assert!(!report.verify_gate_blocked);
+        let submitter = report
+            .results
+            .iter()
+            .find(|r| r.name == "submitter")
+            .unwrap();
+        assert!(matches!(
+            submitter.outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+        ));
+    }
+
+    /// The verify gate is never invoked when every Submitter-group publisher
+    /// is operator-deselected: a `--skip cargo,chocolatey,winget`-style run
+    /// with no surviving Submitter must not pay for a live network
+    /// round-trip that gates nothing.
+    #[test]
+    fn verify_gate_not_invoked_when_every_submitter_is_deselected() {
+        let mut ctx = Context::test_fixture();
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let invoked_clone = invoked.clone();
+        ctx.verify_gate = Some(std::sync::Arc::new(move |_ctx| {
+            invoked_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(true)
+        }));
+        ctx.options.skip_stages = vec!["cargo".to_string(), "winget".to_string()];
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert_eq!(
+            invoked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the verify gate must not be invoked when no Submitter survives the deselect filter"
+        );
+        assert!(!report.verify_gate_blocked);
+        for r in &report.results {
+            assert!(
+                matches!(r.outcome, PublisherOutcome::Skipped(SkipReason::Deselected)),
+                "{} must record Deselected, got {:?}",
+                r.name,
+                r.outcome
+            );
+        }
+    }
+
+    /// A publisher deselected via `--skip` must record `Skipped(Deselected)`
+    /// — never `Skipped(VerifyGateBlocked)` — even when an earlier sibling
+    /// Submitter already tripped the gate. The deselect check must win
+    /// regardless of iteration order.
+    #[test]
+    fn deselected_submitter_reports_deselected_not_verify_gate_blocked() {
+        let mut ctx = Context::test_fixture();
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(false)));
+        ctx.options.skip_stages = vec!["winget".to_string()];
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        assert!(report.verify_gate_blocked);
+        let cargo = report.results.iter().find(|r| r.name == "cargo").unwrap();
+        let winget = report.results.iter().find(|r| r.name == "winget").unwrap();
+        assert!(
+            matches!(
+                cargo.outcome,
+                PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+            ),
+            "cargo (selected) must be blocked by the gate: {:?}",
+            cargo.outcome
+        );
+        assert!(
+            matches!(
+                winget.outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "winget (deselected) must report Deselected, not VerifyGateBlocked: {:?}",
+            winget.outcome
         );
     }
 }

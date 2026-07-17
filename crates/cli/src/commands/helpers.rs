@@ -533,6 +533,17 @@ pub fn resolve_git_context(
         .or_else(|| config.crate_universe().into_iter().next());
 
     if let Some(crate_cfg) = first_crate {
+        // Resolve the crate's own full tag template once — the crate's raw
+        // value if set, else the `{name}-v` convention (NOT
+        // `resolved_tag_template()`'s built-in `v{{ Version }}` default,
+        // which is the wrong family for per-crate `{name}-v` configs). Both
+        // the latest-tag matcher below and the previous-tag prefix filter
+        // extract from this SAME resolved template so they never drift
+        // into mismatched families for an unset-template crate.
+        let crate_tag_template = crate_cfg
+            .tag_template
+            .clone()
+            .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", crate_cfg.name));
         let tag = if let Some(ref override_tag) = tag_override {
             log.verbose(&format!(
                 "using ANODIZER_CURRENT_TAG override '{}'",
@@ -542,7 +553,7 @@ pub fn resolve_git_context(
         } else {
             let monorepo_prefix = config.monorepo_tag_prefix();
             let latest_tag = match git::find_latest_tag_matching_with_prefix(
-                &crate_cfg.tag_template,
+                &crate_tag_template,
                 config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,
@@ -656,7 +667,7 @@ pub fn resolve_git_context(
                     // recently tagged sibling. Falls back to the global
                     // monorepo prefix when the template has no extractable
                     // prefix.
-                    let crate_prefix = git::extract_tag_prefix(&crate_cfg.tag_template);
+                    let crate_prefix = git::extract_tag_prefix(&crate_tag_template);
                     let prefix = crate_prefix
                         .as_deref()
                         .or_else(|| config.monorepo_tag_prefix());
@@ -1733,7 +1744,7 @@ list:
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: format!("{}-v{{{{ .Version }}}}", name),
+            tag_template: Some(format!("{}-v{{{{ .Version }}}}", name)),
             ..Default::default()
         }
     }
@@ -2426,7 +2437,7 @@ list:
             crates: vec![CrateConfig {
                 name: "k1".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ Version }}".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
                 builds: Some(vec![BuildConfig {
                     binary: Some("k1".to_string()),
                     targets: Some(vec!["c".to_string()]),
@@ -2457,7 +2468,7 @@ list:
             crates: vec![CrateConfig {
                 name: "k1".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ Version }}".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
                 builds: Some(vec![BuildConfig {
                     binary: Some("k1".to_string()),
                     targets: None, // not set; should inherit defaults
@@ -2492,7 +2503,7 @@ list:
             crates: vec![CrateConfig {
                 name: "lib".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ Version }}".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -2518,7 +2529,7 @@ list:
             crates: vec![CrateConfig {
                 name: "k1".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ Version }}".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
                 builds: Some(vec![BuildConfig {
                     binary: Some("k1".to_string()),
                     targets: None,
@@ -3270,12 +3281,12 @@ list:
             crates: vec![
                 anodizer_core::config::CrateConfig {
                     name: "cfgd".to_string(),
-                    tag_template: "v{{ Version }}".to_string(),
+                    tag_template: Some("v{{ Version }}".to_string()),
                     ..Default::default()
                 },
                 anodizer_core::config::CrateConfig {
                     name: "cfgd-core".to_string(),
-                    tag_template: "v{{ Version }}".to_string(),
+                    tag_template: Some("v{{ Version }}".to_string()),
                     ..Default::default()
                 },
             ],
@@ -3392,7 +3403,7 @@ list:
             .crates(vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 checksum: Some(ChecksumConfig {
                     split: Some(true),
                     ..Default::default()
@@ -3489,7 +3500,7 @@ list:
             .crates(vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 ..Default::default()
             }])
             .build();
@@ -3599,6 +3610,48 @@ list:
         body();
     }
 
+    /// Like [`with_empty_git_repo_cwd`] but seeds two committed, tagged
+    /// commits — `older_tag` on the first commit, `head_tag` on HEAD — so a
+    /// latest-tag / previous-tag resolution has two same-family tags to
+    /// discover. Hermetic committer identity is supplied via env so the
+    /// helper never depends on a global `git config`.
+    #[cfg(unix)]
+    fn with_two_tagged_commits_repo_cwd(older_tag: &str, head_tag: &str, body: impl FnOnce()) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let git = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@e")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@e");
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} must succeed");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("f.txt"), "v1\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "init"]);
+        git(&["tag", older_tag]);
+        std::fs::write(dir.join("f.txt"), "v2\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "second"]);
+        git(&["tag", head_tag]);
+
+        // The shared CwdGuard swaps into `tmp` and restores cwd on Drop
+        // (panic-safe). Declared after `tmp` so it outlives the guard's
+        // restore before the tempdir is deleted.
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+        body();
+    }
+
     /// Build a context backed by an EMPTY env source so the tag-discovery env
     /// chain (`ANODIZER_CURRENT_TAG`, `GITHUB_REF_TYPE`/`GITHUB_REF_NAME`, …)
     /// resolves to nothing. anodizer's own CI runs under GitHub Actions, which
@@ -3627,7 +3680,7 @@ list:
                     crates: vec![CrateConfig {
                         name: "wcrate".to_string(),
                         path: ".".to_string(),
-                        tag_template: "wcrate-v{{ .Version }}".to_string(),
+                        tag_template: Some("wcrate-v{{ .Version }}".to_string()),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -3683,7 +3736,7 @@ list:
                 crates: vec![CrateConfig {
                     name: "x".to_string(),
                     path: ".".to_string(),
-                    tag_template: "x-v{{ .Version }}".to_string(),
+                    tag_template: Some("x-v{{ .Version }}".to_string()),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -3694,6 +3747,45 @@ list:
             assert!(
                 err.to_string().contains("no git tag found"),
                 "unexpected error: {err}"
+            );
+        });
+    }
+
+    /// A crate with an UNSET `tag_template` in a `{name}-v`-convention
+    /// workspace: the latest-tag matcher and the previous-tag prefix filter
+    /// must resolve the SAME family. If the matcher instead falls back to
+    /// the built-in `v{{ Version }}` default (bucket A) it finds nothing
+    /// among the `widget-v*` tags and `resolve_git_context` bails demanding
+    /// a tag even though `widget-v0.2.0` sits right at HEAD.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn resolve_git_context_unset_template_resolves_name_v_family_consistently() {
+        with_two_tagged_commits_repo_cwd("widget-v0.1.0", "widget-v0.2.0", || {
+            let config = Config {
+                project_name: "widget".to_string(),
+                crates: vec![CrateConfig {
+                    name: "widget".to_string(),
+                    path: ".".to_string(),
+                    tag_template: None,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, ContextOptions::default());
+            resolve_git_context(&mut ctx, &config, &quiet_log()).expect(
+                "an UNSET tag_template must still resolve the {name}-v convention \
+                 family at HEAD, not bail for a missing bare-v tag",
+            );
+            assert_eq!(
+                ctx.template_vars().get("Tag").map(String::as_str),
+                Some("widget-v0.2.0"),
+                "latest-tag matcher must find the {{name}}-v family tag at HEAD"
+            );
+            assert_eq!(
+                ctx.git_info.as_ref().and_then(|gi| gi.previous_tag.clone()),
+                Some("widget-v0.1.0".to_string()),
+                "PreviousTag must resolve the SAME {{name}}-v family as the current tag"
             );
         });
     }
@@ -3712,7 +3804,7 @@ list:
                 crates: vec![CrateConfig {
                     name: "x".to_string(),
                     path: ".".to_string(),
-                    tag_template: "x-v{{ .Version }}".to_string(),
+                    tag_template: Some("x-v{{ .Version }}".to_string()),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -3746,7 +3838,7 @@ list:
                 crates: vec![CrateConfig {
                     name: "x".to_string(),
                     path: ".".to_string(),
-                    tag_template: "x-v{{ .Version }}".to_string(),
+                    tag_template: Some("x-v{{ .Version }}".to_string()),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -3889,7 +3981,7 @@ list:
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: format!("{}-v{{{{ .Version }}}}", name),
+            tag_template: Some(format!("{}-v{{{{ .Version }}}}", name)),
             ..Default::default()
         }
     }

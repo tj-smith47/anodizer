@@ -65,6 +65,29 @@ fn decode_npm_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<NpmTar
     }
 }
 
+/// Top-level `npms:` entries whose `skip:`/`if:` evaluates active right now.
+/// `npms` is NOT crate-scoped, so this deliberately does not apply
+/// `ctx.options.selected_crates` — mirrors `uploads.rs`'s
+/// `active_upload_configs`. Single source of truth shared by
+/// [`anodizer_core::Publisher::config_fully_inactive`], `requirements()`,
+/// and `preflight()` so the active-entry definition can't diverge between
+/// them.
+fn active_npm_configs(ctx: &Context) -> Vec<&anodizer_core::config::NpmConfig> {
+    ctx.config
+        .npms
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for NpmPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -80,6 +103,10 @@ impl anodizer_core::Publisher for NpmPublisher {
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
+    }
+
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_npm_configs(ctx).is_empty()
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -105,20 +132,7 @@ impl anodizer_core::Publisher for NpmPublisher {
     /// The npm CLI is always required.
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         use anodizer_core::config::NpmAuthMode;
-        let active: Vec<_> = ctx
-            .config
-            .npms
-            .iter()
-            .flatten()
-            .filter(|entry| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    entry.skip.as_ref(),
-                    None,
-                    entry.if_condition.as_deref(),
-                )
-            })
-            .collect();
+        let active = active_npm_configs(ctx);
         if active.is_empty() {
             return Vec::new();
         }
@@ -363,15 +377,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         let version = ctx.version();
 
         let mut acc = PreflightCheck::Pass;
-        for cfg in ctx.config.npms.iter().flatten() {
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                cfg.skip.as_ref(),
-                None,
-                cfg.if_condition.as_deref(),
-            ) {
-                continue;
-            }
+        for cfg in active_npm_configs(ctx) {
             acc = merge(
                 acc,
                 crate::publisher_helpers::targets_allowlist_check(
@@ -643,5 +649,60 @@ mod preflight_tests {
             }
             other => panic!("expected Warning, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod config_fully_inactive_tests {
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, NpmConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    fn ctx_with_npms(npms: Vec<NpmConfig>) -> Context {
+        let config = Config {
+            project_name: "proj".to_string(),
+            npms: Some(npms),
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    /// Every configured `npms[]` entry is `skip: true` — no entry is
+    /// active, so the publisher must report fully-inactive rather than
+    /// falling through to `run()` and recording a zero-evidence
+    /// `Succeeded`, which would falsely burn the npm slot for rollback
+    /// purposes and let a required-npm-but-all-skipped config pass the
+    /// required-failures gate silently.
+    #[test]
+    fn config_fully_inactive_true_when_all_entries_inactive() {
+        let npm = NpmConfig {
+            name: Some("pkg".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = ctx_with_npms(vec![npm]);
+
+        assert!(
+            super::NpmPublisher::new().config_fully_inactive(&ctx),
+            "every npms[] entry is skip:true; the publisher must be fully inactive"
+        );
+    }
+
+    /// `npms` is a top-level list (not crate-scoped), so an active entry
+    /// with no `--crate` filter applied must keep the publisher live —
+    /// mirrors `uploads.rs`'s
+    /// `config_fully_inactive_false_with_empty_selection_and_active_entry`.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let npm = NpmConfig {
+            name: Some("pkg".to_string()),
+            ..Default::default()
+        };
+        let ctx = ctx_with_npms(vec![npm]);
+
+        assert!(
+            !super::NpmPublisher::new().config_fully_inactive(&ctx),
+            "an active npms[] entry must keep the publisher live"
+        );
     }
 }

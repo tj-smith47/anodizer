@@ -72,16 +72,36 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
-/// Count of crates in the crate universe (after `--crate` / `--all`
-/// selection) carrying a `publish.cargo` block. Used by the publisher's run
-/// wrapper to choose between the `done` and `no-eligible-crates` log paths.
-fn count_cargo_configured_crates(ctx: &Context) -> usize {
-    let all = ctx.config.crate_universe();
+/// Cargo entries across the crate universe whose `skip:`/`if:` evaluates
+/// active right now AND whose crate is in scope for `--crate` / `--all`
+/// selection. Shared by [`anodizer_core::Publisher::requirements`],
+/// [`anodizer_core::Publisher::config_fully_inactive`], the publisher's
+/// `run()` eligible-count, `preflight()`'s crates.io-probe gate, and
+/// `super::publish::resolve_workspace_cargo_token`'s credential-decision
+/// ladder — so none of them can diverge on which crates are actually
+/// reachable this invocation — the same selection semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`] (empty selection =
+/// every crate; non-empty = exactly those names), applied before the
+/// skip/if filter so a selected-but-skipped crate cannot masquerade as
+/// active via an out-of-scope sibling.
+pub(crate) fn active_cargo_configs(
+    ctx: &Context,
+) -> Vec<&anodizer_core::config::CargoPublishConfig> {
     let selected = &ctx.options.selected_crates;
-    all.iter()
-        .filter(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+    ctx.config
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
-        .count()
+        .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
+        .filter(|cargo| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                cargo.skip.as_ref(),
+                None,
+                cargo.if_condition.as_deref(),
+            )
+        })
+        .collect()
 }
 
 impl anodizer_core::Publisher for CargoPublisher {
@@ -101,25 +121,16 @@ impl anodizer_core::Publisher for CargoPublisher {
         true
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_cargo_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // `cargo publish` runs the literal `cargo` from PATH, so the tool is
         // always required when a cargo block is active. The credential gate is
         // per the block's `auth` mode, mirroring the pypi publisher.
         use anodizer_core::config::CargoAuthMode;
-        let active: Vec<_> = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
-            .filter(|cargo| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    cargo.skip.as_ref(),
-                    None,
-                    cargo.if_condition.as_deref(),
-                )
-            })
-            .collect();
+        let active: Vec<_> = active_cargo_configs(ctx);
         if active.is_empty() {
             return Vec::new();
         }
@@ -180,7 +191,7 @@ impl anodizer_core::Publisher for CargoPublisher {
         // `skipped ... already published`) plus the per-crate-start line
         // from `run_per_crate_start_message` which forms the loop-body
         // signal that satisfies the visible-work contract.
-        let eligible = count_cargo_configured_crates(ctx);
+        let eligible = active_cargo_configs(ctx).len();
         log.status(&run_start_message(eligible.max(selected.len())));
         // Short-circuit BEFORE delegating into publish_to_cargo when no
         // cargo-configured crate is eligible — otherwise the inner path
@@ -329,19 +340,8 @@ impl anodizer_core::Publisher for CargoPublisher {
         // perfectly valid private-registry release. Holds across single-crate,
         // lockstep, and per-crate modes (per-crate entries may each pick a
         // different registry).
-        let probes_crates_io = ctx
-            .config
-            .crate_universe()
+        let probes_crates_io = active_cargo_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
-            .filter(|cargo| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    cargo.skip.as_ref(),
-                    None,
-                    cargo.if_condition.as_deref(),
-                )
-            })
             .any(|cargo| cargo.registry.is_none() && cargo.index.is_none());
         if !probes_crates_io {
             return Ok(anodizer_core::PreflightCheck::Pass);

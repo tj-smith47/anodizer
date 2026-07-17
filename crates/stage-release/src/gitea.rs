@@ -2312,7 +2312,7 @@ mod tests {
         let mut crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             ..Default::default()
         };
         crate_cfg.release = Some(ReleaseConfig {

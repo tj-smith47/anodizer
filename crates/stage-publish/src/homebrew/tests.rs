@@ -1830,7 +1830,7 @@ fn hb_ctx(hb_cfg: HomebrewConfig, dry_run: bool) -> Context {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(hb_cfg),
                 ..Default::default()
@@ -1883,7 +1883,7 @@ fn publish_to_homebrew_missing_config_errors() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }],
@@ -1998,7 +1998,7 @@ fn publish_cask_missing_homebrew_config_errors() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }],
@@ -2484,7 +2484,7 @@ fn generate_cask_from_context_emits_every_os_arch_pair() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -2566,7 +2566,7 @@ fn generate_cask_from_context_single_arch_still_valid() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -2722,7 +2722,7 @@ fn generate_cask_from_context_renders_configured_livecheck() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -3099,7 +3099,7 @@ fn homebrew_top_level_cask_url_empty_metadata_bails_with_actionable_error() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         ..Default::default()
@@ -4188,7 +4188,7 @@ fn rendered_field_ctx(hb_cfg: HomebrewConfig) -> Context {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 homebrew: Some(hb_cfg),
                 ..Default::default()
@@ -4304,7 +4304,7 @@ fn top_level_cask_string_fields_are_template_rendered() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),
@@ -4355,7 +4355,7 @@ fn top_level_cask_dual_darwin_arch_emits_per_arch_blocks() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),
@@ -4426,7 +4426,7 @@ fn top_level_cask_single_darwin_arch_keeps_flat_url() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),
@@ -4477,7 +4477,7 @@ fn top_level_cask_universal_replace_falls_back_to_flat_url() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),
@@ -4534,7 +4534,7 @@ fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),
@@ -4644,7 +4644,7 @@ fn top_level_cask_excludes_watchos_from_macos_block() {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }],
         homebrew_casks: Some(vec![cask_cfg.clone()]),

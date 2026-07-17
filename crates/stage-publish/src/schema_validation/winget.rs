@@ -204,7 +204,7 @@ mod tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             publish: Some(PublishConfig {
                 winget: Some(cfg),
                 ..Default::default()

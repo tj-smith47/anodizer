@@ -394,7 +394,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             binstall: Some(BinstallConfig {
                 enabled: Some(true),
                 ..Default::default()

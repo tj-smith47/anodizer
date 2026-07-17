@@ -160,6 +160,26 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
     ));
 }
 
+/// Top-level `gemfury:` entries whose `skip:`/`if:` evaluates active right
+/// now. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge.
+fn active_gemfury_configs(ctx: &Context) -> Vec<&anodizer_core::config::GemFuryConfig> {
+    ctx.config
+        .gemfury
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for GemFuryPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -181,22 +201,16 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         true
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_gemfury_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // The publish path reads the push token from each entry's
         // (configurable) env var name; the API token is rollback-only and
         // intentionally not required up front.
-        ctx.config
-            .gemfury
-            .iter()
-            .flatten()
-            .filter(|entry| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    entry.skip.as_ref(),
-                    None,
-                    entry.if_condition.as_deref(),
-                )
-            })
+        active_gemfury_configs(ctx)
+            .into_iter()
             .map(|entry| anodizer_core::EnvRequirement::EnvAllOf {
                 vars: vec![crate::gemfury::publish::push_token_env_var(ctx, entry)],
             })

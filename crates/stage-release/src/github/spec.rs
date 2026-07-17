@@ -139,20 +139,41 @@ pub(crate) fn check_existing_assets_block_upload(
 /// same delete-before-retry recovery.
 ///
 /// For a fully-uploaded asset, a `422 already_exists` means the asset
-/// definitively exists, so the shared
-/// [`classify_asset_conflict`](crate::classify_asset_conflict) is consulted
-/// with `remote_present: true`; an unreadable probe (`None`) is
-/// treated as a mismatch, matching the conservative size-compare rule. The
-/// byte-identical-skip invariant lives in that shared classifier, not here.
+/// definitively exists. When GitHub's per-asset `digest` is available on
+/// both sides, same-size-but-different-digest is NOT idempotent (GPG/cosign
+/// signatures embed timestamps/nonces, so a same-size resign is common and
+/// must not be mistaken for the original upload surviving unchanged) — it is
+/// classified the same as a size mismatch (`DeleteAndRetry` when replace is
+/// allowed, `BailReplaceForbidden` otherwise). Only when a digest is
+/// unavailable on either side does this fall back to the shared
+/// [`classify_asset_conflict`](crate::classify_asset_conflict) size-only
+/// rule; an unreadable probe (`None`) is treated as a mismatch there, matching
+/// the conservative size-compare rule. The byte-identical-skip invariant for
+/// the no-digest case lives in that shared classifier, not here.
 pub(crate) fn classify_already_exists(
     replace_existing_artifacts: bool,
     remote: Option<super::assets::RemoteAssetProbe>,
     local_size: u64,
+    local_digest: Option<&str>,
 ) -> AlreadyExistsAction {
-    if remote.is_some_and(|p| !p.uploaded) {
+    if remote.as_ref().is_some_and(|p| !p.uploaded) {
         return AlreadyExistsAction::DeleteAndRetry;
     }
-    let remote_size = remote.map(|p| p.size);
+    let remote_size = remote.as_ref().map(|p| p.size);
+    if remote_size == Some(local_size) {
+        if let (Some(remote_digest), Some(local_digest)) = (
+            remote.as_ref().and_then(|p| p.digest.as_deref()),
+            local_digest,
+        ) {
+            return if digests_match(remote_digest, local_digest) {
+                AlreadyExistsAction::SkipIdempotent
+            } else if replace_existing_artifacts {
+                AlreadyExistsAction::DeleteAndRetry
+            } else {
+                AlreadyExistsAction::BailReplaceForbidden
+            };
+        }
+    }
     match crate::classify_asset_conflict(replace_existing_artifacts, true, remote_size, local_size)
     {
         crate::AssetConflict::IdenticalSkip => AlreadyExistsAction::SkipIdempotent,
@@ -165,6 +186,16 @@ pub(crate) fn classify_already_exists(
             AlreadyExistsAction::BailReplaceForbidden
         }
     }
+}
+
+/// Compare a GitHub asset digest (`"sha256:<hex>"`) against a locally
+/// computed hex digest, case-insensitively and tolerant of the `sha256:`
+/// prefix being absent (defensive; the API always includes it today).
+fn digests_match(remote_digest: &str, local_hex: &str) -> bool {
+    let remote_hex = remote_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(remote_digest);
+    remote_hex.eq_ignore_ascii_case(local_hex)
 }
 
 /// Decide which nightly releases to prune so that exactly `keep_last` nightly
@@ -238,6 +269,15 @@ mod already_exists_tests {
         Some(RemoteAssetProbe {
             size,
             uploaded: true,
+            digest: None,
+        })
+    }
+
+    fn uploaded_with_digest(size: u64, digest: &str) -> Option<RemoteAssetProbe> {
+        Some(RemoteAssetProbe {
+            size,
+            uploaded: true,
+            digest: Some(digest.to_string()),
         })
     }
 
@@ -245,6 +285,7 @@ mod already_exists_tests {
         Some(RemoteAssetProbe {
             size,
             uploaded: false,
+            digest: None,
         })
     }
 
@@ -254,11 +295,11 @@ mod already_exists_tests {
         // remote asset is a no-op: the user's guard rail is "don't
         // overwrite different bytes", not "don't probe the API".
         assert_eq!(
-            classify_already_exists(false, uploaded(100), 100),
+            classify_already_exists(false, uploaded(100), 100, None),
             AlreadyExistsAction::SkipIdempotent,
         );
         assert_eq!(
-            classify_already_exists(true, uploaded(100), 100),
+            classify_already_exists(true, uploaded(100), 100, None),
             AlreadyExistsAction::SkipIdempotent,
         );
     }
@@ -268,14 +309,14 @@ mod already_exists_tests {
         // `if !replace_existing_artifacts { return unrecoverable }`.
         // Surfaces the conflict instead of silently overwriting.
         assert_eq!(
-            classify_already_exists(false, uploaded(100), 200),
+            classify_already_exists(false, uploaded(100), 200, None),
             AlreadyExistsAction::BailReplaceForbidden,
         );
         // Probe `None` (422 says the asset exists but the list could not
         // see it) is treated as a size-mismatch: better to bail than
         // silently overwrite.
         assert_eq!(
-            classify_already_exists(false, None, 200),
+            classify_already_exists(false, None, 200, None),
             AlreadyExistsAction::BailReplaceForbidden,
         );
     }
@@ -283,11 +324,11 @@ mod already_exists_tests {
     #[test]
     fn deletes_and_retries_when_replace_allowed_and_sizes_differ() {
         assert_eq!(
-            classify_already_exists(true, uploaded(100), 200),
+            classify_already_exists(true, uploaded(100), 200, None),
             AlreadyExistsAction::DeleteAndRetry,
         );
         assert_eq!(
-            classify_already_exists(true, None, 200),
+            classify_already_exists(true, None, 200, None),
             AlreadyExistsAction::DeleteAndRetry,
         );
     }
@@ -299,17 +340,67 @@ mod already_exists_tests {
         // and re-uploaded even when overwrites are forbidden — and even
         // when its registered size happens to equal the local size.
         assert_eq!(
-            classify_already_exists(false, partial(100), 200),
+            classify_already_exists(false, partial(100), 200, None),
             AlreadyExistsAction::DeleteAndRetry,
         );
         assert_eq!(
-            classify_already_exists(true, partial(100), 200),
+            classify_already_exists(true, partial(100), 200, None),
             AlreadyExistsAction::DeleteAndRetry,
         );
         assert_eq!(
-            classify_already_exists(false, partial(200), 200),
+            classify_already_exists(false, partial(200), 200, None),
             AlreadyExistsAction::DeleteAndRetry,
             "size-equal partial must NOT be treated as idempotent",
+        );
+    }
+
+    #[test]
+    fn same_size_different_digest_is_not_idempotent() {
+        // A GPG/cosign resign of byte-identical input yields a same-size,
+        // different-digest asset (embedded timestamp/nonce). Size-only
+        // comparison would wrongly call this idempotent; the digest check
+        // must catch it and route through the normal conflict rule.
+        assert_eq!(
+            classify_already_exists(
+                false,
+                uploaded_with_digest(100, "sha256:aaaa"),
+                100,
+                Some("bbbb"),
+            ),
+            AlreadyExistsAction::BailReplaceForbidden,
+        );
+        assert_eq!(
+            classify_already_exists(
+                true,
+                uploaded_with_digest(100, "sha256:aaaa"),
+                100,
+                Some("bbbb"),
+            ),
+            AlreadyExistsAction::DeleteAndRetry,
+        );
+    }
+
+    #[test]
+    fn same_size_same_digest_is_idempotent_case_insensitive_and_prefix_tolerant() {
+        assert_eq!(
+            classify_already_exists(
+                false,
+                uploaded_with_digest(100, "sha256:AAbb"),
+                100,
+                Some("aabb"),
+            ),
+            AlreadyExistsAction::SkipIdempotent,
+        );
+    }
+
+    #[test]
+    fn missing_remote_digest_falls_back_to_size_only_idempotency() {
+        // GHES / older assets don't serve a digest — the classifier must
+        // still treat a same-size asset as idempotent via the shared
+        // size-only rule rather than bailing for lack of a digest.
+        assert_eq!(
+            classify_already_exists(false, uploaded(100), 100, Some("aabb")),
+            AlreadyExistsAction::SkipIdempotent,
         );
     }
 }

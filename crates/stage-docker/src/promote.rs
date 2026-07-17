@@ -214,7 +214,8 @@ fn resolve_image_repos(ctx: &Context) -> Result<Vec<DockerRepo>> {
         let Some(dockers) = krate.dockers_v2.as_ref() else {
             continue;
         };
-        let tag_prefix = per_crate_tag_prefix(&krate.name, &krate.tag_template);
+        let tag_prefix =
+            per_crate_tag_prefix(&krate.name, krate.tag_template.as_deref().unwrap_or(""));
         for cfg in dockers {
             if is_docker_v2_skipped(&cfg.skip, ctx)? {
                 continue;

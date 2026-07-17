@@ -438,7 +438,7 @@ fn test_publish_to_chocolatey_rejects_arm64_only() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 repository: Some(anodizer_core::config::RepositoryConfig {
@@ -494,7 +494,7 @@ fn test_publish_to_chocolatey_dry_run() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 repository: Some(anodizer_core::config::RepositoryConfig {
@@ -529,7 +529,7 @@ fn test_publish_to_chocolatey_missing_config() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig::default()),
         ..Default::default()
     }];
@@ -557,7 +557,7 @@ fn test_publish_to_chocolatey_missing_repository_is_now_optional() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 repository: None,
@@ -923,7 +923,7 @@ fn publish_to_chocolatey_skip_true_returns_false() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 skip: Some(StringOrBool::Bool(true)),
@@ -1172,7 +1172,7 @@ fn chocolatey_license_empty_metadata_bails_with_actionable_error() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 repository: Some(anodizer_core::config::RepositoryConfig {
@@ -1238,7 +1238,7 @@ fn chocolatey_sha256_empty_metadata_bails_with_actionable_error() {
     config.crates = vec![CrateConfig {
         name: "mytool".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 repository: Some(anodizer_core::config::RepositoryConfig {

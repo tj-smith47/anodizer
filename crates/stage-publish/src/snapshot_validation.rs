@@ -1021,7 +1021,7 @@ mod tests {
         CrateConfig {
             name: "cfgd".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             binstall: Some(binstall),
             ..Default::default()
         }
@@ -1379,7 +1379,7 @@ mod tests {
         let cfg = CrateConfig {
             name: "cfgd".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
@@ -1872,7 +1872,7 @@ mod tests {
         CrateConfig {
             name: "cfgd".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             version_sync: Some(VersionSyncConfig {
                 enabled: Some(true),
                 ..Default::default()
@@ -1923,7 +1923,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 nix: Some(NixConfig {
                     repository: Some(RepositoryConfig {
@@ -2405,7 +2405,7 @@ mod tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(anodizer_core::config::ReleaseConfig {
                 github: Some(anodizer_core::config::ScmRepoConfig {
                     owner: "octocat".to_string(),
@@ -2490,7 +2490,7 @@ mod tests {
         let cfg = CrateConfig {
             name: "cfgd".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         };
         let mut ctx = scoped_ctx(cfg);
@@ -2657,7 +2657,7 @@ mod tests {
             CrateConfig {
                 name: name.to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 // Both triples are CONFIGURED; the shard builds only linux, so
                 // the windows override is "configured but unbuilt" (skip), not
                 // "never built" (error).
@@ -2737,7 +2737,7 @@ mod tests {
         let ws_crate = CrateConfig {
             name: "wsc".to_string(),
             path: "crates/wsc".to_string(),
-            tag_template: "wsc-v{{ .Version }}".to_string(),
+            tag_template: Some("wsc-v{{ .Version }}".to_string()),
             binstall: Some(BinstallConfig {
                 enabled: Some(true),
                 overrides: Some(overrides),

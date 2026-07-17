@@ -1109,6 +1109,45 @@ fn collect_aur_source_top_level_targets(ctx: &Context) -> Vec<AurSourceTarget> {
     out
 }
 
+/// True when at least one aur_source entry — per-crate `publish.aur_source`
+/// or top-level `aur_sources:` — evaluates active right now. The per-crate
+/// half is additionally scoped to `--crate` / `--all` selection (same
+/// semantics as [`crate::publisher_helpers::effective_publish_crates`]:
+/// empty selection = every crate; non-empty = exactly those names, so a
+/// selected-but-skipped crate cannot masquerade as active via an
+/// out-of-scope sibling); the top-level half is project-wide and has no
+/// crate to scope against. Shared by
+/// [`anodizer_core::Publisher::advisory_requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge. `requirements()` keeps its own filtered iteration (it needs the
+/// entries themselves, not just a boolean).
+fn any_aur_source_active(ctx: &Context) -> bool {
+    let selected = &ctx.options.selected_crates;
+    let per_crate_active = ctx
+        .config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+        .any(|a| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                a.skip.as_ref(),
+                a.skip_upload.as_ref(),
+                a.if_condition.as_deref(),
+            )
+        });
+    let top_level_active = ctx.config.aur_sources.iter().flatten().any(|a| {
+        !crate::publisher_helpers::entry_inactive(
+            ctx,
+            a.skip.as_ref(),
+            a.skip_upload.as_ref(),
+            a.if_condition.as_deref(),
+        )
+    });
+    per_crate_active || top_level_active
+}
+
 impl anodizer_core::Publisher for AurSourcePublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1126,6 +1165,10 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         true
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        !any_aur_source_active(ctx)
+    }
+
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
@@ -1133,11 +1176,15 @@ impl anodizer_core::Publisher for AurSourcePublisher {
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Both config homes: per-crate `publish.aur_source` and the
         // top-level `aur_sources:` block (the same union
-        // `is_aur_source_configured` gates dispatch on).
+        // `is_aur_source_configured` gates dispatch on). The per-crate half
+        // is scoped to `--crate` / `--all` selection, matching
+        // `any_aur_source_active`.
+        let selected = &ctx.options.selected_crates;
         let per_crate = ctx
             .config
             .crate_universe()
             .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
             .filter(|a| {
                 !crate::publisher_helpers::entry_inactive(
@@ -1180,28 +1227,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         // PKGBUILD warn+skips when bash is absent — a recommendation, never
         // a gate failure. Same both-homes active-entry gate as
         // `requirements`.
-        let per_crate_active = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
-            .any(|a| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    a.skip.as_ref(),
-                    a.skip_upload.as_ref(),
-                    a.if_condition.as_deref(),
-                )
-            });
-        let top_level_active = ctx.config.aur_sources.iter().flatten().any(|a| {
-            !crate::publisher_helpers::entry_inactive(
-                ctx,
-                a.skip.as_ref(),
-                a.skip_upload.as_ref(),
-                a.if_condition.as_deref(),
-            )
-        });
-        if !per_crate_active && !top_level_active {
+        if !any_aur_source_active(ctx) {
             return Vec::new();
         }
         vec![anodizer_core::EnvRequirement::Tool {
@@ -1354,7 +1380,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{AurSourceConfig, CrateConfig, PublishConfig};
+    use anodizer_core::config::{AurSourceConfig, CrateConfig, PublishConfig, StringOrBool};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -1362,7 +1388,7 @@ mod publisher_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur_source: Some(AurSourceConfig {
                     git_url: Some(git_url.to_string()),
@@ -1381,6 +1407,50 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Submitter);
         assert!(!p.required());
         assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    /// `--crate x` selects only the skip:true entry; an active sibling `y`
+    /// outside the selection must not keep the publisher live.
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = aur_source_crate("x", "ssh://aur@aur.archlinux.org/x.git");
+        skipped
+            .publish
+            .as_mut()
+            .unwrap()
+            .aur_source
+            .as_mut()
+            .unwrap()
+            .skip = Some(StringOrBool::Bool(true));
+        let active = aur_source_crate("y", "ssh://aur@aur.archlinux.org/y.git");
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, active])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+
+        assert!(
+            AurSourcePublisher::new().config_fully_inactive(&ctx),
+            "--crate x selects only the skip:true entry; active sibling y is out of \
+             scope and must not keep the publisher live"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_source_crate(
+                "x",
+                "ssh://aur@aur.archlinux.org/x.git",
+            )])
+            .build();
+
+        assert!(
+            !AurSourcePublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
+        );
     }
 
     /// The AUR schema floor runs `bash -n` over the rendered source
@@ -1648,7 +1718,7 @@ mod publisher_tests {
         let ws_crate = CrateConfig {
             name: "ws-only".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             builds: Some(vec![anodizer_core::config::BuildConfig {
                 targets: Some(vec!["aarch64-unknown-linux-gnu".to_string()]),
                 ..Default::default()
@@ -1688,7 +1758,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "unconfigured".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -2585,7 +2655,7 @@ crates:
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 aur_source: Some(cfg),
                 ..Default::default()
@@ -2602,7 +2672,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];
@@ -2785,7 +2855,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];

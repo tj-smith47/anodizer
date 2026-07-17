@@ -59,7 +59,7 @@ Run the full release pipeline
 | `--release-footer-tmpl` | — | — | Path to a template file for release footer (rendered with template variables) |
 | `--release-notes-tmpl` | — | — | Path to a template file for release notes (rendered with template variables, overrides --release-notes) |
 | `--fail-fast` | — | — | Abort immediately on first error during publishing |
-| `--no-gate-submitter` | — | — | Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed |
+| `--no-gate-submitter` | — | — | Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed, or when the pre-submitter verify-release check did not pass |
 | `--rollback` | — | — | Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise. |
 | `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
 | `--from-run` | — | — | Prior run id whose state to load when running --rollback-only. Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a full re-roll. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |

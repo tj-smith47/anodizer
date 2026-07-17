@@ -45,7 +45,7 @@ fn crate_cfg(name: &str, path: &str, deps: &[&str]) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         publish: Some(anodizer_core::config::PublishConfig {
             cargo: Some(CargoPublishConfig::default()),

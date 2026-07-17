@@ -17,6 +17,104 @@ fn cargo_publisher_classification() {
     assert_eq!(p.rollback_scope_needed(), Some("CARGO_REGISTRY_TOKEN yank"));
 }
 
+/// A cargo block registered with `skip: true` is fully inactive: dispatch
+/// must record it as `Skipped(ConfigSkipped)` before `run()` fires, never
+/// let `run()`'s own "nothing active" path silently report success.
+#[test]
+fn config_fully_inactive_true_when_only_entry_skips() {
+    use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig, StringOrBool};
+
+    let crate_cfg = CrateConfig {
+        name: "onlycrate".into(),
+        publish: Some(PublishConfig {
+            cargo: Some(CargoPublishConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+
+    assert!(
+        CargoPublisher::new().config_fully_inactive(&ctx),
+        "the only cargo entry is skip:true — the publisher must report fully inactive"
+    );
+}
+
+/// `--crate x` selects only the skip:true entry; an active sibling `y`
+/// outside the selection must not keep the publisher live — the predicate
+/// has to agree with what `run()` would actually publish for the selected
+/// scope, not the whole crate universe.
+#[test]
+fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+    use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig, StringOrBool};
+
+    let skipped = CrateConfig {
+        name: "x".into(),
+        publish: Some(PublishConfig {
+            cargo: Some(CargoPublishConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let active = CrateConfig {
+        name: "y".into(),
+        publish: Some(PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![skipped, active])
+        .selected_crates(vec!["x".to_string()])
+        .build();
+
+    assert!(
+        CargoPublisher::new().config_fully_inactive(&ctx),
+        "--crate x selects only the skip:true entry; active sibling y is out of scope \
+         and must not keep the publisher live"
+    );
+}
+
+/// The active-entries predicate must see crates nested under
+/// `workspaces[].crates`, not just top-level `crates:` — `crate_universe()`
+/// merges both homes, so a workspace-nested crate's ACTIVE cargo block
+/// keeps the publisher live even when top-level `crates:` is empty.
+#[test]
+fn config_fully_inactive_sees_workspace_nested_crates() {
+    use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig, WorkspaceConfig};
+
+    let nested = CrateConfig {
+        name: "nested".into(),
+        publish: Some(PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let workspace = WorkspaceConfig {
+        name: "ws-a".into(),
+        crates: vec![nested],
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .workspaces(vec![workspace])
+        .build();
+
+    assert!(
+        !CargoPublisher::new().config_fully_inactive(&ctx),
+        "an active cargo block nested under workspaces[].crates must be seen via \
+         crate_universe() — a `.crates`-only read would miss it and wrongly report \
+         fully inactive"
+    );
+}
+
 /// The yank invocation injects the supplied token as a `CARGO_REGISTRY_TOKEN`
 /// ENV pair — never on the argv (which would leak it into the process list).
 #[test]
@@ -263,7 +361,7 @@ fn cargo_publisher_emits_visible_work_when_configured() {
     let cargo_crate = CrateConfig {
         name: "demo".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         publish: Some(PublishConfig {
             cargo: Some(CargoPublishConfig::default()),
             ..Default::default()

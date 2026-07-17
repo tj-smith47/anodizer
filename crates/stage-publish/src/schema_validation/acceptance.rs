@@ -128,7 +128,7 @@ fn multi_publisher_crate(winget_publisher_url: &str) -> CrateConfig {
     CrateConfig {
         name: "widget".to_string(),
         path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
         release: Some(ReleaseConfig {
             github: Some(ScmRepoConfig {
                 owner: "acme".to_string(),

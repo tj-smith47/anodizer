@@ -1793,7 +1793,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -1842,7 +1842,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -1908,7 +1908,7 @@ mod tests {
         let make_crate = |name: &str| CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![PkgConfig {
                 identifier: Some("com.example.{{ ProjectName }}".to_string()),
                 ..Default::default()
@@ -1984,7 +1984,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![PkgConfig {
                 identifier: Some("com.example.myapp".to_string()),
                 ..Default::default()
@@ -2053,7 +2053,7 @@ mod tests {
         let good_crate = CrateConfig {
             name: "alpha".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![PkgConfig {
                 identifier: Some("com.example.alpha".to_string()),
                 ..Default::default()
@@ -2063,7 +2063,7 @@ mod tests {
         let bad_crate = CrateConfig {
             name: "beta".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![PkgConfig {
                 identifier: Some("com.example.beta".to_string()),
                 // Malformed template — unclosed tag forces a mid-loop render error.
@@ -2128,7 +2128,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2180,7 +2180,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2260,7 +2260,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2388,7 +2388,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2469,7 +2469,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2545,7 +2545,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2598,7 +2598,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2668,7 +2668,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2729,7 +2729,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2789,7 +2789,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2839,7 +2839,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2889,7 +2889,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2943,7 +2943,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -2989,7 +2989,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3038,7 +3038,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3111,7 +3111,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3212,7 +3212,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3388,7 +3388,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3441,7 +3441,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![pkg_cfg]),
             ..Default::default()
         }];
@@ -3495,7 +3495,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![make_cfg(), make_cfg()]),
             ..Default::default()
         }];
@@ -3538,7 +3538,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             pkgs: Some(vec![
                 PkgConfig {
                     identifier: Some("com.example.myapp".to_string()),

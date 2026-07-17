@@ -682,6 +682,27 @@ fn decode_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<HomebrewCo
     }
 }
 
+/// Top-level `homebrew_cores:` entries whose `skip:`/`if:` evaluates active
+/// right now. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge. `preflight` keeps its own loop (it needs per-entry repository
+/// resolution alongside the filter, not just a boolean).
+fn active_homebrew_core_configs(ctx: &Context) -> Vec<&anodizer_core::config::HomebrewCoreConfig> {
+    ctx.config
+        .homebrew_cores
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for HomebrewCorePublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -713,17 +734,13 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
     /// env refs when configured, else the any-of ladder
     /// (`HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` /
     /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`).
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_homebrew_core_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         let mut out = Vec::new();
-        for entry in ctx.config.homebrew_cores.iter().flatten() {
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                entry.skip.as_ref(),
-                None,
-                entry.if_condition.as_deref(),
-            ) {
-                continue;
-            }
+        for entry in active_homebrew_core_configs(ctx) {
             let cfg_token = entry
                 .repository
                 .as_ref()

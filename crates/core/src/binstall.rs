@@ -463,8 +463,7 @@ fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> 
         .as_ref()
         .and_then(|r| r.tag.clone())
         .filter(|t| !t.is_empty())
-        .or_else(|| Some(crate_cfg.tag_template.clone()).filter(|t| !t.is_empty()))
-        .unwrap_or_else(|| "v{{ Version }}".to_string());
+        .unwrap_or_else(|| crate_cfg.resolved_tag_template().to_string());
 
     let prior = stamp_sentinel_version(ctx);
     let rendered = ctx.render_template(&tag_template);
@@ -1024,7 +1023,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         };
         CrateConfig {
             name: "anodizer".to_string(),
-            tag_template: "v{{ Version }}".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
             archives: ArchivesConfig::Configs(vec![archive]),
             release: Some(ReleaseConfig {
                 github: Some(GitHubConfig {

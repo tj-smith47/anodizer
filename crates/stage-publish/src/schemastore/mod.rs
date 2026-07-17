@@ -63,6 +63,10 @@ impl anodizer_core::Publisher for SchemastorePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        !schemastore_active(ctx)
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         if !schemastore_active(ctx) {
             return Vec::new();

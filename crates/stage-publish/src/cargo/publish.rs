@@ -213,22 +213,14 @@ pub(crate) fn resolve_workspace_cargo_token(
 ) -> Result<Option<String>> {
     use anodizer_core::config::CargoAuthMode;
 
-    // Active cargo configs across the crate universe (skip:/if: gated out),
-    // paired with whether each targets crates.io (Trusted Publishing has no
-    // custom-registry variant).
-    let active: Vec<(&CargoPublishConfig, bool)> = ctx
-        .config
-        .crate_universe()
+    // Active cargo configs across the crate universe (skip:/if: gated out AND
+    // `selected_crates`-scoped — routed through the same `active_cargo_configs`
+    // SSOT the publisher trait methods use, so a deselected sibling's block
+    // (e.g. `--crate x` with an out-of-scope `y` on `auth: oidc`) can never
+    // leak into this workspace-wide credential decision), paired with whether
+    // each targets crates.io (Trusted Publishing has no custom-registry variant).
+    let active: Vec<(&CargoPublishConfig, bool)> = super::publisher::active_cargo_configs(ctx)
         .into_iter()
-        .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
-        .filter(|cargo| {
-            !crate::publisher_helpers::entry_inactive(
-                ctx,
-                cargo.skip.as_ref(),
-                None,
-                cargo.if_condition.as_deref(),
-            )
-        })
         .map(|cargo| (cargo, targets_crates_io(Some(cargo))))
         .collect();
     if active.is_empty() {

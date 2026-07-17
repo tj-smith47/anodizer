@@ -161,16 +161,20 @@ pub struct PublishDefaults {
     pub on_rollback: Option<Vec<HookEntry>>,
 }
 
-/// Marker block under `defaults.crates:` that signals crate-axis defaults
-/// scope. Required to drive the axis-mismatch validator. Currently
-/// empty; future per-crate-id overrides will live here.
+/// Block under `defaults.crates:` that supplies workspace-wide fallbacks for
+/// per-crate fields. Also drives the axis-mismatch validator (present only
+/// when top-level `crates:` is non-empty).
 ///
 /// `deny_unknown_fields` so that typing `defaults.crates: { foo: bar }`
-/// surfaces as a parse error rather than silently being accepted — without
-/// it, the empty struct is a sink that swallows arbitrary keys.
+/// surfaces as a parse error rather than silently being accepted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-pub struct DefaultsCrateBlock {}
+pub struct DefaultsCrateBlock {
+    /// Git tag template applied to any crate that omits its own
+    /// `tag_template`. Overridden by a crate's own `tag_template` when set;
+    /// falls back to `CrateConfig::DEFAULT_TAG_TEMPLATE` when neither is set.
+    pub tag_template: Option<String>,
+}
 
 /// Marker block under `defaults.workspaces:` that signals workspace-axis
 /// defaults scope. Required to drive the axis-mismatch validator.

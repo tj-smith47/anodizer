@@ -150,6 +150,28 @@ pub enum SkipReason {
     /// publisher would otherwise have run, but the operator's selection
     /// suppressed it.
     Deselected,
+    /// The pre-submitter verify-release gate ([`Context::verify_gate`](crate::context::Context::verify_gate))
+    /// blocked every Submitter-group publisher this run: the gate returned
+    /// `Ok(false)` (asset-content defects found against the just-published
+    /// release) or `Err` (the check itself could not run and the dispatcher
+    /// blocks as a precaution). Distinct from `SubmitterGated` — that variant
+    /// means a required publisher already FAILED; this one means no publisher
+    /// failed, but the post-publish content check did not clear before any
+    /// one-way door could fire. Never applied to the Assets or Manager
+    /// groups: the gate runs only once, at Submitter-group entry, after both
+    /// reversible groups have already dispatched.
+    VerifyGateBlocked,
+    /// The publisher was registered (a config block exists) but every
+    /// configured entry evaluated skip-inactive under the CURRENT
+    /// config/env — `skip:`/`skip_upload:` truthy or `if:` falsy on all of
+    /// them. Assigned directly by the dispatch chokepoint
+    /// ([`crate::Publisher::config_fully_inactive`]) BEFORE `run()` is
+    /// ever invoked, so a `run()` that unconditionally returns
+    /// `Ok(evidence)` even with zero active entries can never be recorded
+    /// as `Succeeded`. Distinct from `NotConfigured` (the config block is
+    /// absent entirely) and from `Deselected` (an operator `--skip` /
+    /// `--publishers` choice, not a config-derived inactivity).
+    ConfigSkipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +190,24 @@ pub struct PublishReport {
     pub submitter_gated: bool,
     #[serde(default)]
     pub announce_gated: bool,
+    /// Set once, at most, per report: the pre-submitter verify-release gate
+    /// blocked the Submitter group this run. Kept separate from
+    /// `submitter_gated` (which means a required publisher already failed)
+    /// so the run summary and `report.json` can distinguish "a publisher
+    /// broke" from "nothing broke, but the post-publish content check never
+    /// cleared" — the two skip reasons a Submitter-group row can carry.
+    #[serde(default)]
+    pub verify_gate_blocked: bool,
+    /// Whether [`ensure_verify_gate_evaluated`] has already run the
+    /// pre-submitter verify-release gate this release. Distinct from
+    /// `verify_gate_blocked`: that bit alone cannot tell "the gate ran and
+    /// passed" apart from "the gate never ran" — both leave it `false` — so
+    /// a second call site (e.g. `SnapcraftPublishStage`, which runs as its
+    /// own pipeline stage outside the in-dispatch Submitter loop) needs this
+    /// flag to know whether it must invoke the gate itself or may trust
+    /// `verify_gate_blocked` as already authoritative.
+    #[serde(default)]
+    pub verify_gate_evaluated: bool,
 }
 
 impl PublishReport {
@@ -184,6 +224,29 @@ impl PublishReport {
         self.results
             .iter()
             .filter(|r| r.required && r.outcome.is_required_release_failure())
+            .map(|r| r.name.as_str())
+            .collect()
+    }
+
+    /// Names of every *required* publisher that was
+    /// [`SkipReason::VerifyGateBlocked`] — never attempted because the
+    /// pre-submitter verify-release gate blocked the Submitter group before
+    /// this publisher could dispatch. Distinct from
+    /// [`Self::required_failure_names`]: a blocked row never ran, so it is
+    /// not [`PublisherOutcome::is_required_release_failure`] and would
+    /// otherwise let [`gate_required_failures`] exit 0 on a required
+    /// publisher that silently never published. [`gate_required_failures`]
+    /// bails on this list too, closing that hole.
+    pub fn required_gate_blocked_names(&self) -> Vec<&str> {
+        self.results
+            .iter()
+            .filter(|r| {
+                r.required
+                    && matches!(
+                        r.outcome,
+                        PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+                    )
+            })
             .map(|r| r.name.as_str())
             .collect()
     }
@@ -262,6 +325,84 @@ impl PublishReport {
             || self.any_failed(PublisherGroup::Manager, true)
             || self.any_failed(PublisherGroup::Submitter, true)
     }
+
+    /// The complete one-way-door gate: `true` when Submitter-group
+    /// publishers must be skipped for EITHER reason — a required publisher
+    /// already failed ([`Self::submitter_gate_closed`]), or the pre-submitter
+    /// verify-release check blocked the group
+    /// ([`Self::verify_gate_blocked`]).
+    ///
+    /// The live per-publisher check sites (the in-dispatch Submitter loop,
+    /// `SnapcraftPublishStage`) deliberately do NOT call this combined form:
+    /// each needs to distinguish which reason applies so it can record the
+    /// precise [`SkipReason`] (`SubmitterGated` vs `VerifyGateBlocked`)
+    /// rather than losing that distinction behind an OR, so they check
+    /// [`Self::submitter_gate_closed`] and [`Self::verify_gate_blocked`]
+    /// separately, in that order. This method is the read-only aggregate for
+    /// callers — tests, and any future consumer — that only need "is the
+    /// Submitter group blocked at all" without caring why.
+    pub fn one_way_door_gate_closed(&self) -> bool {
+        self.submitter_gate_closed() || self.verify_gate_blocked
+    }
+}
+
+/// Runs the pre-submitter verify-release gate exactly once per release,
+/// coordinating every call site that might be first to reach a
+/// Submitter-group publisher: the in-dispatch Submitter loop
+/// (`stage-publish::dispatch`) and `SnapcraftPublishStage`, which runs as
+/// its own pipeline stage AFTER trait-based dispatch and is therefore
+/// invisible to dispatch's own view of the Submitter group — a release that
+/// configures only `snapcraft:` never puts a single publisher through
+/// dispatch's Submitter loop, so dispatch's lazy eval would never fire and
+/// an unverified snap would ship unless snapcraft also has a way to trigger
+/// the check.
+///
+/// Persisting the "already evaluated" bit on `report` (rather than a
+/// per-call-scope local, which is what each call site used before this
+/// function existed) is what makes "exactly once" hold across that crate
+/// boundary: whichever call site reaches a live Submitter-group publisher
+/// first pays for the (network) gate check and records both bits; the
+/// other call site observes `verify_gate_evaluated` already `true` and
+/// returns immediately, deferring to the `verify_gate_blocked` bit the
+/// first caller already recorded.
+///
+/// No-op (marks evaluated, leaves `verify_gate_blocked` untouched) when
+/// `ctx.verify_gate` is `None` — no CLI pipeline installed one (bare
+/// `dispatch()` callers, most unit tests) — matching the behaviour of a
+/// release that never installs a gate at all.
+///
+/// Takes `report` as a caller-owned `&mut PublishReport` rather than
+/// reading `ctx.publish_report` itself: `stage-publish::dispatch` holds its
+/// report as a local (taken out of `ctx.publish_report` for the duration of
+/// the dispatch loop, restored by its caller afterward) specifically so the
+/// gate closure can freely borrow `&mut ctx` without aliasing the report
+/// it's mutating; a caller-owned parameter lets both `dispatch` and
+/// `SnapcraftPublishStage` share this exact discipline instead of each
+/// re-deriving it.
+pub fn ensure_verify_gate_evaluated(
+    ctx: &mut crate::context::Context,
+    report: &mut PublishReport,
+    scope: &'static str,
+) {
+    if report.verify_gate_evaluated {
+        return;
+    }
+    report.verify_gate_evaluated = true;
+    let Some(gate) = ctx.verify_gate.clone() else {
+        return;
+    };
+    let passed = gate(ctx).unwrap_or_else(|err| {
+        ctx.logger(scope).status(&format!(
+            "verify-release gate check failed: {err:#} — blocking one-way-door publishers"
+        ));
+        false
+    });
+    if !passed {
+        report.verify_gate_blocked = true;
+        ctx.logger(scope).status(
+            "one-way-door publishers blocked — verify-release did not pass against the published release",
+        );
+    }
 }
 
 /// Required-failure exit gate: bail when any *required* publisher finished
@@ -291,16 +432,35 @@ pub fn gate_required_failures(
         return Ok(());
     };
     let failed = report.required_failure_names();
-    if failed.is_empty() {
-        return Ok(());
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "{} required publisher(s) failed: {}. {} Inspect dist/run-<id>/report.json \
+             for details and use --rollback-only --from-run=<id> to retry rollback.",
+            failed.len(),
+            failed.join(", "),
+            ran_context
+        );
     }
-    anyhow::bail!(
-        "{} required publisher(s) failed: {}. {} Inspect dist/run-<id>/report.json \
-         for details and use --rollback-only --from-run=<id> to retry rollback.",
-        failed.len(),
-        failed.join(", "),
-        ran_context
-    );
+    // A required publisher can also be missing not because it FAILED but
+    // because the pre-submitter verify-release gate blocked the whole
+    // Submitter group before it ever dispatched (e.g. a transient GH API
+    // error during the gate check). `Skipped(_)` is deliberately never
+    // `is_required_release_failure()` (that predicate means "ran and
+    // failed"), so without this second check a required cargo/npm/pypi
+    // publisher blocked by the gate would exit 0 — a silent partial release.
+    let blocked = report.required_gate_blocked_names();
+    if !blocked.is_empty() {
+        anyhow::bail!(
+            "{} required publisher(s) were blocked by the pre-submitter verify-release \
+             gate and never attempted to publish: {}. {} The post-publish content check \
+             did not clear before these one-way-door publishers could run; inspect the \
+             verify-release stage log and re-run once the underlying issue is fixed.",
+            blocked.len(),
+            blocked.join(", "),
+            ran_context
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -521,5 +681,70 @@ mod tests {
             evidence: None,
         });
         assert!(!r.submitter_gate_closed());
+    }
+
+    #[test]
+    fn one_way_door_gate_closed_by_verify_gate_alone() {
+        let r = PublishReport {
+            verify_gate_blocked: true,
+            ..Default::default()
+        };
+        assert!(
+            !r.submitter_gate_closed(),
+            "no required publisher failed, so the required-failure gate must stay open"
+        );
+        assert!(
+            r.one_way_door_gate_closed(),
+            "the verify-gate block alone must close the combined predicate"
+        );
+    }
+
+    #[test]
+    fn one_way_door_gate_closed_by_required_failure_alone() {
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "cargo".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        assert!(!r.verify_gate_blocked);
+        assert!(r.one_way_door_gate_closed());
+    }
+
+    #[test]
+    fn one_way_door_gate_open_when_neither_reason_applies() {
+        let r = PublishReport::default();
+        assert!(!r.submitter_gate_closed());
+        assert!(!r.verify_gate_blocked);
+        assert!(!r.one_way_door_gate_closed());
+    }
+
+    #[test]
+    fn required_gate_blocked_names_finds_only_required_verify_gate_blocked_rows() {
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "cargo".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+            evidence: None,
+        });
+        r.results.push(PublisherResult {
+            name: "chocolatey".to_string(),
+            group: PublisherGroup::Submitter,
+            required: false,
+            outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+            evidence: None,
+        });
+        r.results.push(PublisherResult {
+            name: "npm".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
+            evidence: None,
+        });
+        assert_eq!(r.required_gate_blocked_names(), vec!["cargo"]);
     }
 }

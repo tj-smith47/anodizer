@@ -742,6 +742,60 @@ impl Config {
             self.derived_metadata.insert(name, derived);
         }
     }
+
+    /// Populate `depends_on` for every crate entry that OMITS it, by reading
+    /// the crate's `Cargo.toml` dependency tables (`[dependencies]`,
+    /// `[build-dependencies]`, and every `[target.'cfg(...)'.dependencies]`)
+    /// and matching against the real on-disk Cargo workspace's member names
+    /// ([`discover_cargo_workspace_member_names`]) — the same derivation
+    /// `anodizer init` performs at scaffold time
+    /// ([`derive_depends_on_from_cargo_toml`]), now re-run at every
+    /// config-load so a hand-maintained `crates:` list can never drift stale
+    /// behind the crate's real Cargo.toml dependencies.
+    /// An explicit `depends_on` (`Some(_)`) is a user override and is never
+    /// overwritten.
+    ///
+    /// Covers every crate the config knows about (top-level `crates:` plus
+    /// every `workspaces[].crates[]`), mirroring
+    /// [`Self::populate_derived_metadata`]. A single-crate project (no
+    /// `crates:` at all) has an empty crate universe, so this is a no-op.
+    /// A project with no on-disk Cargo workspace (no root `Cargo.toml`, or
+    /// a plain single-package `Cargo.toml`) has only itself as a "member",
+    /// so derivation naturally yields no deps.
+    pub fn populate_derived_depends_on(&mut self, base_dir: &std::path::Path) {
+        let member_names = discover_cargo_workspace_member_names(base_dir);
+        if member_names.is_empty() {
+            return;
+        }
+
+        let derived: HashMap<String, Vec<String>> = self
+            .crate_universe()
+            .into_iter()
+            .filter(|c| c.depends_on.is_none())
+            .map(|c| {
+                let crate_dir = base_dir.join(&c.path);
+                let deps = derive_depends_on_from_cargo_toml(&crate_dir, &member_names);
+                (c.name.clone(), deps)
+            })
+            .collect();
+
+        if derived.is_empty() {
+            return;
+        }
+
+        for c in self.crates.iter_mut().chain(
+            self.workspaces
+                .iter_mut()
+                .flatten()
+                .flat_map(|ws| ws.crates.iter_mut()),
+        ) {
+            if c.depends_on.is_none()
+                && let Some(deps) = derived.get(&c.name)
+            {
+                c.depends_on = Some(deps.clone());
+            }
+        }
+    }
 }
 
 /// JSON Schema for the [`Config`] document as a canonical `serde_json::Value`,
@@ -2763,6 +2817,12 @@ pub use snapshot_nightly::*;
 
 mod cargo_metadata;
 pub use cargo_metadata::derive_metadata_from_cargo_toml;
+
+mod workspace_deps;
+pub use workspace_deps::{
+    derive_depends_on_from_cargo_toml, discover_cargo_workspace_member_names,
+    extract_workspace_deps,
+};
 
 /// Extract the name portion of a `"Name <email>"` maintainer/author string,
 /// dropping any `<…>` email suffix. Returns `None` when the result is empty

@@ -34,7 +34,8 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
             r.results.iter().any(|res| match &res.outcome {
                 PublisherOutcome::Failed(_)
                 | PublisherOutcome::RollbackFailed(_)
-                | PublisherOutcome::Skipped(SkipReason::SubmitterGated) => true,
+                | PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                | PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked) => true,
                 PublisherOutcome::Succeeded
                 | PublisherOutcome::Skipped(SkipReason::NotConfigured)
                 | PublisherOutcome::Skipped(SkipReason::Snapshot)
@@ -43,6 +44,7 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
                 | PublisherOutcome::Skipped(SkipReason::NotApplicable)
                 | PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
                 | PublisherOutcome::Skipped(SkipReason::Deselected)
+                | PublisherOutcome::Skipped(SkipReason::ConfigSkipped)
                 | PublisherOutcome::RolledBack
                 | PublisherOutcome::RollbackSkippedNoScope
                 | PublisherOutcome::PendingModeration
@@ -1288,6 +1290,8 @@ mod summary_tests {
         release_ctx.publish_report = Some(PublishReport {
             submitter_gated: false,
             announce_gated: false,
+            verify_gate_blocked: false,
+            verify_gate_evaluated: false,
             results: vec![PublisherResult {
                 name: "cargo".to_string(),
                 group: PublisherGroup::Submitter,

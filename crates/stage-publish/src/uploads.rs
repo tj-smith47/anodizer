@@ -445,6 +445,27 @@ simple_publisher!(
     Some("UPLOAD_<NAME>_SECRET delete"),
 );
 
+/// Top-level `uploads:` entries whose `skip:`/`if:` evaluates active right
+/// now. Used only by [`anodizer_core::Publisher::config_fully_inactive`] —
+/// `requirements()` intentionally keeps its own unfiltered walk (endpoint
+/// reachability is probed for every entry with a `target`, skip-state
+/// notwithstanding; see the comment there).
+fn active_upload_configs(ctx: &Context) -> Vec<&anodizer_core::config::UploadConfig> {
+    ctx.config
+        .uploads
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for UploadsPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -460,6 +481,10 @@ impl anodizer_core::Publisher for UploadsPublisher {
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
+    }
+
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_upload_configs(ctx).is_empty()
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
@@ -787,20 +812,29 @@ fn resolve_rollback_credentials(ctx: &Context, entry_name: &str) -> Option<(Stri
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::Publisher;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{Config, StringOrBool, UploadConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::LogCapture;
     use std::path::PathBuf;
 
+    /// Seals the context's env source to an empty [`MapEnvSource`] so dry-run
+    /// assertions on literal log text (tags, header values, ...) cannot be
+    /// broken by an unrelated real ambient secret-suffixed var whose value
+    /// happens to collide with a substring of the expected message — none of
+    /// these tests exercise real credential-env resolution.
     fn dry_run_ctx(config: Config) -> Context {
-        Context::new(
+        let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
                 ..Default::default()
             },
-        )
+        );
+        ctx.set_env_source(MapEnvSource::new());
+        ctx
     }
 
     /// Build a dry-run context with `Version`/`Tag`/`ProjectName` seeded so
@@ -872,6 +906,27 @@ mod tests {
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
         assert!(publish_uploads(&ctx, &log).is_ok());
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active
+    /// `uploads[]` entry must keep the publisher live even with no
+    /// `--crate` filter applied. `uploads` is a top-level list, not itself
+    /// crate-scoped, so this also guards a future refactor from
+    /// accidentally wiring it to `selected_crates` and dropping entries.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: "https://uploads.example.com/".to_string(),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+
+        assert!(
+            !UploadsPublisher::new().config_fully_inactive(&ctx),
+            "an active uploads[] entry must keep the publisher live"
+        );
     }
 
     #[test]

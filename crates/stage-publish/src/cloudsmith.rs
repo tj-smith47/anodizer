@@ -1536,6 +1536,27 @@ pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String
     )
 }
 
+/// Top-level `cloudsmiths:` entries whose `skip:`/`if:` evaluates active
+/// right now. Shared by [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge. `preflight` keeps its own loop (it needs per-entry endpoint
+/// resolution alongside the filter, not just a boolean).
+fn active_cloudsmith_configs(ctx: &Context) -> Vec<&anodizer_core::config::CloudSmithConfig> {
+    ctx.config
+        .cloudsmiths
+        .iter()
+        .flatten()
+        .filter(|entry| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for CloudsmithPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1553,21 +1574,15 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_cloudsmith_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Same env-var-name resolution the upload path uses: a (templated)
         // `secret_name` per entry, defaulting to CLOUDSMITH_TOKEN.
-        ctx.config
-            .cloudsmiths
-            .iter()
-            .flatten()
-            .filter(|entry| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    entry.skip.as_ref(),
-                    None,
-                    entry.if_condition.as_deref(),
-                )
-            })
+        active_cloudsmith_configs(ctx)
+            .into_iter()
             .map(|entry| {
                 let var = crate::util::resolve_secret_name(
                     ctx,

@@ -394,6 +394,8 @@ fn outcome_to_status_string(outcome: &PublisherOutcome) -> String {
             SkipReason::NotApplicable => "skipped-not-applicable".into(),
             SkipReason::AlreadyPublished => "skipped-already-published".into(),
             SkipReason::Deselected => "skipped-deselected".into(),
+            SkipReason::VerifyGateBlocked => "skipped-verify-gate-blocked".into(),
+            SkipReason::ConfigSkipped => "skipped-config".into(),
         },
         PublisherOutcome::Failed(_) => "failed".into(),
         PublisherOutcome::RolledBack => "rolled-back".into(),
@@ -1123,6 +1125,8 @@ mod tests {
         let report = PublishReport {
             submitter_gated: true,
             announce_gated: true,
+            verify_gate_blocked: false,
+            verify_gate_evaluated: false,
             results: vec![PublisherResult {
                 name: "homebrew".to_string(),
                 group: PublisherGroup::Manager,
@@ -1164,6 +1168,8 @@ mod tests {
         ctx.publish_report = Some(PublishReport {
             submitter_gated: false,
             announce_gated: false,
+            verify_gate_blocked: false,
+            verify_gate_evaluated: false,
             results: vec![
                 result_in(PublisherGroup::Assets, PublisherOutcome::Succeeded),
                 result_in(PublisherGroup::Manager, PublisherOutcome::Succeeded),
@@ -1183,6 +1189,8 @@ mod tests {
         ctx.publish_report = Some(PublishReport {
             submitter_gated: false,
             announce_gated: false,
+            verify_gate_blocked: false,
+            verify_gate_evaluated: false,
             results: vec![result_in(
                 PublisherGroup::Submitter,
                 PublisherOutcome::Succeeded,
@@ -1203,6 +1211,8 @@ mod tests {
         ctx.publish_report = Some(PublishReport {
             submitter_gated: false,
             announce_gated: false,
+            verify_gate_blocked: false,
+            verify_gate_evaluated: false,
             results: vec![result_in(
                 PublisherGroup::Submitter,
                 PublisherOutcome::RolledBack,
@@ -1229,12 +1239,21 @@ mod tests {
             PublisherOutcome::Skipped(SkipReason::SubmitterGated),
             PublisherOutcome::Skipped(SkipReason::NotConfigured),
             PublisherOutcome::Skipped(SkipReason::Snapshot),
+            PublisherOutcome::Skipped(SkipReason::DryRun),
+            PublisherOutcome::Skipped(SkipReason::Nightly),
+            PublisherOutcome::Skipped(SkipReason::NotApplicable),
+            PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
+            PublisherOutcome::Skipped(SkipReason::Deselected),
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+            PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
         ];
         for outcome in all_outcomes {
             let mut ctx = anodizer_core::context::Context::test_fixture();
             ctx.publish_report = Some(PublishReport {
                 submitter_gated: false,
                 announce_gated: false,
+                verify_gate_blocked: false,
+                verify_gate_evaluated: false,
                 results: vec![result_in(PublisherGroup::Submitter, outcome.clone())],
             });
             let s = RunSummary::from_context(&ctx);

@@ -945,7 +945,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![NsisConfig::default()]),
             ..Default::default()
         }];
@@ -1024,7 +1024,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         };
@@ -1081,7 +1081,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1125,7 +1125,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         };
@@ -1201,7 +1201,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         };
@@ -1259,7 +1259,7 @@ mod tests {
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         };
@@ -1342,7 +1342,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1479,7 +1479,7 @@ crates:
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         };
@@ -1532,7 +1532,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1599,7 +1599,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1654,7 +1654,7 @@ crates:
             config.crates = vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 nsis: Some(vec![nsis_cfg]),
                 ..Default::default()
             }];
@@ -1712,7 +1712,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1793,7 +1793,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1908,7 +1908,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -1957,7 +1957,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![NsisConfig::default()]),
             ..Default::default()
         }];
@@ -2074,7 +2074,7 @@ crates:
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![NsisConfig::default()]),
             ..Default::default()
         }];
@@ -2211,7 +2211,7 @@ SectionEnd
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -2261,7 +2261,7 @@ SectionEnd
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![NsisConfig::default()]),
             ..Default::default()
         }];
@@ -2338,7 +2338,7 @@ SectionEnd
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -2400,7 +2400,7 @@ SectionEnd
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![nsis_cfg]),
             ..Default::default()
         }];
@@ -2443,7 +2443,7 @@ SectionEnd
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![NsisConfig::default(), NsisConfig::default()]),
             ..Default::default()
         };
@@ -2491,7 +2491,7 @@ SectionEnd
         let crate_cfg = CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             nsis: Some(vec![
                 NsisConfig {
                     name: Some("{{ ProjectName }}-one_{{ Arch }}_setup".to_string()),

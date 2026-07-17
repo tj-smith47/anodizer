@@ -1981,6 +1981,33 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
+/// Winget entries across the crate universe whose `skip_upload:`/`if:`
+/// evaluates active right now AND whose crate is in scope for `--crate` /
+/// `--all` selection (same semantics as
+/// [`crate::publisher_helpers::effective_publish_crates`]: empty selection
+/// = every crate; non-empty = exactly those names, so a selected-but-skipped
+/// crate cannot masquerade as active via an out-of-scope sibling). Shared by
+/// [`anodizer_core::Publisher::requirements`] and
+/// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
+/// diverge.
+fn active_winget_configs(ctx: &Context) -> Vec<&anodizer_core::config::WingetConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
+        .filter(|w| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                None,
+                w.skip_upload.as_ref(),
+                w.if_condition.as_deref(),
+            )
+        })
+        .collect()
+}
+
 impl anodizer_core::Publisher for WingetPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -2003,19 +2030,13 @@ impl anodizer_core::Publisher for WingetPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn config_fully_inactive(&self, ctx: &Context) -> bool {
+        active_winget_configs(ctx).is_empty()
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        ctx.config
-            .crate_universe()
+        active_winget_configs(ctx)
             .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
-            .filter(|w| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    w.skip_upload.as_ref(),
-                    w.if_condition.as_deref(),
-                )
-            })
             .flat_map(|w| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,
@@ -2030,20 +2051,7 @@ impl anodizer_core::Publisher for WingetPublisher {
         // Every winget publish lands as a PR against the upstream index;
         // `gh pr create` is the preferred transport with a full REST-API
         // fallback, so `gh` is a recommendation, never a gate failure.
-        let any_active = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
-            .any(|w| {
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    w.skip_upload.as_ref(),
-                    w.if_condition.as_deref(),
-                )
-            });
-        if !any_active {
+        if active_winget_configs(ctx).is_empty() {
             return Vec::new();
         }
         vec![anodizer_core::EnvRequirement::Tool {
@@ -2179,7 +2187,9 @@ impl anodizer_core::Publisher for WingetPublisher {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{CrateConfig, PublishConfig, RepositoryConfig, WingetConfig};
+    use anodizer_core::config::{
+        CrateConfig, PublishConfig, RepositoryConfig, StringOrBool, WingetConfig,
+    };
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -2187,7 +2197,7 @@ mod publisher_tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 winget: Some(WingetConfig {
                     publisher: Some("AcmeCo".to_string()),
@@ -2227,7 +2237,7 @@ mod publisher_tests {
         CrateConfig {
             name: crate_name.to_string(),
             path: ".".to_string(),
-            tag_template: tag_template.to_string(),
+            tag_template: Some(tag_template.to_string()),
             publish: Some(PublishConfig {
                 winget: Some(WingetConfig {
                     publisher: Some("AcmeCo".to_string()),
@@ -2831,6 +2841,46 @@ mod publisher_tests {
         );
     }
 
+    /// `--crate x` selects only the skip_upload:true entry; an active
+    /// sibling `y` outside the selection must not keep the publisher live.
+    #[test]
+    fn config_fully_inactive_true_when_selected_crate_is_skipped_sibling_active() {
+        let mut skipped = winget_crate("x");
+        skipped
+            .publish
+            .as_mut()
+            .unwrap()
+            .winget
+            .as_mut()
+            .unwrap()
+            .skip_upload = Some(StringOrBool::Bool(true));
+        let ctx = TestContextBuilder::new()
+            .crates(vec![skipped, winget_crate("y")])
+            .selected_crates(vec!["x".to_string()])
+            .build();
+
+        assert!(
+            WingetPublisher::new().config_fully_inactive(&ctx),
+            "--crate x selects only the skip_upload:true entry; active sibling y is \
+             out of scope and must not keep the publisher live"
+        );
+    }
+
+    /// Empty `--crate` selection means "all crates" — an active entry with
+    /// no `--crate` filter applied must keep the publisher live.
+    #[test]
+    fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("x")])
+            .build();
+
+        assert!(
+            !WingetPublisher::new().config_fully_inactive(&ctx),
+            "empty selection means \"all crates\"; an active entry must keep the \
+             publisher live"
+        );
+    }
+
     #[test]
     fn winget_preflight_defaults_to_pass() {
         let ctx = TestContextBuilder::new().build();
@@ -3110,7 +3160,7 @@ mod publisher_tests {
                 CrateConfig {
                     name: "other".to_string(),
                     path: ".".to_string(),
-                    tag_template: "v{{ .Version }}".to_string(),
+                    tag_template: Some("v{{ .Version }}".to_string()),
                     publish: Some(PublishConfig::default()),
                     ..Default::default()
                 },
@@ -3179,7 +3229,7 @@ mod publisher_tests {
             .crates(vec![CrateConfig {
                 name: "other".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig::default()),
                 ..Default::default()
             }])
@@ -3660,7 +3710,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig::default()),
             ..Default::default()
         }];
@@ -3688,7 +3738,7 @@ mod tests {
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             publish: Some(PublishConfig {
                 winget: Some(WingetConfig {
                     repository: None, // Missing
@@ -4806,7 +4856,7 @@ license-file = "LICENSE.txt"
             CrateConfig {
                 name: crate_name.to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 publish: Some(PublishConfig {
                     winget: Some(WingetConfig {
                         publisher: Some("AcmeCo".to_string()),

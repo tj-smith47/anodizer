@@ -14,9 +14,11 @@ use anodizer_core::{
     PublishEvidence, PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
 };
 
+use crate::arch::triple_to_snap_arch;
 use crate::command::{
-    is_retriable_snap_push, resolve_effective_channels, snap_revision_exists_in_output,
-    snapcraft_list_revisions_command, snapcraft_upload_command,
+    first_channel_rejected_for_prerelease_snap, is_content_dedup_rejection, is_retriable_snap_push,
+    missing_channels_for_version, resolve_effective_channels, snap_revision_for_version,
+    snapcraft_list_revisions_command, snapcraft_release_command, snapcraft_upload_command,
 };
 use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
 
@@ -57,6 +59,12 @@ impl Stage for SnapcraftPublishStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("snapcraft-publish");
 
+        // Computed once up front: `SnapcraftConfig.required` is pure config
+        // and cannot change mid-run, so every `record_snapcraft_result` call
+        // site below (gated, deselected, already-published, terminal) shares
+        // the same derived flag.
+        let required = derive_snapcraft_required(ctx);
+
         // Operator-selection gate. SnapcraftPublishStage performs an external,
         // irreversible Snap Store upload but runs as a pipeline stage OUTSIDE
         // the trait-based dispatch chokepoint, so the uniform `--skip` /
@@ -68,7 +76,12 @@ impl Stage for SnapcraftPublishStage {
         // so the run summary counts it; never silent.
         if ctx.publisher_deselected("snapcraft-publish") {
             log.status(&ctx.deselected_reason("snapcraft-publish"));
-            record_snapcraft_result(ctx, None, PublisherOutcome::Skipped(SkipReason::Deselected));
+            record_snapcraft_result(
+                ctx,
+                None,
+                PublisherOutcome::Skipped(SkipReason::Deselected),
+                required,
+            );
             return Ok(());
         }
 
@@ -102,6 +115,7 @@ impl Stage for SnapcraftPublishStage {
                 ctx,
                 None,
                 PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+                required,
             );
             return Ok(());
         }
@@ -136,6 +150,48 @@ impl Stage for SnapcraftPublishStage {
             // No work attempted (empty snap_artifacts) — leave
             // publish_report untouched, matching BlobStage's discipline.
             return Ok(());
+        }
+
+        // Pre-submitter verify-release gate: the same post-publish
+        // content check the in-dispatch Submitter loop consults, run here
+        // too because snapcraft is a Submitter-group surface that executes
+        // as its own pipeline stage OUTSIDE that loop. Deferred until after
+        // the crates/snap_artifacts emptiness checks above: a release with
+        // no snapcraft work to do must leave `publish_report` untouched
+        // (BlobStage's "no work, no record" contract) rather than trigger a
+        // live GH asset-verification fetch and possibly record a phantom
+        // `Skipped(VerifyGateBlocked)` for a stage that never had anything
+        // to upload.
+        // `ensure_verify_gate_evaluated` is the shared run-once-per-release
+        // coordination point: on a release that also configures a
+        // trait-dispatched Submitter (cargo, winget, ...), the in-dispatch
+        // loop already ran the live check and persisted its verdict, so
+        // this call is a no-op re-read. On a release configuring ONLY
+        // `snapcraft:` — no other Submitter-group publisher ever reaches
+        // the in-dispatch loop, so its lazy eval never fires — this is the
+        // first and only place the gate runs; without this call a
+        // snapcraft-only release would push an unverified snap.
+        if gate_submitter {
+            let mut report = ctx.publish_report.take().unwrap_or_default();
+            anodizer_core::publish_report::ensure_verify_gate_evaluated(
+                ctx,
+                &mut report,
+                "snapcraft-publish",
+            );
+            let blocked = report.verify_gate_blocked;
+            ctx.publish_report = Some(report);
+            if blocked {
+                log.status(
+                    "snapcraft-publish skipped — blocked by the pre-submitter verify-release gate",
+                );
+                record_snapcraft_result(
+                    ctx,
+                    None,
+                    PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
+                    required,
+                );
+                return Ok(());
+            }
         }
 
         // Pre-pass: render every config's `publish.skip` template uniformly
@@ -189,6 +245,7 @@ impl Stage for SnapcraftPublishStage {
                     ctx,
                     None,
                     PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
+                    required,
                 );
             }
             return exec_result;
@@ -200,7 +257,7 @@ impl Stage for SnapcraftPublishStage {
         };
         let evidence = matches!(outcome, PublisherOutcome::Succeeded)
             .then(|| build_snapcraft_evidence(&targets));
-        record_snapcraft_result(ctx, evidence, outcome);
+        record_snapcraft_result(ctx, evidence, outcome, required);
         // End-of-stage accountability for review holds: a per-upload warn can
         // scroll away inside a long publish log, and the store's eventual
         // decline arrives only by email — so the unresolved state gets one
@@ -278,23 +335,34 @@ fn resolve_snap_name(
     })
 }
 
-/// Tri-state idempotency probe for a snap version, mirroring cargo's
-/// `is_already_published` shape.
+/// Idempotency probe for a snap version: does a revision for `version`
+/// already exist, and if so, which of `channels` is it NOT yet released to?
 ///
 /// Runs `snapcraft list-revisions <name>` and parses its tabular output:
-/// - `Some(true)`  → a revision for `version` already exists → skip the upload
-///   (re-uploading would mint a duplicate Snap Store revision).
-/// - `Some(false)` → the snap is listed but has no revision at `version` →
-///   upload.
-/// - `None`        → the probe itself failed (snapcraft missing, not logged in,
-///   snap not registered, network error) → upload. Never falsely skip a
-///   genuine first publish just because the existence check couldn't run; a
-///   true auth/network problem will resurface from the upload itself.
-fn snap_revision_already_published(
+/// - `None`                    → either no revision exists for `version` yet
+///   (genuine first upload) or the probe itself failed (snapcraft missing,
+///   not logged in, snap not registered, network error) → proceed to
+///   upload. Never falsely skip a genuine first publish just because the
+///   existence check couldn't run; a true auth/network problem resurfaces
+///   from the upload itself.
+/// - `Some((revision, missing))` where `missing` is empty → the revision
+///   already occupies every requested channel — a true re-run at an
+///   already-published version → skip (re-uploading would only mint a
+///   duplicate Snap Store revision, or hit the content-dedup rejection).
+/// - `Some((revision, missing))` where `missing` is non-empty → the bytes
+///   were already uploaded (by this run's own earlier attempt, or a prior
+///   interrupted run) but never released to one or more configured
+///   channels — an orphaned revision. The caller must promote it into
+///   `missing` rather than skip (which would silently leave it unpublished)
+///   or re-upload (which would only hit the Store's content-dedup
+///   rejection).
+fn revision_missing_channels(
     snap_name: &str,
     version: &str,
+    arch: &str,
+    channels: &[String],
     log: &StageLogger,
-) -> Option<bool> {
+) -> Option<(String, Vec<String>)> {
     let args = snapcraft_list_revisions_command(snap_name);
     let mut cmd = Command::new(&args[0]);
     cmd.args(&args[1..]);
@@ -327,7 +395,90 @@ fn snap_revision_already_published(
         }
     };
     let combined = log.redact(&String::from_utf8_lossy(&output.stdout));
-    Some(snap_revision_exists_in_output(&combined, version))
+    let (revision, missing) = missing_channels_for_version(&combined, version, arch, channels)?;
+    Some((
+        revision,
+        missing.into_iter().map(|s| s.to_string()).collect(),
+    ))
+}
+
+/// After a content-dedup upload rejection, re-query `snapcraft
+/// list-revisions` for the revision whose `Version` column equals `version`
+/// — the revision that collided with the bytes we just tried to upload.
+///
+/// A dedup rejection at the SAME version most commonly means an earlier
+/// attempt (this run's own retry loop, or a prior failed run) already
+/// landed those exact bytes server-side as an orphaned, unreleased
+/// revision — the client observed a transient failure (e.g. a 5xx) and
+/// retried, but the Store had already ingested the upload. Naming that
+/// revision here is what lets the caller promote it instead of reporting a
+/// permanent "repack" error for content that, from the operator's
+/// perspective, never actually changed.
+///
+/// `arch` scopes the match to the artifact's own architecture-specific
+/// revision — a dual-arch snap mints one revision per arch per version, so
+/// matching on `version` alone could name a different arch's revision and
+/// have the caller promote (or skip re-uploading) the wrong artifact.
+///
+/// Returns `None` when the probe itself fails (mirrors
+/// [`revision_missing_channels`]'s fail-open stance) or when no revision
+/// matches both `version` and `arch` — the latter means the collision is
+/// against a DIFFERENT version's (or a different arch's) bytes, so there is
+/// nothing to promote.
+fn find_colliding_revision(
+    snap_name: &str,
+    version: &str,
+    arch: &str,
+    log: &StageLogger,
+) -> Option<String> {
+    let args = snapcraft_list_revisions_command(snap_name);
+    let mut cmd = Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    let output = run_capture_timeout(
+        &mut cmd,
+        log,
+        "snapcraft list-revisions",
+        SNAPCRAFT_PROBE_TIMEOUT,
+    )
+    .ok()?;
+    if !output.status.success() {
+        log.debug(&format!(
+            "snapcraft list-revisions for '{snap_name}' exited non-zero while looking for a \
+             dedup-colliding revision; cannot identify it"
+        ));
+        return None;
+    }
+    let combined = log.redact(&String::from_utf8_lossy(&output.stdout));
+    snap_revision_for_version(&combined, version, Some(arch))
+}
+
+/// Promote `revision` into every channel in `channels` via `snapcraft
+/// release`, stopping at the first failure. Used to recover a dedup
+/// rejection whose colliding revision matches the version being published
+/// — the bytes already landed, they just were never released.
+fn promote_revision(
+    snap_name: &str,
+    revision: &str,
+    channels: &[String],
+    log: &StageLogger,
+) -> Result<()> {
+    for channel in channels {
+        let args = snapcraft_release_command(snap_name, revision, channel);
+        log.verbose(&format!("running {}", args.join(" ")));
+        let mut cmd = Command::new(&args[0]);
+        cmd.args(&args[1..]);
+        let output = run_capture_timeout(
+            &mut cmd,
+            log,
+            "snapcraft release",
+            SNAPCRAFT_UPLOAD_TIMEOUT,
+        )
+        .with_context(|| {
+            format!("execute snapcraft release for '{snap_name}' revision {revision} -> {channel}")
+        })?;
+        log.check_output(output, "snapcraft release")?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +562,13 @@ fn run_uploads(
 
                 for artifact in &matching {
                     let snap_path = artifact.path.to_string_lossy();
+                    // Scopes the idempotency/dedup probes below to this
+                    // artifact's own architecture — a dual-arch snap config
+                    // (`crates:` targeting both x86_64 and aarch64) mints one
+                    // `list-revisions` row per arch per version, and matching
+                    // on version alone would let one arch's already-released
+                    // revision falsely skip a sibling arch's upload.
+                    let arch = triple_to_snap_arch(artifact.target.as_deref().unwrap_or(""));
 
                     // Each channel template is rendered through the template
                     // engine, dropping only empty results. A render error
@@ -447,7 +605,39 @@ fn run_uploads(
                     let effective_channels = resolve_effective_channels(
                         rendered_channels.as_deref(),
                         rendered_grade.as_deref(),
+                        snap_cfg.confinement.as_deref(),
                     );
+
+                    // Re-check the RENDERED channels/grade against the same
+                    // pre-release restriction the build stage validates on
+                    // the raw, unrendered `channel_templates`. A template
+                    // that resolves to a forbidden channel only at publish
+                    // time (or a `--publish-only` run, which never executes
+                    // the build stage's preflight at all) must still be
+                    // caught here, before the Snap Store ever sees the
+                    // upload.
+                    let confinement_is_devmode = snap_cfg.confinement.as_deref() == Some("devmode");
+                    let grade_is_devel = rendered_grade.as_deref() == Some("devel");
+                    if let Some(channels) = effective_channels.as_deref()
+                        && (confinement_is_devmode || grade_is_devel)
+                        && let Some(rejected) = first_channel_rejected_for_prerelease_snap(channels)
+                    {
+                        let reason = match (confinement_is_devmode, grade_is_devel) {
+                            (true, true) => "devmode confinement and devel grade",
+                            (true, false) => "devmode confinement",
+                            (false, true) => "devel grade",
+                            (false, false) => unreachable!("guarded by the outer if"),
+                        };
+                        anyhow::bail!(
+                            "snapcraft: crate '{}' configures {reason} together with channel \
+                             '{rejected}', which the Snap Store rejects — a snap with {reason} \
+                             may only be pushed to pre-release channels (edge, beta). Remove \
+                             '{rejected}' from channel_templates or drop the setting that \
+                             produces {reason}.",
+                            krate.name
+                        );
+                    }
+
                     let upload_args =
                         snapcraft_upload_command(&snap_path, effective_channels.as_deref());
 
@@ -459,21 +649,55 @@ fn run_uploads(
                     // Idempotency probe: the Snap Store mints a fresh revision
                     // on every upload, so re-running a release at an
                     // already-published version would create a duplicate
-                    // revision. Skip the upload when a revision for this
-                    // version already exists. `None` (probe couldn't run) and
-                    // `Some(false)` (no such revision) both proceed to upload.
+                    // revision (and, since the Store dedups on content, the
+                    // re-upload would only hit a content-dedup rejection
+                    // anyway). A revision uploaded but never released to a
+                    // configured channel — orphaned by an earlier
+                    // interrupted run — must be promoted, not silently
+                    // reported as already published while nothing is
+                    // actually live in that channel.
                     let snap_name = resolve_snap_name(
                         snap_cfg,
                         &project_name,
                         &crate::targets::crate_primary_binary(krate),
                     );
-                    if let Some(true) = snap_revision_already_published(&snap_name, &version, log) {
-                        log.status(&format!(
-                            "skipped snapcraft '{}' {} — revision already published in the Snap Store",
-                            snap_name, version
-                        ));
-                        skipped_already_published += 1;
-                        continue;
+                    let probe_channels = effective_channels.clone().unwrap_or_default();
+                    match revision_missing_channels(
+                        &snap_name,
+                        &version,
+                        arch,
+                        &probe_channels,
+                        log,
+                    ) {
+                        None => {}
+                        Some((_, missing)) if missing.is_empty() => {
+                            log.status(&format!(
+                                "skipped snapcraft '{}' {} — revision already published in the Snap Store",
+                                snap_name, version
+                            ));
+                            skipped_already_published += 1;
+                            continue;
+                        }
+                        Some((revision, missing)) => {
+                            attempted_upload = true;
+                            promote_revision(&snap_name, &revision, &missing, log).with_context(
+                                || {
+                                    format!(
+                                        "promoting existing snap '{snap_name}' revision {revision} \
+                                         to {missing:?} — uploaded by a prior run but never released"
+                                    )
+                                },
+                            )?;
+                            log.status(&format!(
+                                "promoted snap '{}' {} (revision {}) to {} — recovered an \
+                                 already-uploaded revision from a prior run that was never released",
+                                snap_name,
+                                version,
+                                revision,
+                                missing.join(", ")
+                            ));
+                            continue;
+                        }
                     }
 
                     attempted_upload = true;
@@ -482,6 +706,12 @@ fn run_uploads(
                     // re-entered per attempt while the outer scope still reads
                     // the flag afterwards).
                     let review_hold = std::cell::Cell::new(false);
+                    // Set from inside the retry closure when a content-dedup
+                    // rejection was recovered via promotion rather than a
+                    // fresh upload — the final default status line below
+                    // must say "promoted", not "uploaded", or the operator
+                    // reads a fabricated upload that never happened.
+                    let promoted = std::cell::Cell::new(false);
                     // A snapcraft push is idempotent for retry purposes: the
                     // revision-already-published probe above skips a re-run, so
                     // re-issuing the upload after a transient 5xx/network blip
@@ -578,13 +808,108 @@ fn run_uploads(
                                 Ok(_) => return Ok(()),
                                 Err(e) => e,
                             };
+                            // The 5xx-retriable classifier is checked FIRST,
+                            // ahead of the dedup classifier: the two are not
+                            // mutually exclusive. Observed in the wild — the
+                            // attempt that returns a 5xx can still have
+                            // landed the bytes server-side, so the very next
+                            // (automatic) retry gets rejected as a duplicate
+                            // of what it already ingested, and its output
+                            // carries both markers. Checking dedup first
+                            // would permanently fast-fail a purely transient
+                            // failure.
                             if is_retriable_snap_push(&combined) {
-                                Err(ControlFlow::Continue(err))
-                            } else {
-                                // Auth failures, malformed snap, quota errors, etc.
-                                // fast-fail without burning retry budget.
-                                Err(ControlFlow::Break(err))
+                                return Err(ControlFlow::Continue(err));
                             }
+                            if is_content_dedup_rejection(&combined) {
+                                // The Store deduplicates on the uploaded
+                                // bytes' content hash, not on the
+                                // caller-supplied version string. Two
+                                // distinct situations produce this
+                                // rejection:
+                                //
+                                // 1. An EARLIER attempt (this run's own retry
+                                //    loop, or a prior failed run) already
+                                //    landed these exact bytes server-side as
+                                //    an orphaned revision that was never
+                                //    released to any channel — the fix is to
+                                //    PROMOTE that revision, not repack.
+                                // 2. The `.snap` genuinely collides with a
+                                //    DIFFERENT already-released version's
+                                //    bytes — no revision exists at the
+                                //    CURRENT version, so there is nothing to
+                                //    promote and the package contents must
+                                //    change.
+                                //
+                                // `snapcraft list-revisions` disambiguates:
+                                // a revision whose Version column equals the
+                                // version being published names case 1.
+                                if let Some(revision) =
+                                    find_colliding_revision(&snap_name, &version, arch, log)
+                                {
+                                    let promote_channels =
+                                        effective_channels.clone().unwrap_or_default();
+                                    if promote_channels.is_empty() {
+                                        return Err(ControlFlow::Break(err.context(format!(
+                                            "snap upload rejected: content-identical to \
+                                             revision {revision} of {snap_name} {version} \
+                                             already in the Snap Store, but no channel is \
+                                             configured to promote it into — raw snapcraft \
+                                             output: {combined}"
+                                        ))));
+                                    }
+                                    return match promote_revision(
+                                        &snap_name,
+                                        &revision,
+                                        &promote_channels,
+                                        log,
+                                    ) {
+                                        Ok(()) => {
+                                            promoted.set(true);
+                                            log.status(&format!(
+                                                "promoted snap {snap_name} {version} \
+                                                 (revision {revision}) to {} — recovered from \
+                                                 a content-dedup rejection: an earlier attempt \
+                                                 had already landed this version's bytes \
+                                                 without releasing them",
+                                                promote_channels.join(",")
+                                            ));
+                                            Ok(())
+                                        }
+                                        Err(promote_err) => {
+                                            Err(ControlFlow::Break(err.context(format!(
+                                                "snap upload rejected as content-identical to \
+                                                 revision {revision} (already-uploaded bytes \
+                                                 for {snap_name} {version}), and promoting \
+                                                 that revision to {} also failed: \
+                                                 {promote_err:#} — raw snapcraft output: \
+                                                 {combined}",
+                                                promote_channels.join(",")
+                                            ))))
+                                        }
+                                    };
+                                }
+                                log.warn(&format!(
+                                    "snap {snap_name} {version} rejected by Snap Store: \
+                                     content-identical to an already-uploaded revision, but \
+                                     `snapcraft list-revisions` found no revision at version \
+                                     {version} — the collision is against a DIFFERENT \
+                                     already-released version's bytes; retrying will not \
+                                     help, the package contents must change"
+                                ));
+                                return Err(ControlFlow::Break(err.context(format!(
+                                    "snap upload rejected: content-identical to an \
+                                     already-uploaded revision (Snap Store binary_sha3_384 \
+                                     dedup) at a version OTHER than {version} — retry will \
+                                     not help, the .snap contents must change — raw \
+                                     snapcraft output: {combined}"
+                                ))));
+                            }
+                            // Auth failures, malformed snap, quota errors, etc.
+                            // fast-fail without burning retry budget.
+                            Err(ControlFlow::Break(
+                                err.context(format!("raw snapcraft output: {combined}")),
+                            ))
                         },
                     )?;
                     if review_hold.get() {
@@ -607,7 +932,7 @@ fn run_uploads(
                         {
                             t.held_for_review = true;
                         }
-                    } else {
+                    } else if !promoted.get() {
                         log.status(&format!("uploaded snap {} {}", snap_name, version));
                     }
                 }
@@ -662,7 +987,8 @@ fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
 /// Append a `PublisherResult` for the snapcraft stage to
 /// `ctx.publish_report`. Initializes the report when `None` (covers
 /// `--publish` runs where the regular `PublishStage` was skipped).
-/// Snapcraft is a Submitter-group publisher with `required = false`.
+/// Snapcraft is a Submitter-group publisher; `required` is the caller's
+/// pre-derived [`derive_snapcraft_required`] flag.
 ///
 /// Similar role to `stage-blob::run::record_blob_result`; signature is
 /// slightly different — this recorder takes a pre-computed
@@ -670,11 +996,12 @@ fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
 /// from `(uploaded, &exec_result)`. Different shape is fine; the
 /// contract (init `publish_report` if `None`; push one
 /// `PublisherResult` with `name="snapcraft"`,
-/// `group=PublisherGroup::Submitter`, `required=false`) is identical.
+/// `group=PublisherGroup::Submitter`) is identical.
 pub(crate) fn record_snapcraft_result(
     ctx: &mut Context,
     evidence: Option<PublishEvidence>,
     outcome: PublisherOutcome,
+    required: bool,
 ) {
     if ctx.publish_report.is_none() {
         ctx.publish_report = Some(PublishReport::default());
@@ -686,10 +1013,39 @@ pub(crate) fn record_snapcraft_result(
     report.results.push(PublisherResult {
         name: "snapcraft".to_string(),
         group: PublisherGroup::Submitter,
-        required: false,
+        required,
         outcome,
         evidence,
     });
+}
+
+/// Derive the aggregated `required` flag for the snapcraft stage's
+/// `PublisherResult`: `true` iff any selected crate's snapcraft config that
+/// actually opts into publishing (`publish: true`) also sets
+/// `required: true`. A `publish: false` (build-only) config's `required`
+/// setting is inert here — it names an upload that will never be
+/// attempted, so it must not escalate an unrelated `publish: true` config
+/// in the same crate into required. Mirrors
+/// `stage-blob::run::derive_blob_required` — one aggregated outcome per
+/// stage, one bit per stage, so the submitter gate and the CLI's
+/// required-failures exit-code gate just consult
+/// `any_failed(Submitter, required_only=true)` without per-config
+/// bookkeeping.
+///
+/// Unset (`None`) resolves to `false`: `required` only governs whether the
+/// pipeline ABORTS on a failed snap upload. `verify-release`'s landing
+/// check surfaces an attempted-and-failed upload as an issue regardless of
+/// this flag — see `landing::run_landing_checks`.
+pub(crate) fn derive_snapcraft_required(ctx: &Context) -> bool {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter_map(|c| c.snapcrafts.as_ref())
+        .flat_map(|configs| configs.iter())
+        .filter(|cfg| cfg.publish.unwrap_or(false))
+        .any(|cfg| cfg.required.unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -703,7 +1059,7 @@ mod publish_stage_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![SnapcraftConfig {
                 name: package_name.map(|s| s.to_string()),
                 publish: Some(true),
@@ -711,6 +1067,25 @@ mod publish_stage_tests {
                 ..Default::default()
             }]),
             ..Default::default()
+        }
+    }
+
+    /// A Linux Snap artifact for `crate_name`, matching what `stage-build`
+    /// registers before this stage runs. The `crates.is_empty()` /
+    /// `snap_artifacts.is_empty()` early-return checks in `Stage::run`
+    /// require BOTH a `publish: true` snapcraft config AND a matching
+    /// artifact before any of the gate/upload machinery below them
+    /// executes — a test that only sets up the crate config, without this,
+    /// exercises the "no work, no record" early-return path instead.
+    fn snap_artifact(crate_name: &str) -> anodizer_core::artifact::Artifact {
+        anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Snap,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("/tmp/dist/{crate_name}.snap")),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
         }
     }
 
@@ -953,6 +1328,153 @@ mod publish_stage_tests {
         );
     }
 
+    // ---------------------------------------------------------------
+    // Pre-submitter verify-release gate — the post-publish content check
+    // the in-dispatch Submitter loop also consults, run here too because
+    // snapcraft executes as its own pipeline stage outside that loop. A
+    // release configuring ONLY `snapcraft:` never puts a single publisher
+    // through the in-dispatch loop, so its lazy eval never fires without
+    // this stage running the check itself.
+    // ---------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn verify_gate_records_skipped_verify_gate_blocked() {
+        // No prior publish_report at all — the snapcraft-only-release
+        // shape: no trait-dispatched Submitter publisher ever ran, so
+        // this stage is the first and only place the gate can fire.
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, Some("stable"))])
+            .build();
+        ctx.artifacts.add(snap_artifact("demo"));
+        assert!(ctx.publish_report.is_none());
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(false)));
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("gate path returns Ok");
+
+        let report = ctx
+            .publish_report()
+            .expect("gate check initializes the report");
+        assert!(report.verify_gate_evaluated);
+        assert!(report.verify_gate_blocked);
+        let snap = report
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry present");
+        assert_eq!(
+            snap.outcome,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+        );
+        assert!(snap.evidence.is_none(), "gated skip records no evidence");
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn verify_gate_stays_open_when_gate_passes() {
+        // A crate + matching artifact must be configured — the gate only
+        // runs once there is real snapcraft work to do (the "no work, no
+        // record" contract skips the gate entirely otherwise). The gate
+        // passing means the stage proceeds into run_uploads and actually
+        // spawns `snapcraft`, so it needs the same hermetic stub every other
+        // upload-reaching test in this file uses.
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+        let tools = FakeToolDir::new();
+        tools.tool("snapcraft").exit(0).install();
+        let _path = tools.activate();
+
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, Some("stable"))])
+            .build();
+        ctx.artifacts.add(snap_artifact("demo"));
+        ctx.verify_gate = Some(std::sync::Arc::new(|_ctx| Ok(true)));
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("ungated path returns Ok");
+
+        let report = ctx
+            .publish_report()
+            .expect("gate check initializes the report");
+        assert!(report.verify_gate_evaluated);
+        assert!(!report.verify_gate_blocked);
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn no_work_does_not_evaluate_the_verify_gate() {
+        // Without a configured crate or a matching artifact, the stage
+        // must take the "no work, no record" early-return before ever
+        // reaching the verify-release gate — no live GH asset-verification
+        // fetch, no phantom `Skipped(VerifyGateBlocked)` entry.
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let invoked_clone = invoked.clone();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.verify_gate = Some(std::sync::Arc::new(move |_ctx| {
+            invoked_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(false)
+        }));
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("no-work path returns Ok");
+
+        assert_eq!(
+            invoked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a release with no snapcraft work must never invoke the verify gate"
+        );
+        assert!(
+            ctx.publish_report.is_none(),
+            "no work attempted — publish_report must stay untouched"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn verify_gate_evaluated_once_when_dispatch_already_ran_it() {
+        // Simulates the shared, cross-crate coordination: the in-dispatch
+        // Submitter loop already ran the live gate check (e.g. this
+        // release also configures `cargo:`) and persisted its verdict.
+        // The stage must trust that verdict rather than invoking the gate
+        // closure a second time.
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let invoked_clone = invoked.clone();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, Some("stable"))])
+            .build();
+        ctx.artifacts.add(snap_artifact("demo"));
+        ctx.verify_gate = Some(std::sync::Arc::new(move |_ctx| {
+            invoked_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(false)
+        }));
+        ctx.publish_report = Some(PublishReport {
+            verify_gate_evaluated: true,
+            verify_gate_blocked: true,
+            ..Default::default()
+        });
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("gate path returns Ok");
+
+        assert_eq!(
+            invoked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an already-evaluated gate must not be invoked again"
+        );
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry present");
+        assert_eq!(
+            snap.outcome,
+            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked)
+        );
+    }
+
     #[test]
     fn no_configured_crates_records_nothing() {
         // BlobStage parity: when there is no work to attempt, do NOT
@@ -1034,6 +1556,7 @@ mod publish_stage_tests {
             &mut ctx,
             None,
             PublisherOutcome::Failed("simulated upload failure".into()),
+            false,
         );
         let report = ctx.publish_report.as_ref().expect("report initialized");
         assert_eq!(report.results.len(), 1);
@@ -1073,6 +1596,7 @@ mod publish_stage_tests {
             &mut ctx,
             None,
             PublisherOutcome::Failed("snapcraft: 401 unauthorized".into()),
+            false,
         );
 
         let report = ctx.publish_report.as_ref().expect("report present");
@@ -1107,6 +1631,7 @@ mod publish_stage_tests {
             &mut ctx,
             Some(evidence.clone()),
             PublisherOutcome::Succeeded,
+            false,
         );
         let report = ctx.publish_report.as_ref().expect("report initialized");
         let snap = report
@@ -1116,6 +1641,179 @@ mod publish_stage_tests {
             .expect("snapcraft entry present");
         assert_eq!(snap.outcome, PublisherOutcome::Succeeded);
         assert_eq!(snap.evidence.as_ref(), Some(&evidence));
+    }
+
+    // ---------------------------------------------------------------
+    // derive_snapcraft_required — Finding 1: an unset/false snapcraft
+    // `required:` must still let verify-release surface a failed upload,
+    // but must NOT abort the pipeline; an opt-in `required: true` must.
+    // Exercised across all three config modes.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn derive_snapcraft_required_defaults_false_single_crate() {
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                publish: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        assert!(
+            !derive_snapcraft_required(&ctx),
+            "an unset `required:` must default to false"
+        );
+    }
+
+    #[test]
+    fn derive_snapcraft_required_true_lockstep_workspace() {
+        // Lockstep mode: multiple crates under one top-level `crates:` list
+        // sharing one workspace version — any one opting in escalates the
+        // aggregated stage-level bit.
+        let quiet = CrateConfig {
+            name: "quiet".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                publish: Some(true),
+                required: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let loud = CrateConfig {
+            name: "loud".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                publish: Some(true),
+                required: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![quiet, loud],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        assert!(
+            derive_snapcraft_required(&ctx),
+            "any crate's `required: true` must escalate the aggregated stage bit"
+        );
+    }
+
+    #[test]
+    fn derive_snapcraft_required_sees_workspace_only_crate() {
+        // Per-crate (workspace) mode: `required: true` on a workspace-only
+        // crate must still escalate — a `config.crates`-only derivation
+        // would silently miss it.
+        let config = anodizer_core::config::Config {
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![CrateConfig {
+                    name: "ws-only".to_string(),
+                    path: ".".to_string(),
+                    snapcrafts: Some(vec![SnapcraftConfig {
+                        publish: Some(true),
+                        required: Some(true),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        assert!(
+            derive_snapcraft_required(&ctx),
+            "workspace-only `required: true` must escalate the stage gate"
+        );
+    }
+
+    #[test]
+    fn derive_snapcraft_required_respects_selected_crates_filter() {
+        let quiet = CrateConfig {
+            name: "quiet".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                publish: Some(true),
+                required: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let loud = CrateConfig {
+            name: "loud".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                publish: Some(true),
+                required: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![quiet, loud],
+            ..Default::default()
+        };
+        let options = anodizer_core::context::ContextOptions {
+            selected_crates: vec!["quiet".to_string()],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, options);
+        assert!(
+            !derive_snapcraft_required(&ctx),
+            "a `--crate quiet` selection must not see the deselected crate's `required: true`"
+        );
+    }
+
+    #[test]
+    fn derive_snapcraft_required_ignores_build_only_config() {
+        // A `publish: false` config's `required: true` names an upload that
+        // will never be attempted — it must not escalate an unrelated
+        // `publish: true` config in the same crate into required.
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![
+                SnapcraftConfig {
+                    publish: Some(false),
+                    required: Some(true),
+                    ..Default::default()
+                },
+                SnapcraftConfig {
+                    publish: Some(true),
+                    required: Some(false),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        assert!(
+            !derive_snapcraft_required(&ctx),
+            "a build-only config's `required: true` is inert; only \
+             `publish: true` configs may escalate the aggregated bit"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1148,7 +1846,7 @@ mod publish_stage_tests {
         let crate_cfg = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![snap_cfg]),
             ..Default::default()
         };
@@ -1201,7 +1899,7 @@ mod publish_stage_tests {
         CrateConfig {
             name: name.to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![SnapcraftConfig {
                 name: Some(name.to_string()),
                 publish: Some(true),
@@ -1349,7 +2047,7 @@ mod publish_stage_tests {
         let krate = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
             snapcrafts: Some(vec![SnapcraftConfig {
                 name: Some("demo".to_string()),
                 publish: Some(false),
@@ -1404,7 +2102,7 @@ mod publish_stage_tests {
             crates: vec![CrateConfig {
                 name: "demo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
                     name: Some("demo".to_string()),
                     publish: Some(true),
@@ -1483,7 +2181,7 @@ mod publish_stage_tests {
             crates: vec![CrateConfig {
                 name: "demo".to_string(),
                 path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
                 snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
                     name: Some("demo".to_string()),
                     publish: Some(true),
@@ -1524,6 +2222,966 @@ mod publish_stage_tests {
         assert!(
             !targets[0].held_for_review,
             "a processing conflict is not a review hold"
+        );
+    }
+
+    // A content-identical upload rejection (Snap Store binary_sha3_384
+    // dedup) is permanent for the given bytes — retrying resends the same
+    // .snap and gets rejected every time. The upload must fast-fail on the
+    // first attempt (no wasted retry budget) and the recorded outcome must
+    // carry diagnostic text explaining the rejection is content-based, not
+    // a transient store error.
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn content_dedup_rejection_fails_fast_without_retry() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let counter_dir = tempfile::TempDir::new().unwrap();
+        let counter_file = counter_dir.path().join("upload_attempts");
+        std::fs::write(&counter_file, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {counter}\n\
+                 echo \"Error checking upload uniqueness.\"\n\
+                 exit 2\nfi\nexit 1\n",
+                counter = counter_file.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // Per-target upload failures are reported via `PublisherResult`, not
+        // the stage's own `Result` — the stage return stays `Ok(())` so
+        // announce-gating and the Submitter gate still run (see the comment
+        // at the end of `SnapcraftPublishStage::run`).
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok even when a publisher fails");
+
+        let attempts = std::fs::read_to_string(&counter_file).unwrap();
+        assert_eq!(
+            attempts.len(),
+            1,
+            "a content-dedup rejection must fail fast on the first attempt, \
+             never retried — retrying resends identical bytes and gets \
+             rejected every time (got {} attempts)",
+            attempts.len()
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        match &snap.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("content-identical"),
+                    "recorded failure must explain the content-dedup mechanism, got: {msg}"
+                );
+            }
+            other => panic!("expected Failed outcome, got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Classifier ordering — a co-occurring 5xx must still retry even when
+    // the ambiguous dedup marker is also present in the same output.
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn co_occurring_5xx_and_dedup_marker_still_retries() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HumanDuration, RetryConfig};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let counter_dir = tempfile::TempDir::new().unwrap();
+        let counter_file = counter_dir.path().join("upload_attempts");
+        std::fs::write(&counter_file, "").unwrap();
+
+        // The FIRST upload attempt's combined output carries both a `[503]`
+        // marker (retriable) and the ambiguous "Error checking upload
+        // uniqueness." marker (dedup, but only ambiguous, not the
+        // definitive form) — the shape observed on the failed CI run this
+        // fix was diagnosed from. The retriable classifier must win, so
+        // the SECOND attempt gets a chance to succeed cleanly.
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {counter}\n\
+                 n=$(wc -c < {counter})\n\
+                 if [ \"$n\" -eq 1 ]; then\n\
+                 echo \"[503] Service Unavailable — Error checking upload uniqueness.\"\n\
+                 exit 2\nfi\n\
+                 exit 0\nfi\n\
+                 exit 1\n",
+                counter = counter_file.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            retry: Some(RetryConfig {
+                attempts: 5,
+                delay: HumanDuration(Duration::from_millis(1)),
+                max_delay: HumanDuration(Duration::from_millis(1)),
+                max_elapsed: None,
+            }),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let attempts = std::fs::read_to_string(&counter_file).unwrap();
+        assert_eq!(
+            attempts.len(),
+            2,
+            "a co-occurring 5xx must still retry (2 attempts expected: the \
+             failing one and the recovering one), got {} attempt(s)",
+            attempts.len()
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "expected the retry to recover to Succeeded, got: {:?}",
+            snap.outcome
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Dedup-rejection recovery — a matching-version colliding revision is
+    // promoted rather than reported as a permanent repack error.
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn dedup_rejection_with_matching_revision_promotes_instead_of_failing() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let upload_counter_dir = tempfile::TempDir::new().unwrap();
+        let upload_counter = upload_counter_dir.path().join("upload_attempts");
+        std::fs::write(&upload_counter, "").unwrap();
+        let lr_counter_dir = tempfile::TempDir::new().unwrap();
+        let lr_counter = lr_counter_dir.path().join("list_revisions_calls");
+        std::fs::write(&lr_counter, "").unwrap();
+        let release_dir = tempfile::TempDir::new().unwrap();
+        let release_log = release_dir.path().join("release_calls");
+        std::fs::write(&release_log, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 printf 'x' >> {lr}\n\
+                 n=$(wc -c < {lr})\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 if [ \"$n\" -gt 1 ]; then\n\
+                 echo \"7    2024-06-01T00:00:00Z  amd64   1.0.0    -\"\n\
+                 fi\n\
+                 echo \"1    2024-01-01T00:00:00Z  amd64   0.9.0    stable\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {up}\n\
+                 echo \"Error checking upload uniqueness.\"\n\
+                 exit 2\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"$2 $3 $4\" >> {rel}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+                lr = lr_counter.display(),
+                up = upload_counter.display(),
+                rel = release_log.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let upload_attempts = std::fs::read_to_string(&upload_counter).unwrap();
+        assert_eq!(
+            upload_attempts.len(),
+            1,
+            "recovery via promotion must not retry the upload — the bytes \
+             already landed"
+        );
+
+        let release_calls = std::fs::read_to_string(&release_log).unwrap();
+        assert_eq!(
+            release_calls.trim(),
+            "demo 7 stable",
+            "expected exactly one `snapcraft release` promoting revision 7 \
+             to the configured 'stable' channel, got: {release_calls:?}"
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "a recovered dedup rejection must record Succeeded, not Failed, \
+             got: {:?}",
+            snap.outcome
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn dedup_rejection_promotion_failure_is_reported_distinctly() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        // The FIRST `list-revisions` call is the pre-upload idempotency probe
+        // (`revision_missing_channels`), which must NOT see a matching
+        // revision yet or it would skip the upload before the dedup-rejection
+        // / promotion-recovery path this test targets is ever reached. Only
+        // the SECOND+ call (from `find_colliding_revision`, after the upload
+        // is rejected as a duplicate) reports the matching revision.
+        let lr_counter_dir = tempfile::TempDir::new().unwrap();
+        let lr_counter = lr_counter_dir.path().join("list_revisions_calls");
+        std::fs::write(&lr_counter, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 printf 'x' >> {lr}\n\
+                 n=$(wc -c < {lr})\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 if [ \"$n\" -gt 1 ]; then\n\
+                 echo \"7    2024-06-01T00:00:00Z  amd64   1.0.0    -\"\n\
+                 fi\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 echo \"Error checking upload uniqueness.\"\n\
+                 exit 2\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"snapcraft release: 403 Forbidden\"\n\
+                 exit 1\n\
+                 fi\n\
+                 exit 1\n",
+                lr = lr_counter.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok even when a publisher fails");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        match &snap.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("revision 7") && msg.contains("promoting"),
+                    "a failed promotion must name the colliding revision and \
+                     explain that promotion itself failed, got: {msg}"
+                );
+            }
+            other => panic!("expected Failed outcome, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn preupload_probe_promotes_orphaned_revision_instead_of_skipping() {
+        // A revision for this exact version already exists (an earlier run
+        // uploaded it) but its Channels column is "-" — never released. The
+        // pre-upload idempotency probe must not silently report
+        // Skipped(AlreadyPublished) for content that was never actually
+        // published to any channel; it must promote the existing revision.
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let upload_counter_dir = tempfile::TempDir::new().unwrap();
+        let upload_counter = upload_counter_dir.path().join("upload_attempts");
+        std::fs::write(&upload_counter, "").unwrap();
+        let release_dir = tempfile::TempDir::new().unwrap();
+        let release_log = release_dir.path().join("release_calls");
+        std::fs::write(&release_log, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 echo \"7    2024-06-01T00:00:00Z  amd64   1.0.0    -\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {up}\n\
+                 exit 1\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"$2 $3 $4\" >> {rel}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+                up = upload_counter.display(),
+                rel = release_log.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let upload_attempts = std::fs::read_to_string(&upload_counter).unwrap();
+        assert_eq!(
+            upload_attempts.len(),
+            0,
+            "an orphaned-but-unreleased revision must be promoted, never re-uploaded \
+             (re-upload would only hit the Store's content-dedup rejection)"
+        );
+
+        let release_calls = std::fs::read_to_string(&release_log).unwrap();
+        assert_eq!(
+            release_calls.trim(),
+            "demo 7 stable",
+            "expected exactly one `snapcraft release` promoting the orphaned revision 7 \
+             to the configured 'stable' channel, got: {release_calls:?}"
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "recovering an orphaned revision must record Succeeded, not Skipped, got: {:?}",
+            snap.outcome
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn preupload_probe_fully_released_revision_still_skips_cleanly() {
+        // Regression guard: a revision that IS already released to every
+        // configured channel is a true re-run at an already-published
+        // version — must still skip cleanly, never upload or promote.
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let upload_counter_dir = tempfile::TempDir::new().unwrap();
+        let upload_counter = upload_counter_dir.path().join("upload_attempts");
+        std::fs::write(&upload_counter, "").unwrap();
+        let release_dir = tempfile::TempDir::new().unwrap();
+        let release_log = release_dir.path().join("release_calls");
+        std::fs::write(&release_log, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 echo \"7    2024-06-01T00:00:00Z  amd64   1.0.0    stable\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {up}\n\
+                 exit 1\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"$2 $3 $4\" >> {rel}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+                up = upload_counter.display(),
+                rel = release_log.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        assert_eq!(
+            std::fs::read_to_string(&upload_counter).unwrap().len(),
+            0,
+            "a fully-released revision must never be re-uploaded"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&release_log).unwrap().trim(),
+            "",
+            "a fully-released revision must never be re-promoted"
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(
+                snap.outcome,
+                PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
+            ),
+            "a revision already released everywhere configured must still skip cleanly, \
+             got: {:?}",
+            snap.outcome
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn preupload_promotion_failure_is_reported_as_failed() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 echo \"7    2024-06-01T00:00:00Z  amd64   1.0.0    -\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 exit 1\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"snapcraft release: 403 Forbidden\"\n\
+                 exit 1\n\
+                 fi\n\
+                 exit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok even when a publisher fails");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        match &snap.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("revision 7") && msg.contains("promoting"),
+                    "a failed promotion of an orphaned revision must name it and \
+                     explain that promotion itself failed, got: {msg}"
+                );
+            }
+            other => panic!("expected Failed outcome, got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Dual-arch isolation — a dual-arch snap config (`crates:` targeting
+    // both x86_64 and aarch64) mints one `list-revisions` row per arch per
+    // version; the amd64 and arm64 legs must be probed independently.
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let upload_log_dir = tempfile::TempDir::new().unwrap();
+        let upload_log = upload_log_dir.path().join("upload_calls");
+        std::fs::write(&upload_log, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 echo \"5    2026-07-01T00:00:00Z  amd64   1.0.0    stable\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 echo \"$2\" >> {up}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+                up = upload_log.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_arm64.snap"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let uploaded = std::fs::read_to_string(&upload_log).unwrap();
+        assert_eq!(
+            uploaded.trim(),
+            "/tmp/dist/demo_1.0.0_arm64.snap",
+            "matching on version alone would find amd64's already-released \
+             revision 5 and wrongly skip arm64 too; arm64 has no revision of \
+             its own yet and must be uploaded, while amd64 must NOT be \
+             re-uploaded (it is already published), got: {uploaded:?}"
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "one arch skipped + one arch uploaded is still an overall \
+             success, got: {:?}",
+            snap.outcome
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Dedup rejection against a DIFFERENT version's bytes — no revision
+    // exists at the current version, so there is nothing to promote and the
+    // upload must fail with a repack-required error rather than silently
+    // succeed or promote the wrong revision.
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn dedup_rejection_against_different_version_reports_repack_error() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let release_dir = tempfile::TempDir::new().unwrap();
+        let release_log = release_dir.path().join("release_calls");
+        std::fs::write(&release_log, "").unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 echo \"3    2024-01-01T00:00:00Z  amd64   0.9.0    stable\"\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 echo \"Error checking upload uniqueness.\"\n\
+                 exit 2\n\
+                 elif [ \"$1\" = \"release\" ]; then\n\
+                 echo \"$2 $3 $4\" >> {rel}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+                rel = release_log.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok even when a publisher fails");
+
+        assert_eq!(
+            std::fs::read_to_string(&release_log).unwrap().trim(),
+            "",
+            "no revision exists at the current version — there is nothing \
+             to promote, so `snapcraft release` must never be called"
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        match &snap.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("OTHER than") && msg.contains("contents must change"),
+                    "the collision is against a different version's bytes — \
+                     `find_colliding_revision` found no revision at the \
+                     current version, so the error must say so and direct \
+                     the operator to repack rather than retry, got: {msg}"
+                );
+            }
+            other => panic!("expected Failed outcome, got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Rendered-channel/grade preflight re-check — a template that only
+    // resolves to a forbidden channel at render time (or a `--publish-only`
+    // run, which never executes the build stage's raw preflight at all)
+    // must still be caught before the Snap Store ever sees the upload.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn rendered_channel_rejected_even_though_raw_template_is_not_literally_restricted() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    confinement: Some("devmode".to_string()),
+                    // The raw string is "{{ .Channel }}" — it does not
+                    // literally equal a restricted risk word, so a check
+                    // against the unrendered template (the build stage's
+                    // preflight) would not catch it. Only after rendering
+                    // does it become "stable".
+                    channel_templates: Some(vec!["{{ .Channel }}".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Channel", "stable");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let err = SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect_err("a rendered channel the Store rejects for devmode snaps must abort");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("devmode confinement") && msg.contains("'stable'"),
+            "expected the rendered-channel rejection to name devmode \
+             confinement and the offending channel, got: {msg}"
         );
     }
 }

@@ -73,7 +73,7 @@ fn binstall_crate(name: &str, repo: &str, path: &str) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
-        tag_template: "v{{ Version }}".to_string(),
+        tag_template: Some("v{{ Version }}".to_string()),
         archives: ArchivesConfig::Configs(vec![anodize_archive()]),
         release: Some(ReleaseConfig {
             github: Some(GitHubConfig {
