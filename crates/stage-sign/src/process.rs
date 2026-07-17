@@ -1023,8 +1023,20 @@ pub(crate) fn process_sign_configs(
                 continue;
             }
 
+            // Render `stdin` through the template engine (then shell-var
+            // expansion, mirroring the args path above) so a passphrase like
+            // `{{ Env.GPG_PASSPHRASE }}` reaches the signer as its value, not
+            // the literal template string. `stdin_file` is a path read raw.
+            let rendered_stdin = match sign_cfg.stdin.as_deref() {
+                Some(s) => Some(expand_shell_vars(
+                    &ctx.render_template(s)
+                        .with_context(|| format!("sign: render {label} stdin"))?,
+                    &shell_vars,
+                )),
+                None => None,
+            };
             let (_, stdin_data) = prepare_stdin_from(
-                sign_cfg.stdin.as_deref(),
+                rendered_stdin.as_deref(),
                 sign_cfg.stdin_file.as_deref(),
                 label,
             )?;

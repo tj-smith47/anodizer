@@ -27,7 +27,7 @@ docker_signs:
 | `signature` | string | auto | Signature output filename template. Templates supported. |
 | `certificate` | string | | Certificate file to embed in the signature (Cosign bundle signing). |
 | `ids` | list | all | Only sign images from docker configs whose `id` is in this list. |
-| `stdin` | string | | Literal content written to the signing command's stdin (e.g. a passphrase). |
+| `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); template-expanded (e.g. `{{ Env.GPG_PASSPHRASE }}`). |
 | `stdin_file` | string | | Path to a file whose content is written to the signing command's stdin. |
 | `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |

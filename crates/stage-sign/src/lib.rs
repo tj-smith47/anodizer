@@ -517,9 +517,19 @@ impl Stage for DockerSignStage {
 
                     log.verbose(&format!("docker-sign [{}] {}", sign_id, signed_ref));
 
-                    // Prepare stdin piping for docker signs.
+                    // Prepare stdin piping for docker signs. Render `stdin`
+                    // through the template engine (mirroring the args path
+                    // above) so `{{ Env.GPG_PASSPHRASE }}` reaches the signer
+                    // as its value; `stdin_file` is a path read raw.
+                    let rendered_stdin =
+                        match docker_sign_cfg.stdin.as_deref() {
+                            Some(s) => Some(ctx.render_template(s).with_context(|| {
+                                format!("docker-sign [{sign_id}]: render stdin")
+                            })?),
+                            None => None,
+                        };
                     let (stdin_cfg, stdin_data) = prepare_stdin_from(
-                        docker_sign_cfg.stdin.as_deref(),
+                        rendered_stdin.as_deref(),
                         docker_sign_cfg.stdin_file.as_deref(),
                         "docker-sign",
                     )?;

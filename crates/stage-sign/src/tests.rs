@@ -82,6 +82,24 @@ fn shell_echo_literal_to_file(literal: &str, dest_file: &str) -> (String, Vec<St
     }
 }
 
+/// Return a shell command + args that copies the signer's stdin to
+/// `dest_file`, so a test can assert what content was piped in.
+/// On Unix: `sh -c "cat > file"`. On Windows: `findstr "^"` echoes every
+/// stdin line to the redirected file (`^` matches the start of any line).
+fn shell_stdin_capture_to_file(dest_file: &str) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        (
+            "cmd.exe".to_string(),
+            vec!["/C".to_string(), format!("findstr \"^\" > {}", dest_file)],
+        )
+    } else {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), format!("cat > {}", dest_file)],
+        )
+    }
+}
+
 /// Return (cmd, args) for a simple echo command (no shell).
 fn echo_command() -> (String, Vec<String>) {
     if cfg!(windows) {
@@ -1490,6 +1508,138 @@ fn test_sign_env_vars_passed_to_command() {
         env_output.trim(),
         "hello_from_sign",
         "ANODIZER_TEST_SIGN_ENV should have been passed to the signing command"
+    );
+}
+
+#[test]
+fn test_sign_stdin_is_template_rendered() {
+    // Regression: `signs.stdin` must be template-expanded before it is piped
+    // to the signer, so `stdin: "{{ Env.GPG_PASSPHRASE }}"` reaches gpg as the
+    // passphrase VALUE, not the literal template string (matches GoReleaser's
+    // `sign.go` which applies templates to `stdin`).
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let marker_path = tmp.path().join("stdin_check.txt");
+    let marker_str = marker_path.to_string_lossy().to_string();
+
+    let (cmd, args) = shell_stdin_capture_to_file(&marker_str);
+    let signs = vec![SignConfig {
+        id: Some("test-stdin".to_string()),
+        cmd: Some(cmd),
+        args: Some(args),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: Some("{{ Env.GPG_PASSPHRASE }}".to_string()),
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        authenticode: None,
+        verify: None,
+        if_condition: None,
+    }];
+
+    let artifact_path = tmp.path().join("checksums.sha256");
+    std::fs::write(&artifact_path, b"checksum content").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(signs)
+        .build();
+    // `Env.*` resolves from the template env map (checked before the
+    // ProcessEnvSource fallback that supplies it in real CI); seed it
+    // hermetically so the test does not depend on the process environment.
+    ctx.template_vars_mut()
+        .set_env("GPG_PASSPHRASE", "s3cr3t-passphrase");
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: String::new(),
+        path: artifact_path,
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: combined_meta(),
+        size: None,
+    });
+
+    let result = SignStage.run(&mut ctx);
+    assert!(
+        result.is_ok(),
+        "sign should succeed; got: {:?}",
+        result.err()
+    );
+
+    let piped = std::fs::read_to_string(&marker_path)
+        .unwrap_or_else(|e| panic!("marker file should exist — stdin was piped: {e}"));
+    assert!(
+        piped.contains("s3cr3t-passphrase"),
+        "stdin template must render to the env value; got: {piped:?}"
+    );
+    assert!(
+        !piped.contains("{{"),
+        "the literal template string must not reach the signer; got: {piped:?}"
+    );
+}
+
+#[test]
+fn test_docker_sign_stdin_is_template_rendered() {
+    // Same regression as `test_sign_stdin_is_template_rendered`, for the
+    // docker-sign call site.
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let marker_path = tmp.path().join("docker_stdin_check.txt");
+    let marker_str = marker_path.to_string_lossy().to_string();
+
+    let (cmd, args) = shell_stdin_capture_to_file(&marker_str);
+    let docker_signs = vec![DockerSignConfig {
+        verify: None,
+        id: Some("test-stdin".to_string()),
+        cmd: Some(cmd),
+        args: Some(args),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: Some("{{ Env.GPG_PASSPHRASE }}".to_string()),
+        stdin_file: None,
+        env: None,
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    }];
+
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.template_vars_mut()
+        .set_env("GPG_PASSPHRASE", "s3cr3t-passphrase");
+    ctx.config.docker_signs = Some(docker_signs);
+
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("digest".to_string(), "sha256:abc123def456".to_string());
+    metadata.insert("id".to_string(), "my-docker-image".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata,
+        size: None,
+    });
+
+    DockerSignStage.run(&mut ctx).unwrap();
+
+    let piped = std::fs::read_to_string(&marker_path)
+        .unwrap_or_else(|e| panic!("marker file should exist — stdin was piped: {e}"));
+    assert!(
+        piped.contains("s3cr3t-passphrase"),
+        "docker-sign stdin template must render to the env value; got: {piped:?}"
+    );
+    assert!(
+        !piped.contains("{{"),
+        "the literal template string must not reach the signer; got: {piped:?}"
     );
 }
 
