@@ -2327,6 +2327,8 @@ mod publish_stage_tests {
     // the ambiguous dedup marker is also present in the same output.
     // -----------------------------------------------------------------
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn co_occurring_5xx_and_dedup_marker_still_retries() {
@@ -2430,6 +2432,8 @@ mod publish_stage_tests {
     // promoted rather than reported as a permanent repack error.
     // -----------------------------------------------------------------
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn dedup_rejection_with_matching_revision_promotes_instead_of_failing() {
@@ -2541,6 +2545,8 @@ mod publish_stage_tests {
         );
     }
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn dedup_rejection_promotion_failure_is_reported_distinctly() {
@@ -2636,6 +2642,8 @@ mod publish_stage_tests {
         }
     }
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn preupload_probe_promotes_orphaned_revision_instead_of_skipping() {
@@ -2741,6 +2749,8 @@ mod publish_stage_tests {
         );
     }
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn preupload_probe_fully_released_revision_still_skips_cleanly() {
@@ -2843,6 +2853,8 @@ mod publish_stage_tests {
         );
     }
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn preupload_promotion_failure_is_reported_as_failed() {
@@ -2928,6 +2940,8 @@ mod publish_stage_tests {
     // version; the amd64 and arm64 legs must be probed independently.
     // -----------------------------------------------------------------
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
@@ -3032,6 +3046,8 @@ mod publish_stage_tests {
     // succeed or promote the wrong revision.
     // -----------------------------------------------------------------
 
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn dedup_rejection_against_different_version_reports_repack_error() {
