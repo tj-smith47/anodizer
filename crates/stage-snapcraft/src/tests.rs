@@ -2961,8 +2961,8 @@ fn snapcraft_5xx_classifier_is_case_insensitive() {
 #[test]
 fn snapcraft_content_dedup_classifier_is_case_insensitive() {
     for combined in [
-        "snapcraft: upload failed: ERROR CHECKING UPLOAD UNIQUENESS.\n",
         "snapcraft: upload failed: A FILE WITH THIS EXACT SAME CONTENT HAS ALREADY BEEN UPLOADED\n",
+        "snapcraft: upload failed: a file with this exact same content has already been uploaded\n",
     ] {
         assert!(
             is_content_dedup_rejection(combined),
@@ -2972,17 +2972,31 @@ fn snapcraft_content_dedup_classifier_is_case_insensitive() {
 }
 
 #[test]
-fn snapcraft_content_dedup_classifies_both_message_shapes() {
-    for marker in [
-        "A file with this exact same content has already been uploaded",
-        "Error checking upload uniqueness.",
-    ] {
-        let combined = format!("snapcraft: upload failed: {marker}\n");
-        assert!(
-            is_content_dedup_rejection(&combined),
-            "expected content-dedup rejection for marker {marker}: {combined}"
-        );
-    }
+fn snapcraft_content_dedup_classifies_only_the_definitive_marker() {
+    // The Store's definitive duplicate message is a permanent dedup.
+    let definitive = "snapcraft: upload failed: A file with this exact same content \
+                      has already been uploaded\n";
+    assert!(
+        is_content_dedup_rejection(definitive),
+        "the definitive duplicate message is a content-dedup rejection: {definitive}"
+    );
+
+    // `Error checking upload uniqueness.` reports the uniqueness CHECK
+    // faulting, not a confirmed duplicate — it is a transient store fault, so
+    // it must classify as retriable and NOT as a permanent content-dedup.
+    // Misclassifying it as dedup fast-fails a transient fault and emits a
+    // false "contents must change" verdict against a freshly-versioned snap
+    // whose bytes cannot collide with an older revision.
+    let ambiguous = "snapcraft: upload failed: binary_sha3_384: Error checking upload \
+                     uniqueness.\n";
+    assert!(
+        is_retriable_snap_push(ambiguous),
+        "the uniqueness-check fault must be retriable: {ambiguous}"
+    );
+    assert!(
+        !is_content_dedup_rejection(ambiguous),
+        "the uniqueness-check fault must NOT be a permanent content-dedup: {ambiguous}"
+    );
 }
 
 #[test]
@@ -2992,6 +3006,8 @@ fn snapcraft_content_dedup_does_not_match_unrelated_failures() {
         "[503] Service Unavailable",
         "snapcraft: store returned '502 Bad Gateway'",
         "could not parse snap.yaml",
+        // Reclassified: the uniqueness-check fault is retriable, not dedup.
+        "binary_sha3_384: Error checking upload uniqueness.",
     ] {
         assert!(
             !is_content_dedup_rejection(combined),

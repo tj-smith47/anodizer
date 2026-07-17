@@ -2251,7 +2251,7 @@ mod publish_stage_tests {
             .script(format!(
                 "if [ \"$1\" = \"upload\" ]; then\n\
                  printf 'x' >> {counter}\n\
-                 echo \"Error checking upload uniqueness.\"\n\
+                 echo \"A file with this exact same content has already been uploaded\"\n\
                  exit 2\nfi\nexit 1\n",
                 counter = counter_file.display(),
             ))
@@ -2323,15 +2323,19 @@ mod publish_stage_tests {
     }
 
     // -----------------------------------------------------------------
-    // Classifier ordering — a co-occurring 5xx must still retry even when
-    // the ambiguous dedup marker is also present in the same output.
+    // Two co-occurring RETRIABLE markers — a `[503]` and the Store's
+    // uniqueness-check fault ("Error checking upload uniqueness.") in the
+    // same output — must retry. Neither is a confirmed content duplicate
+    // (both are transient store errors), so the second attempt gets a
+    // clean shot. This is NOT the 5xx-vs-dedup straddle (no definitive
+    // dedup marker is present); that ordering case is the next test.
     // -----------------------------------------------------------------
 
     // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn co_occurring_5xx_and_dedup_marker_still_retries() {
+    fn co_occurring_5xx_and_uniqueness_fault_still_retries() {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
         use anodizer_core::config::{HumanDuration, RetryConfig};
         use anodizer_core::test_helpers::fake_tool::FakeToolDir;
@@ -2344,11 +2348,11 @@ mod publish_stage_tests {
         std::fs::write(&counter_file, "").unwrap();
 
         // The FIRST upload attempt's combined output carries both a `[503]`
-        // marker (retriable) and the ambiguous "Error checking upload
-        // uniqueness." marker (dedup, but only ambiguous, not the
-        // definitive form) — the shape observed on the failed CI run this
-        // fix was diagnosed from. The retriable classifier must win, so
-        // the SECOND attempt gets a chance to succeed cleanly.
+        // marker and the "Error checking upload uniqueness." marker — the
+        // shape observed on the failed CI run this fix was diagnosed from.
+        // Both now classify as retriable (the uniqueness-check fault is a
+        // transient store error, NOT a confirmed content duplicate), so the
+        // SECOND attempt gets a chance to succeed cleanly.
         let tools = FakeToolDir::new();
         tools
             .tool("snapcraft")
@@ -2428,6 +2432,227 @@ mod publish_stage_tests {
     }
 
     // -----------------------------------------------------------------
+    // Classifier ordering — `is_retriable_snap_push` is checked BEFORE
+    // `is_content_dedup_rejection`, so a `[503]` co-occurring with the
+    // DEFINITIVE content-dedup marker ("a file with this exact same
+    // content has already been uploaded") still retries: a transient 5xx
+    // whose response body also echoes the dedup wording must not be
+    // permanently fast-failed. `publish_stage.rs` returns
+    // `ControlFlow::Continue` from the retriable branch before the dedup
+    // block is reached. This is the true straddle of the two classifiers,
+    // distinct from the uniqueness-fault case above (which carries no
+    // dedup marker at all).
+    // -----------------------------------------------------------------
+
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn co_occurring_5xx_and_definitive_dedup_marker_still_retries() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HumanDuration, RetryConfig};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let counter_dir = tempfile::TempDir::new().unwrap();
+        let counter_file = counter_dir.path().join("upload_attempts");
+        std::fs::write(&counter_file, "").unwrap();
+
+        // The FIRST attempt returns a `[503]` whose body ALSO carries the
+        // definitive content-dedup wording. Because the 5xx classifier is
+        // checked first, this must be treated as transient and retried —
+        // never fast-failed as a permanent duplicate. The SECOND attempt
+        // succeeds cleanly.
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {counter}\n\
+                 n=$(wc -c < {counter})\n\
+                 if [ \"$n\" -eq 1 ]; then\n\
+                 echo \"[503] Service Unavailable — A file with this exact same content has already been uploaded\"\n\
+                 exit 2\nfi\n\
+                 exit 0\nfi\n\
+                 exit 1\n",
+                counter = counter_file.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            retry: Some(RetryConfig {
+                attempts: 5,
+                delay: HumanDuration(Duration::from_millis(1)),
+                max_delay: HumanDuration(Duration::from_millis(1)),
+                max_elapsed: None,
+            }),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let attempts = std::fs::read_to_string(&counter_file).unwrap();
+        assert_eq!(
+            attempts.len(),
+            2,
+            "a 5xx co-occurring with the definitive dedup marker must still \
+             retry (5xx classified first): 2 attempts expected (failing + \
+             recovering), got {} attempt(s)",
+            attempts.len()
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "expected the retry to recover to Succeeded, got: {:?}",
+            snap.outcome
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Regression guard for the misclassified transient: `Error checking
+    // upload uniqueness.` with NO co-occurring 5xx must retry (it reports
+    // the store's uniqueness-check step faulting, a transient backend
+    // error — not a confirmed content duplicate). It previously fast-failed
+    // as a permanent dedup and emitted a false "contents must change"
+    // verdict, which sank the whole release. A freshly-versioned snap's
+    // bytes cannot collide with an older revision, so this marker is never a
+    // real dedup.
+    // -----------------------------------------------------------------
+
+    // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn uniqueness_check_fault_alone_retries_and_recovers() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HumanDuration, RetryConfig};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let counter_dir = tempfile::TempDir::new().unwrap();
+        let counter_file = counter_dir.path().join("upload_attempts");
+        std::fs::write(&counter_file, "").unwrap();
+
+        // First attempt: uniqueness-check fault ONLY (no 5xx). Second
+        // attempt: clean success. Pre-fix this fast-failed on attempt 1.
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(format!(
+                "if [ \"$1\" = \"upload\" ]; then\n\
+                 printf 'x' >> {counter}\n\
+                 n=$(wc -c < {counter})\n\
+                 if [ \"$n\" -eq 1 ]; then\n\
+                 echo \"binary_sha3_384: Error checking upload uniqueness.\"\n\
+                 exit 2\nfi\n\
+                 exit 0\nfi\n\
+                 exit 1\n",
+                counter = counter_file.display(),
+            ))
+            .install();
+        let _path = tools.activate();
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            retry: Some(RetryConfig {
+                attempts: 5,
+                delay: HumanDuration(Duration::from_millis(1)),
+                max_delay: HumanDuration(Duration::from_millis(1)),
+                max_elapsed: None,
+            }),
+            crates: vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("stage return stays Ok");
+
+        let attempts = std::fs::read_to_string(&counter_file).unwrap();
+        assert_eq!(
+            attempts.len(),
+            2,
+            "a uniqueness-check fault must be retried, not fast-failed as a \
+             permanent dedup (2 attempts expected: the faulting one and the \
+             recovering one), got {} attempt(s)",
+            attempts.len()
+        );
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert!(
+            matches!(snap.outcome, PublisherOutcome::Succeeded),
+            "expected the retry to recover to Succeeded, got: {:?}",
+            snap.outcome
+        );
+    }
+
+    // -----------------------------------------------------------------
     // Dedup-rejection recovery — a matching-version colliding revision is
     // promoted rather than reported as a permanent repack error.
     // -----------------------------------------------------------------
@@ -2467,7 +2692,7 @@ mod publish_stage_tests {
                  exit 0\n\
                  elif [ \"$1\" = \"upload\" ]; then\n\
                  printf 'x' >> {up}\n\
-                 echo \"Error checking upload uniqueness.\"\n\
+                 echo \"A file with this exact same content has already been uploaded\"\n\
                  exit 2\n\
                  elif [ \"$1\" = \"release\" ]; then\n\
                  echo \"$2 $3 $4\" >> {rel}\n\
@@ -2578,7 +2803,7 @@ mod publish_stage_tests {
                  fi\n\
                  exit 0\n\
                  elif [ \"$1\" = \"upload\" ]; then\n\
-                 echo \"Error checking upload uniqueness.\"\n\
+                 echo \"A file with this exact same content has already been uploaded\"\n\
                  exit 2\n\
                  elif [ \"$1\" = \"release\" ]; then\n\
                  echo \"snapcraft release: 403 Forbidden\"\n\
@@ -3069,7 +3294,7 @@ mod publish_stage_tests {
                  echo \"3    2024-01-01T00:00:00Z  amd64   0.9.0    stable\"\n\
                  exit 0\n\
                  elif [ \"$1\" = \"upload\" ]; then\n\
-                 echo \"Error checking upload uniqueness.\"\n\
+                 echo \"A file with this exact same content has already been uploaded\"\n\
                  exit 2\n\
                  elif [ \"$1\" = \"release\" ]; then\n\
                  echo \"$2 $3 $4\" >> {rel}\n\

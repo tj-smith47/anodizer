@@ -315,7 +315,7 @@ pub fn first_channel_rejected_for_prerelease_snap(channels: &[String]) -> Option
 // ---------------------------------------------------------------------------
 
 /// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
-/// invocation looks like a transient Snap Store 5xx response that should be
+/// invocation looks like a transient Snap Store failure that should be
 /// retried.
 ///
 /// Detects a retriable snap-push failure by scanning the `snapcraft`
@@ -328,6 +328,17 @@ pub fn first_channel_rejected_for_prerelease_snap(channels: &[String]) -> Option
 /// Gateway Timeout`) so a future change to snapcraft's error formatter that
 /// drops the `[NNN]` brackets does not silently regress retry coverage.
 ///
+/// The `binary_sha3_384: Error checking upload uniqueness.` message is
+/// classified here, NOT as a content-dedup rejection. It reports that the
+/// Store's uniqueness-check step ITSELF errored server-side — it does not
+/// assert a duplicate was found. The Store names a genuine duplicate with a
+/// distinct, explicit message (see [`is_content_dedup_rejection`]); when it
+/// instead says the check "errored", the failure is a transient backend
+/// fault and a later attempt can succeed. (Empirically: a `.snap` carrying a
+/// freshly-bumped version cannot be byte-identical to any prior release's
+/// revision, so the uniqueness step erroring on it is never a real content
+/// collision — it is the check service faulting.)
+///
 /// Matching is case-insensitive (the combined output is lowercased before
 /// scanning) so a differently-cased Store response never silently misses
 /// this check.
@@ -338,6 +349,9 @@ pub fn is_retriable_snap_push(combined_output: &str) -> bool {
         "502 bad gateway",
         "503 service unavailable",
         "504 gateway timeout",
+        // The Store's uniqueness-check step faulted (backend error), which is
+        // transient — distinct from a confirmed content duplicate.
+        "error checking upload uniqueness",
     ];
     let lower = combined_output.to_ascii_lowercase();
     BRACKETED.iter().any(|m| lower.contains(m)) || TEXT.iter().any(|m| lower.contains(m))
@@ -349,32 +363,35 @@ pub fn is_retriable_snap_push(combined_output: &str) -> bool {
 
 /// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
 /// invocation shows the Snap Store rejecting the push because the uploaded
-/// `.snap`'s content hash (`binary_sha3_384`) already exists under a prior
-/// revision.
+/// `.snap`'s content hash (`binary_sha3_384`) already matches a prior
+/// revision — a *confirmed* duplicate.
 ///
 /// This rejection is permanent for the given bytes: the Store deduplicates
 /// on content, not on the caller-supplied version string, so no number of
-/// retries changes the outcome — the fix is a byte-different `.snap`, not a
-/// second attempt. Two message shapes are observed in the wild: the
-/// definitive form naming the cause, and an ambiguous form
-/// (`"Error checking upload uniqueness."`) that reads as transient but is
-/// empirically the same rejection with the Store declining to say so
-/// explicitly.
+/// retries changes the outcome — the fix is to PROMOTE the already-landed
+/// revision, or (if none is at the current version) ship byte-different
+/// `.snap` contents.
+///
+/// Only the Store's definitive duplicate message counts here. The ambiguous
+/// `Error checking upload uniqueness.` message is deliberately NOT matched:
+/// it reports the uniqueness *check* faulting, not a duplicate being found,
+/// and is classified as a transient retriable failure instead (see
+/// [`is_retriable_snap_push`]). Treating that ambiguous message as a
+/// permanent dedup previously fast-failed a purely transient Store fault and
+/// emitted a false "the .snap contents must change" verdict against a snap
+/// whose bytes could not possibly collide with an older version.
 ///
 /// Matching is case-insensitive (the combined output is lowercased before
 /// scanning), same reasoning as [`is_retriable_snap_push`]. Callers must
-/// check [`is_retriable_snap_push`] FIRST: a response can carry both an
-/// ambiguous dedup marker and a genuine 5xx (observed in the wild — the
+/// check [`is_retriable_snap_push`] FIRST: a response can carry both a
+/// transient marker and a genuine dedup marker (observed in the wild — the
 /// Store returns a 503 on the attempt that actually landed the bytes, then
 /// rejects the client's automatic retry as a duplicate of what it already
-/// ingested) and the 5xx must win so the retry ladder gets a chance to
-/// resolve the transient failure before this permanent classification
+/// ingested) and the transient classification must win so the retry ladder
+/// gets a chance to resolve it before this permanent classification
 /// short-circuits it.
 pub fn is_content_dedup_rejection(combined_output: &str) -> bool {
-    const MARKERS: &[&str] = &[
-        "a file with this exact same content has already been uploaded",
-        "error checking upload uniqueness.",
-    ];
+    const MARKERS: &[&str] = &["a file with this exact same content has already been uploaded"];
     let lower = combined_output.to_ascii_lowercase();
     MARKERS.iter().any(|m| lower.contains(m))
 }

@@ -715,18 +715,21 @@ crates:
           GoReleaser. It handles building, packaging, publishing, and announcing
           releases across multiple platforms and package managers.
         grade: stable
-        # Interim: classic is what anodizer needs (it execs host cargo/docker/
-        # gpg, which a confined sandbox blocks), but classic uploads require a
-        # one-time Snap Store manual review that isn't granted yet. strict uploads
-        # without review but sandboxes those execs — a snap that installs but
-        # can't run a release. devmode runs unconfined so the tool actually works
-        # and still uploads without review; the Store only permits devmode on
-        # beta/edge, hence latest/beta. Restore `confinement: classic` +
-        # `latest/stable` once the store-request for the `anodizer` classic snap
-        # is approved.
+        # DISABLED (`publish: false`): the anodizer snap has never been a
+        # working install method and is not a documented one (the README ships
+        # Homebrew + `cargo install`). classic is the confinement anodizer needs
+        # (it execs host cargo/docker/gpg, which a confined sandbox blocks), but
+        # classic uploads require a one-time Snap Store manual review that isn't
+        # granted yet. strict uploads without review but sandboxes those execs —
+        # a snap that installs but can't run a release. devmode runs unconfined
+        # (tool works) and uploads without review, but the Store only permits it
+        # on beta/edge and its uniqueness-check backend has been faulting these
+        # uploads, so no devmode revision ever landed. Re-enable with
+        # `confinement: classic` + `latest/stable` once the store-request for the
+        # `anodizer` classic snap is approved.
         confinement: devmode
         license: MIT
-        publish: true
+        publish: false
         channel_templates:
           - "latest/beta"
         apps:
