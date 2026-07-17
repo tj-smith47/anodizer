@@ -55,9 +55,9 @@ use anyhow::{Context as _, Result, bail};
 use tempfile::TempDir;
 
 use super::manifest::{
-    PlatformBinary, effective_provenance_override, render_launcher_js, render_package_json,
-    render_postinstall_js, resolve_access, resolve_extra_files, resolve_name, resolve_registry,
-    resolve_tag, token_env_var,
+    DEFAULT_TAG, PlatformBinary, effective_provenance_override, render_launcher_js,
+    render_package_json, render_postinstall_js, resolve_access, resolve_extra_files, resolve_name,
+    resolve_registry, resolve_tag, token_env_var,
 };
 use super::optional_deps::generate_layout;
 
@@ -738,6 +738,129 @@ pub(crate) fn probe_package_existence(
     }
 }
 
+/// Probe the registry for a package's current `latest` dist-tag via a metadata
+/// GET to `<registry>/<url-encoded name>`, reading `.dist-tags.latest`. Returns
+/// `None` on a 404 (brand-new package — nothing to regress), any transport /
+/// decode error, or an absent tag. Every `None` path FAILS OPEN (the caller
+/// keeps the configured tag): a missing signal must never block a legitimate
+/// publish.
+pub(crate) fn probe_dist_tag_latest(
+    registry: &str,
+    name: &str,
+    log: &StageLogger,
+) -> Option<String> {
+    let base = registry.trim_end_matches('/');
+    let url = format!("{}/{}", base, encode_package_path(name));
+    let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(15)) {
+        Ok(c) => c,
+        Err(e) => {
+            log.warn(&format!(
+                "npm: could not build HTTP client to probe '{}' latest dist-tag ({}); \
+                 leaving the configured tag unguarded",
+                name, e
+            ));
+            return None;
+        }
+    };
+    let resp = match client.get(&url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            log.warn(&format!(
+                "npm: latest-tag probe for '{}' failed ({}); leaving the configured tag unguarded",
+                name, e
+            ));
+            return None;
+        }
+    };
+    // 404 = brand-new package (no `latest` to regress); any other non-2xx is
+    // inconclusive. Both fail open.
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            log.warn(&format!(
+                "npm: could not decode metadata for '{}' ({}); leaving the configured tag unguarded",
+                name, e
+            ));
+            return None;
+        }
+    };
+    body.get("dist-tags")
+        .and_then(|d| d.get("latest"))
+        .and_then(|l| l.as_str())
+        .map(str::to_string)
+}
+
+/// Guard the mutable `latest` dist-tag against a version REGRESSION.
+///
+/// npm's `latest` is the tag `npm install <pkg>` (no version) resolves, and
+/// publishing an OLDER version with `--tag latest` moves that pointer BACKWARD —
+/// silently downgrading every default install. This bites a BACKFILL: completing
+/// an interrupted older release after a newer one already published would drag
+/// `latest` back to the older version.
+///
+/// When the configured tag is the default `latest` AND `publish_version` is
+/// strictly LOWER than the registry's current `latest`, this returns the version
+/// string itself as an INERT named dist-tag: the version still publishes
+/// (versions are immutable and always land), but the `latest` pointer is left on
+/// the newer release. Every non-regressing case returns the configured tag
+/// unchanged — a NON-default configured tag (the operator asked for an explicit
+/// tag), `registry_latest == None` (fail-open), an equal/newer version, or a
+/// version string that does not parse as semver.
+pub(crate) fn guard_latest_regression(
+    configured_tag: &str,
+    publish_version: &str,
+    registry_latest: Option<&str>,
+) -> String {
+    if configured_tag != DEFAULT_TAG {
+        return configured_tag.to_string();
+    }
+    if let Some(current) = registry_latest {
+        if let (Ok(pubv), Ok(cur)) = (
+            anodizer_core::git::parse_semver(publish_version),
+            anodizer_core::git::parse_semver(current),
+        ) {
+            if pubv < cur {
+                return publish_version.to_string();
+            }
+        }
+    }
+    configured_tag.to_string()
+}
+
+/// Apply [`guard_latest_regression`] against the live registry: when `dist_tag`
+/// is the default `latest`, probe `package`'s current `latest` and demote to an
+/// inert version-tag if `version` would regress it. A no-op (returns `dist_tag`
+/// verbatim) for any explicit tag, so the network round-trip only happens when a
+/// regression is actually possible. Emits a `status` line when it demotes so the
+/// operator sees why `latest` was left untouched.
+pub(crate) fn dist_tag_guarded_against_regression(
+    dist_tag: &str,
+    version: &str,
+    registry: &str,
+    package: &str,
+    log: &StageLogger,
+) -> String {
+    if dist_tag != DEFAULT_TAG {
+        return dist_tag.to_string();
+    }
+    let current = probe_dist_tag_latest(registry, package, log);
+    let guarded = guard_latest_regression(dist_tag, version, current.as_deref());
+    if guarded != dist_tag {
+        log.status(&format!(
+            "npm: publishing {}@{} under inert tag '{}' — registry 'latest' is {} (newer); \
+             refusing to regress the default-install pointer",
+            package,
+            version,
+            guarded,
+            current.as_deref().unwrap_or("?")
+        ));
+    }
+    guarded
+}
+
 /// Resolve the per-package publish credential for one package under the
 /// configured [`NpmAuthMode`]: probe existence (only when `auto` needs it),
 /// detect OIDC + token availability, run [`decide_auth`], then materialize the
@@ -934,6 +1057,14 @@ fn publish_optional_deps(
         }
         return Ok(());
     }
+
+    // Guard the mutable `latest` pointer BEFORE any irreversible publish: a
+    // backfill of a version older than the registry's current `latest`
+    // (probed via the metapackage) demotes EVERY package in the family to an
+    // inert version-tag so `npm install` is not silently downgraded. Off the
+    // dry-run path so dry-run stays network-free.
+    let dist_tag =
+        dist_tag_guarded_against_regression(&dist_tag, &version, &registry, &metapackage, log);
 
     let policy = ctx.retry_policy();
     // One sequence-level wall-clock deadline: the loop propagates the first
@@ -1137,6 +1268,13 @@ fn publish_postinstall(
         ));
         return Ok(());
     }
+
+    // Guard the mutable `latest` pointer BEFORE the irreversible publish: a
+    // backfill of a version older than the registry's current `latest` demotes
+    // this package to an inert version-tag so `npm install` is not silently
+    // downgraded. Off the dry-run path so dry-run stays network-free.
+    let dist_tag =
+        dist_tag_guarded_against_regression(&dist_tag, &version, &registry, &pkg_name, log);
 
     let policy = ctx.retry_policy();
     let publish_deadline = ctx.retry_deadline();

@@ -20,9 +20,10 @@ use super::manifest::{
 use super::optional_deps::{MetapackageFiles, OptionalDepsLayout, generate_layout};
 use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
-    assemble_postinstall_tarball, build_npm_publish_command, decide_auth, encode_package_path,
-    probe_package_existence, publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package,
-    retry_npm_publish, write_npmrc,
+    assemble_postinstall_tarball, build_npm_publish_command, decide_auth,
+    dist_tag_guarded_against_regression, encode_package_path, guard_latest_regression,
+    probe_dist_tag_latest, probe_package_existence, publish_to_npm, publish_with_oidc_fallback,
+    resolve_auth_for_package, retry_npm_publish, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -3070,6 +3071,190 @@ fn probe_existence_transport_error_is_unknown() {
         PackageExistence::Unknown,
         "a transport error must map to Unknown, never a false Exists/New"
     );
+}
+
+// -----------------------------------------------------------------------------
+// latest-dist-tag regression guard
+// -----------------------------------------------------------------------------
+
+#[test]
+fn guard_demotes_a_backfill_below_registry_latest() {
+    // Configured `latest`, publishing 0.20.0 while the registry's `latest` is
+    // the NEWER 0.21.0 (the backfill case): must NOT move `latest` back — return
+    // the version string as an inert named tag.
+    let got = guard_latest_regression("latest", "0.20.0", Some("0.21.0"));
+    assert_eq!(got, "0.20.0", "an older backfill must not claim `latest`");
+}
+
+#[test]
+fn guard_keeps_latest_for_a_newer_version() {
+    // The normal forward release: publishing 0.21.0 while `latest` is 0.20.0
+    // legitimately advances the pointer.
+    assert_eq!(
+        guard_latest_regression("latest", "0.21.0", Some("0.20.0")),
+        "latest"
+    );
+}
+
+#[test]
+fn guard_keeps_latest_for_an_equal_version() {
+    // A clean re-run of the SAME version (idempotent re-publish) keeps `latest`
+    // — equal is not a regression.
+    assert_eq!(
+        guard_latest_regression("latest", "0.20.0", Some("0.20.0")),
+        "latest"
+    );
+}
+
+#[test]
+fn guard_is_prerelease_aware() {
+    // 1.0.0-rc.1 < 1.0.0 by semver precedence: publishing the rc while `latest`
+    // is the final release must demote; the reverse must not.
+    assert_eq!(
+        guard_latest_regression("latest", "1.0.0-rc.1", Some("1.0.0")),
+        "1.0.0-rc.1"
+    );
+    assert_eq!(
+        guard_latest_regression("latest", "1.0.0", Some("1.0.0-rc.1")),
+        "latest"
+    );
+}
+
+#[test]
+fn guard_ignores_an_explicit_non_default_tag() {
+    // The operator asked for `next` (or any explicit tag): the regression guard
+    // only governs the default-install pointer, so it never overrides an
+    // explicit choice even when the version would regress `latest`.
+    assert_eq!(
+        guard_latest_regression("next", "0.20.0", Some("0.21.0")),
+        "next"
+    );
+    assert_eq!(
+        guard_latest_regression("beta", "0.20.0", Some("0.21.0")),
+        "beta"
+    );
+}
+
+#[test]
+fn guard_fails_open_when_registry_latest_is_absent() {
+    // Brand-new package / probe failure (None): keep the configured tag — a
+    // missing signal must never block a legitimate first publish under `latest`.
+    assert_eq!(guard_latest_regression("latest", "0.20.0", None), "latest");
+}
+
+#[test]
+fn guard_fails_open_on_unparseable_versions() {
+    // A non-semver publish version or registry value cannot be compared → keep
+    // `latest` rather than guess.
+    assert_eq!(
+        guard_latest_regression("latest", "not-semver", Some("0.21.0")),
+        "latest"
+    );
+    assert_eq!(
+        guard_latest_regression("latest", "0.20.0", Some("garbage")),
+        "latest"
+    );
+}
+
+#[test]
+fn probe_dist_tag_reads_latest_from_metadata() {
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 200 OK\r\nContent-Length: 33\r\n\r\n{\"dist-tags\":{\"latest\":\"0.21.0\"}}",
+    ]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_dist_tag_latest(&registry, "demo", &ctx.logger("p"));
+    assert_eq!(got.as_deref(), Some("0.21.0"), "reads .dist-tags.latest");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "probe must hit the registry"
+    );
+}
+
+#[test]
+fn probe_dist_tag_is_none_on_404() {
+    let (addr, _calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    assert_eq!(
+        probe_dist_tag_latest(&registry, "demo", &ctx.logger("p")),
+        None,
+        "a brand-new package (404) has no `latest` to regress"
+    );
+}
+
+#[test]
+fn probe_dist_tag_is_none_on_absent_field() {
+    // 200 with metadata that has no dist-tags.latest → None (fail open).
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n{\"name\":\"x\"}",
+    ]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    assert_eq!(
+        probe_dist_tag_latest(&registry, "demo", &ctx.logger("p")),
+        None
+    );
+}
+
+#[test]
+fn probe_dist_tag_is_none_on_transport_error() {
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr")
+    };
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    assert_eq!(
+        probe_dist_tag_latest(&registry, "demo", &ctx.logger("p")),
+        None,
+        "connection-refused must fail open to None, never panic"
+    );
+}
+
+#[test]
+fn guarded_helper_demotes_against_a_live_newer_latest() {
+    // End-to-end wiring: the integration helper probes the live registry and
+    // demotes a backfill. Registry `latest` = 0.21.0, publishing 0.20.0.
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 200 OK\r\nContent-Length: 33\r\n\r\n{\"dist-tags\":{\"latest\":\"0.21.0\"}}",
+    ]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = dist_tag_guarded_against_regression(
+        "latest",
+        "0.20.0",
+        &registry,
+        "demo",
+        &ctx.logger("p"),
+    );
+    assert_eq!(
+        got, "0.20.0",
+        "helper must demote a backfill to an inert tag"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "helper must probe the registry"
+    );
+}
+
+#[test]
+fn guarded_helper_skips_the_probe_for_an_explicit_tag() {
+    // A non-default tag short-circuits: no network round-trip at all.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr")
+    };
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    // The port is closed; if the helper probed, it would still return "next"
+    // (fail-open), but the point is it must NOT probe for an explicit tag.
+    let got =
+        dist_tag_guarded_against_regression("next", "0.20.0", &registry, "demo", &ctx.logger("p"));
+    assert_eq!(got, "next", "explicit tag is returned verbatim, un-probed");
 }
 
 #[test]
