@@ -1264,16 +1264,17 @@ npms:
 # Self-dogfood: anodizer ships as pip-installable per-platform wheels so the
 # wheel-repackage publisher runs on a live PyPI release, not only in tests.
 # summary/homepage/license derive from `metadata:`; only the declarative PyPI
-# surface is named here. auth: auto prefers a PYPI_TOKEN when present, else PyPI
-# Trusted Publishing — the first publish to a not-yet-existing project cannot use
-# TP (no project = no configured trusted publisher yet), so the token creates it;
-# once the project exists, dropping PYPI_TOKEN lets `auto` fall through to TP.
-# Runs on the github-hosted, workflow_dispatch-triggered publish-oidc.yml
-# (id-token: write there): PyPI TP, like crates.io, REJECTS release.yml's
-# workflow_run event, so the TP config names publish-oidc.yml.
+# surface is named here. auth: oidc = pure PyPI Trusted Publishing, no stored
+# token. A PENDING trusted publisher (pypi.org → Publishing) is registered for
+# project `anodizer` against repo tj-smith47/anodizer, workflow publish-oidc.yml,
+# environment Any — a pending publisher exists precisely to CREATE the
+# not-yet-existing project on its first OIDC publish, after which it promotes to
+# an ordinary trusted publisher. Runs on the github-hosted, workflow_dispatch-
+# triggered publish-oidc.yml (id-token: write there): PyPI TP, like crates.io,
+# REJECTS release.yml's workflow_run event, so the TP config names publish-oidc.yml.
 pypis:
   - name: anodizer
-    auth: auto
+    auth: oidc
     requires_python: ">=3.8"
     project_urls:
       Documentation: "https://tj-smith47.github.io/anodizer"
