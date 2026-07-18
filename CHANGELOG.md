@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-07-18
+
+### Bug Fixes
+
+* 2cdcea12c62b re-sign combined checksums after publish-time refresh ([@tj-smith47](https://github.com/tj-smith47))
+* a4ca534e5772 split five oversized command modules into submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 2fc8c0e7d635 split seven oversized publisher modules into submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 10b3a133fd1c split flatpak/pkg/sbom/snapcraft stage god files into submodules ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.20.0] - 2026-07-14
 
 ### Features
@@ -684,7 +693,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.22.1
 [0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...v0.18.0
