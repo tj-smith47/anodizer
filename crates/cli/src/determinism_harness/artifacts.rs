@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 /// `hash` / `size_bytes` / `relative_path` / `stage` and
 /// [`super::drift::summarize_drift`] can read the head/tail samples.
 #[derive(Debug, Clone)]
-pub(super) struct ArtifactInfo {
+pub(crate) struct ArtifactInfo {
     pub(super) hash: String,
     pub(super) size_bytes: u64,
     /// Path relative to the worktree root (with leading `dist/` etc).
