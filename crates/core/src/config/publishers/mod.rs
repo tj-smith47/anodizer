@@ -531,3 +531,117 @@ impl_publisher_gate_overrides!(
     super::PypiConfig,
     super::HomebrewCoreConfig,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // --- CommitAuthorConfig::normalize_defaults ---------------------------
+
+    #[test]
+    fn normalize_defaults_fills_missing_name_and_email() {
+        let mut c = CommitAuthorConfig::default();
+        c.normalize_defaults();
+        assert_eq!(c.name.as_deref(), Some("anodizer"));
+        assert_eq!(c.email.as_deref(), Some("bot@anodizer.dev"));
+    }
+
+    #[test]
+    fn normalize_defaults_treats_empty_string_as_missing() {
+        let mut c = CommitAuthorConfig {
+            name: Some(String::new()),
+            email: Some(String::new()),
+            ..Default::default()
+        };
+        c.normalize_defaults();
+        assert_eq!(c.name.as_deref(), Some("anodizer"));
+        assert_eq!(c.email.as_deref(), Some("bot@anodizer.dev"));
+    }
+
+    #[test]
+    fn normalize_defaults_preserves_user_supplied_identity() {
+        let mut c = CommitAuthorConfig {
+            name: Some("Release Bot".into()),
+            email: Some("release@corp.example".into()),
+            ..Default::default()
+        };
+        c.normalize_defaults();
+        assert_eq!(c.name.as_deref(), Some("Release Bot"));
+        assert_eq!(c.email.as_deref(), Some("release@corp.example"));
+    }
+
+    // --- CargoAuthMode / resolved_auth ------------------------------------
+
+    #[test]
+    fn cargo_auth_mode_defaults_to_auto() {
+        assert_eq!(CargoAuthMode::default(), CargoAuthMode::Auto);
+        // An omitted `auth` collapses to Auto through the accessor.
+        assert_eq!(
+            CargoPublishConfig::default().resolved_auth(),
+            CargoAuthMode::Auto
+        );
+    }
+
+    #[test]
+    fn cargo_auth_mode_deserializes_kebab_case() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<CargoAuthMode>("auto").unwrap(),
+            CargoAuthMode::Auto
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<CargoAuthMode>("token").unwrap(),
+            CargoAuthMode::Token
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<CargoAuthMode>("oidc").unwrap(),
+            CargoAuthMode::Oidc
+        );
+        assert!(serde_yaml_ng::from_str::<CargoAuthMode>("bogus").is_err());
+    }
+
+    #[test]
+    fn resolved_auth_returns_explicit_value() {
+        let cfg = CargoPublishConfig {
+            auth: Some(CargoAuthMode::Oidc),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_auth(), CargoAuthMode::Oidc);
+    }
+
+    // --- WaitForWorkspaceDepsConfig resolvers -----------------------------
+
+    #[test]
+    fn wait_for_workspace_deps_defaults() {
+        let d = WaitForWorkspaceDepsConfig::default();
+        assert!(!d.resolved_enabled());
+        assert_eq!(d.resolved_poll_interval(), Duration::from_secs(5));
+        assert_eq!(d.resolved_max_wait(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn wait_for_workspace_deps_user_values_win() {
+        let cfg: WaitForWorkspaceDepsConfig =
+            serde_yaml_ng::from_str("enabled: true\npoll_interval: 10s\nmax_wait: 2m").unwrap();
+        assert!(cfg.resolved_enabled());
+        assert_eq!(cfg.resolved_poll_interval(), Duration::from_secs(10));
+        assert_eq!(cfg.resolved_max_wait(), Duration::from_secs(120));
+    }
+
+    // --- PublisherGateOverrides trait -------------------------------------
+
+    #[test]
+    fn gate_overrides_expose_required_and_retain() {
+        let cfg = CargoPublishConfig {
+            required: Some(false),
+            retain_on_rollback: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(cfg.required_override(), Some(false));
+        assert_eq!(cfg.retain_on_rollback_override(), Some(true));
+        // Defaults leave both as None (keep the publisher's built-in gate).
+        let bare = CargoPublishConfig::default();
+        assert_eq!(bare.required_override(), None);
+        assert_eq!(bare.retain_on_rollback_override(), None);
+    }
+}

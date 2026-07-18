@@ -831,4 +831,275 @@ mod tests {
             "binary_signs must reject a non-binary artifact filter"
         );
     }
+
+    // --- WrapInDirectory ---------------------------------------------------
+
+    #[test]
+    fn wrap_in_directory_bool_true_uses_default_name() {
+        assert_eq!(
+            WrapInDirectory::Bool(true).directory_name("myapp_1.0"),
+            Some("myapp_1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn wrap_in_directory_bool_false_disables_wrapping() {
+        assert_eq!(
+            WrapInDirectory::Bool(false).directory_name("myapp_1.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn wrap_in_directory_empty_string_disables_wrapping() {
+        // An empty custom name is treated as "no wrapping", not a dir named "".
+        assert_eq!(
+            WrapInDirectory::Name(String::new()).directory_name("fallback"),
+            None
+        );
+    }
+
+    #[test]
+    fn wrap_in_directory_custom_name_overrides_default() {
+        assert_eq!(
+            WrapInDirectory::Name("custom".into()).directory_name("fallback"),
+            Some("custom".to_string())
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct WrapWrapper {
+        wrap_in_directory: WrapInDirectory,
+    }
+
+    #[test]
+    fn wrap_in_directory_deserializes_bool_and_string() {
+        let b: WrapWrapper = serde_yaml_ng::from_str("wrap_in_directory: true").unwrap();
+        assert_eq!(b.wrap_in_directory, WrapInDirectory::Bool(true));
+        let s: WrapWrapper = serde_yaml_ng::from_str("wrap_in_directory: dist").unwrap();
+        assert_eq!(s.wrap_in_directory, WrapInDirectory::Name("dist".into()));
+    }
+
+    #[test]
+    fn wrap_in_directory_rejects_non_scalar() {
+        // A list is neither a bool nor a string — the hand-written deserializer
+        // must error rather than coerce.
+        let r: Result<WrapWrapper, _> = serde_yaml_ng::from_str("wrap_in_directory:\n  - a\n");
+        assert!(r.is_err());
+    }
+
+    // --- parse_octal_mode --------------------------------------------------
+
+    #[test]
+    fn parse_octal_mode_accepts_common_forms() {
+        assert_eq!(parse_octal_mode("0755"), Some(0o755));
+        assert_eq!(parse_octal_mode("0o755"), Some(0o755));
+        assert_eq!(parse_octal_mode("0O755"), Some(0o755));
+        assert_eq!(parse_octal_mode("755"), Some(0o755));
+        // Bare "0o"/"0O" with nothing after → the cleaned string is empty and
+        // is normalized to "0".
+        assert_eq!(parse_octal_mode("0o"), Some(0));
+        assert_eq!(parse_octal_mode("0"), Some(0));
+    }
+
+    #[test]
+    fn parse_octal_mode_rejects_non_octal() {
+        // 8 and 9 are not octal digits.
+        assert_eq!(parse_octal_mode("0o899"), None);
+        assert_eq!(parse_octal_mode("garbage"), None);
+    }
+
+    // --- ChecksumConfig::resolve_combined_name_template (static precedence) --
+
+    #[test]
+    fn resolve_combined_name_template_prefers_crate_then_global_then_default() {
+        let crate_cfg = ChecksumConfig {
+            name_template: Some("crate.txt".into()),
+            ..Default::default()
+        };
+        let global_cfg = ChecksumConfig {
+            name_template: Some("global.txt".into()),
+            ..Default::default()
+        };
+        // Crate value wins over global and default.
+        assert_eq!(
+            ChecksumConfig::resolve_combined_name_template(Some(&crate_cfg), Some(&global_cfg)),
+            "crate.txt"
+        );
+        // With no crate override, global wins.
+        let bare = ChecksumConfig::default();
+        assert_eq!(
+            ChecksumConfig::resolve_combined_name_template(Some(&bare), Some(&global_cfg)),
+            "global.txt"
+        );
+        // Neither set → the canonical default.
+        assert_eq!(
+            ChecksumConfig::resolve_combined_name_template(None, None),
+            ChecksumConfig::DEFAULT_NAME_TEMPLATE
+        );
+    }
+
+    // --- ChecksumSplitFormat ----------------------------------------------
+
+    #[test]
+    fn checksum_split_format_defaults_to_bare() {
+        assert_eq!(ChecksumSplitFormat::default(), ChecksumSplitFormat::Bare);
+    }
+
+    #[test]
+    fn checksum_split_format_deserializes_lowercase() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<ChecksumSplitFormat>("bare").unwrap(),
+            ChecksumSplitFormat::Bare
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<ChecksumSplitFormat>("coreutils").unwrap(),
+            ChecksumSplitFormat::Coreutils
+        );
+        assert!(serde_yaml_ng::from_str::<ChecksumSplitFormat>("Coreutils").is_err());
+    }
+
+    // --- ExtraFileSpec::allow_empty ---------------------------------------
+
+    #[test]
+    fn extra_file_spec_allow_empty_only_true_for_detailed_opt_in() {
+        // Bare glob form is always fail-fast (allow_empty == false).
+        let bare: ExtraFileSpec = serde_yaml_ng::from_str("dist/*.sig").unwrap();
+        assert!(!bare.allow_empty());
+        // Detailed with allow_empty: true opts in.
+        let opt_in: ExtraFileSpec =
+            serde_yaml_ng::from_str("glob: keys/*.pub\nallow_empty: true").unwrap();
+        assert!(opt_in.allow_empty());
+        assert_eq!(opt_in.glob(), "keys/*.pub");
+        // Detailed defaulting allow_empty stays false.
+        let default_off: ExtraFileSpec = serde_yaml_ng::from_str("glob: docs/*.pdf").unwrap();
+        assert!(!default_off.allow_empty());
+    }
+
+    // --- ArchiveFileSpec PartialEq<&str> ----------------------------------
+
+    #[test]
+    fn archive_file_spec_str_eq_matches_glob_only() {
+        assert!(ArchiveFileSpec::Glob("README.md".into()) == "README.md");
+        assert!(ArchiveFileSpec::Glob("README.md".into()) != "other");
+        // The Detailed variant never equals a bare string.
+        let detailed = ArchiveFileSpec::Detailed {
+            src: "README.md".into(),
+            dst: None,
+            info: None,
+            strip_parent: None,
+        };
+        assert!(detailed != "README.md");
+    }
+
+    // --- ArchiveConfig deprecation folds ----------------------------------
+
+    #[test]
+    fn archive_config_folds_singular_format_into_formats() {
+        // The deprecated `format: tar.gz` singular folds into `formats`.
+        let c: ArchiveConfig = serde_yaml_ng::from_str("format: tar.gz").unwrap();
+        assert_eq!(c.formats.as_deref().unwrap(), ["tar.gz"]);
+    }
+
+    #[test]
+    fn archive_config_folds_deprecated_builds_into_ids() {
+        let c: ArchiveConfig = serde_yaml_ng::from_str("ids: [keep]\nbuilds: [legacy]").unwrap();
+        let ids = c.ids.unwrap();
+        assert!(ids.contains(&"keep".to_string()));
+        assert!(ids.contains(&"legacy".to_string()));
+    }
+
+    #[test]
+    fn archive_config_defaults_id_to_default() {
+        // A parse->serialise round-trip must be stable, so `id` materializes
+        // to "default" when omitted.
+        let c: ArchiveConfig = serde_yaml_ng::from_str("name_template: x").unwrap();
+        assert_eq!(c.id.as_deref(), Some("default"));
+        // An explicit id is preserved verbatim.
+        let named: ArchiveConfig = serde_yaml_ng::from_str("id: bins").unwrap();
+        assert_eq!(named.id.as_deref(), Some("bins"));
+    }
+
+    #[test]
+    fn format_override_folds_singular_format() {
+        let o: FormatOverride = serde_yaml_ng::from_str("os: windows\nformat: zip").unwrap();
+        assert_eq!(o.os, "windows");
+        assert_eq!(o.formats.as_deref().unwrap(), ["zip"]);
+    }
+
+    // --- ContentSource PartialEq ------------------------------------------
+
+    #[test]
+    fn content_source_partial_eq_by_variant_and_payload() {
+        assert_eq!(
+            ContentSource::Inline("a".into()),
+            ContentSource::Inline("a".into())
+        );
+        assert_ne!(
+            ContentSource::Inline("a".into()),
+            ContentSource::Inline("b".into())
+        );
+        // Same string but different variant must not compare equal.
+        assert_ne!(
+            ContentSource::Inline("a".into()),
+            ContentSource::FromFile {
+                from_file: "a".into()
+            }
+        );
+        // FromUrl equality includes the headers map.
+        let mut h = HashMap::new();
+        h.insert("Accept".to_string(), "text/plain".to_string());
+        let with_headers = ContentSource::FromUrl {
+            from_url: "u".into(),
+            headers: Some(h.clone()),
+        };
+        assert_eq!(
+            with_headers,
+            ContentSource::FromUrl {
+                from_url: "u".into(),
+                headers: Some(h),
+            }
+        );
+        assert_ne!(
+            with_headers,
+            ContentSource::FromUrl {
+                from_url: "u".into(),
+                headers: None,
+            }
+        );
+    }
+
+    #[test]
+    fn content_source_from_url_deserializes_headers() {
+        let cs: ContentSource = serde_yaml_ng::from_str(
+            "from_url: https://example.com/h.md\nheaders:\n  X-Token: abc\n",
+        )
+        .unwrap();
+        match cs {
+            ContentSource::FromUrl { from_url, headers } => {
+                assert_eq!(from_url, "https://example.com/h.md");
+                assert_eq!(headers.unwrap().get("X-Token").unwrap(), "abc");
+            }
+            other => panic!("expected FromUrl, got {other:?}"),
+        }
+    }
+
+    // --- TemplatedExtraFile -----------------------------------------------
+
+    #[test]
+    fn templated_extra_file_parses_and_defaults() {
+        let full: TemplatedExtraFile = serde_yaml_ng::from_str(
+            "src: NOTES.tera\ndst: \"{{ ProjectName }}-NOTES.txt\"\nmode: \"0644\"",
+        )
+        .unwrap();
+        assert_eq!(full.src, "NOTES.tera");
+        assert_eq!(full.dst.as_deref(), Some("{{ ProjectName }}-NOTES.txt"));
+        assert_eq!(full.mode.as_deref(), Some("0644"));
+        // Only `src` is required; dst/mode default to None.
+        let minimal: TemplatedExtraFile = serde_yaml_ng::from_str("src: NOTES.tera").unwrap();
+        assert!(minimal.dst.is_none());
+        assert!(minimal.mode.is_none());
+        // Unknown fields are rejected.
+        assert!(serde_yaml_ng::from_str::<TemplatedExtraFile>("src: x\nbogus: y").is_err());
+    }
 }

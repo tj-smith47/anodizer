@@ -705,4 +705,40 @@ mod tests {
             assert_eq!(serde_yaml_ng::from_str::<SkipPushConfig>(&yaml).unwrap(), v);
         }
     }
+
+    #[test]
+    fn resolved_upload_pace_defaults_and_honors_override() {
+        // Unset → the 200ms default that smooths the initial upload burst.
+        assert_eq!(
+            ReleaseConfig::default().resolved_upload_pace(),
+            ReleaseConfig::DEFAULT_UPLOAD_PACE
+        );
+        // A configured humantime value is used verbatim.
+        let cfg = ReleaseConfig {
+            upload_pace: Some(HumanDuration(std::time::Duration::from_secs(1))),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_upload_pace(),
+            std::time::Duration::from_secs(1)
+        );
+        // "0s" disables pacing (resolves to ZERO, not the default).
+        let disabled = ReleaseConfig {
+            upload_pace: Some(HumanDuration(std::time::Duration::ZERO)),
+            ..Default::default()
+        };
+        assert_eq!(disabled.resolved_upload_pace(), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn on_failure_config_display_and_default() {
+        assert_eq!(OnFailureConfig::default(), OnFailureConfig::Rollback);
+        assert_eq!(OnFailureConfig::Rollback.to_string(), "rollback");
+        assert_eq!(OnFailureConfig::Hold.to_string(), "hold");
+        // The lowercase serde form round-trips.
+        assert_eq!(
+            serde_yaml_ng::from_str::<OnFailureConfig>("hold").unwrap(),
+            OnFailureConfig::Hold
+        );
+    }
 }

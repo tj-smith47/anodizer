@@ -95,3 +95,99 @@ where
 
     deserializer.deserialize_any(UpxVisitor)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `upx:` uses the hand-written `deserialize_upx` (single-object OR array OR
+    // null → Vec<UpxConfig>). Each visitor arm is driven through a wrapper
+    // struct that mirrors the real field attributes.
+    #[derive(Deserialize)]
+    struct UpxWrapper {
+        #[serde(default, deserialize_with = "deserialize_upx")]
+        upx: Vec<UpxConfig>,
+    }
+
+    #[test]
+    fn default_fills_upx_binary_and_empty_lists() {
+        let d = UpxConfig::default();
+        assert_eq!(d.binary, "upx");
+        assert!(d.args.is_empty());
+        assert!(!d.required);
+        assert!(d.id.is_none());
+        assert!(d.ids.is_none());
+        assert!(d.enabled.is_none());
+        assert!(d.targets.is_none());
+        assert!(d.compress.is_none());
+        assert!(d.lzma.is_none());
+        assert!(d.brute.is_none());
+    }
+
+    #[test]
+    fn single_object_becomes_one_element_vec() {
+        let w: UpxWrapper = serde_yaml_ng::from_str("upx:\n  compress: best\n").unwrap();
+        assert_eq!(w.upx.len(), 1);
+        assert_eq!(w.upx[0].compress.as_deref(), Some("best"));
+        // Fields omitted from YAML still take their struct defaults.
+        assert_eq!(w.upx[0].binary, "upx");
+    }
+
+    #[test]
+    fn array_collects_every_entry() {
+        let w: UpxWrapper =
+            serde_yaml_ng::from_str("upx:\n  - id: a\n  - id: b\n  - id: c\n").unwrap();
+        assert_eq!(w.upx.len(), 3);
+        assert_eq!(w.upx[0].id.as_deref(), Some("a"));
+        assert_eq!(w.upx[2].id.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn null_and_missing_yield_empty_vec() {
+        let null: UpxWrapper = serde_yaml_ng::from_str("upx: null").unwrap();
+        assert!(null.upx.is_empty());
+        let missing: UpxWrapper = serde_yaml_ng::from_str("{}").unwrap();
+        assert!(missing.upx.is_empty());
+    }
+
+    #[test]
+    fn unknown_field_is_rejected() {
+        // `deny_unknown_fields` on UpxConfig must reject typos rather than
+        // silently drop them into a no-op.
+        let r: Result<UpxWrapper, _> = serde_yaml_ng::from_str("upx:\n  compres: best\n");
+        assert!(r.is_err(), "unknown field `compres` must be rejected");
+    }
+
+    #[test]
+    fn enabled_accepts_bool_and_template_string() {
+        let as_bool: UpxWrapper = serde_yaml_ng::from_str("upx:\n  enabled: true\n").unwrap();
+        assert_eq!(as_bool.upx[0].enabled, Some(StringOrBool::Bool(true)));
+
+        let as_tmpl: UpxWrapper =
+            serde_yaml_ng::from_str("upx:\n  enabled: \"{{ if IsSnapshot }}false{{ endif }}\"\n")
+                .unwrap();
+        assert_eq!(
+            as_tmpl.upx[0].enabled,
+            Some(StringOrBool::String(
+                "{{ if IsSnapshot }}false{{ endif }}".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn full_flag_surface_deserializes() {
+        let w: UpxWrapper = serde_yaml_ng::from_str(
+            "upx:\n  - id: pack\n    binary: /opt/upx\n    args: [\"-9\", \"--brute\"]\n    required: true\n    targets: [\"x86_64-unknown-linux-gnu\"]\n    compress: \"9\"\n    lzma: true\n    brute: false\n    ids: [\"cli\"]\n",
+        )
+        .unwrap();
+        let c = &w.upx[0];
+        assert_eq!(c.binary, "/opt/upx");
+        assert_eq!(c.args, vec!["-9", "--brute"]);
+        assert!(c.required);
+        assert_eq!(c.targets.as_deref().unwrap(), ["x86_64-unknown-linux-gnu"]);
+        assert_eq!(c.compress.as_deref(), Some("9"));
+        assert_eq!(c.lzma, Some(true));
+        assert_eq!(c.brute, Some(false));
+        assert_eq!(c.ids.as_deref().unwrap(), ["cli"]);
+    }
+}

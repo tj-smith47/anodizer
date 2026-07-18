@@ -223,6 +223,63 @@ fn delay_progression_caps_at_max() {
     assert_eq!(p.delay_for(8), Duration::from_millis(500)); // capped
 }
 
+/// A huge `next_attempt` overflows the `2^(n-2)` multiplier; the
+/// `checked_shl(..).unwrap_or(u64::MAX)` + `saturating_mul` guards must yield
+/// the capped `max_delay` instead of panicking on overflow.
+#[test]
+fn delay_for_saturates_on_huge_attempt_without_overflow() {
+    let p = RetryPolicy {
+        max_attempts: 200,
+        base_delay: Duration::from_millis(100),
+        max_delay: Duration::from_secs(30),
+    };
+    // exp = 98 → shift overflows u64 → unwrap_or(MAX) → saturating_mul → capped.
+    assert_eq!(p.delay_for(100), Duration::from_secs(30));
+    // The very first backoff (attempt 2, exp 0) is still the un-multiplied base.
+    assert_eq!(p.delay_for(2), Duration::from_millis(100));
+}
+
+/// Locks the production upload ladder shape (10 attempts / 50ms base / 30s
+/// cap) the same way `preflight`/`guard_probe` are pinned, so a silent edit to
+/// the canonical retry policy is caught.
+#[test]
+fn upload_policy_shape_is_locked() {
+    let p = RetryPolicy::UPLOAD;
+    assert_eq!(p.max_attempts, 10);
+    assert_eq!(p.base_delay, Duration::from_millis(50));
+    assert_eq!(p.max_delay, Duration::from_secs(30));
+    // Backoff climbs from the 50ms base and never exceeds the 30s cap.
+    assert_eq!(p.delay_for(2), Duration::from_millis(50));
+    assert_eq!(p.delay_for(3), Duration::from_millis(100));
+    for n in 2..=p.max_attempts {
+        assert!(p.delay_for(n) <= Duration::from_secs(30));
+    }
+}
+
+/// `with_floor` is a `max()` that only ever RAISES the attempt cap: a value
+/// below the floor is lifted, an operator-set value above it is preserved.
+/// Backoff shape (`base_delay` / `max_delay`) is untouched either way.
+#[test]
+fn with_floor_general_raises_and_preserves() {
+    let base = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_millis(50),
+        max_delay: Duration::from_secs(30),
+    };
+    let raised = base.with_floor(5);
+    assert_eq!(raised.max_attempts, 5, "a sub-floor cap must be raised");
+    // Shape is preserved verbatim.
+    assert_eq!(raised.base_delay, base.base_delay);
+    assert_eq!(raised.max_delay, base.max_delay);
+
+    // A cap already above the floor is left alone.
+    let high = RetryPolicy {
+        max_attempts: 9,
+        ..base
+    };
+    assert_eq!(high.with_floor(5).max_attempts, 9);
+}
+
 #[test]
 fn sync_succeeds_on_first_attempt() {
     let calls = AtomicU32::new(0);

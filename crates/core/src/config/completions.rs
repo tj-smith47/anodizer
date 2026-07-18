@@ -381,4 +381,50 @@ mod tests {
         assert_eq!(completion_filename("rg", "fig"), "rg.ts");
         assert_eq!(completion_filename("rg", "weirdshell"), "rg.weirdshell");
     }
+
+    #[test]
+    fn completion_filename_accepts_shell_aliases_case_insensitively() {
+        // `pwsh` maps to the same file as `powershell`; `nu` as `nushell`.
+        assert_eq!(completion_filename("rg", "pwsh"), "_rg.ps1");
+        assert_eq!(completion_filename("rg", "nu"), "rg.nu");
+        // Shell name is lower-cased before matching.
+        assert_eq!(completion_filename("rg", "BASH"), "rg");
+        assert_eq!(completion_filename("rg", "Fish"), "rg.fish");
+    }
+
+    #[test]
+    fn empty_shells_list_falls_back_to_defaults() {
+        // An explicit empty list is treated as "unset" — the four common shells.
+        let c = parse_completions("generate: \"x\"\nshells: []").unwrap();
+        assert_eq!(
+            c.resolved_shells(),
+            vec!["bash", "zsh", "fish", "powershell"]
+        );
+    }
+
+    #[test]
+    fn manpages_mode_resolves_all_three_variants() {
+        let generate: ManpagesConfig =
+            serde_yaml_ng::from_str("generate: \"{{ .ArtifactPath }} --man\"").unwrap();
+        assert_eq!(
+            generate.mode(),
+            GenMode::Generate("{{ .ArtifactPath }} --man")
+        );
+        let harvest: ManpagesConfig =
+            serde_yaml_ng::from_str("from_build_out: \"**/out/{{ .Binary }}.1\"").unwrap();
+        assert_eq!(
+            harvest.mode(),
+            GenMode::FromBuildOut("**/out/{{ .Binary }}.1")
+        );
+        let copy: ManpagesConfig = serde_yaml_ng::from_str("copy: \"man/*.1\"").unwrap();
+        assert_eq!(copy.mode(), GenMode::Copy("man/*.1"));
+        // No mode set is a no-op.
+        let none: ManpagesConfig = serde_yaml_ng::from_str("dst: \"man/\"").unwrap();
+        assert_eq!(none.mode(), GenMode::None);
+    }
+
+    #[test]
+    fn manpages_rejects_unknown_field() {
+        assert!(serde_yaml_ng::from_str::<ManpagesConfig>("shells: [bash]").is_err());
+    }
 }

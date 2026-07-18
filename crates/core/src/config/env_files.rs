@@ -279,3 +279,86 @@ pub fn load_env_files(
 // publishers.
 
 pub use crate::env::{parse_env_entries, render_env_entries, split_env_entry};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_log() -> crate::log::StageLogger {
+        crate::log::StageLogger::new("test", crate::log::Verbosity::Normal)
+    }
+
+    // --- EnvFilesConfig deserialize dispatch ------------------------------
+
+    #[test]
+    fn env_files_scalar_input_is_rejected() {
+        // Neither a sequence nor a mapping — the hand-written deserializer must
+        // error rather than coerce a bare string.
+        let r: Result<EnvFilesConfig, _> = serde_yaml_ng::from_str("just-a-string");
+        assert!(r.is_err(), "a scalar env_files value must be rejected");
+    }
+
+    #[test]
+    fn as_list_and_as_token_files_are_mutually_exclusive() {
+        let list = EnvFilesConfig::List(vec![".env".into()]);
+        assert_eq!(list.as_list(), Some([".env".to_string()].as_slice()));
+        assert!(list.as_token_files().is_none());
+
+        let tokens = EnvFilesConfig::TokenFiles(EnvFilesTokenConfig::default());
+        assert!(tokens.as_list().is_none());
+        assert!(tokens.as_token_files().is_some());
+    }
+
+    // --- load_token_files candidate precedence ----------------------------
+
+    #[test]
+    fn unset_field_prefers_anodizer_path_over_goreleaser() {
+        // With no explicit github_token, the anodizer-native path is tried
+        // first; when it exists it wins even though the goreleaser path also
+        // exists.
+        let dir = tempfile::TempDir::new().unwrap();
+        let home = dir.path();
+        let anod = home.join(".config/anodizer/github_token");
+        let gore = home.join(".config/goreleaser/github_token");
+        std::fs::create_dir_all(anod.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(gore.parent().unwrap()).unwrap();
+        std::fs::write(&anod, "anodizer_tok\n").unwrap();
+        std::fs::write(&gore, "goreleaser_tok\n").unwrap();
+
+        let env = crate::MapEnvSource::new().with("HOME", home.to_string_lossy().to_string());
+        let vars =
+            load_token_files_with_env(&EnvFilesTokenConfig::default(), &test_log(), &env).unwrap();
+        assert_eq!(vars.get("GITHUB_TOKEN").unwrap(), "anodizer_tok");
+    }
+
+    #[test]
+    fn unset_field_falls_back_to_goreleaser_when_anodizer_absent() {
+        // Only the goreleaser path exists → the second candidate is used.
+        let dir = tempfile::TempDir::new().unwrap();
+        let home = dir.path();
+        let gore = home.join(".config/goreleaser/gitlab_token");
+        std::fs::create_dir_all(gore.parent().unwrap()).unwrap();
+        std::fs::write(&gore, "gl_fallback\n").unwrap();
+
+        let env = crate::MapEnvSource::new().with("HOME", home.to_string_lossy().to_string());
+        let vars =
+            load_token_files_with_env(&EnvFilesTokenConfig::default(), &test_log(), &env).unwrap();
+        assert_eq!(vars.get("GITLAB_TOKEN").unwrap(), "gl_fallback");
+    }
+
+    // --- load_env_files strict-mode error ---------------------------------
+
+    #[test]
+    fn strict_mode_errors_on_missing_env_file() {
+        let r = load_env_files(
+            &["/nonexistent/anodizer/strict/.env".to_string()],
+            &test_log(),
+            true,
+        );
+        let err = r.unwrap_err();
+        assert!(
+            err.contains("strict mode"),
+            "expected strict-mode error, got: {err}"
+        );
+    }
+}

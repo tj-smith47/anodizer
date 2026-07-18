@@ -474,3 +474,133 @@ impl MacOSNativeNotarizeConfig {
             .unwrap_or_else(|| Self::DEFAULT_TIMEOUT.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Renders a template to itself (Tera would leave literals unchanged); used
+    // to drive `should_skip` without a real engine.
+    fn identity(s: &str) -> anyhow::Result<String> {
+        Ok(s.to_string())
+    }
+
+    fn parse(yaml: &str) -> MacOSSignNotarizeConfig {
+        serde_yaml_ng::from_str(yaml).expect("notarize config should parse")
+    }
+
+    // --- direct `skip:` semantics -----------------------------------------
+
+    #[test]
+    fn should_skip_direct_bool_short_circuits() {
+        // Bool skip never renders; a panicking closure proves it.
+        assert!(
+            parse("skip: true")
+                .should_skip(|_| panic!("render must not run for a bool skip"))
+                .unwrap()
+        );
+        assert!(
+            !parse("skip: false")
+                .should_skip(|_| unreachable!())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn should_skip_missing_is_false() {
+        // No `skip:`/`enabled:` at all → run (don't skip).
+        assert!(
+            !parse("sign:\n  certificate: c")
+                .should_skip(identity)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn should_skip_direct_template_uses_truthy_semantics() {
+        // Direct `skip:` uses `try_evaluates_to_true` — only "true"/"1" skip.
+        let cfg = parse("skip: \"{{ flag }}\"");
+        assert!(cfg.should_skip(|_| Ok("true".to_string())).unwrap());
+        assert!(cfg.should_skip(|_| Ok("1".to_string())).unwrap());
+        assert!(!cfg.should_skip(|_| Ok("no".to_string())).unwrap());
+    }
+
+    #[test]
+    fn should_skip_fails_closed_on_render_error() {
+        // A render failure must propagate as Err so callers treat the entry as
+        // undecided rather than silently signing.
+        let cfg = parse("skip: \"{{ broken\"");
+        assert!(cfg.should_skip(|_| anyhow::bail!("render boom")).is_err());
+    }
+
+    // --- `enabled:` alias inversion ---------------------------------------
+
+    #[test]
+    fn enabled_bool_inverts_to_skip_and_evaluates() {
+        // `enabled: false` → skip:true (don't run).
+        assert!(parse("enabled: false").should_skip(identity).unwrap());
+        // `enabled: true` → skip:false (run).
+        assert!(!parse("enabled: true").should_skip(identity).unwrap());
+    }
+
+    #[test]
+    fn templated_enabled_sets_inversion_flag_and_negates() {
+        // A non-literal `enabled:` template is kept verbatim with the inversion
+        // flag set (no `{{ }}` spliced into a condition head).
+        let cfg = parse("enabled: \"{{ e }}\"");
+        assert!(
+            cfg.skip_inverts_enabled,
+            "templated enabled must set the inversion flag"
+        );
+        // enabled renders truthy → run (should_skip false).
+        assert!(!cfg.should_skip(|_| Ok("yes".to_string())).unwrap());
+        // enabled renders falsy → skip. The wider falsy set applies here.
+        assert!(cfg.should_skip(|_| Ok("false".to_string())).unwrap());
+        // Empty render is also falsy → skip.
+        assert!(cfg.should_skip(|_| Ok(String::new())).unwrap());
+    }
+
+    #[test]
+    fn literal_enabled_string_inverts_without_flag() {
+        // Literal "true"/"false" strings invert at parse time — no runtime flag.
+        let run = parse("enabled: \"true\"");
+        assert!(!run.skip_inverts_enabled);
+        assert!(
+            !run.should_skip(|_| panic!("literal enabled must not render"))
+                .unwrap()
+        );
+        let skip = parse("enabled: \"false\"");
+        assert!(skip.should_skip(|_| unreachable!()).unwrap());
+    }
+
+    // --- skip/enabled conflict resolution ---------------------------------
+
+    #[test]
+    fn both_skip_and_enabled_agreeing_is_accepted() {
+        // skip:true and enabled:false both say "don't run" — lenient accept.
+        let cfg = parse("skip: true\nenabled: false");
+        assert_eq!(cfg.skip, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn both_skip_and_enabled_disagreeing_is_rejected() {
+        // skip:true and enabled:true disagree (skip vs run) — config error.
+        let r: Result<MacOSSignNotarizeConfig, _> =
+            serde_yaml_ng::from_str("skip: true\nenabled: true");
+        let err = r.unwrap_err().to_string();
+        assert!(
+            err.contains("disagree"),
+            "expected disagree error, got: {err}"
+        );
+    }
+
+    // --- native config mirrors the same behavior --------------------------
+
+    #[test]
+    fn native_should_skip_mirrors_cross_platform() {
+        let cfg: MacOSNativeSignNotarizeConfig = serde_yaml_ng::from_str("enabled: false").unwrap();
+        assert!(cfg.should_skip(identity).unwrap());
+        let run: MacOSNativeSignNotarizeConfig = serde_yaml_ng::from_str("skip: false").unwrap();
+        assert!(!run.should_skip(identity).unwrap());
+    }
+}
