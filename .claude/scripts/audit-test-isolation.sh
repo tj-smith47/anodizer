@@ -139,9 +139,9 @@ helper_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS[*]}")"
 
 # Per-file awk state machine over crates/cli/src/commands/helpers.rs (or any
 # future file reaching one of CWD_SWAP_HELPERS): tracks the attribute block
-# immediately preceding each top-level `    fn NAME` line (4-space indent —
-# the mod-tests fn nesting depth in this file; a deeper nested `fn` would
-# defeat this, but the test module here has none) and the set of
+# immediately preceding each top-level `fn NAME` line (0-space in a flat
+# sibling `tests.rs`, or 4-space inside an inline `mod tests`; a deeper nested
+# `fn` would defeat this, but a flat test module has none) and the set of
 # CWD_SWAP_HELPERS calls textually inside that fn's body (bounded by the next
 # top-level fn line or EOF). A fn is flagged iff it is #[test], its body
 # calls an allow-listed helper, and its attribute block lacks #[cfg(unix)] or
@@ -157,11 +157,11 @@ helper_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS[*]}")"
 # definition's own signature is never scored as a call inside a tracked body,
 # and definitions carry no #[test] so `fn_is_test` gates them out regardless.
 #
-# Fail-closed structural backstop: the fn-boundary rule only recognizes a
-# 4-space-indent `    fn NAME` (the flat mod-tests nesting depth), so a
-# `#[test]` fn nested one level deeper (inside a sub-`mod` in the test
-# module) is never tracked as its own fn — its body folds into whichever
-# 4-indent fn was last open, so a genuinely unattributed nested test would
+# Fail-closed structural backstop: the fn-boundary rule recognizes a flat
+# 0-space `fn NAME` (a sibling `tests.rs`) or 4-space `    fn NAME` (an inline
+# `mod tests`), so a `#[test]` fn nested one level deeper (inside a sub-`mod`
+# in the test module) is never tracked as its own fn — its body folds into
+# whichever flat fn was last open, so a genuinely unattributed nested test would
 # silently pass. Per file, the count of `#[test]` lines (any indent) vs the
 # count of tracked fns whose attribute block carried `#[test]` must match;
 # a mismatch means the flat-module assumption broke and the scanner can no
@@ -223,7 +223,7 @@ report_cwd_helper_pairing() {
         # has already advanced), so the ended file is named via `cur_file`.
         function check_counts(f) {
             if (file_test_attrs != file_tracked_test_fns) {
-                printf("%s: unexpected test-module structure: %d #[test] attrs but %d attributed to a flat 4-space fn; the cwd-helper pairing scanner assumes a flat, 4-space-indented test module (no nested `mod`) — flatten the test module or extend report_cwd_helper_pairing\n", f, file_test_attrs, file_tracked_test_fns)
+                printf("%s: unexpected test-module structure: %d #[test] attrs but %d attributed to a flat fn; the cwd-helper pairing scanner assumes a flat test module — 0-space in a sibling `tests.rs`, or 4-space in an inline `mod tests` (no deeper nested `mod`) — flatten the nested module or extend report_cwd_helper_pairing\n", f, file_test_attrs, file_tracked_test_fns)
                 bad = 1
             }
         }
@@ -257,9 +257,15 @@ report_cwd_helper_pairing() {
         /^[[:space:]]*\/\/\// { next }  # doc comment: transparent to the pending attribute block
         /^[[:space:]]*$/      { next }  # blank line: transparent
 
-        match(line, /^    fn [A-Za-z_][A-Za-z_0-9]*/) {
+        match(line, /^(    )?fn [A-Za-z_][A-Za-z_0-9]*/) {
             finalize()
-            fn_name = substr(line, RSTART + 7, RLENGTH - 7)
+            # "fn " begins at column 1 in a flat sibling `tests.rs` (a god-file
+            # split moves the inline `mod tests` body out to a sibling module,
+            # dropping the fns to 0-space) or at column 5 in an inline 4-space
+            # `mod tests` — strip whichever indent + "fn " prefix matched,
+            # leaving the bare fn name.
+            fn_name = substr(line, 1, RLENGTH)
+            sub(/^(    )?fn /, "", fn_name)
             fn_file = FILENAME
             fn_line = FNR
             have_fn = 1
