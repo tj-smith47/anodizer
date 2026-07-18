@@ -852,4 +852,156 @@ mod tests {
         // The npm result's github-shaped target must NOT leak through.
         assert_eq!(recorded_tag(&report, "acme", "nomatch"), None);
     }
+
+    // --- preflight: a `release.github` block + a resolvable token per target ---
+
+    #[test]
+    fn preflight_ok_when_every_target_is_tokened() {
+        // A single github target carrying a per-repo token satisfies both
+        // preflight conditions (a repo resolves, and every target is tokened).
+        let ctx = ctx_from_crates(
+            vec![github_crate_cfg("a", "acme", "app", Some("ghp_a"))],
+            None,
+        );
+        preflight(&ctx).expect("a tokened github target must pass preflight");
+    }
+
+    #[test]
+    fn preflight_bails_when_no_github_block_resolves() {
+        // A release-less crate and a release crate without a `github:` sub-block
+        // resolve no repo at all, so preflight has nothing to promote and must
+        // bail with the actionable message rather than silently pass.
+        let ctx = ctx_from_crates(
+            vec![release_less_crate("a"), non_github_release_crate("b")],
+            None,
+        );
+        let err = preflight(&ctx).expect_err("no github repo must fail preflight");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no `release.github` block resolved"),
+            "unexpected preflight message: {msg}"
+        );
+    }
+
+    #[test]
+    fn preflight_bails_and_names_every_untokened_target() {
+        // Two distinct github repos, neither tokened (no per-repo token, no
+        // pipeline --token): preflight must fail AND name both so the operator
+        // sees exactly which credentials are missing.
+        let ctx = ctx_from_crates(
+            vec![
+                github_crate_cfg("a", "acme", "app", None),
+                github_crate_cfg("b", "acme", "lib", None),
+            ],
+            None,
+        );
+        let err = preflight(&ctx).expect_err("untokened targets must fail preflight");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("acme/app"), "must name acme/app: {msg}");
+        assert!(msg.contains("acme/lib"), "must name acme/lib: {msg}");
+        assert!(
+            msg.contains("no GitHub token resolved"),
+            "must explain the missing-token cause: {msg}"
+        );
+    }
+
+    #[test]
+    fn preflight_ok_when_cli_token_backfills_untokened_config() {
+        // No per-repo token, but a pipeline `--token`: resolve_token's final
+        // `.or_else(ctx.options.token)` rung adopts it, so the target is
+        // effectively tokened and preflight passes.
+        let ctx = ctx_from_crates(
+            vec![github_crate_cfg("a", "acme", "app", None)],
+            Some("ghp_cli"),
+        );
+        preflight(&ctx).expect("a --token backfill must satisfy preflight");
+    }
+
+    // --- promote (dry-run): the plan resolves without credentials or network ---
+
+    #[test]
+    fn promote_dry_run_yields_dry_run_outcome_naming_the_version() {
+        use anodizer_core::promote::PromoteStatus;
+        // Untokened target is fine for a dry-run: the plan resolves from config
+        // without credentials, and the dry-run arm returns before any tokio
+        // runtime / HTTP is created. A Version selector's source_label is the
+        // version itself, so the folded outcome reads `1.2.3→stable`.
+        let ctx = ctx_from_crates(vec![github_crate_cfg("a", "acme", "app", None)], None);
+        let selector = PromoteSelector::Version("1.2.3".to_string());
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: true,
+                ctx: &ctx,
+            })
+            .expect("dry-run resolves the plan without a token");
+        assert_eq!(outcome.status, PromoteStatus::DryRun);
+        assert_eq!(outcome.publisher, "github");
+        assert_eq!(
+            outcome.from, "1.2.3",
+            "a Version selector labels `from` with the version, not the track"
+        );
+        assert_eq!(outcome.to, "stable");
+        assert_eq!(outcome.what.as_deref(), Some("1 release(s)"));
+    }
+
+    #[test]
+    fn promote_dry_run_newest_selector_keeps_native_from_track() {
+        use anodizer_core::promote::PromoteStatus;
+        // The Newest selector genuinely promotes whatever sits on the
+        // from-track, so its source_label is the native from-track (not a
+        // concrete version). Two distinct repos → the dry-run counts both.
+        let ctx = ctx_from_crates(
+            vec![
+                github_crate_cfg("a", "acme", "app", None),
+                github_crate_cfg("b", "acme", "lib", None),
+            ],
+            None,
+        );
+        let selector = PromoteSelector::Newest;
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: true,
+                ctx: &ctx,
+            })
+            .expect("dry-run over two untokened repos still resolves the plan");
+        assert_eq!(outcome.status, PromoteStatus::DryRun);
+        assert_eq!(
+            outcome.from, "prerelease",
+            "Newest keeps the native from-track label"
+        );
+        assert_eq!(
+            outcome.what.as_deref(),
+            Some("2 release(s)"),
+            "two distinct repos deduplicate to two dry-run targets"
+        );
+    }
+
+    #[test]
+    fn promote_bails_when_no_github_repo_resolves() {
+        // No github block anywhere → promote resolves zero targets and bails
+        // with the actionable "needs a `release.github` block" message rather
+        // than silently succeeding on nothing.
+        let ctx = ctx_from_crates(vec![non_github_release_crate("a")], None);
+        let selector = PromoteSelector::Version("1.0.0".to_string());
+        let err = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: true,
+                ctx: &ctx,
+            })
+            .expect_err("no github repo must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no github release repo resolved"),
+            "unexpected promote bail message: {msg}"
+        );
+    }
 }

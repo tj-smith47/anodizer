@@ -32,6 +32,8 @@ CLAUDE.local.md
 !.claude/scripts/test-os-suite.sh
 # Coverage artifact emitted by `task coverage:check`.
 cobertura.xml
+# Ad-hoc coverage scratch (summary/err dumps) written to the repo root.
+/coverage-*
 
 # Hermetic dist tree emitted by `task check:determinism --preserve-dist` (CI's
 # `preserved-dist` path). Local runs write it into the repo root.

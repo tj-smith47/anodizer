@@ -767,4 +767,227 @@ mod tests {
             )]
         );
     }
+
+    #[test]
+    fn promoter_name_is_npm() {
+        assert_eq!(NpmPromoter::default().name(), "npm");
+        assert_eq!(NpmPromoter::new("rc").name(), "npm");
+    }
+
+    #[test]
+    fn promote_bails_without_any_npms_config() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // No `npms:` block ⇒ nothing to promote for npm; the verb must bail with
+        // an actionable message naming the missing block, before any scratch dir
+        // or command.
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let err = NpmPromoter::default()
+            .promote(&req)
+            .expect_err("no npms block must bail");
+        assert!(
+            format!("{err:#}").contains("npms:"),
+            "error should name the missing npms block; got {err:#}"
+        );
+    }
+
+    #[test]
+    fn promote_dry_run_names_plan_and_spawns_nothing() {
+        use anodizer_core::config::{Config, NpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::promote::PromoteStatus;
+
+        let cfg = Config {
+            npms: Some(vec![NpmConfig::default()]),
+            ..Default::default()
+        };
+        let ctx = Context::new(cfg, ContextOptions::default());
+        // An explicit `--version` selector names the version as the folded
+        // `from` label (not the canonical track), and dry-run resolves the plan
+        // without spawning `npm`.
+        let selector = PromoteSelector::Version("1.4.0".to_string());
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let out = NpmPromoter::default().promote(&req).expect("dry-run ok");
+        assert_eq!(out.status, PromoteStatus::DryRun);
+        assert_eq!(out.publisher, "npm");
+        assert_eq!(out.from, "1.4.0");
+        assert_eq!(out.to, "latest");
+        // Dry-run resolves no concrete package set, so `what` is None.
+        assert_eq!(out.what, None);
+    }
+
+    #[test]
+    fn promote_from_run_with_empty_report_is_skipped_nothing_to_promote() {
+        use anodizer_core::config::{Config, NpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::promote::{PromoteSkipReason, PromoteStatus};
+
+        // FromRun with a report holding no npm targets ⇒ the recorded family is
+        // empty ⇒ nothing is re-tagged and no `npm` command spawns; the outcome
+        // is Skipped(NothingToPromote), and the `from` label is the run id.
+        let cfg = Config {
+            npms: Some(vec![NpmConfig::default()]),
+            ..Default::default()
+        };
+        let ctx = Context::new(cfg, ContextOptions::default());
+        let selector = PromoteSelector::FromRun {
+            run_id: "abc123".to_string(),
+            report: PublishReport::default(),
+        };
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let out = NpmPromoter::default()
+            .promote(&req)
+            .expect("empty recorded family ok");
+        assert_eq!(
+            out.status,
+            PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
+        );
+        assert_eq!(out.from, "run abc123");
+    }
+
+    #[test]
+    fn env_token_reads_named_var_and_rejects_unset_or_empty() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        // Sealed env so the assertion reflects only the injected fixture, never
+        // the host's ambient NPM_TOKEN.
+        let ctx = TestContextBuilder::new()
+            .env("NPM_TOKEN", "s3cr3t")
+            .env("EMPTY_TOKEN", "")
+            .build();
+        let log = ctx.logger("npm-promote-test");
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let cfg_dir = TempDir::new().expect("scratch dir");
+        let retag = ReTagger::new(&req, &log, cfg_dir.path());
+
+        assert_eq!(retag.env_token("NPM_TOKEN").expect("set var"), "s3cr3t");
+        // An empty value counts as unset — the error names the offending var.
+        let empty_err = retag
+            .env_token("EMPTY_TOKEN")
+            .expect_err("empty value rejected");
+        assert!(
+            format!("{empty_err:#}").contains("EMPTY_TOKEN"),
+            "error should name the empty var; got {empty_err:#}"
+        );
+        let missing_err = retag
+            .env_token("UNSET_VAR")
+            .expect_err("unset var rejected");
+        assert!(
+            format!("{missing_err:#}").contains("UNSET_VAR"),
+            "error should name the unset var; got {missing_err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_version_returns_explicit_version_selector_verbatim() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // The `Version` selector short-circuits — the version is returned as-is
+        // with no registry round-trip (no `npm dist-tag ls` spawn).
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = ctx.logger("npm-promote-test");
+        let selector = PromoteSelector::Version("9.9.9".to_string());
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let cfg_dir = TempDir::new().expect("scratch dir");
+        let retag = ReTagger::new(&req, &log, cfg_dir.path());
+        let v = retag
+            .resolve_version("pkg", "https://registry.npmjs.org", Path::new("/x/.npmrc"))
+            .expect("resolve version");
+        assert_eq!(v, Some("9.9.9".to_string()));
+    }
+
+    #[test]
+    fn retag_recorded_routes_every_target_to_failed_when_token_env_unset() {
+        use anodizer_core::publish_evidence::{NpmExtra, NpmTargetSnapshot};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_core::{PublishEvidence, PublisherGroup, PublisherOutcome, PublisherResult};
+
+        // Sealed empty env ⇒ the recorded target's token var resolves to nothing,
+        // so retag records a per-target failure WITHOUT spawning `npm dist-tag
+        // add` (env-token resolution fails before the subprocess).
+        let ctx = TestContextBuilder::new().sealed_env().build();
+        let log = ctx.logger("npm-promote-test");
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "next".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let cfg_dir = TempDir::new().expect("scratch dir");
+        let mut retag = ReTagger::new(&req, &log, cfg_dir.path());
+
+        let mut evidence = PublishEvidence::new("npm");
+        evidence.extra = PublishEvidenceExtra::Npm(NpmExtra {
+            npm_targets: vec![NpmTargetSnapshot {
+                target: "pkg".into(),
+                package: "pkg".into(),
+                version: "1.0.0".into(),
+                registry: "https://registry.npmjs.org".into(),
+                dist_tag: "next".into(),
+                token_env_var: "DEFINITELY_UNSET_NPM_TOKEN".into(),
+            }],
+        });
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "npm".into(),
+            group: PublisherGroup::Submitter,
+            required: false,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: Some(evidence),
+        });
+
+        retag.retag_recorded(&report);
+        assert!(
+            retag.applied.is_empty(),
+            "no package should re-tag with an unresolvable token"
+        );
+        assert_eq!(retag.failed.len(), 1, "the single target must be a failure");
+        assert!(
+            retag.failed[0].0.contains("pkg@1.0.0"),
+            "failure label should be the package@version; got {}",
+            retag.failed[0].0
+        );
+        assert!(
+            retag.failed[0].1.contains("DEFINITELY_UNSET_NPM_TOKEN"),
+            "failure cause should name the unresolvable token var; got {}",
+            retag.failed[0].1
+        );
+    }
 }

@@ -1422,6 +1422,27 @@ fn allowlist_name_for_errors_for_external_plan_without_path() {
     );
 }
 
+#[test]
+fn allowlist_name_for_errors_when_vendor_path_has_no_file_name() {
+    // A bare root path ("/") is `Some` but has no basename, so `file_name()`
+    // returns `None`. The function must surface a "no file name" error naming
+    // the entry rather than unwrap-panicking on the missing basename.
+    let plan = SchemaPlan {
+        name: "Rooty".into(),
+        mode: SchemaMode::Vendor,
+        url: "https://www.schemastore.org/rooty.json".into(),
+        vendor_path: Some(PathBuf::from("/")),
+        versioned: false,
+        desired_entry: serde_json::json!({}),
+        verdict: None,
+    };
+    let err = allowlist_name_for(&plan).expect_err("root path has no file name");
+    assert!(
+        err.to_string().contains("Rooty") && err.to_string().contains("no file name"),
+        "expected a 'no file name' error naming the entry; got {err}"
+    );
+}
+
 // --- resolve_description: crate-bound derivation branch --------------
 
 #[test]

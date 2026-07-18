@@ -565,3 +565,94 @@ fn krew_short_description_falls_back_to_cargo_toml_description() {
         "description must resolve from Cargo.toml; got: {msg}"
     );
 }
+
+#[test]
+fn krew_retain_on_rollback_defaults_to_false() {
+    // No config override for `retain_on_rollback` ⇒ the built-in default is
+    // false: a rolled-back krew publish closes its PR (does not retain it).
+    let p = KrewPublisher::new();
+    assert!(!p.retain_on_rollback());
+}
+
+#[test]
+fn collect_krew_target_none_when_crate_absent_from_universe() {
+    // A crate name that is not in the resolved universe cannot be snapshotted —
+    // `find_crate_in_universe` returns None, so the collector short-circuits to
+    // Ok(None) rather than fabricating a target for a non-existent crate.
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let log = ctx.logger("publish");
+    assert!(
+        collect_krew_target(&ctx, "ghost", &log)
+            .expect("no error")
+            .is_none()
+    );
+}
+
+#[test]
+fn collect_krew_target_none_when_crate_has_no_krew_block() {
+    // A crate present in the universe but carrying no `publish.krew` block has
+    // nothing to roll back — Ok(None), no branch/target recorded.
+    let plain = CrateConfig {
+        name: "core".to_string(),
+        path: ".".to_string(),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new().crates(vec![plain]).build();
+    let log = ctx.logger("publish");
+    assert!(
+        collect_krew_target(&ctx, "core", &log)
+            .expect("no error")
+            .is_none()
+    );
+}
+
+#[test]
+fn collect_krew_target_none_when_repository_has_no_owner_name() {
+    // A krew block with no `repository` cannot resolve a fork owner, so no PR
+    // branch can be pushed and no rollback target is recorded — Ok(None).
+    let c = CrateConfig {
+        name: "core".to_string(),
+        path: ".".to_string(),
+        publish: Some(PublishConfig {
+            krew: Some(KrewConfig {
+                repository: None,
+                short_description: Some("a kubectl plugin".to_string()),
+                description: Some("a kubectl plugin".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new().crates(vec![c]).build();
+    let log = ctx.logger("publish");
+    assert!(
+        collect_krew_target(&ctx, "core", &log)
+            .expect("no error")
+            .is_none()
+    );
+}
+
+#[test]
+fn requirements_declare_git_and_krew_token_for_active_config() {
+    // An active krew config (not skipped, repository set) must declare its
+    // env/tool requirements: the `git` clone tool and the KREW_INDEX_TOKEN the
+    // PR-direct flow authenticates with.
+    let ctx = TestContextBuilder::new()
+        .crates(vec![krew_crate("demo")])
+        .build();
+    let reqs = KrewPublisher::new().requirements(&ctx);
+    assert!(
+        !reqs.is_empty(),
+        "an active krew config must declare requirements"
+    );
+    let dumped = format!("{reqs:?}");
+    assert!(
+        dumped.contains("KREW_INDEX_TOKEN"),
+        "requirements must name the krew token env var; got {dumped}"
+    );
+    assert!(
+        dumped.contains("git"),
+        "the PR-direct flow clones, so `git` must be required; got {dumped}"
+    );
+}
