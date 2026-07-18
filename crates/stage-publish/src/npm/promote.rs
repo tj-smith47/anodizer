@@ -566,6 +566,112 @@ mod tests {
     }
 
     #[test]
+    fn dist_tag_ls_command_is_fully_positional() {
+        let ls = npm_dist_tag_ls_command("@scope/app", Path::new("/tmp/.npmrc"), "https://r");
+        assert_eq!(
+            ls,
+            vec![
+                "npm",
+                "dist-tag",
+                "ls",
+                "@scope/app",
+                "--userconfig",
+                "/tmp/.npmrc",
+                "--registry",
+                "https://r",
+            ]
+        );
+    }
+
+    #[test]
+    fn view_optional_deps_command_is_fully_positional() {
+        let view = npm_view_optional_deps_command(
+            "@scope/app",
+            "1.2.3",
+            Path::new("/tmp/.npmrc"),
+            "https://registry.npmjs.org",
+        );
+        assert_eq!(
+            view,
+            vec![
+                "npm",
+                "view",
+                "@scope/app@1.2.3",
+                "optionalDependencies",
+                "--json",
+                "--userconfig",
+                "/tmp/.npmrc",
+                "--registry",
+                "https://registry.npmjs.org",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_dist_tag_version_tolerates_padding_and_missing_lines() {
+        // Leading/trailing whitespace around both tag and version is trimmed.
+        assert_eq!(
+            parse_dist_tag_version("  latest :  9.9.9  \n", "latest"),
+            Some("9.9.9".into())
+        );
+        // The first matching line wins; a blank/garbage line is skipped.
+        assert_eq!(
+            parse_dist_tag_version("garbage-no-colon\nbeta: 2.0.0\n", "beta"),
+            Some("2.0.0".into())
+        );
+        // No line at all ⇒ None.
+        assert_eq!(parse_dist_tag_version("", "latest"), None);
+    }
+
+    #[test]
+    fn fallback_crate_name_prefers_primary_crate_else_project_name() {
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        // No crates configured ⇒ falls back to the project name.
+        let bare = TestContextBuilder::new().project_name("demo").build();
+        assert_eq!(fallback_crate_name(&bare), "demo");
+
+        // A configured crate ⇒ its name is the fallback.
+        let with_crate = TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![CrateConfig {
+                name: "core".to_string(),
+                path: "crates/core".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        assert_eq!(fallback_crate_name(&with_crate), "core");
+    }
+
+    #[test]
+    fn family_label_uses_metapackage_for_optional_deps_and_name_for_postinstall() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let ctx = TestContextBuilder::new().project_name("demo").build();
+
+        // optional-deps: the explicit metapackage names the family.
+        let opt = NpmConfig {
+            mode: NpmMode::OptionalDeps,
+            metapackage: Some("@scope/app".into()),
+            ..Default::default()
+        };
+        assert_eq!(family_label(&ctx, &opt), "@scope/app");
+
+        // postinstall: the `name:` names the family.
+        let post = NpmConfig {
+            mode: NpmMode::Postinstall,
+            name: Some("anodize-demo".into()),
+            ..Default::default()
+        };
+        assert_eq!(family_label(&ctx, &post), "anodize-demo");
+
+        // Neither set ⇒ both modes fall back to the resolved crate/project name.
+        let bare = NpmConfig::default();
+        assert_eq!(family_label(&ctx, &bare), "demo");
+    }
+
+    #[test]
     fn parse_dist_tag_version_picks_named_tag() {
         let out = "latest: 1.2.3\nnext: 1.3.0-rc.1\nbeta: 1.3.0-beta.2\n";
         assert_eq!(

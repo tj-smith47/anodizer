@@ -1368,6 +1368,116 @@ mod tests {
     }
 
     #[test]
+    fn install_cmd_exact_strings_per_package_type() {
+        // The `.deb` install must chase missing deps with an apt-get fixup —
+        // asserted end-to-end here (build_smoke_argv tests only prefix-match the
+        // `dpkg -i` head, leaving the `|| (...)` fallback unchecked).
+        assert_eq!(
+            PackageType::Deb.install_cmd("/pkg/a.deb"),
+            "dpkg -i '/pkg/a.deb' || (apt-get update && apt-get -y -f install)"
+        );
+        assert_eq!(
+            PackageType::Rpm.install_cmd("/pkg/a.rpm"),
+            "rpm -i --nodeps '/pkg/a.rpm'"
+        );
+        assert_eq!(
+            PackageType::Apk.install_cmd("/pkg/a.apk"),
+            "apk add --allow-untrusted '/pkg/a.apk'"
+        );
+    }
+
+    #[test]
+    fn is_container_start_failure_detects_daemon_envelope_and_docker_prefix() {
+        // The `docker:`-prefixed runtime error line.
+        assert!(is_container_start_failure(
+            "docker: Error response from daemon: pull access denied"
+        ));
+        // The daemon envelope WITHOUT a `docker:` prefix — the second OR branch,
+        // which the smoke_failure_detail tests never reach (their line starts
+        // with `docker:` and short-circuits the `||`).
+        assert!(is_container_start_failure(
+            "some tool wrote: Error response from daemon: no such image"
+        ));
+        // A genuine in-container install/version failure is NOT a start failure.
+        assert!(!is_container_start_failure(
+            "sh: myapp: not found\ndpkg: error processing package"
+        ));
+        assert!(!is_container_start_failure(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_label_reports_signal_termination() {
+        use std::os::unix::process::ExitStatusExt;
+        // A SIGKILL-terminated process: wait status low 7 bits = signal, no exit
+        // code. `exit_label` must name the signal, not fall through to the
+        // "terminated without an exit code" branch.
+        let status = std::process::ExitStatus::from_raw(9);
+        assert_eq!(exit_label(&status), "killed by signal 9");
+        // A normal exit still reports the code.
+        assert_eq!(exit_label(&fake_output(3, "", "").status), "exit 3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_detail_joins_present_streams_and_omits_empty_ones() {
+        let status = fake_output(7, "", "").status;
+        // Both streams present: `exit N — stderr: … — stdout: …`.
+        assert_eq!(
+            compose_detail(&status, "boom", "progress"),
+            "exit 7 — stderr: boom — stdout: progress"
+        );
+        // Only stderr present — stdout segment omitted.
+        assert_eq!(compose_detail(&status, "boom", ""), "exit 7 — stderr: boom");
+        // Only stdout present — stderr segment omitted.
+        assert_eq!(
+            compose_detail(&status, "", "progress"),
+            "exit 7 — stdout: progress"
+        );
+        // Both empty: the exit label stands alone (the code is never dropped).
+        assert_eq!(compose_detail(&status, "", ""), "exit 7");
+    }
+
+    #[test]
+    fn platform_is_native_matches_host_and_rejects_foreign() {
+        // A platform string the host can never equal is never native. This holds
+        // regardless of the host arch (unknown host ⇒ always false).
+        assert!(!platform_is_native("linux/__not-a-real-platform__"));
+        // The host's own platform, when it has one, IS native. When the host arch
+        // has no Docker platform name, `platform_is_native` is false for every
+        // input (the emulation probe then decides), which the first assert covers.
+        if let Some(host) = host_docker_platform() {
+            assert!(platform_is_native(&host), "host {host} must be native");
+        }
+    }
+
+    #[test]
+    fn tail_returns_short_streams_unchanged() {
+        // At or below the 2 KiB cap the stream is returned verbatim — no
+        // truncation marker, no reallocation of content.
+        assert_eq!(tail("short output"), "short output");
+        assert_eq!(tail(""), "");
+        let exactly_max = "x".repeat(2048);
+        assert_eq!(tail(&exactly_max), exactly_max);
+        assert!(!tail(&exactly_max).contains("truncated"));
+    }
+
+    #[test]
+    fn tail_truncates_on_a_char_boundary_for_multibyte_streams() {
+        // A stream whose MAX-byte cut point lands mid-multibyte-char must be
+        // advanced to the next char boundary — never sliced through a code point
+        // (which would panic). `é` is two bytes, so the cut alternates between
+        // lead and continuation bytes across the buffer.
+        let body = format!("HEADMARK{}TAILEND", "é".repeat(2000));
+        let t = tail(&body);
+        // Valid UTF-8 (a `String` is always valid — reaching here proves the
+        // slice did not panic on a non-boundary index).
+        assert!(t.contains("TAILEND"), "keeps the end: {}", &t[..12]);
+        assert!(t.contains("truncated"), "marks truncation");
+        assert!(!t.contains("HEADMARK"), "drops the head");
+    }
+
+    #[test]
     fn copy_script_quotes_metacharacters() {
         // The copy path shares smoke_script with the bind path, so the same
         // single-quote splice-safety must hold for the container-root path.

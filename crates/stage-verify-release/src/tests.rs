@@ -1571,6 +1571,22 @@ fn extract_package_main_elf_reads_rpm_and_apk() {
     );
 }
 
+#[test]
+fn extract_package_main_elf_on_undecodable_apk_is_none_not_error() {
+    // A `.apk` whose bytes are not a valid gzip stream must degrade to
+    // `Ok(None)` (the libc check is best-effort) rather than propagate an error
+    // — the MultiGzDecoder failure branch.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let apk_path = tmp.path().join("garbage.apk");
+    std::fs::write(&apk_path, b"this is definitely not a gzip stream").expect("write apk");
+    assert!(
+        extract_package_main_elf(&apk_path)
+            .expect("undecodable apk must not error")
+            .is_none(),
+        "an undecodable apk yields no ELF, not an error"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Config-derived signature/SBOM expectations (the v0.8.0 gap)
 // ---------------------------------------------------------------------------

@@ -620,4 +620,236 @@ mod tests {
         );
         assert_eq!(recorded_tag(&report, "acme", "other"), None);
     }
+
+    // --- shared builders for the resolve_github_repos branch tests ---
+
+    fn github_crate_cfg(
+        name: &str,
+        owner: &str,
+        repo: &str,
+        token: Option<&str>,
+    ) -> anodizer_core::config::CrateConfig {
+        use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig};
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: owner.to_string(),
+                    name: repo.to_string(),
+                    token: token.map(String::from),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A crate with a `release:` block but NO `github:` sub-block — resolves no
+    /// GitHub repo, so `resolve_github_repos` must skip it.
+    fn non_github_release_crate(name: &str) -> anodizer_core::config::CrateConfig {
+        use anodizer_core::config::{CrateConfig, ReleaseConfig};
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }
+    }
+
+    /// A crate with no `release:` block at all — skipped by the first guard.
+    fn release_less_crate(name: &str) -> anodizer_core::config::CrateConfig {
+        use anodizer_core::config::CrateConfig;
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            release: None,
+            ..Default::default()
+        }
+    }
+
+    fn ctx_from_crates(
+        crates: Vec<anodizer_core::config::CrateConfig>,
+        cli_token: Option<&str>,
+    ) -> Context {
+        use anodizer_core::config::{Config, WorkspaceConfig};
+        use anodizer_core::context::ContextOptions;
+        let config = Config {
+            project_name: "ws".to_string(),
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let options = ContextOptions {
+            token: cli_token.map(String::from),
+            ..Default::default()
+        };
+        Context::new(config, options)
+    }
+
+    #[test]
+    fn resolve_github_repos_skips_release_less_and_non_github_crates() {
+        // Only the crate carrying a `release.github` block yields a target;
+        // the release-less crate hits the first guard, and the crate whose
+        // `release:` block lacks a `github:` sub-block hits the second.
+        let ctx = ctx_from_crates(
+            vec![
+                release_less_crate("a"),
+                non_github_release_crate("b"),
+                github_crate_cfg("c", "acme", "app", Some("ghp_c")),
+            ],
+            None,
+        );
+        let repos = resolve_github_repos(&ctx).expect("resolve");
+        assert_eq!(repos.len(), 1, "only the github-backed crate contributes");
+        assert_eq!(repos[0].owner, "acme");
+        assert_eq!(repos[0].name, "app");
+        assert_eq!(repos[0].token.as_deref(), Some("ghp_c"));
+    }
+
+    #[test]
+    fn resolve_github_repos_keeps_first_token_when_later_crate_is_untokened() {
+        // The FIRST occurrence carries the token; a later crate names the same
+        // repo untokened. Dedup must NOT clobber the existing token with None.
+        let ctx = ctx_from_crates(
+            vec![
+                github_crate_cfg("a", "acme", "app", Some("ghp_first")),
+                github_crate_cfg("b", "acme", "app", None),
+            ],
+            None,
+        );
+        let repos = resolve_github_repos(&ctx).expect("resolve");
+        assert_eq!(repos.len(), 1, "shared repo is deduplicated");
+        assert_eq!(
+            repos[0].token.as_deref(),
+            Some("ghp_first"),
+            "the first crate's token survives a later untokened duplicate"
+        );
+    }
+
+    #[test]
+    fn resolve_github_repos_adopts_cli_token_when_config_is_untokened() {
+        // No per-repo and no release-stage token, but a pipeline `--token` is
+        // set: resolve_token's final `.or_else(ctx.options.token)` rung adopts it.
+        let ctx = ctx_from_crates(
+            vec![github_crate_cfg("a", "acme", "app", None)],
+            Some("ghp_cli"),
+        );
+        let repos = resolve_github_repos(&ctx).expect("resolve");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(
+            repos[0].token.as_deref(),
+            Some("ghp_cli"),
+            "the pipeline --token backfills an otherwise-untokened target"
+        );
+    }
+
+    #[test]
+    fn resolve_github_repos_yields_distinct_repos_in_config_order() {
+        // Two DIFFERENT repos → two targets, order preserved, each tokened.
+        let ctx = ctx_from_crates(
+            vec![
+                github_crate_cfg("a", "acme", "app", Some("ghp_a")),
+                github_crate_cfg("b", "acme", "other", Some("ghp_b")),
+            ],
+            None,
+        );
+        let repos = resolve_github_repos(&ctx).expect("resolve");
+        assert_eq!(repos.len(), 2, "two distinct repos are both kept");
+        assert_eq!(
+            (repos[0].owner.as_str(), repos[0].name.as_str()),
+            ("acme", "app")
+        );
+        assert_eq!(repos[0].token.as_deref(), Some("ghp_a"));
+        assert_eq!(
+            (repos[1].owner.as_str(), repos[1].name.as_str()),
+            ("acme", "other")
+        );
+        assert_eq!(repos[1].token.as_deref(), Some("ghp_b"));
+    }
+
+    #[test]
+    fn recorded_tag_skips_wrong_name_missing_evidence_and_wrong_variant() {
+        use anodizer_core::publish_evidence::{GithubReleaseExtra, GithubReleaseTargetSnapshot};
+        use anodizer_core::{
+            PublishEvidence, PublishEvidenceExtra, PublisherGroup, PublisherOutcome,
+            PublisherResult,
+        };
+
+        fn result(name: &str, evidence: Option<PublishEvidence>) -> PublisherResult {
+            PublisherResult {
+                name: name.into(),
+                group: PublisherGroup::Submitter,
+                required: true,
+                outcome: PublisherOutcome::Succeeded,
+                evidence,
+            }
+        }
+
+        // A non-github-release result carrying github-release-shaped evidence
+        // must be ignored by the name filter.
+        let mut npm_ev = PublishEvidence::new("npm");
+        npm_ev.extra = PublishEvidenceExtra::GithubRelease(GithubReleaseExtra {
+            github_release_targets: vec![GithubReleaseTargetSnapshot {
+                crate_name: "app".into(),
+                owner: "acme".into(),
+                repo: "app".into(),
+                tag: "v9.9.9".into(),
+                release_id: Some(1),
+            }],
+        });
+
+        // A github-release result whose extra is the default `Empty` variant
+        // hits the `_ => None` arm.
+        let mut empty_ev = PublishEvidence::new("github-release");
+        empty_ev.extra = PublishEvidenceExtra::Empty;
+
+        // The one real hit — carries MULTIPLE targets so `flatten().find(...)`
+        // must pick the owner/repo match out of several.
+        let mut real_ev = PublishEvidence::new("github-release");
+        real_ev.extra = PublishEvidenceExtra::GithubRelease(GithubReleaseExtra {
+            github_release_targets: vec![
+                GithubReleaseTargetSnapshot {
+                    crate_name: "core".into(),
+                    owner: "acme".into(),
+                    repo: "core".into(),
+                    tag: "v2.0.0-rc.2".into(),
+                    release_id: Some(7),
+                },
+                GithubReleaseTargetSnapshot {
+                    crate_name: "app".into(),
+                    owner: "acme".into(),
+                    repo: "app".into(),
+                    tag: "v2.0.0-rc.1".into(),
+                    release_id: Some(8),
+                },
+            ],
+        });
+
+        let mut report = PublishReport::default();
+        report.results.push(result("npm", Some(npm_ev)));
+        // A github-release result with NO evidence exercises the evidence filter.
+        report.results.push(result("github-release", None));
+        report
+            .results
+            .push(result("github-release", Some(empty_ev)));
+        report.results.push(result("github-release", Some(real_ev)));
+
+        // Picks the matching target's tag out of the multi-target evidence,
+        // ignoring the npm result, the evidence-less result, and the Empty one.
+        assert_eq!(
+            recorded_tag(&report, "acme", "app"),
+            Some("v2.0.0-rc.1".to_string())
+        );
+        // The sibling target in the same evidence resolves independently.
+        assert_eq!(
+            recorded_tag(&report, "acme", "core"),
+            Some("v2.0.0-rc.2".to_string())
+        );
+        // The npm result's github-shaped target must NOT leak through.
+        assert_eq!(recorded_tag(&report, "acme", "nomatch"), None);
+    }
 }

@@ -1,6 +1,26 @@
 use super::*;
+use anodizer_core::config::{CloudSmithConfig, Config, StringOrBool};
+use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::test_helpers::TestContextBuilder;
-use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+use anodizer_core::{EnvRequirement, PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+/// Build a plain (non-dry-run) Context carrying `cloudsmiths` config so the
+/// filter/requirements helpers see live entries.
+fn ctx_with_cloudsmiths(entries: Vec<CloudSmithConfig>) -> Context {
+    let config = Config {
+        cloudsmiths: Some(entries),
+        ..Default::default()
+    };
+    Context::new(config, ContextOptions::default())
+}
+
+fn active_entry(org: &str) -> CloudSmithConfig {
+    CloudSmithConfig {
+        organization: Some(org.to_string()),
+        repository: Some("tools".to_string()),
+        ..Default::default()
+    }
+}
 
 #[test]
 fn cloudsmith_publisher_classification() {
@@ -264,4 +284,106 @@ fn cloudsmith_rollback_falls_back_to_warn_when_slug_missing() {
     assert!(msg.contains("acme/widget"), "{msg}");
     assert!(msg.contains("per-package slug not surfaced"), "{msg}");
     assert!(msg.contains("Cloudsmith dashboard"), "{msg}");
+}
+
+// `active_cloudsmith_configs` keeps only the entries whose `skip:` is inactive
+// — the shared filter behind `requirements` and `config_fully_inactive`.
+#[test]
+fn active_cloudsmith_configs_drops_skipped_entries() {
+    let ctx = ctx_with_cloudsmiths(vec![
+        active_entry("keep-me"),
+        CloudSmithConfig {
+            organization: Some("skip-me".to_string()),
+            repository: Some("tools".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        },
+    ]);
+    let active = active_cloudsmith_configs(&ctx);
+    assert_eq!(active.len(), 1, "the skipped entry must be filtered out");
+    assert_eq!(active[0].organization.as_deref(), Some("keep-me"));
+}
+
+#[test]
+fn active_cloudsmith_configs_empty_without_config() {
+    let ctx = TestContextBuilder::new().build();
+    assert!(active_cloudsmith_configs(&ctx).is_empty());
+}
+
+// `config_fully_inactive` is `true` exactly when no active entry remains,
+// so the publisher self-deactivates when every entry is skipped.
+#[test]
+fn config_fully_inactive_tracks_active_entries() {
+    let p = CloudsmithPublisher::new();
+
+    let all_skipped = ctx_with_cloudsmiths(vec![CloudSmithConfig {
+        organization: Some("skip-me".to_string()),
+        repository: Some("tools".to_string()),
+        skip: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    }]);
+    assert!(p.config_fully_inactive(&all_skipped));
+
+    let has_active = ctx_with_cloudsmiths(vec![active_entry("keep-me")]);
+    assert!(!p.config_fully_inactive(&has_active));
+
+    let no_config = TestContextBuilder::new().build();
+    assert!(p.config_fully_inactive(&no_config));
+}
+
+// `requirements` yields one `EnvAllOf` per active entry, naming that entry's
+// resolved secret env var (explicit `secret_name`, else `CLOUDSMITH_TOKEN`).
+#[test]
+fn requirements_names_resolved_secret_env_per_active_entry() {
+    let ctx = ctx_with_cloudsmiths(vec![
+        active_entry("acme"),
+        CloudSmithConfig {
+            organization: Some("beta".to_string()),
+            repository: Some("tools".to_string()),
+            secret_name: Some("BETA_CLOUDSMITH_KEY".to_string()),
+            ..Default::default()
+        },
+        // Skipped entries contribute no requirement.
+        CloudSmithConfig {
+            organization: Some("gamma".to_string()),
+            repository: Some("tools".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        },
+    ]);
+    let p = CloudsmithPublisher::new();
+    let reqs = p.requirements(&ctx);
+    assert_eq!(
+        reqs,
+        vec![
+            EnvRequirement::EnvAllOf {
+                vars: vec!["CLOUDSMITH_TOKEN".to_string()],
+            },
+            EnvRequirement::EnvAllOf {
+                vars: vec!["BETA_CLOUDSMITH_KEY".to_string()],
+            },
+        ]
+    );
+}
+
+#[test]
+fn requirements_empty_without_config() {
+    let ctx = TestContextBuilder::new().build();
+    assert!(CloudsmithPublisher::new().requirements(&ctx).is_empty());
+}
+
+// Cloudsmith supports versioned packages, so nightly uploads are allowed
+// (they don't clobber stable content).
+#[test]
+fn skips_on_nightly_is_false() {
+    assert!(!CloudsmithPublisher::new().skips_on_nightly());
+}
+
+// `retain_on_rollback` defaults to `false` (participate in rollback) and
+// honours the config-supplied override.
+#[test]
+fn retain_on_rollback_defaults_false_and_honours_override() {
+    assert!(!CloudsmithPublisher::new().retain_on_rollback());
+    let opted_out = CloudsmithPublisher::with_overrides(None, Some(true));
+    assert!(opted_out.retain_on_rollback());
 }
