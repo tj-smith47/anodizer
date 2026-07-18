@@ -20,6 +20,12 @@ pub(crate) struct CargoPublishPlan {
     pub cfgs: HashMap<String, CargoPublishConfig>,
     pub versions: HashMap<String, String>,
     pub all_crates: Vec<CrateConfig>,
+    /// Per-crate intra-workspace publish dependencies (crate name → the
+    /// co-published crates it depends on), the exact graph `order` was derived
+    /// from. Reused by the publisher's post-publish `poll_crates_io_index`
+    /// gate so the "does a later crate depend on this one?" decision reads the
+    /// same edges that produced the order — they can never disagree.
+    pub deps: HashMap<String, Vec<String>>,
 }
 
 /// Resolve the cargo-publish set: the crates that a real release WOULD
@@ -90,17 +96,47 @@ pub(crate) fn cargo_publish_plan(
         m
     };
 
+    // Publish-order edges. A present `depends_on` (`Some`, including an
+    // explicit empty list) is authoritative: config-load derivation either
+    // populates EVERY crate's `depends_on` to `Some(..)`, or — on the failure
+    // that motivates this fallback — leaves every crate `None`. So `None`
+    // uniquely means "config-load derivation did not run"; in that case derive
+    // the edges here from the crate's own `Cargo.toml`. Without this fallback,
+    // that failure collapses every `depends_on` to empty and `topological_sort`
+    // seeds an ALPHABETICAL order — which publishes e.g. `-stage-attest` before
+    // the `-stage-checksum` it depends on and hard-fails on crates.io. The
+    // manifest read here is the SAME source the post-publish index poll and the
+    // wait-for-deps gate use, so the publish order can never disagree with the
+    // dependency the publisher then blocks on.
+    let member_names: HashSet<String> = all_crates.iter().map(|c| c.name.clone()).collect();
     let publishable: Vec<(String, Vec<String>)> = all_crates
         .iter()
         .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
         .filter(|c| cfgs.contains_key(&c.name))
         .map(|c| {
-            let deps = c.depends_on.clone().unwrap_or_default();
+            let deps = match c.depends_on.as_ref() {
+                Some(d) => d.clone(),
+                None => {
+                    let mut deps = anodizer_core::config::derive_depends_on_from_cargo_toml(
+                        std::path::Path::new(&c.path),
+                        &member_names,
+                    );
+                    // A crate never depends on itself. Real workspace crates
+                    // have distinct paths so a manifest never lists its own
+                    // package; this only guards a caller that points several
+                    // crates at one manifest.
+                    deps.retain(|d| d != &c.name);
+                    deps
+                }
+            };
             (c.name.clone(), deps)
         })
         .collect();
 
     let order = topological_sort(&publishable);
+    validate_publish_order(&order, &publishable)?;
+
+    let deps: HashMap<String, Vec<String>> = publishable.iter().cloned().collect();
 
     let versions: HashMap<String, String> = all_crates
         .iter()
@@ -121,7 +157,49 @@ pub(crate) fn cargo_publish_plan(
         cfgs,
         versions,
         all_crates,
+        deps,
     })
+}
+
+/// Fail loud if `order` would publish any crate before an intra-workspace
+/// dependency it needs on the index.
+///
+/// [`topological_sort`] already yields a dependency-first order for an acyclic
+/// `graph`, but a cycle (or any future regression that hands it an incomplete
+/// graph) makes it append the remaining nodes in input order — silently
+/// emitting an order that violates a real edge. crates.io would then reject the
+/// dependent for an unresolvable version deep inside the publish loop, where the
+/// retry layer misreports it as transient sparse-index propagation lag and burns
+/// three futile retries before hard-failing. Validating the order here converts
+/// that cryptic mid-publish failure into an instant, actionable pre-publish
+/// error before any one-way-door publish runs.
+fn validate_publish_order(order: &[String], graph: &[(String, Vec<String>)]) -> Result<()> {
+    let pos: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (name, deps) in graph {
+        let Some(&here) = pos.get(name.as_str()) else {
+            continue;
+        };
+        for dep in deps {
+            // Deps outside the publish set (already on the index, or skipped)
+            // carry no ordering constraint — only co-published crates do.
+            if let Some(&dep_pos) = pos.get(dep.as_str())
+                && dep_pos >= here
+            {
+                anyhow::bail!(
+                    "cargo publish order is broken: '{name}' depends on workspace crate \
+                     '{dep}', but '{dep}' is scheduled at position {dep_pos} (at or after \
+                     '{name}' at position {here}). Refusing to publish out of order — crates.io \
+                     would reject '{name}' for an unresolvable '{dep}' dependency. This usually \
+                     means a dependency cycle among the co-published crates.",
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the project-wide `default_targets` the build stage would use:

@@ -380,6 +380,7 @@ pub(crate) fn publish_to_cargo_with_guard(
         cfgs: cargo_cfgs,
         versions: crate_versions,
         all_crates,
+        deps: deps_map,
     } = plan;
 
     if sorted_names.is_empty() {
@@ -391,11 +392,10 @@ pub(crate) fn publish_to_cargo_with_guard(
         return Ok(());
     }
 
-    // Build a quick lookup: name → depends_on
-    let deps_map: HashMap<String, Vec<String>> = all_crates
-        .iter()
-        .map(|c| (c.name.clone(), c.depends_on.clone().unwrap_or_default()))
-        .collect();
+    // `deps_map` (name → intra-workspace deps) is the same graph the publish
+    // order was derived from in `cargo_publish_plan` — read from each crate's
+    // `Cargo.toml` — so the `has_dependents` index-poll gate below and the
+    // order can never disagree about which crates depend on which.
 
     if ctx.is_dry_run() {
         for name in &sorted_names {

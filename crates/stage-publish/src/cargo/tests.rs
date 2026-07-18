@@ -3397,6 +3397,92 @@ fn cargo_publish_plan_lockstep_orders_deps_and_resolves_both_versions() {
     assert!(plan.cfgs.contains_key("cfgd"));
 }
 
+/// Like [`disk_crate`] but writes the intra-workspace deps into the crate's
+/// real `Cargo.toml` `[dependencies]` and leaves the config `depends_on`
+/// UNSET — so the plan must DERIVE the publish order from the manifest (the
+/// same source the post-publish index poll and wait-for-deps gate read),
+/// reproducing the environment where the config-load `depends_on` derivation
+/// yielded nothing.
+fn disk_crate_manifest_deps(
+    root: &std::path::Path,
+    name: &str,
+    version: &str,
+    manifest_deps: &[&str],
+) -> CrateConfig {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("mkdir crate dir");
+    let mut manifest = format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n");
+    if !manifest_deps.is_empty() {
+        manifest.push_str("\n[dependencies]\n");
+        for dep in manifest_deps {
+            manifest.push_str(&format!("{dep}.workspace = true\n"));
+        }
+    }
+    std::fs::write(dir.join("Cargo.toml"), manifest).expect("write manifest");
+    CrateConfig {
+        name: name.to_string(),
+        path: dir.display().to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        depends_on: None,
+        publish: Some(PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Regression: with config `depends_on` UNSET, the publish order is derived
+/// from each crate's `Cargo.toml` — never left empty, which made
+/// `topological_sort` fall back to an alphabetical order that published a
+/// dependent before its dependency and hard-failed on crates.io. Names are
+/// chosen so the alphabetical fallback would be WRONG (`aaa-app` sorts before
+/// its `zzz-lib` dependency), so a correct dependency-first order must invert
+/// the alphabetical one — proving the fix, not an alphabetical coincidence.
+#[test]
+fn cargo_publish_plan_derives_order_from_cargo_toml_when_depends_on_unset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lib = disk_crate_manifest_deps(tmp.path(), "zzz-lib", "0.1.0", &[]);
+    let app = disk_crate_manifest_deps(tmp.path(), "aaa-app", "0.1.0", &["zzz-lib"]);
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.1.0")
+        .crates(vec![app, lib])
+        .build();
+    let plan = cargo_publish_plan(&mut ctx, &[], &quiet_log()).expect("plan resolves");
+
+    // Dependency-first, inverting the (wrong) alphabetical fallback.
+    assert_eq!(plan.order, vec!["zzz-lib", "aaa-app"]);
+    // The derived edge is exposed for the post-publish index-poll gate.
+    assert_eq!(
+        plan.deps.get("aaa-app").map(Vec::as_slice),
+        Some(["zzz-lib".to_string()].as_slice())
+    );
+}
+
+/// A dependency cycle in the Cargo.toml graph makes `topological_sort` append
+/// the cycle members in input order — an order that violates a real edge.
+/// `validate_publish_order` must reject it BEFORE any one-way-door publish,
+/// with an actionable message, rather than let crates.io fail mid-loop where
+/// the retry layer misreports it as transient index lag.
+#[test]
+fn cargo_publish_plan_rejects_dependency_cycle() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = disk_crate_manifest_deps(tmp.path(), "crate-a", "0.1.0", &["crate-b"]);
+    let b = disk_crate_manifest_deps(tmp.path(), "crate-b", "0.1.0", &["crate-a"]);
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.1.0")
+        .crates(vec![a, b])
+        .build();
+    let msg = match cargo_publish_plan(&mut ctx, &[], &quiet_log()) {
+        Ok(_) => panic!("cyclic publish graph must be rejected before publishing"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(
+        msg.contains("publish order is broken"),
+        "unexpected error: {msg}"
+    );
+}
+
 /// Workspace per-crate mode: members live under `workspaces:` and the
 /// plan overlays them into `all_crates`, orders a cross-member dep
 /// first, and records each member's cfg/version from disk.
