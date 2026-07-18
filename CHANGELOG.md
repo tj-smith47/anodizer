@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-18
+
+### Features
+
+* 8dd01bf0c45e cryptographically verify published signatures when key material is derivable ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* a5b75eb4abe7 reclassify Store uniqueness-check fault as transient, not a permanent content-dedup ([@tj-smith47](https://github.com/tj-smith47))
+* 2113b753c39c an optional publisher landing failure warns, never fails the gate ([@tj-smith47](https://github.com/tj-smith47))
+* 9949971956a2 split tag/release/determinism_harness god mod.rs into submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 18c7a84711c9 split winget/cloudsmith/aur god files into submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 498b174de939 split changelog/core/announce god files into submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 71d3224f87c8 split core + stage-release god files into cohesive submodules ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.20.0] - 2026-07-14
 
 ### Features
@@ -684,7 +700,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.22.0
 [0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tj-smith47/anodizer/compare/v0.17.0...v0.18.0
