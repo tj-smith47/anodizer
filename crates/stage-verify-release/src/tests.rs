@@ -2935,6 +2935,203 @@ fn run_asset_gate_still_checks_assets_when_github_release_is_deselected() {
     );
 }
 
+/// Register an artifact backed by a REAL file (so the gate's byte-level
+/// size/digest comparison actually runs instead of degrading to the
+/// name-only check that a nonexistent path triggers).
+fn add_real_file_artifact(
+    ctx: &mut Context,
+    dir: &std::path::Path,
+    kind: ArtifactKind,
+    name: &str,
+    crate_name: &str,
+    bytes: &[u8],
+    combined_checksum: bool,
+) {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("write artifact fixture");
+    let metadata = if combined_checksum {
+        HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )])
+    } else {
+        HashMap::new()
+    };
+    ctx.artifacts.add(Artifact {
+        kind,
+        name: name.to_string(),
+        path,
+        target: None,
+        crate_name: crate_name.to_string(),
+        metadata,
+        size: None,
+    });
+}
+
+#[test]
+fn run_asset_gate_submitter_only_exempts_combined_checksum_byte_mismatch() {
+    // Repro of publish-oidc run 29653381802: the OIDC leg (github-release
+    // deselected) recomputes the combined checksums.txt WITHOUT the docker
+    // publish-time digest lines the uploading leg folded in at upload time,
+    // so its local bytes legitimately differ from the published asset's.
+    // That surface difference must NOT block the registry submitters.
+    // Published size is 1 B (release_json_with_assets); the local file is
+    // larger — a guaranteed size mismatch under a cross-leg byte comparison.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Checksum,
+        "app_checksums.txt",
+        "app",
+        b"aaaa  app.tar.gz\n",
+        true,
+    );
+
+    let result = run_asset_gate(&mut ctx).expect("gate must not error");
+    assert!(
+        result,
+        "a cross-leg combined-checksum byte difference is a publish-surface \
+         difference, not corruption — it must not block the submitters"
+    );
+}
+
+#[test]
+fn run_asset_gate_submitter_only_still_blocks_corrupted_payload_asset() {
+    // The cross-leg exemption is scoped to the combined checksum manifest
+    // ONLY: a payload asset (archive) whose local bytes disagree with the
+    // published size must still block the gate in a submitter-only leg.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        b"archive payload bytes",
+        false,
+    );
+
+    let result = run_asset_gate(&mut ctx).expect("a content defect is Ok(false), not Err");
+    assert!(
+        !result,
+        "a real payload byte mismatch must still block a submitter-only leg"
+    );
+}
+
+#[test]
+fn run_asset_gate_submitter_only_still_blocks_missing_combined_checksum() {
+    // The exemption only covers the BYTE comparison — a combined checksum
+    // manifest missing from the release entirely is a genuine defect the
+    // missing-asset diff must still catch, even cross-leg.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Checksum,
+        "app_checksums.txt",
+        "app",
+        b"aaaa  app.tar.gz\n",
+        true,
+    );
+
+    let result = run_asset_gate(&mut ctx).expect("a content defect is Ok(false), not Err");
+    assert!(
+        !result,
+        "a combined checksum manifest absent from the release must still block"
+    );
+}
+
+#[test]
+fn run_asset_gate_full_leg_still_blocks_combined_checksum_mismatch() {
+    // In the leg that itself uploads the assets (github-release selected),
+    // the combined checksum bytes MUST match — a mismatch there is real
+    // corruption (or a broken refresh), never a surface difference.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Checksum,
+        "app_checksums.txt",
+        "app",
+        b"aaaa  app.tar.gz\n",
+        true,
+    );
+
+    let result = run_asset_gate(&mut ctx).expect("a content defect is Ok(false), not Err");
+    assert!(
+        !result,
+        "the uploading leg must byte-match its own combined checksum manifest"
+    );
+}
+
+#[test]
+fn run_asset_gate_submitter_only_exempts_per_crate_combined_checksums() {
+    // Per-crate / lockstep workspace shape: each crate carries its own
+    // combined checksum manifest; the cross-leg exemption resolves per crate
+    // by name, so both crates' manifests are exempted while every other
+    // asset stays checked.
+    let (addr, _log) = spawn_release_route(&[
+        "a.tar.gz",
+        "crate-a_checksums.txt",
+        "b.tar.gz",
+        "crate-b_checksums.txt",
+    ]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(
+        addr,
+        vec![
+            published_crate("crate-a", None),
+            published_crate("crate-b", None),
+        ],
+    );
+    ctx.options.publisher_allowlist =
+        vec!["npm".to_string(), "pypi".to_string(), "cargo".to_string()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "a.tar.gz", "crate-a");
+    add_artifact(&mut ctx, ArtifactKind::Archive, "b.tar.gz", "crate-b");
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Checksum,
+        "crate-a_checksums.txt",
+        "crate-a",
+        b"aaaa  a.tar.gz\n",
+        true,
+    );
+    add_real_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Checksum,
+        "crate-b_checksums.txt",
+        "crate-b",
+        b"bbbb  b.tar.gz\n",
+        true,
+    );
+
+    let result = run_asset_gate(&mut ctx).expect("gate must not error");
+    assert!(
+        result,
+        "each crate's combined checksum manifest is exempted cross-leg"
+    );
+}
+
 #[test]
 fn run_asset_gate_blocks_when_the_release_is_missing_entirely() {
     // A genuinely missing release (no release found for the tag) is recorded
@@ -3163,6 +3360,7 @@ mod signature_crypto_verification {
             &release_cfg,
             expected,
             published,
+            true,
             &mut issues,
         );
         issues
@@ -3174,6 +3372,159 @@ mod signature_crypto_verification {
         published: &[PublishedAsset],
     ) -> Vec<String> {
         run_contents_for(ctx, "app", expected, published)
+    }
+
+    #[test]
+    fn cross_leg_combined_checksum_and_its_signature_are_exempted() {
+        // Cross-leg (assets uploaded by an earlier leg): the combined
+        // checksum manifest's bytes and its signature's cryptographic
+        // re-check are both surface-dependent — the published manifest folds
+        // in the uploading leg's docker publish digests, and its published
+        // signature signs THOSE bytes, not this leg's recomputed manifest.
+        // A failing verifier stub proves the crypto check would have
+        // rejected; the exemption must keep both from becoming issues.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub = write_script(
+            tmp.path(),
+            "gpg",
+            "#!/bin/sh\necho 'gpg: BAD signature from test' >&2\nexit 1\n",
+        );
+        let sign_cfg = SignConfig {
+            cmd: Some(stub.to_string_lossy().to_string()),
+            artifacts: Some("checksum".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            ..Default::default()
+        };
+        let mut ctx = contents_ctx(tmp.path(), vec![sign_cfg]);
+        let manifest_path = tmp.path().join("app_checksums.txt");
+        std::fs::write(&manifest_path, b"cccc  app.tar.gz\n").expect("manifest fixture");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "app_checksums.txt".to_string(),
+            path: manifest_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::from([(
+                anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+                anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+            )]),
+            size: None,
+        });
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app_checksums.txt.sig",
+            "app",
+            b"signature over the uploading leg's manifest bytes",
+        );
+
+        let expected = vec![
+            "app_checksums.txt".to_string(),
+            "app_checksums.txt.sig".to_string(),
+        ];
+        let published = vec![
+            published("app_checksums.txt", 5768),
+            published("app_checksums.txt.sig", 566),
+        ];
+
+        // Same-leg control: the byte mismatch (local 17 B vs published
+        // 5768 B) AND the failing verifier must both surface as issues.
+        let crate_cfg = published_crate("app", None);
+        let release_cfg = crate_cfg.release.clone().expect("release block");
+        let log = ctx.logger("verify-release");
+        let mut same_leg_issues = Vec::new();
+        super::super::verify_published_contents(
+            &ctx,
+            &log,
+            &crate_cfg,
+            &release_cfg,
+            &expected,
+            &published,
+            true,
+            &mut same_leg_issues,
+        );
+        assert!(
+            same_leg_issues.iter().any(|i| i.contains("size mismatch")),
+            "same-leg manifest byte mismatch must be an issue: {same_leg_issues:?}"
+        );
+        assert!(
+            same_leg_issues.iter().any(|i| i.contains("cryptographic")),
+            "same-leg failing verifier must be an issue: {same_leg_issues:?}"
+        );
+
+        // Cross-leg: both exempted, zero issues.
+        let mut cross_leg_issues = Vec::new();
+        super::super::verify_published_contents(
+            &ctx,
+            &log,
+            &crate_cfg,
+            &release_cfg,
+            &expected,
+            &published,
+            false,
+            &mut cross_leg_issues,
+        );
+        assert!(
+            cross_leg_issues.is_empty(),
+            "cross-leg surface-dependent manifest + signature must be exempted: \
+             {cross_leg_issues:?}"
+        );
+    }
+
+    #[test]
+    fn cross_leg_empty_surface_dependent_signature_still_fails() {
+        // The signature exemption sits AFTER the empty-asset check: a 0-byte
+        // published signature is a silent signing failure regardless of
+        // which leg uploaded it.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = contents_ctx(tmp.path(), vec![]);
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "app_checksums.txt".to_string(),
+            path: tmp.path().join("app_checksums.txt"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::from([(
+                anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+                anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+            )]),
+            size: None,
+        });
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app_checksums.txt.sig",
+            "app",
+            b"sig bytes",
+        );
+
+        let crate_cfg = published_crate("app", None);
+        let release_cfg = crate_cfg.release.clone().expect("release block");
+        let log = ctx.logger("verify-release");
+        let expected = vec!["app_checksums.txt.sig".to_string()];
+        let published = vec![published("app_checksums.txt.sig", 0)];
+        let mut issues = Vec::new();
+        super::super::verify_published_contents(
+            &ctx,
+            &log,
+            &crate_cfg,
+            &release_cfg,
+            &expected,
+            &published,
+            false,
+            &mut issues,
+        );
+        assert!(
+            issues.iter().any(|i| i.contains("empty (0 bytes)")),
+            "an empty published signature must fail even cross-leg: {issues:?}"
+        );
     }
 
     #[test]

@@ -298,6 +298,10 @@ impl Stage for VerifyReleaseStage {
 
         let scope = AxisScope {
             github_selected,
+            // The terminal stage only reaches the asset axis when this run's
+            // github-release upload produced the published bytes, so the
+            // cross-leg exemption never applies here.
+            assets_published_by_this_run: github_selected,
             os_pkg_selected,
             smoke_enabled,
             docker_ok,
@@ -395,7 +399,18 @@ impl Stage for VerifyReleaseStage {
 /// `--publishers` (e.g. the OIDC leg's `--publishers npm,pypi,cargo`): the
 /// release and its assets were already published by an earlier leg, and the
 /// immutable registries this gate guards depend on that content being
-/// correct regardless of which leg re-verifies it.
+/// correct regardless of which leg re-verifies it. The ONE thing such a leg
+/// cannot verify byte-for-byte is the combined checksum manifest: the
+/// uploading leg rewrites it at upload time to fold in publish-time evidence
+/// (docker image digests) that only exists in the leg that ran those
+/// publishers, so this leg's locally recomputed manifest legitimately
+/// differs. [`AxisScope::assets_published_by_this_run`] carries that fact
+/// into [`verify_published_contents`], which exempts exactly the
+/// combined-checksum assets (shared predicate:
+/// [`anodizer_core::artifact::is_combined_checksum_artifact`], the same
+/// selection the upload-time refresher rewrites) from the cross-leg byte
+/// comparison — presence is still enforced, and every other asset is still
+/// byte-checked.
 ///
 /// Deliberately reuses [`verify_one_crate`] rather than re-implementing the
 /// asset diff/content check: the same expected-vs-published/local-bytes
@@ -448,6 +463,11 @@ pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("verify-release gate: create tokio runtime: {e}"))?;
     let scope = AxisScope {
         github_selected: true,
+        // When github-release is deselected (a registry-submitter-only leg),
+        // an earlier leg uploaded the assets and rewrote the combined
+        // checksum manifests with ITS publish surface — this leg cannot
+        // reproduce those bytes, only verify everything else.
+        assets_published_by_this_run: !ctx.publisher_deselected("github-release"),
         os_pkg_selected: false,
         smoke_enabled: false,
         docker_ok: false,
@@ -609,11 +629,58 @@ fn local_asset_index(
     idx
 }
 
+/// Asset names whose published bytes are a function of WHICH publishers ran
+/// in the leg that uploaded them: the combined checksum manifests, rewritten
+/// by the github-release upload path at upload time
+/// (`refresh_combined_checksums`) to fold in publish-time evidence such as
+/// docker image digests. A leg with a different publish surface recomputes
+/// different — equally correct — bytes, so a cross-leg byte comparison of
+/// these assets reports a defect that is actually a surface difference. The
+/// membership predicate is the shared core definition
+/// ([`anodizer_core::artifact::is_combined_checksum_artifact`]) that the
+/// refresher's own selection uses, so the exempted set and the rewritten set
+/// cannot drift apart.
+/// Names resolve exactly as the upload/diff path resolves them — the custom
+/// destination name when a release upload candidate renames the file,
+/// otherwise the artifact's registered name — so the exemption keys into the
+/// same namespace `diff_assets` and the byte check use.
+fn surface_dependent_asset_names(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+    exclude: Option<&[String]>,
+) -> std::collections::BTreeSet<String> {
+    let combined: Vec<&anodizer_core::artifact::Artifact> = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Checksum, crate_name)
+        .into_iter()
+        .filter(|a| anodizer_core::artifact::is_combined_checksum_artifact(a))
+        .collect();
+    let mut names: std::collections::BTreeSet<String> =
+        combined.iter().map(|a| a.name.clone()).collect();
+    for (path, custom_name) in anodizer_stage_release::collect_release_upload_candidates(
+        ctx, crate_name, ids, exclude, false,
+    ) {
+        if let Some(name) = custom_name
+            && combined.iter().any(|a| a.path == path)
+        {
+            names.insert(name);
+        }
+    }
+    names
+}
+
 /// Compare each expected asset that IS present on the release against its
 /// local bytes: stored size must equal the local file size, and the stored
 /// `sha256:` digest (when GitHub serves one) must equal the local sha256.
 /// When no digest is served, small assets are downloaded and hashed instead;
 /// larger ones are verified by size only, with a verbose notice.
+///
+/// `assets_published_by_this_run` is false only for the pre-submitter gate in
+/// a leg whose assets an earlier leg uploaded; it exempts the
+/// publish-surface-dependent combined checksum manifests (and their
+/// signatures' cryptographic re-check, whose payload is that manifest) from
+/// cross-leg byte comparison — see [`surface_dependent_asset_names`].
 #[allow(clippy::too_many_arguments)]
 fn verify_published_contents(
     ctx: &Context,
@@ -622,8 +689,21 @@ fn verify_published_contents(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     expected: &[String],
     published: &[anodizer_stage_release::PublishedAsset],
+    assets_published_by_this_run: bool,
     issues: &mut Vec<String>,
 ) -> ContentSummary {
+    // Empty when this run uploaded the assets, so the `contains` checks below
+    // collapse to no-ops on the normal (same-leg) path.
+    let surface_dependent = if assets_published_by_this_run {
+        std::collections::BTreeSet::new()
+    } else {
+        surface_dependent_asset_names(
+            ctx,
+            &crate_cfg.name,
+            release_cfg.ids.as_deref(),
+            release_cfg.exclude.as_deref(),
+        )
+    };
     let local = local_asset_index(
         ctx,
         &crate_cfg.name,
@@ -679,6 +759,25 @@ fn verify_published_contents(
                     crate_cfg.name
                 ));
                 summary.issue_count += 1;
+                continue;
+            }
+            // A signature over a surface-dependent payload (the combined
+            // checksum manifest) cannot be cryptographically re-checked
+            // cross-leg: the published signature signs the UPLOADING leg's
+            // manifest bytes, while this leg holds its own recomputed
+            // manifest — verifying one against the other would reject a
+            // perfectly valid signature. Presence + non-empty were enforced
+            // above; the byte-level truth was established by the leg that
+            // signed and uploaded it.
+            if surface_dependent
+                .iter()
+                .any(|s| name.starts_with(s.as_str()) && name.len() > s.len())
+            {
+                log.verbose(&format!(
+                    "asset '{name}' signs a publish-surface-dependent manifest \
+                     uploaded by an earlier leg — cryptographic re-check \
+                     exempted (present and non-empty)"
+                ));
                 continue;
             }
             // In place of the exempted digest comparison, the signature is
@@ -747,6 +846,19 @@ fn verify_published_contents(
                     ));
                 }
             }
+            continue;
+        }
+        // Cross-leg exemption for the combined checksum manifest itself: the
+        // uploading leg rewrote it with publish-time evidence (docker
+        // digests) this leg's surface never produces, so this leg's locally
+        // recomputed bytes legitimately differ from the published ones.
+        // Presence was already enforced by the missing-asset diff.
+        if surface_dependent.contains(name) {
+            log.verbose(&format!(
+                "asset '{name}' is a publish-surface-dependent manifest \
+                 uploaded by an earlier leg — byte comparison exempted \
+                 (its bytes fold in that leg's publish-time evidence)"
+            ));
             continue;
         }
         let Some((path, meta_sha, _kind)) = local.get(name) else {
@@ -968,6 +1080,15 @@ fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
 struct AxisScope {
     /// github-release survives the operator selection (asset axis in scope).
     github_selected: bool,
+    /// This run itself uploaded the release assets (github-release runs in
+    /// this leg). When `false` — the pre-submitter gate verifying a release
+    /// an earlier leg published — byte comparison is exempted for
+    /// publish-surface-dependent assets: the combined checksum manifests,
+    /// whose bytes the uploading leg rewrote at upload time to fold in
+    /// publish-time evidence (docker image digests) this leg never produces.
+    /// Every other asset stays byte-checked and the missing-asset diff stays
+    /// fully strict, so the exemption cannot widen into a bypass.
+    assets_published_by_this_run: bool,
     /// At least one OS-package carrier is selected (libc + smoke in scope).
     os_pkg_selected: bool,
     /// `install_smoke:` is configured.
@@ -1139,6 +1260,7 @@ fn verify_one_crate(
                     release_cfg,
                     &all_expected,
                     &published_assets,
+                    scope.assets_published_by_this_run,
                     issues,
                 );
                 let present = all_expected.len() - diff.missing.len();

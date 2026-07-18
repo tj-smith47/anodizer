@@ -779,6 +779,32 @@ pub const COMBINED_CHECKSUM_META: &str = "combined";
 /// Sentinel value stored under [`COMBINED_CHECKSUM_META`].
 pub const COMBINED_CHECKSUM_VALUE: &str = "true";
 
+/// `true` when `artifact` is a COMBINED checksum sidecar (`checksums.txt`):
+/// [`ArtifactKind::Checksum`] carrying the [`COMBINED_CHECKSUM_META`] marker,
+/// as opposed to a per-artifact split `.sha256` sidecar.
+///
+/// This is the SINGLE definition shared by the two sides of a load-bearing
+/// invariant. `refresh_combined_checksums` (stage-checksum) rewrites exactly
+/// these artifacts at release-upload time to fold in PUBLISH-TIME artifacts
+/// (docker `.digest` files registered by the publish leg's docker push), so
+/// their published bytes are a function of WHICH PUBLISHERS RAN in the leg
+/// that uploaded them — not of the produced dist alone. The pre-submitter
+/// verify-release gate consumes the same predicate to exempt exactly these
+/// artifacts from cross-leg byte comparison: a leg that did not itself upload
+/// the release assets (e.g. the split-topology OIDC job publishing only
+/// npm/pypi/cargo) recomputes different — equally correct — combined-checksum
+/// bytes and must not treat the difference as corruption. Keeping selection
+/// and exemption on one function means a change to what the refresher rewrites
+/// automatically changes what the gate exempts; the two cannot drift apart.
+pub fn is_combined_checksum_artifact(artifact: &Artifact) -> bool {
+    matches!(artifact.kind, ArtifactKind::Checksum)
+        && artifact
+            .metadata
+            .get(COMBINED_CHECKSUM_META)
+            .map(String::as_str)
+            == Some(COMBINED_CHECKSUM_VALUE)
+}
+
 /// Metadata key recording the on-disk packaging format of an artifact whose
 /// [`ArtifactKind`] alone is ambiguous. The load-bearing case is the macOS
 /// `.app` bundle, registered as [`ArtifactKind::Installer`] (shared with

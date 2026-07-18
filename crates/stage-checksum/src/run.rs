@@ -759,17 +759,14 @@ pub fn refresh_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()
         return Ok(());
     }
 
-    // Collect combined checksum artifacts (per crate).
+    // Collect combined checksum artifacts (per crate). The selection
+    // predicate is the shared core definition so the verify-release gate's
+    // cross-leg exemption stays welded to exactly the set rewritten here.
     let combined: Vec<(PathBuf, String, String)> = ctx
         .artifacts
         .by_kind(ArtifactKind::Checksum)
         .into_iter()
-        .filter(|a| {
-            a.metadata
-                .get(anodizer_core::artifact::COMBINED_CHECKSUM_META)
-                .map(|s| s.as_str())
-                == Some(anodizer_core::artifact::COMBINED_CHECKSUM_VALUE)
-        })
+        .filter(|a| anodizer_core::artifact::is_combined_checksum_artifact(a))
         .filter_map(|a| {
             let algo = a.metadata.get("algorithm")?.clone();
             Some((a.path.clone(), algo, a.crate_name.clone()))
