@@ -472,6 +472,14 @@ fn assemble_artifact_entries(
     // stage ran.
     anodizer_stage_checksum::refresh_combined_checksums(ctx, dry_run)?;
 
+    // The refresh above rewrites `checksums.txt`, so the signature the sign
+    // stage produced now certifies stale bytes. Re-sign the combined checksums
+    // in place before upload so the uploaded `checksums.txt.sig` matches the
+    // uploaded `checksums.txt` — otherwise verify-release's crypto gate fails
+    // BAD and blocks the one-way-door submitters. No-op when checksum signing
+    // is not configured or the signature consumers are deselected.
+    anodizer_stage_sign::resign_combined_checksums(ctx, dry_run)?;
+
     if let Some(extra_specs) = &release_cfg.extra_files {
         let extra = collect_extra_files(extra_specs, ctx)?;
         artifact_entries.extend(extra);
@@ -1091,6 +1099,139 @@ mod tests {
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    /// The github-release upload path rewrites `checksums.txt` (via
+    /// `refresh_combined_checksums`, to fold in publish-time artifacts) and
+    /// then re-signs it (via `resign_combined_checksums`), so the uploaded
+    /// `.sig` matches the uploaded `checksums.txt`. Without the re-sign the
+    /// signature certifies the pre-refresh bytes and `gpg --verify` fails BAD,
+    /// which is exactly what blocked the v0.22.0 release. This drives the real
+    /// refresh → re-sign sequence run() performs and asserts the signature is
+    /// valid against the rewritten bytes.
+    #[test]
+    fn release_path_resigns_checksums_after_refresh() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::SignConfig;
+        use anodizer_core::stage::Stage;
+        use std::process::Command;
+
+        // Provisioning spawns gpg + cosign; the sign + re-sign path drives gpg.
+        for tool in ["gpg", "cosign"] {
+            match anodizer_core::tool_detect::runs(tool) {
+                anodizer_core::tool_detect::ToolProbe::Available => {}
+                probe => {
+                    eprintln!(
+                        "skipping release_path_resigns_checksums_after_refresh: {tool}={probe:?}"
+                    );
+                    return;
+                }
+            }
+        }
+        let keys = anodizer_core::harness_signing::provision_ephemeral_keys(1_715_000_000)
+            .expect("provision ephemeral gpg keypair");
+        let gnupg_home = keys.gnupg_home.to_string_lossy().into_owned();
+
+        let dist = tempfile::tempdir().expect("tempdir for dist");
+        let archive = dist.path().join("myapp.tar.gz");
+        std::fs::write(&archive, b"archive-one").expect("write archive");
+        let checksums = dist.path().join("checksums.txt");
+        std::fs::write(&checksums, "0000  myapp.tar.gz\n").expect("write checksums.txt");
+
+        let gpg_checksum = SignConfig {
+            id: Some("gpg".to_string()),
+            cmd: Some("gpg".to_string()),
+            artifacts: Some("checksum".to_string()),
+            env: Some(vec![format!("GNUPGHOME={gnupg_home}")]),
+            ..Default::default()
+        };
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .dist(dist.path().to_path_buf())
+            .signs(vec![gpg_checksum])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.tar.gz".to_string(),
+            path: archive.clone(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "checksums.txt".to_string(),
+            path: checksums.clone(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::from([
+                (
+                    anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+                    anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+                ),
+                // `refresh_combined_checksums` filters on `algorithm`, which the
+                // checksum stage always writes on the combined file.
+                ("algorithm".to_string(), "sha256".to_string()),
+            ]),
+            size: None,
+        });
+
+        anodizer_stage_sign::SignStage
+            .run(&mut ctx)
+            .expect("sign stage");
+        let sig = dist.path().join("checksums.txt.sig");
+        assert!(sig.exists(), "sign stage must produce checksums.txt.sig");
+
+        let verify = || {
+            Command::new("gpg")
+                .env("GNUPGHOME", &gnupg_home)
+                .arg("--verify")
+                .arg(&sig)
+                .arg(&checksums)
+                .output()
+                .expect("spawn gpg --verify")
+                .status
+                .success()
+        };
+        assert!(verify(), "freshly-signed checksums.txt must verify");
+
+        // A publish-time artifact appears AFTER the checksum + sign stages ran
+        // (the docker `.digest` case), so the combined checksums file must be
+        // refreshed to include it before upload.
+        let extra = dist.path().join("myapp.digest");
+        std::fs::write(&extra, b"digest-bytes").expect("write publish-time artifact");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.digest".to_string(),
+            path: extra,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // The exact sequence run() performs before upload.
+        anodizer_stage_checksum::refresh_combined_checksums(&mut ctx, false)
+            .expect("refresh combined checksums");
+        let refreshed = std::fs::read_to_string(&checksums).expect("read refreshed checksums");
+        assert!(
+            refreshed.contains("myapp.digest"),
+            "refresh must fold the publish-time artifact into checksums.txt: {refreshed:?}"
+        );
+        assert!(
+            !verify(),
+            "the sign-stage signature must go stale once refresh rewrites checksums.txt"
+        );
+
+        anodizer_stage_sign::resign_combined_checksums(&mut ctx, false)
+            .expect("resign combined checksums");
+        assert!(
+            verify(),
+            "the re-signed checksums.txt.sig must verify against the refreshed bytes"
+        );
     }
 
     #[test]

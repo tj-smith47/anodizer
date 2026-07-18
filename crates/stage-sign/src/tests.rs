@@ -4099,6 +4099,203 @@ fn gpg_signature_byte_stable_for_same_sde() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Re-signing combined checksums after the release stage's
+// `refresh_combined_checksums` rewrites `checksums.txt`.
+//
+// The release bug that blocked v0.22.0: the sign stage signs `checksums.txt`,
+// then the github-release publisher REWRITES it (to fold in publish-time
+// artifacts like docker `.digest` files) and uploads it — with the STALE
+// signature. `gpg --verify` fails BAD and verify-release blocks winget/aur.
+// `resign_combined_checksums` re-signs after the refresh so the uploaded
+// `.sig` matches the uploaded `checksums.txt` byte-for-byte.
+// ---------------------------------------------------------------------------
+
+/// Provision an ephemeral gpg keypair for a live sign+verify test, or return
+/// `None` (with a skip note) when gpg/cosign are unavailable. Provisioning
+/// spawns BOTH gpg and cosign, so both must be present.
+fn gpg_keys_or_skip(test: &str) -> Option<anodizer_core::harness_signing::EphemeralSigningKeys> {
+    for tool in ["gpg", "cosign"] {
+        match anodizer_core::tool_detect::runs(tool) {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            probe => {
+                eprintln!("skipping {test}: {tool}={probe:?}");
+                return None;
+            }
+        }
+    }
+    Some(
+        anodizer_core::harness_signing::provision_ephemeral_keys(1_715_000_000)
+            .expect("provision ephemeral gpg keypair"),
+    )
+}
+
+/// A gpg `signs:` config that signs the combined checksums using the
+/// PRODUCTION default args (`--output <sig> --detach-sig <artifact>`, no
+/// `--yes`), with the keyring pointed at the ephemeral home. The default args
+/// are deliberate: they are the exact invocation that refuses to overwrite a
+/// signature already on disk, the condition the re-sign path must clear.
+fn gpg_checksum_config(gnupg_home: &str) -> SignConfig {
+    SignConfig {
+        id: Some("gpg".to_string()),
+        cmd: Some("gpg".to_string()),
+        artifacts: Some("checksum".to_string()),
+        env: Some(vec![format!("GNUPGHOME={gnupg_home}")]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn resign_combined_checksums_refreshes_stale_signature() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use std::process::Command;
+
+    let Some(keys) = gpg_keys_or_skip("resign_combined_checksums_refreshes_stale_signature") else {
+        return;
+    };
+    let gnupg_home = keys.gnupg_home.to_string_lossy().into_owned();
+
+    let dist = tempfile::tempdir().expect("tempdir for dist");
+    let checksums = dist.path().join("checksums.txt");
+    std::fs::write(&checksums, "aaaa  myapp-linux-amd64.tar.gz\n")
+        .expect("write initial checksums.txt");
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .dist(dist.path().to_path_buf())
+        .signs(vec![gpg_checksum_config(&gnupg_home)])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "checksums.txt".to_string(),
+        path: checksums.clone(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: combined_meta(),
+        size: None,
+    });
+
+    // 1. The sign stage produces checksums.txt.sig over the initial bytes.
+    SignStage.run(&mut ctx).expect("sign stage");
+    let sig = dist.path().join("checksums.txt.sig");
+    assert!(sig.exists(), "sign stage must produce checksums.txt.sig");
+
+    let verify = || {
+        Command::new("gpg")
+            .env("GNUPGHOME", &gnupg_home)
+            .arg("--verify")
+            .arg(&sig)
+            .arg(&checksums)
+            .output()
+            .expect("spawn gpg --verify")
+            .status
+            .success()
+    };
+    assert!(verify(), "freshly-signed checksums.txt must verify");
+
+    // 2. Simulate refresh_combined_checksums rewriting the file to fold in a
+    //    publish-time artifact. The signature now certifies stale bytes.
+    std::fs::write(
+        &checksums,
+        "aaaa  myapp-linux-amd64.tar.gz\nbbbb  myapp.digest\n",
+    )
+    .expect("rewrite checksums.txt (refresh)");
+    assert!(
+        !verify(),
+        "stale signature must NOT verify against the refreshed checksums.txt \
+         — this is the release bug that blocked v0.22.0"
+    );
+
+    // 3. The fix: re-sign after the refresh; the uploaded .sig must match again.
+    crate::resign_combined_checksums(&mut ctx, false).expect("resign combined checksums");
+    assert!(
+        verify(),
+        "re-signed checksums.txt.sig must verify against the refreshed bytes"
+    );
+}
+
+#[test]
+fn resign_combined_checksums_covers_every_crate() {
+    // per-crate layout: each crate owns a `<crate>_checksums.txt`. A refresh
+    // rewrites all of them, so the re-sign must refresh EVERY crate's
+    // signature — the match loop scans the whole registry, not one crate.
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use std::process::Command;
+
+    let Some(keys) = gpg_keys_or_skip("resign_combined_checksums_covers_every_crate") else {
+        return;
+    };
+    let gnupg_home = keys.gnupg_home.to_string_lossy().into_owned();
+
+    let dist = tempfile::tempdir().expect("tempdir for dist");
+    let crates = ["core", "cli"];
+    let files: Vec<std::path::PathBuf> = crates
+        .iter()
+        .map(|c| {
+            let p = dist.path().join(format!("{c}_checksums.txt"));
+            std::fs::write(&p, format!("aaaa  {c}-linux-amd64.tar.gz\n")).expect("write checksums");
+            p
+        })
+        .collect();
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .dist(dist.path().to_path_buf())
+        .signs(vec![gpg_checksum_config(&gnupg_home)])
+        .build();
+
+    for (c, f) in crates.iter().zip(&files) {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: format!("{c}_checksums.txt"),
+            path: f.clone(),
+            target: None,
+            crate_name: (*c).to_string(),
+            metadata: combined_meta(),
+            size: None,
+        });
+    }
+
+    SignStage.run(&mut ctx).expect("sign stage");
+
+    let verify = |f: &std::path::Path| {
+        let sig = f.with_extension("txt.sig");
+        Command::new("gpg")
+            .env("GNUPGHOME", &gnupg_home)
+            .arg("--verify")
+            .arg(&sig)
+            .arg(f)
+            .output()
+            .expect("spawn gpg --verify")
+            .status
+            .success()
+    };
+
+    // Refresh every crate's combined checksum, then re-sign.
+    for (c, f) in crates.iter().zip(&files) {
+        assert!(verify(f), "[{c}] fresh signature must verify");
+        std::fs::write(
+            f,
+            format!("aaaa  {c}-linux-amd64.tar.gz\nbbbb  {c}.digest\n"),
+        )
+        .expect("rewrite checksums (refresh)");
+        assert!(
+            !verify(f),
+            "[{c}] stale signature must NOT verify after refresh"
+        );
+    }
+
+    crate::resign_combined_checksums(&mut ctx, false).expect("resign combined checksums");
+
+    for (c, f) in crates.iter().zip(&files) {
+        assert!(
+            verify(f),
+            "[{c}] every crate's re-signed checksum must verify against refreshed bytes"
+        );
+    }
+}
+
 #[test]
 fn docker_sign_zero_match_ids_filter_warns_loudly() {
     // A docker_signs config whose ids filter eliminates every selected

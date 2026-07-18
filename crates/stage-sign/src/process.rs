@@ -164,6 +164,16 @@ pub(crate) enum ArtifactFilter {
     FromConfig,
     /// Always restrict to `ArtifactKind::Binary`, regardless of config.
     BinaryOnly,
+    /// Re-sign ONLY the combined `checksums.txt` files, using each
+    /// SignConfig's own `artifacts` filter (so only a config that signs
+    /// checksums participates). Used by [`crate::resign_combined_checksums`]
+    /// after the release stage rewrites `checksums.txt` to fold in
+    /// publish-time artifacts, which would otherwise leave the earlier
+    /// signature stale. Any stale `.sig`/`.pem` sidecars are removed before
+    /// signing so the reused signer writes a fresh signature over the
+    /// refreshed bytes (the default `gpg --output` refuses to overwrite a
+    /// file already on disk non-interactively).
+    CombinedChecksumOnly,
 }
 
 /// Append a target triple to a basename while keeping its extension
@@ -606,7 +616,9 @@ pub(crate) fn process_sign_configs(
         }
 
         let config_filter = sign_cfg.resolved_artifacts(match filter_mode {
-            ArtifactFilter::FromConfig => SignConfig::DEFAULT_ARTIFACTS,
+            ArtifactFilter::FromConfig | ArtifactFilter::CombinedChecksumOnly => {
+                SignConfig::DEFAULT_ARTIFACTS
+            }
             ArtifactFilter::BinaryOnly => SignConfig::DEFAULT_ARTIFACTS_BINARY,
         });
 
@@ -710,6 +722,25 @@ pub(crate) fn process_sign_configs(
                             continue;
                         }
                     }
+                    ArtifactFilter::CombinedChecksumOnly => {
+                        // Honor the config's own filter (so a config that does
+                        // not select checksums signs nothing here), then narrow
+                        // to the COMBINED checksums file — the only artifact
+                        // `refresh_combined_checksums` rewrites, hence the only
+                        // signature that went stale. Split `.sha256` sidecars
+                        // are never rewritten, so their signatures stay valid.
+                        if !should_sign_artifact(a.kind, config_filter)? {
+                            continue;
+                        }
+                        let is_combined = a
+                            .metadata
+                            .get(anodizer_core::artifact::COMBINED_CHECKSUM_META)
+                            .map(String::as_str)
+                            == Some(anodizer_core::artifact::COMBINED_CHECKSUM_VALUE);
+                        if !is_combined {
+                            continue;
+                        }
+                    }
                 }
                 kind_matched += 1;
                 if !crate::helpers::sign_ids_match(&a.metadata, sign_cfg.ids.as_ref()) {
@@ -785,7 +816,9 @@ pub(crate) fn process_sign_configs(
 
         let default_sig_template: &str = match filter_mode {
             ArtifactFilter::BinaryOnly => SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
-            ArtifactFilter::FromConfig => SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
+            ArtifactFilter::FromConfig | ArtifactFilter::CombinedChecksumOnly => {
+                SignConfig::DEFAULT_SIGNATURE_TEMPLATE
+            }
         };
 
         for (
@@ -1087,6 +1120,21 @@ pub(crate) fn process_sign_configs(
                 env: rendered_env.clone(),
                 what: artifact_str.to_string(),
             });
+
+            // Re-signing a combined checksum: the sign stage already wrote
+            // these `.sig`/`.pem` files over the pre-refresh bytes. The default
+            // `gpg --output <sig> --detach-sig` refuses to overwrite a file
+            // already on disk without a tty (exit 2, leaving the stale
+            // signature in place), so clear the stale sidecars first — the
+            // reused signer then writes a fresh signature over the refreshed
+            // bytes, byte-identical to a cold first sign.
+            if matches!(filter_mode, ArtifactFilter::CombinedChecksumOnly) {
+                for produced in &job_artifacts {
+                    if produced.path.exists() {
+                        let _ = std::fs::remove_file(&produced.path);
+                    }
+                }
+            }
 
             sign_jobs.push(SignJob {
                 cmd: cmd.clone(),

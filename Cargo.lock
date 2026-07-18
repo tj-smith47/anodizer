@@ -455,6 +455,7 @@ version = "0.20.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-checksum",
+ "anodizer-stage-sign",
  "anyhow",
  "glob",
  "http",

@@ -16,6 +16,7 @@ readme = "README.md"
 [dependencies]
 anodizer-core.workspace = true
 anodizer-stage-checksum.workspace = true
+anodizer-stage-sign.workspace = true
 anyhow.workspace = true
 glob.workspace = true
 http.workspace = true

@@ -105,6 +105,70 @@ pub fn binary_signs_skipped(ctx: &Context) -> bool {
     ctx.is_publish_only()
 }
 
+/// Re-sign every combined `checksums.txt` after the release stage's
+/// `anodizer_stage_checksum::refresh_combined_checksums` rewrote it.
+///
+/// The pipeline signs `checksums.txt` in the sign stage, but the
+/// github-release publisher later rewrites it — to fold in artifacts produced
+/// at publish time (e.g. docker `.digest` files) — immediately before upload.
+/// Nothing re-signs after that rewrite, so the uploaded `checksums.txt.sig`
+/// certifies the PRE-refresh bytes while the uploaded `checksums.txt` is the
+/// POST-refresh bytes: `gpg --verify` / `cosign verify-blob` fails BAD, and the
+/// verify-release crypto gate then blocks the one-way-door submitters
+/// (winget/aur). This restores the invariant that the uploaded `checksums.txt`
+/// bytes are exactly the bytes its `.sig` signs.
+///
+/// Re-runs the SAME per-config signing the sign stage would (via
+/// [`process_sign_configs`] restricted to combined-checksum artifacts, reusing
+/// the identical key-loading and signer invocation), overwriting each stale
+/// `.sig`/`.pem` in place. In per-crate / lockstep layouts every crate's own
+/// combined checksum is re-signed, because the match loop scans the whole
+/// artifact registry.
+///
+/// No-ops (returns `Ok(())` without spawning a signer) when:
+/// - `dry_run` is set,
+/// - every `signs:` signature consumer is deselected (the sign stage produced
+///   no signatures, so nothing is stale), or
+/// - no `signs:` config selects checksums (`artifacts: checksum` / `all` /
+///   `any`) — checksum signing was never configured.
+pub fn resign_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    // Same consumer gate the sign stage applies: with no selected publisher
+    // consuming signature sidecars, the sign stage signed nothing, so there is
+    // no stale signature to refresh.
+    if signs_fully_deselected(ctx) {
+        return Ok(());
+    }
+    // Fast no-op when nothing signs checksums, so a checksum-free config never
+    // pays for a "sign" logger, id validation, or a skip-record pass.
+    let signs_checksums = ctx.config.signs.iter().any(|c| {
+        matches!(
+            c.resolved_artifacts(anodizer_core::config::SignConfig::DEFAULT_ARTIFACTS),
+            "checksum" | "all" | "any"
+        )
+    });
+    if !signs_checksums {
+        return Ok(());
+    }
+
+    let log = ctx.logger("sign");
+    validate_sign_config_ids(&ctx.config.signs, "sign", "signs")?;
+    let sign_configs = ctx.config.signs.clone();
+    process_sign_configs(
+        &sign_configs,
+        ctx,
+        &log,
+        ArtifactFilter::CombinedChecksumOnly,
+        "sign",
+    )?;
+    // Signatures are overwritten in place, so the registry paths are unchanged;
+    // refresh the template var anyway to match the sign stage's contract.
+    ctx.refresh_artifacts_var();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // SignStage
 // ---------------------------------------------------------------------------
