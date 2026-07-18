@@ -1436,3 +1436,398 @@ fn sign_filter_warns_on_unrecognized_value() {
         warnings
     );
 }
+
+#[test]
+fn sign_authenticode_filter_warns_on_unrecognized_value() {
+    // The authenticode sub-block carries its own `artifacts` selector,
+    // resolved through the same vocabulary; an unknown value must warn too.
+    let config = Config {
+        project_name: "test".to_string(),
+        signs: vec![anodizer_core::config::SignConfig {
+            authenticode: Some(anodizer_core::config::AuthenticodeConfig {
+                artifacts: Some("nonsense".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_sign_artifact_filters(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "unknown authenticode filter must warn");
+    assert!(
+        warnings[0].contains("authenticode") && warnings[0].contains("nonsense"),
+        "authenticode warning should name the block and value: {:?}",
+        warnings
+    );
+}
+
+// ---- Target-triple validation tests ----
+
+#[test]
+fn target_triple_warns_on_unrecognized_in_defaults() {
+    use anodizer_core::config::Defaults;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.defaults = Some(Defaults {
+        targets: Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(), // valid
+            "sparc-sun-solaris".to_string(),        // unknown arch AND os
+        ]),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_target_triples(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "only the bad triple warns: {warnings:?}");
+    assert!(
+        warnings[0].contains("sparc-sun-solaris") && warnings[0].contains("defaults.targets"),
+        "warning should name the triple and its context: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn target_triple_warns_on_unrecognized_in_crate_build() {
+    use anodizer_core::config::BuildConfig;
+    let mut crate_cfg = make_crate("mycrate", "v{{ .Version }}", None);
+    crate_cfg.builds = Some(vec![BuildConfig {
+        binary: Some("mybin".to_string()),
+        targets: Some(vec!["not-a-real-triple".to_string()]),
+        ..Default::default()
+    }]);
+    let config = make_config(vec![crate_cfg]);
+    let mut warnings: Vec<String> = vec![];
+    check_target_triples(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("not-a-real-triple")
+            && warnings[0].contains("crate 'mycrate'")
+            && warnings[0].contains("build 'mybin'"),
+        "warning should name the triple, crate, and build binary: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn target_triple_silent_on_known_triples() {
+    use anodizer_core::config::Defaults;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.defaults = Some(Defaults {
+        targets: Some(vec![
+            "aarch64-apple-darwin".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ]),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_target_triples(&config, &mut warnings);
+    assert!(
+        warnings.is_empty(),
+        "known triples must not warn: {warnings:?}"
+    );
+}
+
+// ---- Changelog `use` validation tests ----
+
+#[test]
+fn changelog_use_warns_on_unrecognized_value() {
+    use anodizer_core::config::ChangelogConfig;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.changelog = Some(ChangelogConfig {
+        use_source: Some("mercurial".to_string()),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_changelog(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("mercurial") && warnings[0].contains("git, github-native"),
+        "warning should name the bad value and valid set: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn changelog_use_silent_on_github_native() {
+    use anodizer_core::config::ChangelogConfig;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.changelog = Some(ChangelogConfig {
+        use_source: Some("github-native".to_string()),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_changelog(&config, &mut warnings);
+    assert!(warnings.is_empty(), "github-native is valid: {warnings:?}");
+}
+
+// ---- Checksum-algorithm validation tests ----
+
+#[test]
+fn checksum_algorithm_warns_on_unrecognized_in_defaults() {
+    use anodizer_core::config::{ChecksumConfig, Defaults};
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.defaults = Some(Defaults {
+        checksum: Some(ChecksumConfig {
+            algorithm: Some("crc32".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_checksum_algorithms(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("crc32") && warnings[0].contains("defaults.checksum"),
+        "warning should name the algorithm and context: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn checksum_algorithm_warns_on_unrecognized_per_crate() {
+    use anodizer_core::config::ChecksumConfig;
+    let mut crate_cfg = make_crate("mycrate", "v{{ .Version }}", None);
+    crate_cfg.checksum = Some(ChecksumConfig {
+        algorithm: Some("md5".to_string()),
+        ..Default::default()
+    });
+    let config = make_config(vec![crate_cfg]);
+    let mut warnings: Vec<String> = vec![];
+    check_checksum_algorithms(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("md5") && warnings[0].contains("mycrate"),
+        "warning should name the algorithm and crate: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn checksum_algorithm_silent_on_known_algorithm() {
+    use anodizer_core::config::{ChecksumConfig, Defaults};
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.defaults = Some(Defaults {
+        checksum: Some(ChecksumConfig {
+            algorithm: Some("blake2b".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut warnings: Vec<String> = vec![];
+    check_checksum_algorithms(&config, &mut warnings);
+    assert!(warnings.is_empty(), "blake2b is valid: {warnings:?}");
+}
+
+// ---- SBOM artifacts validation tests ----
+
+#[test]
+fn sbom_artifacts_errors_on_unrecognized_value() {
+    use anodizer_core::config::SbomConfig;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.sboms = vec![SbomConfig {
+        id: Some("main".to_string()),
+        artifacts: Some("everything".to_string()),
+        ..Default::default()
+    }];
+    let mut errors: Vec<String> = vec![];
+    check_sbom_configs(&config, &mut errors);
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert!(
+        errors[0].contains("everything") && errors[0].contains("main"),
+        "error should name the value and the sbom label: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn sbom_artifacts_silent_on_known_value() {
+    use anodizer_core::config::SbomConfig;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.sboms = vec![SbomConfig {
+        artifacts: Some("binary".to_string()),
+        ..Default::default()
+    }];
+    let mut errors: Vec<String> = vec![];
+    check_sbom_configs(&config, &mut errors);
+    assert!(
+        errors.is_empty(),
+        "'binary' is a valid artifacts type: {errors:?}"
+    );
+}
+
+// ---- Announce secret-exposure: remaining channels ----
+
+#[test]
+fn announce_secret_warns_across_all_remaining_channels() {
+    use anodizer_core::config::{
+        DiscordAnnounce, LinkedInAnnounce, MastodonAnnounce, MattermostAnnounce,
+        OpenCollectiveAnnounce, RedditAnnounce, TeamsAnnounce, TelegramAnnounce, WebhookConfig,
+    };
+    // Each channel content field carries a distinct secret-named ref so the
+    // per-field warning routing (field label in the message) is exercised
+    // once per channel branch.
+    let warnings = collect_announce_warnings(AnnounceConfig {
+        linkedin: Some(LinkedInAnnounce {
+            message_template: Some("{{ Env.LINKEDIN_TOKEN }}".to_string()),
+            ..Default::default()
+        }),
+        opencollective: Some(OpenCollectiveAnnounce {
+            title_template: Some("{{ Env.OC_API_KEY }}".to_string()),
+            message_template: Some("{{ Env.OC_SECRET }}".to_string()),
+            ..Default::default()
+        }),
+        mastodon: Some(MastodonAnnounce {
+            message_template: Some("{{ Env.MASTODON_TOKEN }}".to_string()),
+            ..Default::default()
+        }),
+        discord: Some(DiscordAnnounce {
+            message_template: Some("{{ Env.DISCORD_TOKEN }}".to_string()),
+            author: Some("{{ Env.DISCORD_SECRET }}".to_string()),
+            ..Default::default()
+        }),
+        webhook: Some(WebhookConfig {
+            message_template: Some("{{ Env.WEBHOOK_TOKEN }}".to_string()),
+            ..Default::default()
+        }),
+        telegram: Some(TelegramAnnounce {
+            message_template: Some("{{ Env.TELEGRAM_TOKEN }}".to_string()),
+            ..Default::default()
+        }),
+        teams: Some(TeamsAnnounce {
+            message_template: Some("{{ Env.TEAMS_TOKEN }}".to_string()),
+            title_template: Some("{{ Env.TEAMS_SECRET }}".to_string()),
+            ..Default::default()
+        }),
+        mattermost: Some(MattermostAnnounce {
+            message_template: Some("{{ Env.MM_TOKEN }}".to_string()),
+            title_template: Some("{{ Env.MM_SECRET }}".to_string()),
+            ..Default::default()
+        }),
+        reddit: Some(RedditAnnounce {
+            title_template: Some("{{ Env.REDDIT_TOKEN }}".to_string()),
+            url_template: Some("https://x/{{ Env.REDDIT_SECRET }}".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    // Two each for opencollective/discord/teams/mattermost/reddit + one each
+    // for linkedin/mastodon/webhook/telegram = 5*2 + 4 = 14.
+    assert_eq!(
+        warnings.len(),
+        14,
+        "one warning per secret-named field: {warnings:?}"
+    );
+    for needle in [
+        "announce.linkedin.message_template",
+        "announce.opencollective.title_template",
+        "announce.opencollective.message_template",
+        "announce.mastodon.message_template",
+        "announce.discord.message_template",
+        "announce.discord.author",
+        "announce.webhook.message_template",
+        "announce.telegram.message_template",
+        "announce.teams.message_template",
+        "announce.teams.title_template",
+        "announce.mattermost.message_template",
+        "announce.mattermost.title_template",
+        "announce.reddit.title_template",
+        "announce.reddit.url_template",
+    ] {
+        assert!(
+            warnings.iter().any(|w| w.contains(needle)),
+            "missing warning for {needle}: {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn announce_secret_warns_in_slack_attachment_text_fields() {
+    use anodizer_core::config::{SlackAnnounce, SlackAttachment};
+    // The attachment scan covers text/title/fallback/pretext/footer; drive
+    // the first four (footer already has a dedicated test above).
+    let warnings = collect_announce_warnings(AnnounceConfig {
+        slack: Some(SlackAnnounce {
+            attachments: Some(vec![SlackAttachment {
+                text: Some("{{ Env.SLACK_A_TOKEN }}".to_string()),
+                title: Some("{{ Env.SLACK_B_TOKEN }}".to_string()),
+                fallback: Some("{{ Env.SLACK_C_TOKEN }}".to_string()),
+                pretext: Some("{{ Env.SLACK_D_TOKEN }}".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(
+        warnings.len(),
+        4,
+        "one per attachment content field: {warnings:?}"
+    );
+    for suffix in [".text", ".title", ".fallback", ".pretext"] {
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains(&format!("announce.slack.attachments[0]{suffix}"))),
+            "missing attachment{suffix} warning: {warnings:?}"
+        );
+    }
+}
+
+// ---- Signing-tool availability warnings ----
+
+#[test]
+fn signing_tools_warns_on_missing_sign_cmd() {
+    // A `signs.cmd` naming a binary not on PATH must warn — the release
+    // would otherwise fail at sign time with a less-actionable spawn error.
+    let config = Config {
+        project_name: "test".to_string(),
+        signs: vec![anodizer_core::config::SignConfig {
+            cmd: Some("anodizer-nonexistent-signer".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_signing_tools(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("anodizer-nonexistent-signer")
+            && warnings[0].contains("signs section"),
+        "warning should name the missing tool and section: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn signing_tools_warns_on_missing_docker_sign_cmd() {
+    let config = Config {
+        project_name: "test".to_string(),
+        docker_signs: Some(vec![anodizer_core::config::DockerSignConfig {
+            cmd: Some("anodizer-nonexistent-cosign".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_signing_tools(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("anodizer-nonexistent-cosign")
+            && warnings[0].contains("docker_signs section"),
+        "warning should name the missing tool and section: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn signing_tools_silent_when_no_signing_configured() {
+    let config = Config {
+        project_name: "test".to_string(),
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_signing_tools(&config, &mut warnings);
+    assert!(
+        warnings.is_empty(),
+        "no signing config → no warnings: {warnings:?}"
+    );
+}

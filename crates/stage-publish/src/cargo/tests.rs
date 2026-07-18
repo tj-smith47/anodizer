@@ -1572,6 +1572,37 @@ fn index_confirmation_rides_at_verbose_not_default() {
     );
 }
 
+#[test]
+fn poll_index_times_out_after_retrying_non_success_and_transport_errors() {
+    // The propagation poll must not confirm on a 404 (version-not-yet-there)
+    // and must keep retrying — through a non-success status AND the transport
+    // error the oneshot server produces once it has closed — until the
+    // deadline, at which point it bails with a descriptive timeout error.
+    let (addr, _calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let url = format!("http://{addr}/3/m/myapp");
+
+    let start = std::time::Instant::now();
+    let err = poll_crates_io_index_at(
+        &url,
+        "myapp",
+        "9.9.9",
+        1, // 1s deadline
+        std::time::Duration::from_millis(400),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect_err("version never appears ⇒ timeout");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_secs(1),
+        "must honor the full deadline before bailing"
+    );
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("timed out waiting for myapp-9.9.9") && msg.contains("crates.io index"),
+        "unexpected error: {msg}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // sparse-index propagation retry on cargo publish
 //
@@ -3879,5 +3910,25 @@ fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
     assert_eq!(
         n, PUBLISH_PROPAGATION_RETRIES,
         "must retry the full budget before surfacing"
+    );
+}
+
+#[test]
+fn run_cargo_publish_with_retry_surfaces_spawn_failure() {
+    // A command that cannot be spawned (no such binary) must bubble the spawn
+    // error with its context, never silently retry into a timeout.
+    let cmd = vec!["anodizer-nonexistent-cargo-binary-xyz".to_string()];
+    let err = run_cargo_publish_with_retry(
+        &cmd,
+        "demo",
+        anodizer_core::test_helpers::test_logger(),
+        std::time::Duration::ZERO,
+        None,
+    )
+    .expect_err("spawning a missing binary must fail");
+    assert!(
+        format!("{err:#}").contains("spawn")
+            && format!("{err:#}").contains("nonexistent-cargo-binary"),
+        "error should carry spawn context: {err:#}"
     );
 }

@@ -3510,3 +3510,69 @@ fn archive_group_first_binary_variant_agrees_with_projection() {
         "a copy_from declaration must not out-vote the first-registered compile build"
     );
 }
+
+// ---- detect_cargo_profile ------------------------------------------------
+
+#[test]
+fn detect_profile_defaults_to_debug_on_empty_and_unmarked_flags() {
+    use super::profile::detect_cargo_profile;
+    assert_eq!(detect_cargo_profile(&[]), "debug", "no flags → debug");
+    assert_eq!(
+        detect_cargo_profile(&["--locked".to_string(), "--offline".to_string()]),
+        "debug",
+        "flags with no profile marker → debug"
+    );
+}
+
+#[test]
+fn detect_profile_release_flag_and_equals_form() {
+    use super::profile::detect_cargo_profile;
+    assert_eq!(detect_cargo_profile(&["--release".to_string()]), "release");
+    assert_eq!(
+        detect_cargo_profile(&["--profile=release".to_string()]),
+        "release"
+    );
+    // A custom profile name passes through verbatim.
+    assert_eq!(
+        detect_cargo_profile(&["--profile=bench".to_string()]),
+        "bench"
+    );
+}
+
+#[test]
+fn detect_profile_space_separated_form() {
+    use super::profile::detect_cargo_profile;
+    assert_eq!(
+        detect_cargo_profile(&["--profile".to_string(), "release".to_string()]),
+        "release"
+    );
+    assert_eq!(
+        detect_cargo_profile(&["--profile".to_string(), "custom-prof".to_string()]),
+        "custom-prof"
+    );
+}
+
+#[test]
+fn detect_profile_dev_normalizes_to_debug_in_both_forms() {
+    use super::profile::detect_cargo_profile;
+    // cargo's `dev` profile emits into target/debug; both spellings map to it.
+    assert_eq!(
+        detect_cargo_profile(&["--profile=dev".to_string()]),
+        "debug"
+    );
+    assert_eq!(
+        detect_cargo_profile(&["--profile".to_string(), "dev".to_string()]),
+        "debug"
+    );
+}
+
+#[test]
+fn detect_profile_equals_form_wins_over_release_flag() {
+    use super::profile::detect_cargo_profile;
+    // The equals form is scanned first, so an explicit `--profile=` beats a
+    // co-present `--release`.
+    assert_eq!(
+        detect_cargo_profile(&["--release".to_string(), "--profile=bench".to_string()]),
+        "bench"
+    );
+}

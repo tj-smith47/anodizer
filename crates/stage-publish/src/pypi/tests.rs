@@ -1716,6 +1716,89 @@ fn parse_pkg_info_reads_maturin_metadata_and_version() {
 }
 
 #[test]
+fn parse_pkg_info_errors_when_no_top_level_pkg_info() {
+    // A sdist whose only PKG-INFO lives deeper than the top level (e.g. the
+    // `*.egg-info/PKG-INFO`) must be rejected — the upload form has no
+    // metadata to echo.
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let path = tmp.path().join("nometa-1.0.tar.gz");
+    let enc = GzEncoder::new(
+        std::fs::File::create(&path).unwrap(),
+        Compression::default(),
+    );
+    let mut builder = tar::Builder::new(enc);
+    for entry in ["nometa-1.0/README", "nometa-1.0/nometa.egg-info/PKG-INFO"] {
+        let body = b"noise";
+        let mut header = tar::Header::new_gnu();
+        header.set_path(entry).unwrap();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, &body[..]).unwrap();
+    }
+    builder.into_inner().unwrap().finish().unwrap();
+
+    let err = super::sdist::parse_pkg_info(&path).expect_err("must reject missing PKG-INFO");
+    assert!(
+        err.to_string().contains("no top-level PKG-INFO"),
+        "unexpected error: {err:#}"
+    );
+}
+
+#[test]
+fn parse_pkg_info_errors_when_required_header_missing() {
+    // PKG-INFO present but missing the `Version` header → the three-field
+    // guard bails.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let pkg_info = "Metadata-Version: 2.4\nName: my-tool\nSummary: x\n\nbody\n";
+    let path = write_fake_sdist(tmp.path(), "my_tool", "1.0", pkg_info);
+    let err = super::sdist::parse_pkg_info(&path).expect_err("missing Version must fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("missing a required header") && msg.contains("Version"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn parse_pkg_info_tolerates_colonless_lines() {
+    // A stray header line without a colon is skipped, not fatal; the real
+    // headers after it still parse.
+    use super::sdist::{SdistPkgInfo, parse_pkg_info};
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let pkg_info =
+        "Metadata-Version: 2.4\nGARBAGE-NO-COLON\nName: my-tool\nVersion: 3.1.4\n\nbody\n";
+    let path = write_fake_sdist(tmp.path(), "my_tool", "3.1.4", pkg_info);
+    assert_eq!(
+        parse_pkg_info(&path).expect("parse"),
+        SdistPkgInfo {
+            metadata_version: "2.4".to_string(),
+            name: "my-tool".to_string(),
+            version: "3.1.4".to_string(),
+        }
+    );
+}
+
+#[test]
+fn build_sdist_bails_when_manifest_missing() {
+    // The early guard fires before maturin is ever spawned, so an absent
+    // pyproject.toml is a clean, actionable error rather than a subprocess
+    // failure.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let ctx = TestContextBuilder::new().build();
+    let out = tmp.path().join("staging");
+    let err = super::sdist::build_sdist(&ctx, tmp.path().to_str().unwrap(), &out, &probe_logger())
+        .expect_err("missing pyproject.toml must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does not exist") && msg.contains("sdist_manifest"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
 fn sdist_upload_form_carries_pkg_info_metadata_version() {
     // The upload form's metadata_version comes from the spec, so an sdist spec
     // stamped from PKG-INFO (2.4) sends 2.4, not the hardcoded wheel 2.1.

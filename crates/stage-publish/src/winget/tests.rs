@@ -917,6 +917,39 @@ fn test_winget_commit_msg_default() {
 }
 
 #[test]
+fn test_winget_commit_msg_malformed_template_errors_under_strict() {
+    // A malformed commit-message template is a hard error under the
+    // guard/`--strict` — a broken title must not silently ship.
+    let err = render_winget_commit_msg(
+        Some("{{ Version | no_such_filter_xyz }}"),
+        "Org.MyTool",
+        "1.0.0",
+        &commit_msg_logger(),
+        true,
+    )
+    .expect_err("malformed template must fail under strict");
+    assert!(
+        err.to_string().contains("commit_msg_template"),
+        "error should name the offending field: {err:#}"
+    );
+}
+
+#[test]
+fn test_winget_commit_msg_malformed_template_falls_back_when_lenient() {
+    // Outside strict mode the same failure warns and falls back to the
+    // default-shaped message rather than aborting the publish.
+    let msg = render_winget_commit_msg(
+        Some("{{ Version | no_such_filter_xyz }}"),
+        "Org.MyTool",
+        "1.0.0",
+        &commit_msg_logger(),
+        false,
+    )
+    .expect("lenient mode falls back, not errors");
+    assert_eq!(msg, "New version: Org.MyTool 1.0.0");
+}
+
+#[test]
 fn test_winget_commit_msg_with_package_identifier_template() {
     // PackageIdentifier is exposed in the template context
     let msg = render_winget_commit_msg(

@@ -134,4 +134,135 @@ mod tests {
         assert!(!is_macho(&[]));
         assert!(!is_macho(b"#!/bin/sh\n"));
     }
+
+    // ---- Synthetic Mach-O fixtures ------------------------------------
+    //
+    // The `object` crate is built without its `write` feature, so the parse
+    // paths (thin/fat headers, LC_BUILD_VERSION vs LC_VERSION_MIN_MACOSX) are
+    // exercised against hand-assembled headers. The byte layouts follow
+    // `<mach-o/loader.h>`: thin headers are little-endian, fat headers are
+    // big-endian.
+
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+    const CPU_TYPE_X86_64: u32 = 0x0100_0007;
+    const MH_EXECUTE: u32 = 0x2;
+    const PLATFORM_MACOS: u32 = 1;
+    const FAT_MAGIC: u32 = 0xcafe_babe;
+
+    /// Pack `major.minor.patch` into the 16.8.8-bit form Mach-O version load
+    /// commands use.
+    fn pack_ver(major: u16, minor: u16, patch: u16) -> u32 {
+        (u32::from(major) << 16) | (u32::from(minor) << 8) | u32::from(patch)
+    }
+
+    fn wrap_thin(cputype: u32, load_command: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&MH_MAGIC_64.to_le_bytes());
+        out.extend_from_slice(&cputype.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // cpusubtype
+        out.extend_from_slice(&MH_EXECUTE.to_le_bytes());
+        let ncmds = if load_command.is_empty() { 0 } else { 1 };
+        out.extend_from_slice(&(ncmds as u32).to_le_bytes());
+        out.extend_from_slice(&(load_command.len() as u32).to_le_bytes()); // sizeofcmds
+        out.extend_from_slice(&0u32.to_le_bytes()); // flags
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        out.extend_from_slice(load_command);
+        out
+    }
+
+    /// Thin 64-bit Mach-O carrying one LC_BUILD_VERSION (modern linkers).
+    fn thin_build_version(cputype: u32, minos: u32) -> Vec<u8> {
+        let mut lc = Vec::new();
+        lc.extend_from_slice(&LC_BUILD_VERSION.to_le_bytes());
+        lc.extend_from_slice(&24u32.to_le_bytes()); // cmdsize
+        lc.extend_from_slice(&PLATFORM_MACOS.to_le_bytes());
+        lc.extend_from_slice(&minos.to_le_bytes());
+        lc.extend_from_slice(&0u32.to_le_bytes()); // sdk
+        lc.extend_from_slice(&0u32.to_le_bytes()); // ntools
+        wrap_thin(cputype, &lc)
+    }
+
+    /// Thin 64-bit Mach-O carrying one LC_VERSION_MIN_MACOSX (older targets).
+    fn thin_version_min(cputype: u32, version: u32) -> Vec<u8> {
+        let mut lc = Vec::new();
+        lc.extend_from_slice(&LC_VERSION_MIN_MACOSX.to_le_bytes());
+        lc.extend_from_slice(&16u32.to_le_bytes()); // cmdsize
+        lc.extend_from_slice(&version.to_le_bytes()); // version at offset 8
+        lc.extend_from_slice(&0u32.to_le_bytes()); // sdk at offset 12
+        wrap_thin(cputype, &lc)
+    }
+
+    /// Fat (universal) 32-bit container over the given `(cputype, slice)`
+    /// pairs. Fat headers and arch tables are big-endian.
+    fn fat32(slices: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let header_size = 8 + 20 * slices.len();
+        let mut arch_table = Vec::new();
+        let mut body = Vec::new();
+        let mut offset = header_size as u32;
+        for (cputype, data) in slices {
+            arch_table.extend_from_slice(&cputype.to_be_bytes());
+            arch_table.extend_from_slice(&0u32.to_be_bytes()); // cpusubtype
+            arch_table.extend_from_slice(&offset.to_be_bytes());
+            arch_table.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            arch_table.extend_from_slice(&0u32.to_be_bytes()); // align (2^0)
+            body.extend_from_slice(data);
+            offset += data.len() as u32;
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&FAT_MAGIC.to_be_bytes());
+        out.extend_from_slice(&(slices.len() as u32).to_be_bytes());
+        out.extend_from_slice(&arch_table);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn thin_reads_build_version_minos() {
+        let bytes = thin_build_version(CPU_TYPE_ARM64, pack_ver(11, 0, 0));
+        assert!(is_macho(&bytes), "synthetic thin Mach-O must be recognized");
+        assert_eq!(macho_min_os_version(&bytes).unwrap(), Some((11, 0)));
+    }
+
+    #[test]
+    fn thin_reads_version_min_macosx_minor() {
+        // LC_VERSION_MIN_MACOSX packs 10.13.0; the minor byte must survive.
+        let bytes = thin_version_min(CPU_TYPE_X86_64, pack_ver(10, 13, 0));
+        assert_eq!(macho_min_os_version(&bytes).unwrap(), Some((10, 13)));
+    }
+
+    #[test]
+    fn thin_macho_without_version_command_is_none_but_still_macho() {
+        // A real Mach-O that declares no version load command is Ok(None)
+        // for the version probe yet still `is_macho` — the two must not be
+        // conflated (the doc contract the wheel publisher relies on).
+        let bytes = wrap_thin(CPU_TYPE_ARM64, &[]);
+        assert!(is_macho(&bytes));
+        assert_eq!(macho_min_os_version(&bytes).unwrap(), None);
+    }
+
+    #[test]
+    fn fat_returns_max_minos_across_slices() {
+        // Two slices at 11.0 and 12.3: the honest floor for the single fat
+        // artifact is the MAX (12.3), the version below which one slice
+        // refuses to run.
+        let arm = thin_build_version(CPU_TYPE_ARM64, pack_ver(12, 3, 0));
+        let intel = thin_build_version(CPU_TYPE_X86_64, pack_ver(11, 0, 0));
+        let bytes = fat32(&[(CPU_TYPE_X86_64, intel), (CPU_TYPE_ARM64, arm)]);
+        assert!(
+            is_macho(&bytes),
+            "fat container must be recognized as Mach-O"
+        );
+        assert_eq!(macho_min_os_version(&bytes).unwrap(), Some((12, 3)));
+    }
+
+    #[test]
+    fn fat_with_no_versioned_slices_is_none() {
+        // A fat container whose slices declare no version command yields
+        // Ok(None) — the accumulator never sees a value.
+        let bare = wrap_thin(CPU_TYPE_ARM64, &[]);
+        let bytes = fat32(&[(CPU_TYPE_ARM64, bare)]);
+        assert!(is_macho(&bytes));
+        assert_eq!(macho_min_os_version(&bytes).unwrap(), None);
+    }
 }

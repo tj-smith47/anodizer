@@ -341,6 +341,93 @@ fn aur_rpc_malformed_json_is_error() {
     );
 }
 
+// ---- Winget: 422 query-validation → NotFound (not Unknown) -----------
+
+#[test]
+fn winget_pr_422_maps_to_not_found() {
+    // GitHub returns 422 for a malformed search query; that is a "no PR"
+    // signal, not a transient network blip, so the checker must surface
+    // Clean rather than bubbling an Unknown.
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let url = format!("http://{}/search/issues", addr);
+    let result = query_winget_pr_at(
+        &url,
+        None,
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("422 must be Ok(NotFound)");
+    assert!(
+        matches!(result, WingetPrLookup::NotFound),
+        "422 must map to NotFound, got {result:?}"
+    );
+}
+
+// ---- Winget / AUR: persistent 5xx exhausts retries → Err -------------
+
+#[test]
+fn winget_pr_server_error_bubbles_as_err() {
+    // A 5xx that persists across the retry budget must surface as Err (mapped
+    // to Unknown by the caller), exercising the error-message formatter and
+    // the HttpError status downcast on the failure path.
+    let err500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nboo";
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![err500, err500, err500]);
+    let url = format!("http://{}/search/issues", addr);
+    let err = query_winget_pr_at(
+        &url,
+        Some("tok"),
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect_err("persistent 5xx must be Err");
+    assert!(
+        format!("{err:#}").contains("winget PR search"),
+        "error should carry the retry label: {err:#}"
+    );
+}
+
+#[test]
+fn aur_rpc_server_error_bubbles_as_err() {
+    let err500 = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\n\r\nno";
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![err500, err500, err500]);
+    let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
+    let err = query_aur_rpc_at(
+        &url,
+        "1.0.0",
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect_err("persistent 5xx must be Err");
+    assert!(
+        format!("{err:#}").contains("AUR RPC"),
+        "error should carry the retry label: {err:#}"
+    );
+}
+
+// ---- RealCheckerFactory constructs each publisher's real checker -----
+
+#[test]
+fn real_checker_factory_builds_named_checkers() {
+    let f = RealCheckerFactory;
+    assert_eq!(f.cargo(fast_retry()).publisher_name(), "cargo");
+    assert_eq!(
+        f.chocolatey(
+            "https://community.chocolatey.org/api/v2/".to_string(),
+            fast_retry()
+        )
+        .publisher_name(),
+        "chocolatey"
+    );
+    assert_eq!(
+        f.winget(Some("tok".to_string()), fast_retry())
+            .publisher_name(),
+        "winget"
+    );
+    assert_eq!(f.aur(fast_retry()).publisher_name(), "aur");
+}
+
 // ---- AUR: 404 → Ok(false) (Clean) ------------------------------------
 
 #[test]
