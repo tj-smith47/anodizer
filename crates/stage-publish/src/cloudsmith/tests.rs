@@ -187,6 +187,54 @@ fn prune_unparseable_versions_fall_back_to_timestamp() {
     assert_eq!(to_delete, vec!["s-old".to_string()]);
 }
 
+// An epoch prefix with no packaging revision is still stripped, and a
+// non-numeric "epoch" is left intact (it is not a deb/rpm epoch).
+#[test]
+fn normalize_epoch_without_revision_and_non_numeric_epoch() {
+    // Epoch, no trailing `-N` revision → epoch stripped, version bare.
+    assert_eq!(normalize_cloudsmith_version("1:0.9.1"), "0.9.1");
+    assert_eq!(normalize_cloudsmith_version("10:2.0.0"), "2.0.0");
+    // A non-numeric segment before `:` is NOT an epoch — keep it verbatim so a
+    // colon-bearing non-version string is never silently truncated.
+    assert_eq!(normalize_cloudsmith_version("v1:2.0.0"), "v1:2.0.0");
+    // Empty epoch (`:x`) is not a valid epoch either.
+    assert_eq!(normalize_cloudsmith_version(":0.9.1"), ":0.9.1");
+}
+
+// keep >= the number of DISTINCT versions present prunes nothing (every
+// version fits within the retention window).
+#[test]
+fn prune_keep_ge_distinct_count_deletes_nothing() {
+    let entries = vec![
+        entry("s-090", "0.9.0", "2026-06-13T00:00:00Z"),
+        entry("s-080", "0.8.0", "2026-06-12T00:00:00Z"),
+    ];
+    // Two distinct versions, keep 2 → nothing pruned.
+    assert!(select_versions_to_prune(&entries, 2, "0.9.0").is_empty());
+    // keep well above the count is also a no-op.
+    assert!(select_versions_to_prune(&entries, 99, "0.9.0").is_empty());
+    // An empty entry set is trivially a no-op regardless of keep.
+    assert!(select_versions_to_prune(&[], 3, "1.0.0").is_empty());
+}
+
+// The shared comparator ranks distinct normalized versions newest-first
+// (semver descending) and groups every format of a version into one bucket.
+#[test]
+fn rank_distinct_versions_desc_orders_and_buckets() {
+    let entries = vec![
+        entry("deb-091", "1:0.9.1-1", "2026-06-13T00:00:00Z"),
+        entry("apk-091", "0.9.1-r1", "2026-06-13T00:00:00Z"),
+        entry("bare-100", "1.0.0", "2026-07-01T00:00:00Z"),
+        entry("bare-090", "0.9.0", "2026-05-01T00:00:00Z"),
+    ];
+    let (order, buckets) = rank_distinct_versions_desc(&entries);
+    // Semver descending: 1.0.0, 0.9.1, 0.9.0.
+    assert_eq!(order, vec!["1.0.0", "0.9.1", "0.9.0"]);
+    // Both 0.9.1 formats collapse into one bucket.
+    assert_eq!(buckets.get("0.9.1").map(|b| b.len()), Some(2));
+    assert_eq!(buckets.get("1.0.0").map(|b| b.len()), Some(1));
+}
+
 #[test]
 fn test_cloudsmith_skips_when_no_config() {
     let config = Config::default();

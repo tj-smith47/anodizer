@@ -1340,6 +1340,282 @@ fn resolve_winget_description_empty_when_nothing_configured() {
     );
 }
 
+// -----------------------------------------------------------------------
+// installer_type_for — (format stamp, `use` selector) → winget InstallerType
+// -----------------------------------------------------------------------
+
+/// The `format` stamp wins when present: `msi` maps to `msi` unless the `use`
+/// selector nominates `wix` (both are Windows Installer packages, but winget
+/// distinguishes the authoring toolchain).
+#[test]
+fn installer_type_for_format_stamp_precedence() {
+    assert_eq!(installer_type_for(Some("msi"), None), "msi");
+    assert_eq!(installer_type_for(Some("msi"), Some("wix")), "wix");
+    // A non-wix `use` selector does not demote a real MSI stamp.
+    assert_eq!(installer_type_for(Some("msi"), Some("exe")), "msi");
+    assert_eq!(installer_type_for(Some("nsis"), None), "nsis");
+    assert_eq!(installer_type_for(Some("exe"), None), "exe");
+    // An unrecognized format stamp falls through to the `use`-selector arm.
+    assert_eq!(installer_type_for(Some("weird"), Some("nsis")), "nsis");
+}
+
+/// With no `format` stamp the `use` selector routes the type; a fully-absent
+/// pair defaults to `msi` (the artifact is `ArtifactKind::Installer`, so it is
+/// one of the installer kinds).
+#[test]
+fn installer_type_for_falls_back_to_use_selector() {
+    assert_eq!(installer_type_for(None, Some("wix")), "wix");
+    assert_eq!(installer_type_for(None, Some("nsis")), "nsis");
+    assert_eq!(installer_type_for(None, Some("exe")), "exe");
+    assert_eq!(installer_type_for(None, Some("msi")), "msi");
+    assert_eq!(installer_type_for(None, None), "msi");
+    assert_eq!(installer_type_for(None, Some("unknown")), "msi");
+}
+
+// -----------------------------------------------------------------------
+// is_executable_installer_type — which types get a silent switch
+// -----------------------------------------------------------------------
+
+/// Only real installer programs (`msi`/`wix`/`exe`/`nsis`) are "executable";
+/// `zip`/`portable` archives winget unpacks itself are not.
+#[test]
+fn is_executable_installer_type_matrix() {
+    for t in ["msi", "wix", "exe", "nsis"] {
+        assert!(
+            is_executable_installer_type(t),
+            "{t} should be an executable installer type"
+        );
+    }
+    for t in ["zip", "portable", "", "msix"] {
+        assert!(
+            !is_executable_installer_type(t),
+            "{t} must NOT be an executable installer type"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// auto_package_identifier — <publisher-without-spaces>.<name>
+// -----------------------------------------------------------------------
+
+/// The auto-id strips every space from the publisher (winget ids forbid
+/// whitespace) but leaves the package name untouched.
+#[test]
+fn auto_package_identifier_strips_publisher_spaces() {
+    assert_eq!(auto_package_identifier("My Org", "mytool"), "MyOrg.mytool");
+    assert_eq!(
+        auto_package_identifier("Acme Co", "widget"),
+        "AcmeCo.widget"
+    );
+    assert_eq!(auto_package_identifier("Acme", "widget"), "Acme.widget");
+    assert_eq!(
+        auto_package_identifier("A B C Corp", "tool"),
+        "ABCCorp.tool"
+    );
+}
+
+// -----------------------------------------------------------------------
+// static_package_identifier — context-free id resolution
+// -----------------------------------------------------------------------
+
+/// An explicit `package_identifier` with no template syntax is returned
+/// verbatim; one carrying `{{` is unresolvable without a context → `None`.
+#[test]
+fn static_package_identifier_explicit_and_templated() {
+    let explicit = anodizer_core::config::WingetConfig {
+        package_identifier: Some("Acme.Widget".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        static_package_identifier("widget", &explicit),
+        Some("Acme.Widget".to_string())
+    );
+
+    let templated = anodizer_core::config::WingetConfig {
+        package_identifier: Some("Acme.{{ .ProjectName }}".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(static_package_identifier("widget", &templated), None);
+}
+
+/// With no explicit id, the auto-derivation combines the publisher and the
+/// name (falling back to the crate name); a templated name/publisher, or a
+/// missing repository owner with no publisher, yields `None`.
+#[test]
+fn static_package_identifier_auto_derivation() {
+    // Explicit publisher + explicit name.
+    let cfg = anodizer_core::config::WingetConfig {
+        publisher: Some("Acme Co".to_string()),
+        name: Some("widget".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        static_package_identifier("crate-x", &cfg),
+        Some("AcmeCo.widget".to_string())
+    );
+
+    // Publisher set, name falls back to crate_name.
+    let cfg = anodizer_core::config::WingetConfig {
+        publisher: Some("Acme".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        static_package_identifier("crate-x", &cfg),
+        Some("Acme.crate-x".to_string())
+    );
+
+    // Publisher falls back to the repository owner when unset.
+    let cfg = anodizer_core::config::WingetConfig {
+        name: Some("widget".to_string()),
+        repository: Some(anodizer_core::config::RepositoryConfig {
+            owner: Some("acme".to_string()),
+            name: Some("winget-pkgs-fork".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        static_package_identifier("crate-x", &cfg),
+        Some("acme.widget".to_string())
+    );
+
+    // A templated name is unresolvable context-free → None.
+    let cfg = anodizer_core::config::WingetConfig {
+        publisher: Some("Acme".to_string()),
+        name: Some("{{ .ProjectName }}".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(static_package_identifier("crate-x", &cfg), None);
+
+    // No publisher AND no repository → nothing to derive from → None.
+    let cfg = anodizer_core::config::WingetConfig {
+        name: Some("widget".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(static_package_identifier("crate-x", &cfg), None);
+}
+
+// -----------------------------------------------------------------------
+// resolve_winget_release_date — YYYY-MM-DD from the template `Date` var
+// -----------------------------------------------------------------------
+
+fn ctx_with_date(date: Option<&str>) -> anodizer_core::context::Context {
+    let mut ctx = anodizer_core::context::Context::new(
+        anodizer_core::config::Config::default(),
+        anodizer_core::context::ContextOptions::default(),
+    );
+    if let Some(d) = date {
+        ctx.template_vars_mut().set("Date", d);
+    }
+    ctx
+}
+
+/// A valid RFC-3339 `Date` yields the leading `YYYY-MM-DD`; a malformed or
+/// missing value yields `None` (the manifest omits `ReleaseDate`).
+#[test]
+fn resolve_winget_release_date_extracts_or_omits() {
+    let ctx = ctx_with_date(Some("2026-07-18T12:34:56Z"));
+    assert_eq!(
+        resolve_winget_release_date(&ctx),
+        Some("2026-07-18".to_string())
+    );
+
+    // A bare date (already YYYY-MM-DD) passes through.
+    let ctx = ctx_with_date(Some("2025-01-02"));
+    assert_eq!(
+        resolve_winget_release_date(&ctx),
+        Some("2025-01-02".to_string())
+    );
+
+    // Malformed: no hyphens at positions 4/7 → None.
+    let ctx = ctx_with_date(Some("not-a-real-date"));
+    assert_eq!(resolve_winget_release_date(&ctx), None);
+
+    // Too short to carry a full date → None.
+    let ctx = ctx_with_date(Some("2026"));
+    assert_eq!(resolve_winget_release_date(&ctx), None);
+
+    // Absent Date var → None.
+    let ctx = ctx_with_date(None);
+    assert_eq!(resolve_winget_release_date(&ctx), None);
+}
+
+// -----------------------------------------------------------------------
+// resolve_winget_moniker — override → single-binary derivation → None
+// -----------------------------------------------------------------------
+
+fn add_windows_binary(
+    ctx: &mut anodizer_core::context::Context,
+    crate_name: &str,
+    binary: &str,
+    target: &str,
+) {
+    let mut meta = std::collections::HashMap::new();
+    meta.insert("binary".to_string(), binary.to_string());
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::Binary,
+        path: std::path::PathBuf::from(format!("/dist/{binary}.exe")),
+        name: format!("{binary}.exe"),
+        target: Some(target.to_string()),
+        crate_name: crate_name.to_string(),
+        metadata: meta,
+        size: None,
+    });
+}
+
+/// An explicit `winget.moniker` override always wins, even when multiple
+/// binaries would otherwise force omission.
+#[test]
+fn resolve_winget_moniker_override_wins() {
+    let mut ctx = anodizer_core::context::Context::new(
+        anodizer_core::config::Config::default(),
+        anodizer_core::context::ContextOptions::default(),
+    );
+    add_windows_binary(&mut ctx, "app", "one", "x86_64-pc-windows-msvc");
+    add_windows_binary(&mut ctx, "app", "two", "aarch64-pc-windows-msvc");
+    let cfg = anodizer_core::config::WingetConfig {
+        moniker: Some("rg".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_winget_moniker(&ctx, "app", &cfg),
+        Some("rg".to_string())
+    );
+}
+
+/// With exactly one distinct windows binary name and no override, the moniker
+/// derives to that binary; multiple distinct names or none → `None` (winget
+/// treats the Moniker as the invoke alias, ambiguous when >1 binary).
+#[test]
+fn resolve_winget_moniker_derives_single_and_omits_ambiguous() {
+    let cfg = anodizer_core::config::WingetConfig::default();
+    let new_ctx = || {
+        anodizer_core::context::Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        )
+    };
+
+    // One binary (across two arches, same name) → derives that name.
+    let mut ctx = new_ctx();
+    add_windows_binary(&mut ctx, "app", "app", "x86_64-pc-windows-msvc");
+    add_windows_binary(&mut ctx, "app", "app", "aarch64-pc-windows-msvc");
+    assert_eq!(
+        resolve_winget_moniker(&ctx, "app", &cfg),
+        Some("app".to_string())
+    );
+
+    // Two DISTINCT binary names → ambiguous → None.
+    let mut ctx = new_ctx();
+    add_windows_binary(&mut ctx, "app", "one", "x86_64-pc-windows-msvc");
+    add_windows_binary(&mut ctx, "app", "two", "x86_64-pc-windows-msvc");
+    assert_eq!(resolve_winget_moniker(&ctx, "app", &cfg), None);
+
+    // No windows binaries at all → None.
+    let ctx = new_ctx();
+    assert_eq!(resolve_winget_moniker(&ctx, "app", &cfg), None);
+}
+
 // =====================================================================
 // LIVE push + PR flow — drives `publish_to_winget` / `submit_winget_pr`
 // against a local bare git repo (no network), forcing the GitHub REST

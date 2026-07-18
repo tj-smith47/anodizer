@@ -2122,3 +2122,159 @@ fn resolve_aur_credentials_renders_templates() {
     assert_eq!(ssh.as_deref(), Some("ssh -i /run/k"));
     assert!(!pk.unwrap().contains("{{"));
 }
+
+// -----------------------------------------------------------------------
+// aur_license_array — SPDX expression → pacman license=() entries
+// -----------------------------------------------------------------------
+
+/// An empty or whitespace-only license yields an empty array so the template
+/// emits a bare `license=()` (never `license=('')`, which namcap lints).
+#[test]
+fn aur_license_array_empty_and_blank_yield_empty() {
+    assert!(aur_license_array("").is_empty());
+    assert!(aur_license_array("   ").is_empty());
+    assert!(aur_license_array("\t\n").is_empty());
+}
+
+/// A single SPDX id renders as a one-element array carrying that id verbatim.
+#[test]
+fn aur_license_array_single_id() {
+    assert_eq!(aur_license_array("MIT"), vec!["MIT".to_string()]);
+    assert_eq!(
+        aur_license_array("Apache-2.0"),
+        vec!["Apache-2.0".to_string()]
+    );
+}
+
+/// A disjunction (`OR`) and the legacy slash form both split into one entry
+/// per SPDX id, in source order — the modern-AUR multi-id convention.
+#[test]
+fn aur_license_array_splits_disjunction_and_slash() {
+    assert_eq!(
+        aur_license_array("MIT OR Apache-2.0"),
+        vec!["MIT".to_string(), "Apache-2.0".to_string()]
+    );
+    assert_eq!(
+        aur_license_array("MIT/Apache-2.0"),
+        vec!["MIT".to_string(), "Apache-2.0".to_string()]
+    );
+}
+
+/// A conjunction (`AND`) also splits per id (each is a distinct license the
+/// package is under).
+#[test]
+fn aur_license_array_splits_conjunction() {
+    assert_eq!(
+        aur_license_array("Apache-2.0 AND MIT"),
+        vec!["Apache-2.0".to_string(), "MIT".to_string()]
+    );
+}
+
+/// A `WITH` exception names a single license and is kept literal — it must
+/// NOT be split on the embedded whitespace into a bogus multi-id array.
+#[test]
+fn aur_license_array_keeps_with_exception_literal() {
+    assert_eq!(
+        aur_license_array("Apache-2.0 WITH LLVM-exception"),
+        vec!["Apache-2.0 WITH LLVM-exception".to_string()]
+    );
+}
+
+// -----------------------------------------------------------------------
+// aur_extra_install_lines — package() LICENSE/man/completion install lines
+// -----------------------------------------------------------------------
+
+use anodizer_core::config::{
+    ArchiveConfig, ArchivesConfig, CompletionsConfig, CrateConfig as CfgCrateConfig, ManpagesConfig,
+};
+
+fn crate_cfg_with_archives(archives: ArchivesConfig) -> CfgCrateConfig {
+    CfgCrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        archives,
+        ..Default::default()
+    }
+}
+
+/// With no archives config the only extra line is the REQUIRED LICENSE
+/// install — no man/completion lines are emitted for a crate that ships none.
+#[test]
+fn aur_extra_install_lines_license_only_without_archives() {
+    let cfg = crate_cfg_with_archives(ArchivesConfig::default());
+    let lines = aur_extra_install_lines(&cfg, "mytool");
+    assert_eq!(lines.len(), 1, "expected only the LICENSE line: {lines:?}");
+    assert!(
+        lines[0].contains("usr/share/licenses/$pkgname/"),
+        "LICENSE line missing: {lines:?}"
+    );
+    // No man/completion destinations leak in.
+    assert!(!lines.iter().any(|l| l.contains("man/man1")));
+    assert!(!lines.iter().any(|l| l.contains("completion")));
+}
+
+/// A completions block scoped to only `bash` emits the bash completion line
+/// but NOT zsh/fish — the shell subset is honored exactly.
+#[test]
+fn aur_extra_install_lines_only_selected_shell() {
+    let archives = ArchivesConfig::Configs(vec![ArchiveConfig {
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ ArtifactPath }} completions {{ Shell }}".to_string()),
+            shells: Some(vec!["bash".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }]);
+    let cfg = crate_cfg_with_archives(archives);
+    let lines = aur_extra_install_lines(&cfg, "mytool");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("usr/share/bash-completion/completions/mytool")),
+        "bash completion line missing: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("usr/share/zsh/site-functions")),
+        "zsh line must be absent when only bash is selected: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("vendor_completions.d")),
+        "fish line must be absent when only bash is selected: {lines:?}"
+    );
+}
+
+/// A manpages block with a real generation mode emits the man-install line;
+/// a completions/manpages block left in `GenMode::None` (no mode field set)
+/// emits nothing beyond the LICENSE line.
+#[test]
+fn aur_extra_install_lines_manpages_present_but_none_mode_skipped() {
+    // Man mode set → man line present.
+    let with_man = crate_cfg_with_archives(ArchivesConfig::Configs(vec![ArchiveConfig {
+        manpages: Some(ManpagesConfig {
+            generate: Some("{{ ArtifactPath }} man".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }]));
+    let lines = aur_extra_install_lines(&with_man, "mytool");
+    assert!(
+        lines.iter().any(|l| l.contains("usr/share/man/man1/")),
+        "man install line missing when manpages.generate set: {lines:?}"
+    );
+
+    // Empty (no-mode) completions + manpages blocks → GenMode::None → skipped.
+    let none_mode = crate_cfg_with_archives(ArchivesConfig::Configs(vec![ArchiveConfig {
+        completions: Some(CompletionsConfig::default()),
+        manpages: Some(ManpagesConfig::default()),
+        ..Default::default()
+    }]));
+    let lines = aur_extra_install_lines(&none_mode, "mytool");
+    assert_eq!(
+        lines.len(),
+        1,
+        "GenMode::None blocks must emit only the LICENSE line: {lines:?}"
+    );
+    assert!(lines[0].contains("usr/share/licenses/$pkgname/"));
+}
