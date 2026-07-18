@@ -232,11 +232,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # A run cancelled or runner-lost between the tag push and advance-master
-      # leaves the bump commit reachable only through its tag (advance-master's
-      # `if:` skips silently on cancellation). Tagging again from pre-bump
-      # master recomputes the same version and dies on a bare non-fast-forward
-      # tag push, so detect the orphaned tag first and name the reconcile step.
+      # advance-master fast-forwards master onto the tag's bump-writeback commit
+      # AFTER publish; a run cancelled/failed before that step (or master moving
+      # in between) leaves the writeback reachable only through its tag. master
+      # enforces required_linear_history + non_fast_forward, so a stranded
+      # writeback can be neither merged nor force-reconciled onto master — the
+      # only safe recovery is to cut forward. That is valid IFF master has
+      # advanced past the tag's parent with new commits: a higher version cuts,
+      # never colliding with the existing tag, and the tag's feature commits are
+      # already present (only the mechanical writeback diverged, and it
+      # regenerates on the next cut). If master still sits at the tag's pre-bump
+      # parent, re-cutting recomputes the SAME version and dies on a bare
+      # non-fast-forward tag push — that case must still block for a hand
+      # reconcile.
       - name: Guard against a stranded bump commit
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
         run: |
@@ -246,10 +254,17 @@ jobs:
             exit 0
           fi
           sha="$(git rev-parse "${latest}^{commit}")"
-          if ! git merge-base --is-ancestor "$sha" HEAD; then
-            echo "::error::release tag ${latest} (${sha}) is not an ancestor of ${RELEASE_REF}: a prior run was cancelled between the tag push and advance-master, stranding the bump commit. Reconcile with: git push origin ${sha}:refs/heads/${RELEASE_REF}  — then re-run this workflow."
-            exit 1
+          if git merge-base --is-ancestor "$sha" HEAD; then
+            exit 0
           fi
+          parent="$(git rev-parse "${sha}^" 2>/dev/null || echo '')"
+          if [ -n "$parent" ] && git merge-base --is-ancestor "$parent" HEAD \
+             && [ "$(git rev-list --count "${parent}..HEAD")" -gt 0 ]; then
+            echo "::warning::release tag ${latest} bump-writeback (${sha}) is not on ${RELEASE_REF}: its advance-master step was skipped, but ${RELEASE_REF} has advanced past the tag's parent by $(git rev-list --count "${parent}..HEAD") commit(s). The tag's feature content is present and a new, higher version will be cut. Proceeding."
+            exit 0
+          fi
+          echo "::error::release tag ${latest} (${sha}) is not an ancestor of ${RELEASE_REF} and ${RELEASE_REF} has not advanced past the tag's parent: a prior run stranded the bump commit. Reconcile with: git push origin ${sha}:refs/heads/${RELEASE_REF}  — then re-run this workflow."
+          exit 1
 
       - name: Auto-tag release
         id: autotag
