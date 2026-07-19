@@ -238,11 +238,17 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     };
 
     // Collapse target triples to the installer's `os-arch` key vocabulary.
-    // Arch-specific assets are inserted first (first-writer-wins within them
-    // is unambiguous — only `all` could alias two triples onto one key);
-    // universal (`all`) assets then fan out into any amd64/arm64 keys still
-    // missing, since no `uname -m` can ever produce "all".
-    let mut arms: BTreeMap<String, String> = BTreeMap::new();
+    // Several triples can alias onto one key: two libc/ABI variants of the same
+    // os+arch (`*-linux-gnu` and `*-linux-musl` both key `linux-amd64`), and the
+    // `all` universal fanning into amd64/arm64. The installer detects only OS +
+    // arch — it has no libc probe — so exactly one asset can answer each key.
+    // [`record_arm`] resolves every collision by [`installer_arm_rank`] (lower
+    // wins) rather than first-writer-wins, so the choice is order-independent
+    // and a libc variant is never silently dropped by iteration order. Universal
+    // (`all`) assets carry the worst rank: they only fill amd64/arm64 keys no
+    // real arch-specific build claimed, since no `uname -m` can ever produce
+    // "all".
+    let mut arms: BTreeMap<String, (u8, String)> = BTreeMap::new();
     let mut released_os: BTreeSet<String> = BTreeSet::new();
     let mut released_arch: BTreeSet<String> = BTreeSet::new();
     for (target, asset) in &assets {
@@ -252,8 +258,12 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         }
         released_os.insert(os.clone());
         released_arch.insert(arch.clone());
-        arms.entry(format!("{os}-{arch}"))
-            .or_insert_with(|| asset.asset_name.clone());
+        record_arm(
+            &mut arms,
+            format!("{os}-{arch}"),
+            installer_arm_rank(target),
+            &asset.asset_name,
+        );
     }
     for (target, asset) in &assets {
         let (os, arch) = map_target(target);
@@ -263,8 +273,12 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         released_os.insert(os.clone());
         for cpu in ["amd64", "arm64"] {
             released_arch.insert(cpu.to_string());
-            arms.entry(format!("{os}-{cpu}"))
-                .or_insert_with(|| asset.asset_name.clone());
+            record_arm(
+                &mut arms,
+                format!("{os}-{cpu}"),
+                RANK_UNIVERSAL,
+                &asset.asset_name,
+            );
         }
     }
 
@@ -307,7 +321,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
 
     let lines: Vec<String> = arms
         .iter()
-        .map(|(key, asset)| format!("    {key})\n        ARCHIVE=\"{asset}\"\n        ;;"))
+        .map(|(key, (_, asset))| format!("    {key})\n        ARCHIVE=\"{asset}\"\n        ;;"))
         .collect();
     Ok(InstallerCases {
         asset_cases: lines.join("\n"),
@@ -326,6 +340,46 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
         .map(|(pattern, token)| format!("        {pattern}) echo \"{token}\" ;;"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Rank the `all` universal asset when it fans out onto an `amd64`/`arm64`
+/// key: strictly worse than any real arch-specific build ([`installer_arm_rank`]
+/// tops out at 1), so a universal only fills a key no native build claimed —
+/// the arch-specific-wins precedence a `curl | sh` user relies on.
+const RANK_UNIVERSAL: u8 = 2;
+
+/// Preference rank (lower wins) for the asset that answers an `os-arch`
+/// installer arm when two release targets collapse onto the same key.
+///
+/// The generated installer keys only on OS + arch — it carries no libc probe —
+/// so when a release ships both a gnu and a musl build of one os+arch, exactly
+/// one asset can serve the shared arm. A statically-linked musl binary runs on
+/// BOTH glibc and musl hosts, whereas a glibc binary fails on musl; preferring
+/// musl therefore hands every host a binary that works, and — being a fixed
+/// rule rather than iteration order — makes the choice deterministic instead of
+/// silently dropping whichever libc a map happened to visit second. Every other
+/// ABI (gnu, msvc, darwin, …) shares rank 1; a residual tie holds the incumbent,
+/// which is the lexicographically-smaller target (assets arrive in sorted-target
+/// order), so single-variant output is byte-identical to before.
+fn installer_arm_rank(target: &str) -> u8 {
+    if target.contains("musl") { 0 } else { 1 }
+}
+
+/// Record `asset` under `key`, keeping the lowest-ranked asset when several
+/// release targets collapse onto one `os-arch` key. Replaces first-writer-wins
+/// (which silently dropped a libc variant by iteration order) with a
+/// deterministic, order-independent choice; an equal-rank collision keeps the
+/// incumbent.
+fn record_arm(arms: &mut BTreeMap<String, (u8, String)>, key: String, rank: u8, asset: &str) {
+    match arms.entry(key) {
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert((rank, asset.to_string()));
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot) if rank < slot.get().0 => {
+            slot.insert((rank, asset.to_string()));
+        }
+        std::collections::btree_map::Entry::Occupied(_) => {}
+    }
 }
 
 /// The crate whose primary archive the remote installer downloads: the crate
@@ -761,6 +815,64 @@ mod tests {
             arms.get("darwin-arm64").map(String::as_str),
             Some("anodizer-0.13.0-darwin-arm64.tar.gz"),
             "the arch-specific asset wins its own key over the universal"
+        );
+    }
+
+    /// A release shipping BOTH a gnu and a musl build for the same os+arch
+    /// (two distinct assets, one shared `os-arch` installer key) must not
+    /// silently drop a libc: the generated installer detects only OS + arch, so
+    /// exactly one asset answers the `linux-amd64` arm, and it must be the
+    /// statically-linked musl build (runs on glibc AND musl hosts) — chosen by
+    /// rule, independent of target iteration order.
+    #[test]
+    fn gnu_and_musl_same_arch_prefers_static_musl() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+
+        assert_eq!(
+            arms.len(),
+            1,
+            "both libcs collapse onto the single linux-amd64 key: {arms:?}"
+        );
+        assert_eq!(
+            arms.get("linux-amd64").map(String::as_str),
+            Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
+            "the static musl build must win the shared linux-amd64 arm, not be dropped"
+        );
+    }
+
+    /// The same libc collision, but with the installer crate reachable only
+    /// through `workspaces[].crates[]` (the per-crate config mode) instead of
+    /// top-level `crates:` — the musl-first resolution must hold there too,
+    /// since the collapse operates on the derived asset map regardless of which
+    /// config mode surfaced the crate.
+    #[test]
+    fn gnu_and_musl_collision_resolves_under_workspaces_config() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]);
+        let moved: Vec<CrateConfig> = ctx.config.crates.drain(..).collect();
+        ctx.config.workspaces = Some(vec![crate::config::WorkspaceConfig {
+            name: "cli".to_string(),
+            crates: moved,
+            ..Default::default()
+        }]);
+
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+        assert_eq!(
+            arms.get("linux-amd64").map(String::as_str),
+            Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
+            "per-crate (workspaces) config must resolve the libc collision musl-first too"
         );
     }
 
