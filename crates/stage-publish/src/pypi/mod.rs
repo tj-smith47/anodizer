@@ -22,6 +22,7 @@
 
 pub(crate) mod oidc;
 pub(crate) mod pep;
+mod preflight;
 pub mod publisher;
 pub(crate) mod sdist;
 pub(crate) mod upload;

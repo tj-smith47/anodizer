@@ -14,11 +14,14 @@
 //! packages and pushes to the configured registry (default
 //! `https://registry.npmjs.org`).
 
+mod auth;
 mod manifest;
 mod optional_deps;
+mod platform_render;
 mod promote;
 pub mod publish;
 pub mod publisher;
+mod staging;
 
 #[cfg(test)]
 mod tests;
