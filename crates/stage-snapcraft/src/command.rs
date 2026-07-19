@@ -1,3 +1,16 @@
+use std::time::Duration;
+
+/// Wall-clock bound on a single `snapcraft upload` or `snapcraft release`
+/// attempt. A Snap Store round-trip that stalls (unreachable store, hung TLS
+/// handshake, a snapcraft prompt blocking on stdin) would otherwise hang the
+/// entire release or promote forever. Sized generously for a multi-MB snap on
+/// a slow link; on expiry the whole snapcraft process subtree is killed.
+pub const SNAPCRAFT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wall-clock bound on a `snapcraft list-revisions` / `snapcraft whoami` probe.
+/// A probe only reads a small table, so a much shorter bound suffices.
+pub const SNAPCRAFT_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+
 // ---------------------------------------------------------------------------
 // snapcraft_command
 // ---------------------------------------------------------------------------
@@ -134,6 +147,108 @@ pub fn snap_revision_for_version(
         })
         .max()
         .map(|r| r.to_string())
+}
+
+/// Parse `snapcraft list-revisions` output and return the numerically highest
+/// revision of `version` **for each distinct architecture** present in the
+/// table. A dual-arch snap mints one revision per arch per version, so a
+/// store-wide `promote --version` must release every arch's revision rather
+/// than a single global maximum (which would leave the lower-numbered arch on
+/// the source channel). Revisions are returned ascending and de-duplicated.
+pub fn snap_revisions_for_version_by_arch(output: &str, version: &str) -> Vec<String> {
+    revisions_by_arch(output, |cols, version_col, _chan_col| {
+        cols.get(version_col).is_some_and(|v| *v == version)
+    })
+}
+
+/// Parse `snapcraft list-revisions` output and return the numerically highest
+/// revision currently released into `channel` **for each distinct
+/// architecture**. The store-wide `promote --newest`/default path releases
+/// every arch sitting on the source channel, not just the single highest
+/// revision across all arches. Revisions are returned ascending and
+/// de-duplicated.
+pub fn snap_newest_revisions_in_channel_by_arch(output: &str, channel: &str) -> Vec<String> {
+    revisions_by_arch(output, |cols, _version_col, chan_col| {
+        row_occupies_channel(cols, chan_col, channel)
+    })
+}
+
+/// Group `list-revisions` rows by their `Arches` column, keep the numerically
+/// highest revision per arch whose row satisfies `keep`, and return those
+/// revisions ascending + de-duplicated. Rows with an unparseable revision or a
+/// missing arch cell are ignored. The `keep` predicate receives the row's
+/// columns plus the resolved `Version`/`Channels` column indices so a caller
+/// can match on either without re-locating the header.
+fn revisions_by_arch(output: &str, keep: impl Fn(&[&str], usize, usize) -> bool) -> Vec<String> {
+    let Some((rows, arch_col)) = revision_table_column(output, "Arches") else {
+        return Vec::new();
+    };
+    let Some((_, rev_col)) = revision_table_column(output, "Rev") else {
+        return Vec::new();
+    };
+    // Version/Channels may be absent depending on the caller; default the
+    // index to `usize::MAX` so a `keep` closure that does not consult it never
+    // indexes a real cell.
+    let version_col = revision_table_column(output, "Version")
+        .map(|(_, c)| c)
+        .unwrap_or(usize::MAX);
+    let chan_col = revision_table_column(output, "Channels")
+        .map(|(_, c)| c)
+        .unwrap_or(usize::MAX);
+    let mut best_per_arch: std::collections::BTreeMap<String, u64> =
+        std::collections::BTreeMap::new();
+    for line in &rows {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if !keep(&cols, version_col, chan_col) {
+            continue;
+        }
+        let Some(arch) = cols.get(arch_col) else {
+            continue;
+        };
+        let Some(rev) = cols.get(rev_col).and_then(|r| r.parse::<u64>().ok()) else {
+            continue;
+        };
+        let entry = best_per_arch.entry(arch.to_string()).or_insert(0);
+        if rev > *entry {
+            *entry = rev;
+        }
+    }
+    let mut revisions: Vec<u64> = best_per_arch.into_values().collect();
+    revisions.sort_unstable();
+    revisions.dedup();
+    revisions.into_iter().map(|r| r.to_string()).collect()
+}
+
+/// Return `true` when a failed `snapcraft list-revisions` (or `release`)
+/// invocation's combined output says the snap is simply absent from the store
+/// — not yet registered or holding no revisions — as opposed to a genuine
+/// authentication / network / server fault. Promotion treats the absent case
+/// as "nothing to promote" (a skip) while surfacing every real fault honestly.
+///
+/// Matching is case-insensitive. Only the store's unambiguous
+/// snap-does-not-exist / no-revisions wording qualifies; an auth or
+/// connectivity error carries none of these markers and therefore stays a
+/// hard error.
+pub fn is_snap_absent_from_store(combined_output: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "not found in the snap store",
+        "could not find",
+        "has no revisions",
+        "no revisions available",
+        "no revisions for",
+        "is not registered",
+        "not registered in the store",
+        "you are not the publisher or collaborator",
+    ];
+    let lower = combined_output.to_ascii_lowercase();
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Construct the `snapcraft whoami` command used to probe whether a Snap Store
+/// session is available before dispatching a promotion. Non-interactive and
+/// side-effect-free — it only prints the logged-in account or errors.
+pub fn snapcraft_whoami_command() -> Vec<String> {
+    vec!["snapcraft".to_string(), "whoami".to_string()]
 }
 
 /// Parse `snapcraft list-revisions` output and return the numerically highest

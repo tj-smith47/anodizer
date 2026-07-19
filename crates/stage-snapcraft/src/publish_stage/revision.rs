@@ -167,6 +167,35 @@ pub(crate) fn find_colliding_revision(
     arch: &str,
     log: &StageLogger,
 ) -> Option<String> {
+    probe_revision_for_version(snap_name, version, arch, log)
+}
+
+/// After a successful upload/promotion, resolve the revision the Snap Store now
+/// lists for (`version`, `arch`) — the revision this run's artifact
+/// corresponds to — so it can be recorded in the run evidence for a later
+/// `promote --from-run`. Returns `None` when the probe cannot run or names no
+/// matching revision; the evidence then records the arch without a revision
+/// (the store version-map probe in verify-release still covers the landing
+/// check).
+pub(crate) fn resolve_recorded_revision(
+    snap_name: &str,
+    version: &str,
+    arch: &str,
+    log: &StageLogger,
+) -> Option<String> {
+    probe_revision_for_version(snap_name, version, arch, log)
+}
+
+/// Run `snapcraft list-revisions <name>` (bounded) and return the numerically
+/// highest revision whose `Version` and `Arches` columns match. Shared by the
+/// content-dedup collision lookup and the post-upload evidence capture. `None`
+/// on a probe that could not run, a non-zero exit, or no matching row.
+fn probe_revision_for_version(
+    snap_name: &str,
+    version: &str,
+    arch: &str,
+    log: &StageLogger,
+) -> Option<String> {
     let args = snapcraft_list_revisions_command(snap_name);
     let mut cmd = Command::new(&args[0]);
     cmd.args(&args[1..]);
@@ -179,8 +208,8 @@ pub(crate) fn find_colliding_revision(
     .ok()?;
     if !output.status.success() {
         log.debug(&format!(
-            "snapcraft list-revisions for '{snap_name}' exited non-zero while looking for a \
-             dedup-colliding revision; cannot identify it"
+            "snapcraft list-revisions for '{snap_name}' exited non-zero while resolving the \
+             revision for {version} ({arch}); cannot identify it"
         ));
         return None;
     }

@@ -293,6 +293,14 @@ pub struct SnapcraftTargetSnapshot {
     pub package_name: String,
     #[serde(default)]
     pub channel: Option<String>,
+    /// The snapcraft architecture this entry's revision was minted for
+    /// (`amd64`, `arm64`, …). A dual-arch snap mints one Snap Store revision
+    /// per architecture, so the evidence carries one entry per arch and a
+    /// `promote --from-run` releases every arch's recorded revision. `None`
+    /// on a planned-but-unprocessed snapshot or an older report predating the
+    /// per-arch model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     #[serde(default)]
     pub revision: Option<String>,
     /// The version this run uploaded, so post-publish verification can probe

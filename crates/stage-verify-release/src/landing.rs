@@ -352,6 +352,12 @@ fn check_snapcraft_landing(
     }
     let mut visible: Vec<String> = Vec::new();
     let mut probed = 0usize;
+    // A dual-arch snap records one evidence entry per architecture, but the
+    // store channel-map probe is arch-independent (it asks whether a version
+    // is live in a channel), so probing every arch entry would query the same
+    // listing twice. Collapse to one probe per (package, version, channel).
+    let mut seen: std::collections::HashSet<(String, String, Option<String>)> =
+        std::collections::HashSet::new();
     for t in targets {
         // Pre-`version` snapshots (older runs replayed via --from-run) carry
         // no version to look for — nothing honest to probe.
@@ -362,6 +368,13 @@ fn check_snapcraft_landing(
             ));
             continue;
         };
+        if !seen.insert((
+            t.package_name.clone(),
+            version.to_string(),
+            t.channel.clone(),
+        )) {
+            continue;
+        }
         probed += 1;
         let coords = format!("{} {version}", t.package_name);
         match (probes.snap_channel_map)(&t.package_name, version, t.channel.as_deref()) {
@@ -941,6 +954,7 @@ mod tests {
                     crate_name: name.to_string(),
                     package_name: name.to_string(),
                     channel: channel.map(|c| c.to_string()),
+                    arch: None,
                     revision: None,
                     version: Some(version.to_string()),
                     held_for_review: *held,
@@ -1071,6 +1085,7 @@ mod tests {
                     crate_name: "demo".to_string(),
                     package_name: "demo".to_string(),
                     channel: Some("stable".to_string()),
+                    arch: None,
                     revision: None,
                     version: None,
                     held_for_review: false,

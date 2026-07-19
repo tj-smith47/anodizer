@@ -103,6 +103,10 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
                 crate_name: krate.name.clone(),
                 package_name,
                 channel,
+                // Planned (pre-upload) snapshot has no arch/revision yet; the
+                // upload loop stamps one per-arch entry with its minted
+                // revision, cloning this base's channel/version.
+                arch: None,
                 revision: None,
                 // Empty when the Version template var is unpopulated (e.g. a
                 // bare test context) — an empty string is not a probeable

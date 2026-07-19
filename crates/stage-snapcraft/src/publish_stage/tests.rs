@@ -1010,8 +1010,8 @@ fn run_uploads_no_configured_publishers_returns_not_attempted() {
     let log = ctx.logger("snapcraft-publish");
     let crates = vec![krate];
     let skip_decisions = vec![false];
-    let mut targets = Vec::new();
-    let outcome = run_uploads(&ctx, &crates, &[], &skip_decisions, &log, &mut targets);
+    let planned = Vec::new();
+    let outcome = run_uploads(&ctx, &crates, &[], &skip_decisions, &log, &planned);
     assert!(!outcome.attempted, "publish:false → no attempted upload");
     assert_eq!(
         outcome.skipped_already_published, 0,
@@ -2210,6 +2210,136 @@ fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
         "one arch skipped + one arch uploaded is still an overall \
              success, got: {:?}",
         snap.outcome
+    );
+}
+
+// -----------------------------------------------------------------
+// Per-arch revision recording — a fresh dual-arch upload must record ONE
+// evidence entry per architecture, each carrying that arch's minted Snap
+// Store revision, so a later `promote --from-run` can release every arch.
+// Before the fix the evidence recorded `revision: None` and one entry per
+// config, making `--from-run` a dead selector for multi-arch snaps.
+// The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
+// -----------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn fresh_dual_arch_upload_records_a_revision_per_arch() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    // A minimal Snap Store simulation: `upload` mints an incrementing
+    // revision for the arch in the snap path and appends it to a state file;
+    // `list-revisions` prints that state. So the post-upload evidence probe
+    // resolves each arch's own freshly-minted revision.
+    let state_dir = tempfile::TempDir::new().unwrap();
+    let state = state_dir.path().join("revs");
+    let count = state_dir.path().join("count");
+    std::fs::write(&state, "").unwrap();
+    std::fs::write(&count, "0").unwrap();
+
+    let tools = FakeToolDir::new();
+    tools
+        .tool("snapcraft")
+        .script(format!(
+            "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Rev  Uploaded              Arches  Version  Channels\"\n\
+                 cat {state} 2>/dev/null\n\
+                 exit 0\n\
+                 elif [ \"$1\" = \"upload\" ]; then\n\
+                 n=$(cat {count}); n=$((n+1)); echo \"$n\" > {count}\n\
+                 case \"$2\" in\n\
+                   *arm64*) a=arm64;;\n\
+                   *) a=amd64;;\n\
+                 esac\n\
+                 echo \"$n  2026-07-01T00:00:00Z  $a  1.0.0  stable\" >> {state}\n\
+                 exit 0\n\
+                 fi\n\
+                 exit 1\n",
+            state = state.display(),
+            count = count.display(),
+        ))
+        .install();
+    let _path = tools.activate();
+
+    let config = anodizer_core::config::Config {
+        project_name: "demo".to_string(),
+        crates: vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            snapcrafts: Some(vec![anodizer_core::config::SnapcraftConfig {
+                name: Some("demo".to_string()),
+                publish: Some(true),
+                channel_templates: Some(vec!["stable".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Snap,
+        name: String::new(),
+        path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Snap,
+        name: String::new(),
+        path: PathBuf::from("/tmp/dist/demo_1.0.0_arm64.snap"),
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    SnapcraftPublishStage
+        .run(&mut ctx)
+        .expect("stage return stays Ok");
+
+    let snap = ctx
+        .publish_report()
+        .expect("report present")
+        .results
+        .iter()
+        .find(|r| r.name == "snapcraft")
+        .expect("snapcraft entry recorded")
+        .clone();
+    assert_eq!(snap.outcome, PublisherOutcome::Succeeded);
+    let targets: Vec<SnapcraftTarget> = match &snap.evidence.as_ref().expect("evidence").extra {
+        anodizer_core::PublishEvidenceExtra::Snapcraft(e) => e.snapcraft_targets.clone(),
+        other => panic!("wrong extra variant: {other:?}"),
+    };
+    assert_eq!(
+        targets.len(),
+        2,
+        "one evidence entry per architecture: {targets:?}"
+    );
+    let amd = targets
+        .iter()
+        .find(|t| t.arch.as_deref() == Some("amd64"))
+        .expect("amd64 entry");
+    let arm = targets
+        .iter()
+        .find(|t| t.arch.as_deref() == Some("arm64"))
+        .expect("arm64 entry");
+    assert_eq!(
+        amd.revision.as_deref(),
+        Some("1"),
+        "amd64's minted revision must be recorded: {amd:?}"
+    );
+    assert_eq!(
+        arm.revision.as_deref(),
+        Some("2"),
+        "arm64's minted revision must be recorded: {arm:?}"
     );
 }
 

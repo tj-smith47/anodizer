@@ -16,19 +16,10 @@ pub(crate) use result::*;
 pub(crate) use revision::*;
 pub(crate) use uploads::*;
 
-/// Wall-clock bound on a single `snapcraft upload` attempt. A Snap Store upload
-/// that stalls (unreachable store, hung TLS handshake, a snapcraft prompt
-/// blocking on stdin) would otherwise hang the entire release forever — the
-/// store-side analogue of the bounded release-backend HTTP timeout. Sized
-/// generously for a multi-MB snap on a slow link; on expiry the whole snapcraft
-/// process subtree is killed and the attempt retries within the upload budget.
-const SNAPCRAFT_UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
-
-/// Wall-clock bound on the `snapcraft list-revisions` existence probe. The probe
-/// only reads a small revision table, so a much shorter bound suffices; on
-/// timeout it is treated like any other probe failure (proceed to upload rather
-/// than falsely skip a genuine first publish).
-const SNAPCRAFT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+// The upload/probe wall-clock bounds live in `crate::command` so the publish
+// path and the promote path share one source of truth (the `super::*` glob
+// re-exports them to the sibling upload/revision modules).
+pub(crate) use crate::command::{SNAPCRAFT_PROBE_TIMEOUT, SNAPCRAFT_UPLOAD_TIMEOUT};
 
 // ---------------------------------------------------------------------------
 // SnapcraftPublishStage — uploads previously built .snap artifacts
@@ -197,19 +188,20 @@ impl Stage for SnapcraftPublishStage {
         // failure for some crate orderings and a stage abort for others.
         let skip_decisions = render_skip_decisions(ctx, &crates)?;
 
-        // Capture the resolved per-target snapshot BEFORE we start
-        // uploading so a mid-stream failure still leaves the operator a
-        // manual channel-management pointer for each snap we attempted to
-        // push. The snapshot also feeds
+        // Resolve the planned per-config snapshot BEFORE uploading so the
+        // upload loop can clone each snap's channel/version base while
+        // stamping the per-arch revision it mints. The recorded per-arch
+        // entries returned below feed
         // `PublishEvidence::extra.snapcraft_targets` on success so
-        // `--rollback-only --from-run` consumers can decode the recorded
-        // shape.
-        let mut targets = collect_snapcraft_targets(ctx);
+        // `promote --from-run` / `--rollback-only --from-run` consumers can
+        // release every architecture's revision.
+        let planned = collect_snapcraft_targets(ctx);
 
         let SnapUploadOutcome {
             attempted,
             skipped_already_published,
             held_for_review,
+            recorded,
             result: exec_result,
         } = run_uploads(
             ctx,
@@ -217,7 +209,7 @@ impl Stage for SnapcraftPublishStage {
             &snap_artifacts,
             &skip_decisions,
             &log,
-            &mut targets,
+            &planned,
         );
 
         if !attempted {
@@ -250,7 +242,7 @@ impl Stage for SnapcraftPublishStage {
             Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
         };
         let evidence = matches!(outcome, PublisherOutcome::Succeeded)
-            .then(|| build_snapcraft_evidence(&targets));
+            .then(|| build_snapcraft_evidence(&recorded));
         record_snapcraft_result(ctx, evidence, outcome, required);
         // End-of-stage accountability for review holds: a per-upload warn can
         // scroll away inside a long publish log, and the store's eventual

@@ -44,7 +44,7 @@ pub(crate) fn run_uploads(
     snap_artifacts: &[Artifact],
     skip_decisions: &[bool],
     log: &StageLogger,
-    targets: &mut [SnapcraftTarget],
+    planned: &[SnapcraftTarget],
 ) -> SnapUploadOutcome {
     let dry_run = ctx.options.dry_run;
     // Wrap snapcraft upload in retry.
@@ -55,6 +55,11 @@ pub(crate) fn run_uploads(
     let mut attempted_upload = false;
     let mut skipped_already_published = 0usize;
     let mut held_for_review: Vec<String> = Vec::new();
+    // One evidence entry per (crate, snap config, architecture) actually
+    // processed, each carrying the Snap Store revision minted/resolved for
+    // that arch. A dual-arch snap therefore records two revisions so a later
+    // `promote --from-run` can release every architecture.
+    let mut recorded: Vec<SnapcraftTarget> = Vec::new();
     let version = ctx.version();
     let project_name = ctx.config.project_name.clone();
     // IIFE captures `attempted_upload` by mutable reference so the
@@ -208,12 +213,21 @@ pub(crate) fn run_uploads(
                         log,
                     ) {
                         None => {}
-                        Some((_, missing)) if missing.is_empty() => {
+                        Some((revision, missing)) if missing.is_empty() => {
                             log.status(&format!(
                                 "skipped snapcraft '{}' {} — revision already published in the Snap Store",
                                 snap_name, version
                             ));
                             skipped_already_published += 1;
+                            push_recorded(
+                                &mut recorded,
+                                planned,
+                                &krate.name,
+                                &snap_name,
+                                arch,
+                                Some(revision),
+                                false,
+                            );
                             continue;
                         }
                         Some((revision, missing)) => {
@@ -234,6 +248,15 @@ pub(crate) fn run_uploads(
                                 revision,
                                 missing.join(", ")
                             ));
+                            push_recorded(
+                                &mut recorded,
+                                planned,
+                                &krate.name,
+                                &snap_name,
+                                arch,
+                                Some(revision),
+                                false,
+                            );
                             continue;
                         }
                     }
@@ -250,6 +273,11 @@ pub(crate) fn run_uploads(
                     // must say "promoted", not "uploaded", or the operator
                     // reads a fabricated upload that never happened.
                     let promoted = std::cell::Cell::new(false);
+                    // Carries the revision a content-dedup recovery promoted,
+                    // so the evidence records the recovered revision rather
+                    // than re-probing the store a second time.
+                    let promoted_revision: std::cell::Cell<Option<String>> =
+                        std::cell::Cell::new(None);
                     // A snapcraft push is idempotent for retry purposes: the
                     // revision-already-published probe above skips a re-run, so
                     // re-issuing the upload after a transient 5xx/network blip
@@ -404,6 +432,7 @@ pub(crate) fn run_uploads(
                                     ) {
                                         Ok(()) => {
                                             promoted.set(true);
+                                            promoted_revision.set(Some(revision.clone()));
                                             log.status(&format!(
                                                 "promoted snap {snap_name} {version} \
                                                  (revision {revision}) to {} — recovered from \
@@ -450,7 +479,25 @@ pub(crate) fn run_uploads(
                             ))
                         },
                     )?;
-                    if review_hold.get() {
+                    let held = review_hold.get();
+                    // Capture the arch's minted revision for the run evidence.
+                    // A dedup recovery already knows the promoted revision; a
+                    // fresh upload/hold resolves it via a scoped post-upload
+                    // `list-revisions` probe (best-effort — `None` when the
+                    // probe cannot run).
+                    let revision = promoted_revision
+                        .take()
+                        .or_else(|| resolve_recorded_revision(&snap_name, &version, arch, log));
+                    push_recorded(
+                        &mut recorded,
+                        planned,
+                        &krate.name,
+                        &snap_name,
+                        arch,
+                        revision,
+                        held,
+                    );
+                    if held {
                         // A held upload is NOT a delivered release: the store
                         // accepted the binary but ships nothing until a human
                         // approves it, and a rejection arrives only by email.
@@ -464,12 +511,6 @@ pub(crate) fn run_uploads(
                              (https://dashboard.snapcraft.io/snaps/{snap_name}/)"
                         ));
                         held_for_review.push(format!("{snap_name} {version}"));
-                        for t in targets
-                            .iter_mut()
-                            .filter(|t| t.crate_name == krate.name && t.package_name == snap_name)
-                        {
-                            t.held_for_review = true;
-                        }
                     } else if !promoted.get() {
                         log.status(&format!("uploaded snap {} {}", snap_name, version));
                     }
@@ -483,18 +524,54 @@ pub(crate) fn run_uploads(
         attempted: attempted_upload,
         skipped_already_published,
         held_for_review,
+        recorded,
         result,
     }
 }
 
+/// Append one per-arch evidence entry for a processed artifact, cloning the
+/// channel/version base from the matching planned target so the recorded
+/// coordinates stay consistent with `collect_snapcraft_targets`. `revision` is
+/// the Snap Store revision minted/resolved for `arch` (`None` when a probe
+/// could not name it); `held` marks a manual-review hold.
+fn push_recorded(
+    recorded: &mut Vec<SnapcraftTarget>,
+    planned: &[SnapcraftTarget],
+    crate_name: &str,
+    package_name: &str,
+    arch: &str,
+    revision: Option<String>,
+    held: bool,
+) {
+    let base = planned
+        .iter()
+        .find(|t| t.crate_name == crate_name && t.package_name == package_name);
+    let (channel, version) = match base {
+        Some(b) => (b.channel.clone(), b.version.clone()),
+        None => (None, None),
+    };
+    recorded.push(SnapcraftTarget {
+        crate_name: crate_name.to_string(),
+        package_name: package_name.to_string(),
+        channel,
+        arch: Some(arch.to_string()),
+        revision,
+        version,
+        held_for_review: held,
+    });
+}
+
 /// Result of [`run_uploads`]: whether any upload was attempted, how many snaps
-/// were skipped because their version was already published, and the
-/// upload-phase result.
+/// were skipped because their version was already published, the per-arch
+/// evidence entries actually recorded, and the upload-phase result.
 pub(crate) struct SnapUploadOutcome {
     pub(crate) attempted: bool,
     pub(crate) skipped_already_published: usize,
     /// `"<snap> <version>"` per upload the store answered with a
     /// manual-review hold — accepted but not live until a human approves.
     pub(crate) held_for_review: Vec<String>,
+    /// One entry per (crate, snap config, architecture) processed, carrying
+    /// that arch's Snap Store revision — the success-path evidence snapshot.
+    pub(crate) recorded: Vec<SnapcraftTarget>,
     pub(crate) result: Result<()>,
 }
