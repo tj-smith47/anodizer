@@ -122,6 +122,7 @@ fn wheel_arch(triple: &str) -> Result<&'static str> {
 /// | `*-linux-musl*` | `musllinux_1_2_<arch>` |
 /// | `*-apple-darwin` (thin) | `macosx_<minos maj>_<min>_<x86_64\|arm64>` |
 /// | `*-apple-darwin` (fat) | `macosx_<minos maj>_<min>_universal2` |
+/// | `darwin-universal` (synthetic lipo target) | `macosx_<minos maj>_<min>_universal2` |
 /// | `x86_64-pc-windows-*` | `win_amd64` |
 /// | `i686-pc-windows-*` | `win32` |
 /// | `aarch64-pc-windows-*` | `win_arm64` |
@@ -142,8 +143,15 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
             other => bail!("pypi: windows target '{triple}' (arch '{other}') has no wheel tag"),
         });
     }
-    if triple.contains("apple-darwin") {
+    if triple.contains("apple-darwin") || triple == "darwin-universal" {
         let arch = triple.split('-').next().unwrap_or_default();
+        // The lipo'd fat binary carries the synthetic target `darwin-universal`
+        // (no arch prefix), so it is universal2 by construction regardless of
+        // the caller's selection flag — an archive `format: binary` clone would
+        // select it as a plain UploadableBinary with `universal = false`, yet it
+        // is still the fat artifact. Fold that into one local so both the minos
+        // fallback and the arch token agree.
+        let universal = traits.universal || triple == "darwin-universal";
         // A non-Mach-O artifact under a darwin triple is the wrong binary:
         // hard-error rather than shipping an immutable wheel with a guessed
         // fallback tag. A healthy Mach-O missing its version load command
@@ -157,7 +165,7 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
         }
         let (maj, min) = traits
             .macos_min
-            .unwrap_or(if traits.universal || arch == "aarch64" {
+            .unwrap_or(if universal || arch == "aarch64" {
                 MACOS_FALLBACK_ARM64
             } else {
                 MACOS_FALLBACK_X86_64
@@ -167,7 +175,7 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
         // `minos` of e.g. 11.2 must tag `macosx_11_0` or the wheel is
         // uninstallable (maturin/cibuildwheel apply the same clamp).
         let min = if maj >= 11 { 0 } else { min };
-        let arch_token = if traits.universal {
+        let arch_token = if universal {
             "universal2"
         } else {
             match arch {

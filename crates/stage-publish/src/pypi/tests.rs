@@ -182,6 +182,30 @@ fn universal_binaries_tag_universal2() {
 }
 
 #[test]
+fn synthetic_darwin_universal_target_tags_universal2() {
+    // The lipo'd fat binary carries the synthetic target `darwin-universal`,
+    // which contains no `apple-darwin` substring — before the fix it fell
+    // through every branch to the catch-all bail and stranded every pypi
+    // backfill ("target 'darwin-universal' has no wheel platform-tag mapping").
+    assert_eq!(
+        platform_tag("darwin-universal", &traits(None, Some((11, 0)), true)).unwrap(),
+        "macosx_11_0_universal2"
+    );
+    // `universal = false` on the traits must NOT matter: the synthetic target
+    // is universal2 by construction (an archive `format: binary` clone selects
+    // it as a plain UploadableBinary with `universal = false`).
+    assert_eq!(
+        platform_tag("darwin-universal", &traits(None, Some((11, 0)), false)).unwrap(),
+        "macosx_11_0_universal2"
+    );
+    // No minos load command still tags at the arm64 floor.
+    assert_eq!(
+        platform_tag("darwin-universal", &traits(None, None, false)).unwrap(),
+        "macosx_11_0_universal2"
+    );
+}
+
+#[test]
 fn windows_targets_map_to_win_tags() {
     let t = traits(None, None, false);
     assert_eq!(
