@@ -42,6 +42,23 @@ pub(crate) fn is_already_published_at(
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
 ) -> Result<Option<String>> {
+    match fetch_index_file(url, crate_name, policy, log)? {
+        Some(body) => Ok(parse_index_cksum_for_version(&body, version)),
+        None => Ok(None),
+    }
+}
+
+/// GET a crate's sparse-index file: `Ok(Some(body))` on 200, `Ok(None)` on a
+/// definitive 404 (the crate has never been published under this name), `Err`
+/// on transport failure / retry exhaustion. The single fetch shared by the
+/// name@version check ([`is_already_published_at`]) and the crate-level
+/// existence probe ([`crate_exists_on_index`]).
+fn fetch_index_file(
+    url: &str,
+    crate_name: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<Option<String>> {
     use anodizer_core::retry::{SuccessClass, retry_http_blocking};
     use std::time::Duration;
 
@@ -64,8 +81,8 @@ pub(crate) fn is_already_published_at(
         },
     );
 
-    let (_status, body) = match result {
-        Ok(pair) => pair,
+    match result {
+        Ok((_status, body)) => Ok(Some(body)),
         Err(err) => {
             // 404 = crate has never been published — not already published.
             // The retry helper Breaks 4xx with HttpError(status) in the chain;
@@ -81,11 +98,43 @@ pub(crate) fn is_already_published_at(
             if status_code == 404 {
                 return Ok(None);
             }
-            return Err(err);
+            Err(err)
         }
-    };
+    }
+}
 
-    Ok(parse_index_cksum_for_version(&body, version))
+/// Whether a crate NAME exists on crates.io at all (any version) — the
+/// crate-level probe behind the Trusted-Publishing new-crate guard. Distinct
+/// from [`is_already_published`], which answers for one name@version and
+/// cannot tell "brand-new crate" apart from "existing crate, new version"
+/// (both are `Ok(None)` there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CrateIndexExistence {
+    /// The sparse index serves a file for this crate — some version has
+    /// published before.
+    Exists,
+    /// The index definitively 404s the crate file — no version has ever
+    /// published under this name.
+    NeverPublished,
+    /// Transport failure / retry exhaustion: existence could not be
+    /// determined. Consumers fail OPEN — an unreachable index must never
+    /// block a release whose crates are actually fine.
+    Unknown,
+}
+
+/// Probe the crates.io sparse index for `crate_name`'s existence at any
+/// version. Never returns an error: indeterminate outcomes collapse to
+/// [`CrateIndexExistence::Unknown`] so callers are fail-open by construction.
+pub(crate) fn crate_exists_on_index(
+    crate_name: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> CrateIndexExistence {
+    match fetch_index_file(&sparse_index_url(crate_name), crate_name, policy, log) {
+        Ok(Some(_)) => CrateIndexExistence::Exists,
+        Ok(None) => CrateIndexExistence::NeverPublished,
+        Err(_) => CrateIndexExistence::Unknown,
+    }
 }
 
 /// Local `.crate` package produced by [`local_crate_cksum`]: the sha256 the

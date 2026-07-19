@@ -695,6 +695,7 @@ fn already_published_crate_is_skipped_not_republished() {
             local_matches,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -757,6 +758,7 @@ fn index_check_error_fails_closed() {
             local_unused,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1075,6 +1077,7 @@ fn guard_publishes_when_version_not_on_crates_io() {
             local_panics,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1126,6 +1129,7 @@ fn guard_refuses_when_git_status_indeterminate() {
             local_panics,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1184,6 +1188,7 @@ fn guard_skips_when_already_published_identical() {
             local_match,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1265,6 +1270,7 @@ fn guard_hard_fails_when_already_published_different() {
             local_differs,
             &fixed_tag_resolver,
             fetch,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1328,6 +1334,7 @@ fn guard_fails_closed_when_index_unreachable() {
             local_unused,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1382,6 +1389,7 @@ fn guard_fails_closed_when_local_cksum_uncomputable() {
             local_errs,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1441,6 +1449,7 @@ fn guard_skipped_for_custom_registry_publishes() {
             local_panics,
             &fixed_tag_resolver,
             fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1543,6 +1552,7 @@ fn guard_per_crate_workspace_each_checked_independently() {
             local_per_crate,
             &fixed_tag_resolver,
             fetch,
+            |_: &str| CrateIndexExistence::Exists,
             None,
         )
     });
@@ -1567,4 +1577,145 @@ fn guard_per_crate_workspace_each_checked_independently() {
         record.is_empty(),
         "no crate published → nothing to roll back"
     );
+}
+
+/// Trusted-Publishing new-crate guard, wired: a minted TP token
+/// (`registry_token = Some`) plus a crate the index has never seen aborts
+/// BEFORE any `cargo publish` spawns. Without the guard this exact shape
+/// 403s mid-loop — after earlier crates in topological order already landed
+/// at the release version.
+#[test]
+#[serial(cargo_stub_path)]
+fn tp_token_new_crate_aborts_before_any_publish() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_crate_dir(tmp.path(), "brand-new", "1.0.0");
+    let argv_log = tmp.path().join("argv.log");
+    let crate_cfg = cargo_crate("brand-new", &path, &[], CargoPublishConfig::default());
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![crate_cfg])
+        .selected_crates(vec!["brand-new".to_string()])
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    let log = StageLogger::new("tp-guard-test", anodizer_core::log::Verbosity::Normal);
+    let mut record: Vec<CargoYankTarget> = Vec::new();
+
+    let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+    init_clean_repo(tmp.path());
+    let result = with_path(&new_path, || {
+        publish_to_cargo_with_guard(
+            &mut ctx,
+            &["brand-new".to_string()],
+            &log,
+            &mut record,
+            never_published,
+            |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+                panic!("guard must abort before any local packaging")
+            },
+            &fixed_tag_resolver,
+            fetch_panics,
+            |_: &str| CrateIndexExistence::NeverPublished,
+            Some("tp-minted-token"),
+        )
+    });
+    let err = result.expect_err("TP token + never-published crate must abort");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("'brand-new'") && msg.contains("Trusted Publishing"),
+        "abort must name the crate and the TP mechanism: {msg}"
+    );
+    assert!(
+        read_argv_log(&argv_log).is_empty(),
+        "the abort must land BEFORE the first cargo spawn"
+    );
+    assert!(record.is_empty(), "nothing published, nothing to yank");
+}
+
+/// False-positive proof for the TP guard's valid steady state: a minted TP
+/// token with every crate already on the index publishes exactly as before —
+/// the guard passes and the loop runs.
+#[test]
+#[serial(cargo_stub_path)]
+fn tp_token_existing_crate_publishes_normally() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
+    let argv_log = tmp.path().join("argv.log");
+    let crate_cfg = cargo_crate("alpha", &path, &[], CargoPublishConfig::default());
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![crate_cfg])
+        .selected_crates(vec!["alpha".to_string()])
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    let log = StageLogger::new("tp-guard-test", anodizer_core::log::Verbosity::Normal);
+    let mut record: Vec<CargoYankTarget> = Vec::new();
+
+    let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+    init_clean_repo(tmp.path());
+    let result = with_path(&new_path, || {
+        publish_to_cargo_with_guard(
+            &mut ctx,
+            &["alpha".to_string()],
+            &log,
+            &mut record,
+            never_published,
+            |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+                panic!("local cksum must not be computed when version is not published")
+            },
+            &fixed_tag_resolver,
+            fetch_panics,
+            |_: &str| CrateIndexExistence::Exists,
+            Some("tp-minted-token"),
+        )
+    });
+    result.expect("TP token over an existing crate is the normal OIDC release — must publish");
+    assert_eq!(
+        publish_count(&argv_log, "alpha"),
+        1,
+        "the guard must not block the valid TP shape"
+    );
+}
+
+/// The token/ambient-env path (`registry_token = None`) must never consult
+/// the existence probe: without a TP token there is no TP-cannot-create
+/// hazard, and a probing guard there would be pure new false-positive
+/// surface.
+#[test]
+#[serial(cargo_stub_path)]
+fn token_path_never_consults_existence_probe() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
+    let argv_log = tmp.path().join("argv.log");
+    let crate_cfg = cargo_crate("alpha", &path, &[], CargoPublishConfig::default());
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![crate_cfg])
+        .selected_crates(vec!["alpha".to_string()])
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    let log = StageLogger::new("tp-guard-test", anodizer_core::log::Verbosity::Normal);
+    let mut record: Vec<CargoYankTarget> = Vec::new();
+
+    let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+    init_clean_repo(tmp.path());
+    let result = with_path(&new_path, || {
+        publish_to_cargo_with_guard(
+            &mut ctx,
+            &["alpha".to_string()],
+            &log,
+            &mut record,
+            never_published,
+            |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+                panic!("local cksum must not be computed when version is not published")
+            },
+            &fixed_tag_resolver,
+            fetch_panics,
+            |_: &str| -> CrateIndexExistence {
+                panic!("existence probe must not run without a TP token")
+            },
+            None,
+        )
+    });
+    result.expect("token path publishes exactly as before the guard existed");
+    assert_eq!(publish_count(&argv_log, "alpha"), 1);
 }

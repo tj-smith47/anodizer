@@ -436,6 +436,7 @@ fn guard_skips_binstall_crate_when_recut_matches_published() {
         local_reads_disk,
         &fixed_tag,
         fetch_panics,
+        |_: &str| CrateIndexExistence::Exists,
         None,
     )
     .expect(
@@ -524,6 +525,7 @@ fn guard_flags_real_drift_even_for_binstall_crate() {
         local_reads_disk,
         &fixed_tag,
         fetch,
+        |_: &str| CrateIndexExistence::Exists,
         None,
     )
     .expect_err("a genuine content divergence must still hard-fail");
@@ -592,6 +594,7 @@ fn guard_clean_check_runs_once_not_per_crate() {
         local_reads_disk,
         &fixed_tag,
         fetch_panics,
+        |_: &str| CrateIndexExistence::Exists,
         None,
     )
     .expect("crate A's binstall write must not false-trip the dirty check for crate B");
@@ -665,6 +668,7 @@ fn guard_refuses_dirty_tree_before_binstall_mutation() {
         local_panics,
         &fixed_tag,
         fetch_panics,
+        |_: &str| CrateIndexExistence::Exists,
         None,
     )
     .expect_err("a dirty tree is an unverifiable precondition; the guard must refuse");

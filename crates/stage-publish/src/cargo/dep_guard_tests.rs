@@ -399,3 +399,107 @@ fn guard_resolves_workspace_inherited_renamed_dep() {
         "probe must target the real package at the root-pinned version"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Trusted-Publishing new-crate guard tests
+// ---------------------------------------------------------------------------
+
+fn order(names: &[&str]) -> Vec<String> {
+    names.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn tp_guard_blocks_never_published_crate() {
+    let log = quiet_log();
+    let cfgs: HashMap<String, CargoPublishConfig> = HashMap::new();
+    let probe = |name: &str| {
+        if name == "brand-new" {
+            CrateIndexExistence::NeverPublished
+        } else {
+            CrateIndexExistence::Exists
+        }
+    };
+    let err = check_tp_new_crates(&order(&["existing", "brand-new"]), &cfgs, &probe, &log)
+        .expect_err("a definitively-absent crate under a TP token must abort the publish");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("'brand-new'"),
+        "error must name the new crate: {msg}"
+    );
+    assert!(
+        !msg.contains("'existing'"),
+        "error must not implicate crates that exist: {msg}"
+    );
+    assert!(
+        msg.contains("Trusted Publishing"),
+        "error must explain the TP-cannot-create mechanism: {msg}"
+    );
+    assert!(
+        msg.contains("bootstrap"),
+        "error must carry the bootstrap remedy: {msg}"
+    );
+}
+
+#[test]
+fn tp_guard_passes_when_all_crates_exist() {
+    let log = quiet_log();
+    let cfgs: HashMap<String, CargoPublishConfig> = HashMap::new();
+    check_tp_new_crates(
+        &order(&["a", "b", "c"]),
+        &cfgs,
+        &|_| CrateIndexExistence::Exists,
+        &log,
+    )
+    .expect("every crate existing on the index is the valid steady state — must pass");
+}
+
+#[test]
+fn tp_guard_fails_open_on_unknown_existence() {
+    let log = quiet_log();
+    let cfgs: HashMap<String, CargoPublishConfig> = HashMap::new();
+    check_tp_new_crates(
+        &order(&["a", "b"]),
+        &cfgs,
+        &|_| CrateIndexExistence::Unknown,
+        &log,
+    )
+    .expect("an unreachable index must never block a release (fail-open)");
+}
+
+#[test]
+fn tp_guard_skips_non_crates_io_registries() {
+    let log = quiet_log();
+    let mut cfgs: HashMap<String, CargoPublishConfig> = HashMap::new();
+    cfgs.insert(
+        "internal".to_string(),
+        CargoPublishConfig {
+            registry: Some("company-reg".to_string()),
+            ..Default::default()
+        },
+    );
+    // The probe must not even be consulted for a non-crates.io target: TP is
+    // a crates.io mechanism and the sparse-index answer describes the wrong
+    // registry entirely.
+    let probe = |name: &str| {
+        assert_ne!(
+            name, "internal",
+            "existence probe must not run for a custom-registry crate"
+        );
+        CrateIndexExistence::NeverPublished
+    };
+    let err = check_tp_new_crates(&order(&["internal", "public"]), &cfgs, &probe, &log)
+        .expect_err("the crates.io crate still gets probed and blocked");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("'public'") && !msg.contains("'internal'"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn tp_guard_empty_order_passes() {
+    let log = quiet_log();
+    let cfgs: HashMap<String, CargoPublishConfig> = HashMap::new();
+    check_tp_new_crates(&[], &cfgs, &|_| CrateIndexExistence::NeverPublished, &log)
+        .expect("empty publish set has nothing to guard");
+}

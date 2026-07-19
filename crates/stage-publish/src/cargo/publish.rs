@@ -302,6 +302,9 @@ pub(crate) fn publish_to_cargo_with(
     ) -> Result<Option<String>>,
     registry_token: Option<&str>,
 ) -> Result<()> {
+    // Resolved before the `&mut ctx` borrow below; the existence probe only
+    // needs the retry policy, not the context.
+    let existence_policy = ctx.retry_policy();
     publish_to_cargo_with_guard(
         ctx,
         selected,
@@ -311,6 +314,7 @@ pub(crate) fn publish_to_cargo_with(
         |name, crate_cfg, cargo_cfg| local_crate_cksum(name, crate_cfg, cargo_cfg, log),
         &anodizer_core::crate_scope::resolve_crate_tag,
         fetch_published_crate,
+        move |name: &str| crate_exists_on_index(name, &existence_policy, log),
         registry_token,
     )
 }
@@ -356,6 +360,12 @@ pub(crate) fn publish_to_cargo_with_guard(
         &anodizer_core::retry::RetryPolicy,
         &StageLogger,
     ) -> Result<Vec<u8>>,
+    // Crate-level existence probe for the Trusted-Publishing new-crate guard
+    // (`(name) -> CrateIndexExistence`): consulted only when `registry_token`
+    // is `Some`. Distinct from `already_published_check`, whose `Ok(None)`
+    // cannot tell "brand-new crate" from "existing crate, new version".
+    // Production wires `crate_exists_on_index`; tests inject a stub.
+    crate_exists: impl Fn(&str) -> CrateIndexExistence,
     // Registry token override for each spawned `cargo publish`: `Some` only
     // when Trusted Publishing minted a short-lived crates.io token, injected as
     // `CARGO_REGISTRY_TOKEN` on the child. `None` inherits the ambient env
@@ -447,6 +457,18 @@ pub(crate) fn publish_to_cargo_with_guard(
             Err(_) => DepIndexState::Unknown,
         };
         check_publish_set_completeness(&sorted_names, &all_crates, &crate_versions, &probe, log)?;
+    }
+
+    // Second hard backstop, same placement rationale: crates.io Trusted
+    // Publishing cannot CREATE a crate (the TP config attaches to an existing
+    // one), so under a minted OIDC token a brand-new workspace member is
+    // guaranteed a 403 partway through the loop — after its dependencies
+    // already landed at the release version. `registry_token.is_some()` is
+    // exactly "TP minted a token this run"; the token/ambient-env path never
+    // consults the probe. Only a definitive index 404 blocks; transport
+    // failures fail open inside the guard.
+    if registry_token.is_some() {
+        check_tp_new_crates(&sorted_names, &cargo_cfgs, &|n| crate_exists(n), log)?;
     }
 
     // Path lookup for the wait-for-workspace-deps manifest scan below.

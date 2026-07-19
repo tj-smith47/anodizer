@@ -623,3 +623,80 @@ pub(crate) fn check_publish_set_completeness(
     }
     Ok(())
 }
+
+/// Injected crate-existence probe for [`check_tp_new_crates`]; production
+/// wires it over [`crate_exists_on_index`], tests substitute a closure.
+pub(crate) type CrateExistenceProbe<'a> = dyn Fn(&str) -> CrateIndexExistence + 'a;
+
+/// Trusted-Publishing new-crate guard.
+///
+/// crates.io Trusted Publishing can only publish new VERSIONS of crates that
+/// already exist — the TP config attaches to an existing crate, and the
+/// first-ever publish of a name requires an API token. A brand-new workspace
+/// member in a TP (OIDC) run is therefore guaranteed to 403 partway through
+/// the topological publish loop, AFTER its dependencies already landed at the
+/// release version. This guard probes the sparse index for every
+/// crates.io-targeting crate in the publish set and aborts BEFORE the first
+/// publish when any name has never been published, naming the crates and the
+/// bootstrap remedy.
+///
+/// Fail-open by construction: only a definitive index 404
+/// ([`CrateIndexExistence::NeverPublished`]) blocks; transport failures
+/// ([`CrateIndexExistence::Unknown`]) log at verbose and pass, so an
+/// unreachable index can never fail a release whose crates all exist.
+/// Crates targeting a non-crates.io registry are skipped entirely — TP is a
+/// crates.io mechanism and alternative registries have their own auth.
+pub(crate) fn check_tp_new_crates(
+    order: &[String],
+    cfgs: &HashMap<String, CargoPublishConfig>,
+    probe: &CrateExistenceProbe<'_>,
+    log: &StageLogger,
+) -> Result<()> {
+    let mut new_crates: Vec<&str> = Vec::new();
+    for name in order {
+        if !targets_crates_io(cfgs.get(name)) {
+            log.verbose(&format!(
+                "publish TP guard: '{name}' targets a non-crates.io registry; skipping \
+                 existence probe"
+            ));
+            continue;
+        }
+        match probe(name) {
+            CrateIndexExistence::Exists => {}
+            CrateIndexExistence::NeverPublished => new_crates.push(name),
+            CrateIndexExistence::Unknown => {
+                log.verbose(&format!(
+                    "publish TP guard: could not determine crates.io existence for '{name}' \
+                     (transient index error); not failing the guard on an inconclusive probe"
+                ));
+            }
+        }
+    }
+    if new_crates.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "cargo publish is running under a crates.io Trusted Publishing (OIDC) token, but \
+         {crates} {have} never been published: Trusted Publishing cannot CREATE a crate, so \
+         {each} would be rejected (403) partway through the publish loop — after {its} \
+         dependencies already landed at the release version. Aborting before any crate \
+         publishes.\n\
+         Remediation, once per new crate:\n\
+         1. `cargo publish -p <crate>` with a regular crates.io API token to create the \
+         crate (bootstrap publish).\n\
+         2. Add the Trusted Publisher config for the new crate on crates.io.\n\
+         3. Re-run the release — subsequent versions publish via OIDC normally.",
+        crates = new_crates
+            .iter()
+            .map(|n| format!("'{n}'"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        have = if new_crates.len() == 1 { "has" } else { "have" },
+        each = if new_crates.len() == 1 { "it" } else { "each" },
+        its = if new_crates.len() == 1 {
+            "its"
+        } else {
+            "their"
+        },
+    );
+}
