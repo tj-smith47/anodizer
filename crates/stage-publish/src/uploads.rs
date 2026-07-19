@@ -1832,6 +1832,114 @@ mod live_http_tests {
             "PUT routed to the rendered (Version-substituted) target: {entries:?}"
         );
     }
+
+    /// Rollback DELETEs every recorded upload URL, resolves basic-auth for the
+    /// URL whose entry survives in config, and classifies each response into
+    /// the deleted / already-absent / failed buckets — best-effort, never
+    /// aborting on one URL's non-2xx. Drives the whole `rollback` loop
+    /// (credential resolution, per-URL DELETE, and the three `DeleteOutcome`
+    /// arms) against the scripted responder.
+    #[test]
+    fn rollback_deletes_each_url_with_auth_and_classifies_outcomes() {
+        use anodizer_core::Publisher;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/repo/a",
+                    response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/repo/b",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/repo/c",
+                    response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+
+        let url_a = format!("http://{addr}/repo/a");
+        let url_b = format!("http://{addr}/repo/b");
+        let url_c = format!("http://{addr}/repo/c");
+
+        // Config carries the `jarvispro` entry with basic-auth creds, so the
+        // URL mapped to it (url_a) resolves an Authorization header on DELETE;
+        // url_b/url_c have no surviving entry → anonymous DELETE.
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("jarvispro".to_string()),
+            target: format!("http://{addr}/repo/"),
+            username: Some("ci-bot".to_string()),
+            password: Some("s3cret".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+
+        let mut evidence = anodizer_core::PublishEvidence::new("uploads");
+        evidence.artifact_paths = vec![
+            std::path::PathBuf::from(&url_a),
+            std::path::PathBuf::from(&url_b),
+            std::path::PathBuf::from(&url_c),
+        ];
+        // Only url_a maps to a config entry, so only its DELETE is authenticated.
+        evidence.extra = crate::artifactory::encode_artifactory_targets(&[ArtifactoryTarget {
+            entry: "jarvispro".to_string(),
+            url: url_a.clone(),
+        }]);
+
+        UploadsPublisher::new()
+            .rollback(&mut ctx, &evidence)
+            .expect("rollback is best-effort and returns Ok even with a 500");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(count_calls(&entries, "DELETE", "/repo/a"), 1, "{entries:?}");
+        assert_eq!(count_calls(&entries, "DELETE", "/repo/b"), 1, "{entries:?}");
+        assert_eq!(count_calls(&entries, "DELETE", "/repo/c"), 1, "{entries:?}");
+
+        let del_a = entries
+            .iter()
+            .find(|e| e.method == "DELETE" && e.path == "/repo/a")
+            .expect("DELETE /repo/a recorded");
+        let expected_auth = {
+            use base64::Engine as _;
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("ci-bot:s3cret")
+            )
+        };
+        assert_eq!(
+            del_a.header("Authorization"),
+            Some(expected_auth.as_str()),
+            "the entry-mapped URL's DELETE carries resolved basic auth: {:?}",
+            del_a.headers
+        );
+        let del_b = entries
+            .iter()
+            .find(|e| e.method == "DELETE" && e.path == "/repo/b")
+            .expect("DELETE /repo/b recorded");
+        assert_eq!(
+            del_b.header("Authorization"),
+            None,
+            "an unmapped URL's DELETE is anonymous: {:?}",
+            del_b.headers
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1899,5 +2007,234 @@ mod preflight_live_tests {
             anodizer_core::PreflightCheck::Pass
         ));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod dryrun_and_pure_tests {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, UploadConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::collections::HashMap;
+
+    /// A dry-run context whose single `uploads:` entry sets every optional
+    /// toggle, plus one archive artifact so the per-artifact preview loop runs.
+    fn dryrun_ctx(mutate: impl FnOnce(&mut UploadConfig)) -> (tempfile::TempDir, Context) {
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join("app-1.0.0.tar.gz");
+        std::fs::write(&art_path, b"bytes").unwrap();
+        let mut entry = UploadConfig {
+            name: Some("jarvispro".to_string()),
+            target: "http://example.test/repo/".to_string(),
+            ..Default::default()
+        };
+        mutate(&mut entry);
+        let config = Config {
+            project_name: "app".to_string(),
+            uploads: Some(vec![entry]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app-1.0.0.tar.gz".to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        (dir, ctx)
+    }
+
+    #[test]
+    fn dry_run_previews_every_configured_toggle() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom".to_string(), "v".to_string());
+        let (_dir, ctx) = dryrun_ctx(|e| {
+            e.method = Some("POST".to_string());
+            e.checksum_header = Some("X-My-Sum".to_string());
+            e.custom_headers = Some(headers);
+            e.client_x509_cert = Some("cert.pem".to_string());
+            e.client_x509_key = Some("key.pem".to_string());
+            e.trusted_certificates = Some("ca.pem".to_string());
+            e.checksum = Some(true);
+            e.signature = Some(true);
+            e.meta = Some(true);
+            e.custom_artifact_name = Some(true);
+            e.ids = Some(vec!["build-a".to_string()]);
+            e.exts = Some(vec!["tar.gz".to_string()]);
+        });
+        let (log, cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
+        publish_uploads(&ctx, &log).expect("dry-run ok");
+
+        let msgs: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+        let has = |needle: &str| msgs.iter().any(|m| m.contains(needle));
+        // The `method=POST` is threaded into the top-level dry-run line.
+        assert!(has("method=POST"), "method preview missing: {msgs:?}");
+        assert!(
+            has("would send custom header"),
+            "custom header preview: {msgs:?}"
+        );
+        assert!(
+            has("would present a client certificate"),
+            "cert preview: {msgs:?}"
+        );
+        assert!(has("would present a client key"), "key preview: {msgs:?}");
+        assert!(
+            has("would trust custom certificates"),
+            "trust preview: {msgs:?}"
+        );
+        assert!(
+            has("would send checksum header X-My-Sum"),
+            "checksum header: {msgs:?}"
+        );
+        assert!(has("would filter to build IDs"), "ids preview: {msgs:?}");
+        assert!(has("would filter to extensions"), "exts preview: {msgs:?}");
+        assert!(
+            has("would include checksum files"),
+            "checksum include: {msgs:?}"
+        );
+        assert!(
+            has("would include signature files"),
+            "signature include: {msgs:?}"
+        );
+        assert!(
+            has("would include metadata files"),
+            "meta include: {msgs:?}"
+        );
+        assert!(
+            has("would apply custom artifact naming"),
+            "custom naming: {msgs:?}"
+        );
+        // The per-artifact preview renders the artifact and its POST target.
+        assert!(has("POST"), "per-artifact method preview: {msgs:?}");
+    }
+
+    #[test]
+    fn bails_on_missing_name() {
+        let (_dir, ctx) = dryrun_ctx(|e| e.name = Some(String::new()));
+        let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
+        let err = publish_uploads(&ctx, &log).expect_err("empty name must bail");
+        assert!(
+            format!("{err:#}").contains("missing required 'name'"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn bails_on_missing_target() {
+        let (_dir, ctx) = dryrun_ctx(|e| e.target = String::new());
+        let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
+        let err = publish_uploads(&ctx, &log).expect_err("empty target must bail");
+        assert!(
+            format!("{err:#}").contains("missing required 'target'"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn bails_on_invalid_mode() {
+        let (_dir, ctx) = dryrun_ctx(|e| e.mode = Some("nonsense".to_string()));
+        let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
+        let err = publish_uploads(&ctx, &log).expect_err("invalid mode must bail");
+        assert!(
+            format!("{err:#}").to_lowercase().contains("mode"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn target_origin_extracts_scheme_authority_and_rejects_relative() {
+        // Path, query, and fragment are dropped — only scheme://host[:port].
+        assert_eq!(
+            target_origin("https://host.example:8443/a/b?x=1#f"),
+            Some("https://host.example:8443".to_string())
+        );
+        // Userinfo prefix is stripped.
+        assert_eq!(
+            target_origin("https://user:pass@host.example/path"),
+            Some("https://host.example".to_string())
+        );
+        // A `{{ .Version }}` in the PATH survives origin extraction (only the
+        // scheme + authority matter to a reachability probe).
+        assert_eq!(
+            target_origin("http://host/{{ .Version }}/app"),
+            Some("http://host".to_string())
+        );
+        // No scheme:// authority ⇒ None (a relative/path-only target).
+        assert_eq!(target_origin("/repo/app.tar.gz"), None);
+        // Empty scheme ⇒ None.
+        assert_eq!(target_origin("://host/x"), None);
+        // Scheme but empty authority ⇒ None.
+        assert_eq!(target_origin("http:///path-only"), None);
+    }
+
+    #[test]
+    fn collect_upload_targets_renders_active_and_skips_inactive() {
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join("app-2.0.0.tar.gz");
+        std::fs::write(&art_path, b"bytes").unwrap();
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.uploads = Some(vec![
+            // Active entry — renders a concrete rollback URL.
+            UploadConfig {
+                name: Some("active".to_string()),
+                target: "http://host/repo/{{ .Version }}/".to_string(),
+                ..Default::default()
+            },
+            // Skipped entry (`skip: true`) — must NOT leak a phantom rollback
+            // target, mirroring publish_uploads's skip handling.
+            UploadConfig {
+                name: Some("inactive".to_string()),
+                target: "http://host/other/".to_string(),
+                skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+            // Nameless entry — skipped (name keys the credential cascade).
+            UploadConfig {
+                name: None,
+                target: "http://host/nameless/".to_string(),
+                ..Default::default()
+            },
+            // Empty-target entry — skipped.
+            UploadConfig {
+                name: Some("no-target".to_string()),
+                target: String::new(),
+                ..Default::default()
+            },
+        ]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app-2.0.0.tar.gz".to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let targets = collect_upload_targets(&ctx);
+        // Only the active entry contributes, with the Version-rendered URL.
+        assert_eq!(
+            targets.len(),
+            1,
+            "only the active entry yields a target: {targets:?}"
+        );
+        assert_eq!(targets[0].entry, "active");
+        assert_eq!(targets[0].url, "http://host/repo/2.0.0/app-2.0.0.tar.gz");
     }
 }

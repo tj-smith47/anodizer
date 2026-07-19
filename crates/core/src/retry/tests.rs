@@ -1274,6 +1274,145 @@ fn retry_http_blocking_bytes_retries_5xx_then_succeeds() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry then success");
 }
 
+/// Under `AllowRedirects` the bytes variant treats a surfaced 3xx as success
+/// (never invoking the error formatter), mirroring the text variant. Pins the
+/// `success_class` predicate's redirect arm for the bytes path.
+#[test]
+fn retry_http_blocking_bytes_redirect_class_is_success() {
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        // Disable redirect-following so the 307 surfaces to the helper.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let policy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+    };
+    let result = retry_http_blocking_bytes(
+        RetryLog::new("test", test_logger()),
+        &policy,
+        SuccessClass::AllowRedirects,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |_, _| String::from("error formatter must not run for a 3xx under AllowRedirects"),
+    );
+    let (status, _bytes) =
+        result.expect("3xx is success under AllowRedirects for the bytes variant");
+    assert_eq!(status.as_u16(), 307);
+}
+
+/// A transport-layer failure in the bytes variant is classified retriable
+/// (`Continue`), so the attempt ladder runs more than once before exhausting.
+/// Pins the bytes path's transport-error `is_retriable` branch (the text and
+/// async variants have their own transport tests).
+#[test]
+fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
+    let attempts = std::sync::Arc::new(AtomicU32::new(0));
+    let attempts_inner = attempts.clone();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    let policy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+    };
+    let result = retry_http_blocking_bytes(
+        RetryLog::new("test-transport-bytes", test_logger()),
+        &policy,
+        SuccessClass::Strict,
+        |_| {
+            attempts_inner.fetch_add(1, Ordering::SeqCst);
+            client.get(TRANSPORT_FAIL_URL).send()
+        },
+        |_, _| String::from("non-success branch should not be reached"),
+    );
+    let err = result.expect_err("transport error must surface as Err");
+    assert!(
+        attempts.load(Ordering::SeqCst) > 1,
+        "transport error must be retried; got {} attempts",
+        attempts.load(Ordering::SeqCst)
+    );
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("test-transport-bytes"),
+        "label must surface in error chain; got: {chain}"
+    );
+}
+
+/// `classify_http_sync` maps a real HTTP outcome to the `ControlFlow` shape
+/// `retry_sync` expects: 2xx/3xx → `Ok(resp)`, 5xx → `Continue` (retry), 4xx →
+/// `Break` (fast-fail), transport error → `Continue`. Drives each arm through a
+/// live loopback responder (and a dead address for the transport arm) so the
+/// pure classifier is pinned end-to-end without a public `reqwest::Error` ctor.
+#[test]
+fn classify_http_sync_maps_status_and_transport_to_controlflow() {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        // Surface 3xx to the classifier rather than following it.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+
+    // 2xx → Ok(resp)
+    let (addr, _c) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+    let ok = classify_http_sync(client.get(format!("http://{addr}/")).send());
+    assert!(
+        matches!(&ok, Ok(resp) if resp.status().as_u16() == 200),
+        "2xx must be Ok(resp)"
+    );
+
+    // 3xx → Ok(resp): a redirect is a success outcome for this classifier.
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 301 Moved Permanently\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let redir = classify_http_sync(client.get(format!("http://{addr}/")).send());
+    assert!(
+        matches!(&redir, Ok(resp) if resp.status().as_u16() == 301),
+        "3xx must be Ok(resp)"
+    );
+
+    // 5xx → Continue (retriable), status echoed in the error.
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    match classify_http_sync(client.get(format!("http://{addr}/")).send()) {
+        Err(ControlFlow::Continue(e)) => {
+            assert!(
+                format!("{e:#}").contains("503"),
+                "5xx error must name the status"
+            )
+        }
+        other => panic!("5xx must be Continue, got {other:?}"),
+    }
+
+    // 4xx → Break (fast-fail), status echoed in the error.
+    let (addr, _c) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    match classify_http_sync(client.get(format!("http://{addr}/")).send()) {
+        Err(ControlFlow::Break(e)) => {
+            assert!(
+                format!("{e:#}").contains("404"),
+                "4xx error must name the status"
+            )
+        }
+        other => panic!("4xx must be Break, got {other:?}"),
+    }
+
+    // Transport-layer failure (dead host) → Continue (retriable).
+    let transport = classify_http_sync(client.get(TRANSPORT_FAIL_URL).send());
+    assert!(
+        matches!(transport, Err(ControlFlow::Continue(_))),
+        "transport error must be Continue"
+    );
+}
+
 // ----- retry_http_async behavioural tests ------------------------------
 //
 // Mirrors the blocking suite but drives an async reqwest::Client against

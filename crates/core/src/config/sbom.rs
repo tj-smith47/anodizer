@@ -177,3 +177,69 @@ where
 
     deserializer.deserialize_any(SbomsVisitor)
 }
+
+#[cfg(test)]
+mod sbom_resolver_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_args_falls_back_to_syft_defaults_only_for_syft_cmd() {
+        let cfg = SbomConfig::default();
+        // syft cmd with no explicit args ⇒ the built-in syft argv (non-empty,
+        // carrying the output placeholder), NOT an empty vec.
+        let syft = cfg.resolved_args("syft");
+        assert!(!syft.is_empty(), "syft default args must be populated");
+        assert!(
+            syft.iter().any(|a| a.contains("$artifact")),
+            "syft default args reference the per-artifact placeholder: {syft:?}"
+        );
+        // A non-syft cmd gets NO default args (a foreign tool's flags are
+        // unknown), so the fallback yields an empty vec.
+        assert!(
+            cfg.resolved_args("mytool").is_empty(),
+            "non-syft cmd must not inherit syft's argv"
+        );
+    }
+
+    #[test]
+    fn resolved_args_returns_explicit_args_verbatim() {
+        let cfg = SbomConfig {
+            args: Some(vec!["--only".to_string(), "this".to_string()]),
+            ..Default::default()
+        };
+        // Explicit args short-circuit the cmd-based fallback entirely.
+        assert_eq!(cfg.resolved_args("syft"), vec!["--only", "this"]);
+        assert_eq!(cfg.resolved_args("other"), vec!["--only", "this"]);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct SbomsWrapper {
+        #[serde(deserialize_with = "deserialize_sboms", default)]
+        sboms: Vec<SbomConfig>,
+    }
+
+    #[test]
+    fn deserialize_sboms_accepts_single_object() {
+        // A single mapping is wrapped into a one-element vec (visit_map).
+        let w: SbomsWrapper = serde_yaml_ng::from_str("sboms:\n  cmd: trivy\n").unwrap();
+        assert_eq!(w.sboms.len(), 1);
+        assert_eq!(w.sboms[0].cmd.as_deref(), Some("trivy"));
+    }
+
+    #[test]
+    fn deserialize_sboms_accepts_array() {
+        // A sequence yields one config per element (visit_seq).
+        let w: SbomsWrapper =
+            serde_yaml_ng::from_str("sboms:\n  - cmd: syft\n  - cmd: trivy\n").unwrap();
+        assert_eq!(w.sboms.len(), 2);
+        assert_eq!(w.sboms[0].cmd.as_deref(), Some("syft"));
+        assert_eq!(w.sboms[1].cmd.as_deref(), Some("trivy"));
+    }
+
+    #[test]
+    fn deserialize_sboms_null_is_empty() {
+        // An explicit null collapses to an empty vec (visit_unit).
+        let w: SbomsWrapper = serde_yaml_ng::from_str("sboms: null\n").unwrap();
+        assert!(w.sboms.is_empty());
+    }
+}

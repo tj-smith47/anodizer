@@ -383,4 +383,221 @@ Rev    Uploaded              Arches  Version  Channels
         assert_eq!(recorded_revision(&report, "mysnap"), Some("7".to_string()));
         assert_eq!(recorded_revision(&report, "othersnap"), None);
     }
+
+    use anodizer_core::config::{Config, CrateConfig, SnapcraftConfig};
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::promote::PromoteStatus;
+
+    fn ctx_with_snapcrafts(project: &str, snaps: Vec<Option<&str>>) -> Context {
+        let cfg = Config {
+            project_name: project.to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                snapcrafts: Some(
+                    snaps
+                        .into_iter()
+                        .map(|n| SnapcraftConfig {
+                            name: n.map(String::from),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        Context::new(cfg, ContextOptions::default())
+    }
+
+    #[test]
+    fn promote_bails_without_any_snapcraft_config() {
+        // No `snapcrafts:` anywhere ⇒ resolve_snap_names is empty and promote
+        // must bail with an actionable message naming the missing block before
+        // any revision resolution or subprocess.
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "candidate".to_string(),
+            to: "stable".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let err = SnapcraftPromoter
+            .promote(&req)
+            .expect_err("no snapcrafts block must bail");
+        assert!(
+            format!("{err:#}").contains("snapcrafts:"),
+            "error should name the missing snapcrafts block; got {err:#}"
+        );
+    }
+
+    #[test]
+    fn promote_dry_run_names_plan_and_spawns_nothing() {
+        // A Version selector's dry-run resolves the plan without a
+        // `list-revisions` round-trip and returns a DryRun outcome whose `from`
+        // label is the version itself.
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
+        let selector = PromoteSelector::Version("1.4.0".to_string());
+        let req = PromoteRequest {
+            from: "candidate".to_string(),
+            to: "stable".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let out = SnapcraftPromoter.promote(&req).expect("dry-run ok");
+        assert_eq!(out.status, PromoteStatus::DryRun);
+        assert_eq!(out.publisher, "snapcraft");
+        assert_eq!(out.from, "1.4.0");
+        assert_eq!(out.to, "stable");
+    }
+
+    #[test]
+    fn promote_from_run_empty_report_is_skipped_nothing_to_promote() {
+        // FromRun with a report holding no snapcraft targets ⇒ every snap's
+        // recorded revision is None, release_one returns Ok(None) with no
+        // spawn, and the folded outcome is Skipped(NothingToPromote).
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
+        let selector = PromoteSelector::FromRun {
+            run_id: "run42".to_string(),
+            report: PublishReport::default(),
+        };
+        let req = PromoteRequest {
+            from: "candidate".to_string(),
+            to: "stable".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let out = SnapcraftPromoter
+            .promote(&req)
+            .expect("empty recorded family ok");
+        assert_eq!(
+            out.status,
+            PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
+        );
+        assert_eq!(out.from, "run run42");
+    }
+
+    #[test]
+    fn resolve_snap_names_dedups_and_is_order_stable() {
+        // Two snaps under one crate, the second a duplicate of the first's
+        // resolved name: the result keeps first-seen order and dedups.
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("alpha"), Some("beta"), Some("alpha")]);
+        assert_eq!(resolve_snap_names(&ctx), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn resolve_snap_names_skips_crate_without_snapcrafts() {
+        // A crate with no `snapcrafts:` block is skipped by the `continue`
+        // guard, contributing no names.
+        let cfg = Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                snapcrafts: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ctx = Context::new(cfg, ContextOptions::default());
+        assert!(resolve_snap_names(&ctx).is_empty());
+    }
+
+    #[test]
+    fn snap_name_for_resolution_chain() {
+        // Explicit name wins.
+        let named = SnapcraftConfig {
+            name: Some("explicit".into()),
+            ..Default::default()
+        };
+        assert_eq!(snap_name_for(&named, "proj", "bin"), "explicit");
+        // No explicit name, non-empty project ⇒ project name.
+        let bare = SnapcraftConfig::default();
+        assert_eq!(snap_name_for(&bare, "proj", "bin"), "proj");
+        // No explicit name, empty project ⇒ primary binary fallback.
+        assert_eq!(snap_name_for(&bare, "", "bin"), "bin");
+    }
+
+    #[test]
+    fn primary_binary_prefers_first_build_binary_else_crate_name() {
+        use anodizer_core::config::BuildConfig;
+        let with_build = CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("mybin".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(primary_binary(&with_build), "mybin");
+        // No builds ⇒ the crate name is the last resort.
+        let no_build = CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: None,
+            ..Default::default()
+        };
+        assert_eq!(primary_binary(&no_build), "app");
+    }
+
+    #[test]
+    fn resolve_revision_from_run_reads_recorded_without_spawn() {
+        use anodizer_core::publish_evidence::{SnapcraftExtra, SnapcraftTargetSnapshot};
+        use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult};
+
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
+        let log = ctx.logger("snapcraft-promote-test");
+        let mut evidence = anodizer_core::PublishEvidence::new("snapcraft");
+        evidence.extra = PublishEvidenceExtra::Snapcraft(SnapcraftExtra {
+            snapcraft_targets: vec![SnapcraftTargetSnapshot {
+                crate_name: "app".into(),
+                package_name: "mysnap".into(),
+                channel: Some("candidate".into()),
+                revision: Some("99".into()),
+                version: Some("1.0.0".into()),
+                held_for_review: false,
+            }],
+        });
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "snapcraft".into(),
+            group: PublisherGroup::Submitter,
+            required: false,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: Some(evidence),
+        });
+        let selector = PromoteSelector::FromRun {
+            run_id: "r".into(),
+            report,
+        };
+        let req = PromoteRequest {
+            from: "candidate".to_string(),
+            to: "stable".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        // FromRun routes to recorded_revision — no `list-revisions` spawn.
+        let rev = resolve_revision(&req, "mysnap", &log).expect("resolve");
+        assert_eq!(rev, Some("99".to_string()));
+        // An unknown snap yields no recorded revision.
+        assert_eq!(
+            resolve_revision(&req, "absent", &log).expect("resolve"),
+            None
+        );
+    }
+
+    #[test]
+    fn preflight_ok_when_snapcraft_on_path() {
+        // In CI/this env snapcraft is present on PATH, so preflight passes.
+        // (The bail branch is exercised on hosts without snapcraft.)
+        if anodizer_core::tool_detect::on_path("snapcraft") {
+            preflight().expect("snapcraft present ⇒ preflight ok");
+        }
+    }
 }

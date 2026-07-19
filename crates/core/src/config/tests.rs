@@ -4517,6 +4517,109 @@ crates: []
 }
 
 // ---------------------------------------------------------------------------
+// validate_release_backends tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_release_backends_single_backend_is_ok() {
+    // Exactly one SCM backend per crate is the supported shape.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: acme
+        name: app
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(super::validate_release_backends(&config).is_ok());
+}
+
+#[test]
+fn test_validate_release_backends_top_level_crate_multiple_backends_errors() {
+    // A top-level crate naming BOTH github and gitlab is a mutually-exclusive
+    // mis-config: anodizer dispatches one backend at runtime, so a second
+    // silently-ignored backend must fail fast at config-load.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: dual
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: acme
+        name: app
+      gitlab:
+        owner: acme
+        name: app
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_release_backends(&config).unwrap_err();
+    assert!(
+        err.contains("crate dual"),
+        "error must name the crate: {err}"
+    );
+    assert!(err.contains("github"), "error must name github: {err}");
+    assert!(err.contains("gitlab"), "error must name gitlab: {err}");
+    assert!(
+        err.contains("mutually-exclusive"),
+        "error must explain the mutual exclusion: {err}"
+    );
+}
+
+#[test]
+fn test_validate_release_backends_workspace_crate_github_plus_gitea_errors() {
+    // The same guard must fire for a crate under `workspaces:` (not just the
+    // top-level `crates:` list), and must recognise the gitea backend arm.
+    let yaml = r#"
+project_name: test
+workspaces:
+  - name: ws1
+    crates:
+      - name: wscrate
+        path: "."
+        tag_template: "v{{ .Version }}"
+        release:
+          github:
+            owner: acme
+            name: app
+          gitea:
+            owner: acme
+            name: app
+crates: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_release_backends(&config).unwrap_err();
+    assert!(
+        err.contains("crate wscrate"),
+        "error must name the workspace crate: {err}"
+    );
+    assert!(err.contains("gitea"), "error must name gitea: {err}");
+}
+
+#[test]
+fn all_builds_prebuilt_false_when_builds_list_is_empty() {
+    // A declared-but-empty `builds: []` list is `Some(vec![])`, which the
+    // per-crate helper maps to `None` (nothing to classify) — distinct from the
+    // `builds:` field being absent. With no prebuilt-bearing crate seen,
+    // `saw_any` stays false.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(!all_builds_prebuilt(&config));
+}
+
+// ---------------------------------------------------------------------------
 // validate_homebrew_cask_url_template tests
 // ---------------------------------------------------------------------------
 

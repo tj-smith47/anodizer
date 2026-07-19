@@ -433,4 +433,99 @@ mod tests {
         let names: Vec<&str> = repos.iter().map(|r| r.repo.as_str()).collect();
         assert_eq!(names, vec!["ghcr.io/o/app", "ghcr.io/o/extra"]);
     }
+
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::promote::PromoteStatus;
+
+    fn ctx_with_docker(images: Vec<&str>) -> Context {
+        let cfg = Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                dockers_v2: Some(vec![DockerV2Config {
+                    dockerfile: "Dockerfile".to_string(),
+                    images: images.into_iter().map(String::from).collect(),
+                    tags: vec!["latest".to_string()],
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        Context::new(cfg, ContextOptions::default())
+    }
+
+    #[test]
+    fn promote_bails_without_any_docker_config() {
+        // No `dockers_v2:` block ⇒ resolve_image_repos is empty and promote
+        // bails with the actionable message before any imagetools spawn.
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "edge".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let err = DockerPromoter
+            .promote(&req)
+            .expect_err("no dockers_v2 block must bail");
+        assert!(
+            format!("{err:#}").contains("dockers_v2:"),
+            "error should name the missing dockers_v2 block; got {err:#}"
+        );
+    }
+
+    #[test]
+    fn promote_dry_run_newest_names_plan_and_spawns_nothing() {
+        // Newest selector's dry-run resolves the source tag as the floating
+        // from-track as-is (resolve_source_tag `_` arm) and returns a DryRun
+        // outcome counting the images, without any subprocess.
+        let ctx = ctx_with_docker(vec!["ghcr.io/o/app", "ghcr.io/o/extra"]);
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "edge".to_string(),
+            to: "latest".to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        let out = DockerPromoter.promote(&req).expect("dry-run ok");
+        assert_eq!(out.status, PromoteStatus::DryRun);
+        assert_eq!(out.publisher, "docker");
+        // Newest keeps the native from-track label.
+        assert_eq!(out.from, "edge");
+        assert_eq!(out.to, "latest");
+        assert_eq!(out.what.as_deref(), Some("2 image(s)"));
+    }
+
+    #[test]
+    fn resolve_image_repos_skips_crate_without_dockers_v2() {
+        // A crate with no `dockers_v2:` block hits the `continue` guard and
+        // contributes no repos.
+        let cfg = Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                dockers_v2: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ctx = Context::new(cfg, ContextOptions::default());
+        assert!(resolve_image_repos(&ctx).expect("resolve").is_empty());
+    }
+
+    #[test]
+    fn preflight_ok_when_buildx_available() {
+        // buildx is present in this env, so preflight passes the availability
+        // gate. (The bail branch is exercised on hosts without buildx.)
+        if anodizer_core::docker_detect::buildx_available().unwrap_or(false) {
+            preflight().expect("buildx present ⇒ preflight ok");
+        }
+    }
 }

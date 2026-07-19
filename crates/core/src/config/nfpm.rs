@@ -616,6 +616,26 @@ mod is_empty_tests {
         assert!(NfpmDebConfig::default().is_empty());
     }
 
+    /// A default MSIX block is empty (every field None) so the "drop empty
+    /// blocks" path omits the section; a single populated field keeps it alive.
+    #[test]
+    fn msix_default_is_empty_but_one_field_keeps_it() {
+        assert!(NfpmMsixConfig::default().is_empty());
+        let with_arch = NfpmMsixConfig {
+            arch: Some("x64".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !with_arch.is_empty(),
+            "an MSIX block with a set field must NOT be dropped"
+        );
+        let with_publisher = NfpmMsixConfig {
+            publisher: Some("CN=Acme".to_string()),
+            ..Default::default()
+        };
+        assert!(!with_publisher.is_empty());
+    }
+
     /// The legacy `goamd64:` spelling folds into `amd64_variant` so imported
     /// configs keep parsing under `deny_unknown_fields`.
     #[test]
