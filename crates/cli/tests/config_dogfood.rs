@@ -112,3 +112,42 @@ fn derivation_recovers_the_install_script_edge_the_hand_list_missed() {
          edge (the v0.19.0 hand-list omission), got: {deps:?}"
     );
 }
+
+#[test]
+fn derivation_captures_versioned_dev_dependency_publish_order_edges() {
+    let (config, _root) = load_derived_config();
+
+    // `anodizer-stage-attest` depends on `anodizer-stage-checksum` ONLY through
+    // `[dev-dependencies]` (a `workspace = true` dev-dep). `cargo publish`
+    // resolves that versioned dev-dep, so checksum must publish first — the
+    // exact edge whose omission stranded the v0.22.1 backfill (attest published
+    // before checksum and hard-failed "failed to select a version for
+    // anodizer-stage-checksum ^0.22.1"). Derivation must capture it.
+    let attest = config
+        .crates
+        .iter()
+        .find(|c| c.name == "anodizer-stage-attest")
+        .expect("`anodizer-stage-attest` crate present");
+    let deps = attest
+        .depends_on
+        .as_ref()
+        .expect("derivation populated `anodizer-stage-attest` depends_on");
+    assert!(
+        deps.iter().any(|d| d == "anodizer-stage-checksum"),
+        "derivation must capture the dev-dependency publish-order edge \
+         `anodizer-stage-attest -> anodizer-stage-checksum`, got: {deps:?}"
+    );
+
+    // A crate must never depend on itself: crates carry a `path`/`workspace`
+    // dev-dependency on their own package for the `test-helpers` feature, which
+    // must not leak into the publish-order graph as a self-edge.
+    for c in &config.crates {
+        if let Some(deps) = &c.depends_on {
+            assert!(
+                !deps.contains(&c.name),
+                "crate '{}' has a self-edge in its derived depends_on: {deps:?}",
+                c.name
+            );
+        }
+    }
+}

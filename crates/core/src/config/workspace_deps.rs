@@ -141,13 +141,20 @@ pub fn discover_cargo_workspace_member_names(base_dir: &Path) -> HashSet<String>
 }
 
 /// Read `<crate_dir>/Cargo.toml`'s `[dependencies]`, `[build-dependencies]`,
-/// and every `[target.'cfg(...)'.dependencies]` table, and derive the union
-/// of their intra-workspace deps against `member_names` via
-/// [`extract_workspace_deps`]. Build- and target-gated deps are resolved by
-/// `cargo publish`'s verification build exactly like ordinary deps, so a
-/// workspace member reachable only through one of them is an equally hard
-/// publish-order requirement. `[dev-dependencies]` is deliberately excluded:
-/// it is never resolved for a publish upload. Missing / unparsable
+/// `[dev-dependencies]`, and every `[target.'cfg(...)'.dependencies]` table,
+/// and derive the union of their intra-workspace deps against `member_names`
+/// via [`extract_workspace_deps`]. All of these gate the cargo publish order:
+/// `cargo publish`'s verification build resolves the full dependency graph, so
+/// a workspace member reachable through a build- or target-gated dep — or a
+/// **versioned** dev-dependency — is an equally hard publish-order requirement.
+/// (`[dev-dependencies]` looked exempt, but a `workspace = true` dev-dep
+/// inherits the workspace version, and `cargo publish` rejects the crate when
+/// that version is not yet on the index — the exact failure that stranded a
+/// backfill when `anodizer-stage-attest` published before its dev-dependency
+/// `anodizer-stage-checksum`.) The crate's own package name is filtered out: a
+/// crate never depends on itself, and a `path`/`workspace` dev-dependency on
+/// its own package (a common test-helpers pattern) would otherwise appear as a
+/// self-edge and corrupt the topological order. Missing / unparsable
 /// `Cargo.toml` yields an empty list (best-effort).
 pub fn derive_depends_on_from_cargo_toml(
     crate_dir: &Path,
@@ -164,6 +171,10 @@ pub fn derive_depends_on_from_cargo_toml(
         doc.get("build-dependencies"),
         member_names,
     ));
+    deps.extend(extract_workspace_deps(
+        doc.get("dev-dependencies"),
+        member_names,
+    ));
     if let Some(Value::Table(targets)) = doc.get("target") {
         for target_table in targets.values() {
             deps.extend(extract_workspace_deps(
@@ -171,6 +182,18 @@ pub fn derive_depends_on_from_cargo_toml(
                 member_names,
             ));
         }
+    }
+
+    // A crate never depends on itself — drop a self-edge from a `path`/
+    // `workspace` dev-dependency on its own package (the `{ path = ".",
+    // features = ["test-helpers"] }` idiom) so `topological_sort` cannot drop
+    // the node and corrupt the order.
+    if let Some(own) = doc
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(Value::as_str)
+    {
+        deps.remove(own);
     }
 
     let mut deps: Vec<String> = deps.into_iter().collect();
@@ -364,18 +387,23 @@ mod tests {
     }
 
     #[test]
-    fn derive_depends_on_from_cargo_toml_excludes_dev_dependencies() {
-        // dev-dependencies are never resolved for a `cargo publish` upload —
-        // must stay excluded even after extending to build/target tables.
+    fn derive_depends_on_from_cargo_toml_includes_versioned_dev_dependencies() {
+        // A `workspace = true` dev-dependency inherits the workspace version, so
+        // `cargo publish` rejects the crate until that version is on the index —
+        // it IS a publish-order requirement and must be captured. A dev-dep on
+        // the crate's OWN package (the `{ path = ".", features = ... }`
+        // test-helpers idiom) is a self-edge and must be dropped.
         let root = tempdir().unwrap();
         write(
             root.path(),
             "crates/a/Cargo.toml",
-            "[package]\nname = \"a\"\n[dev-dependencies]\ntest-helper.workspace = true\n",
+            "[package]\nname = \"a\"\n[dev-dependencies]\n\
+             test-helper.workspace = true\n\
+             a = { path = \".\", features = [\"test-helpers\"] }\n",
         );
         let members: HashSet<String> = ["a", "test-helper"].into_iter().map(String::from).collect();
         let deps = derive_depends_on_from_cargo_toml(&root.path().join("crates/a"), &members);
-        assert!(deps.is_empty());
+        assert_eq!(deps, vec!["test-helper".to_string()]);
     }
 
     #[test]
