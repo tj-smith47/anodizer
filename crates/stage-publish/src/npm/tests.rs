@@ -5029,3 +5029,147 @@ fn requirements_token_mode_still_requires_npm_token() {
         "token mode must fail without NPM_TOKEN even if OIDC env is present"
     );
 }
+
+// -----------------------------------------------------------------------------
+// Rollback (`npm unpublish`) — best-effort teardown of already-pushed packages
+// -----------------------------------------------------------------------------
+
+/// A `PublishEvidence` carrying the npm rollback coordinates in `targets`.
+fn npm_evidence(
+    targets: Vec<anodizer_core::publish_evidence::NpmTargetSnapshot>,
+) -> anodizer_core::PublishEvidence {
+    let mut e = anodizer_core::PublishEvidence::new("npm");
+    e.extra = anodizer_core::PublishEvidenceExtra::Npm(anodizer_core::publish_evidence::NpmExtra {
+        npm_targets: targets,
+    });
+    e
+}
+
+/// One recorded npm package whose rollback token is read from `token_env`.
+fn npm_target(token_env: &str) -> anodizer_core::publish_evidence::NpmTargetSnapshot {
+    anodizer_core::publish_evidence::NpmTargetSnapshot {
+        target: "demo".to_string(),
+        package: "demo".to_string(),
+        version: "1.2.3".to_string(),
+        registry: "https://registry.npmjs.org".to_string(),
+        dist_tag: "latest".to_string(),
+        token_env_var: token_env.to_string(),
+    }
+}
+
+#[test]
+fn rollback_warns_and_returns_ok_when_no_targets_recorded() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    NpmPublisher::new()
+        .rollback(&mut ctx, &npm_evidence(Vec::new()))
+        .expect("rollback is best-effort and returns Ok");
+
+    let warns = capture.warn_messages();
+    assert!(
+        warns
+            .iter()
+            .any(|m| m.contains("npm") && m.contains("published packages")),
+        "empty-evidence rollback must emit the no-targets warning: {warns:?}"
+    );
+    // The per-target loop never runs, so the tally line is absent.
+    assert!(
+        !capture
+            .all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("rollback complete")),
+        "no-targets rollback must return before the per-target tally"
+    );
+}
+
+#[test]
+fn rollback_skips_target_whose_token_env_is_unset() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "")
+        .crates(vec![demo_crate()])
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    NpmPublisher::new()
+        .rollback(&mut ctx, &npm_evidence(vec![npm_target("NPM_TOKEN")]))
+        .expect("rollback is best-effort and returns Ok");
+
+    let warns = capture.warn_messages();
+    assert!(
+        warns
+            .iter()
+            .any(|m| m.contains("env var $NPM_TOKEN is unset")),
+        "a token-less target must be skipped with the manual-unpublish warning: {warns:?}"
+    );
+    // The tally still runs and counts the skipped target as a failure.
+    let msgs = capture.all_messages();
+    assert!(
+        msgs.iter()
+            .any(|(_, m)| m.contains("rollback complete") && m.contains("1 failure")),
+        "the tally must count the token-less target as a failure: {msgs:?}"
+    );
+}
+
+/// A token-bearing target is actually unpublished: `write_npmrc` +
+/// `run_npm_unpublish` run against a fake `npm` on PATH that exits 0.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(npm_counter)]
+fn rollback_unpublishes_recorded_target_with_valid_token() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let npm = bin_dir.join("npm");
+    std::fs::write(&npm, "#!/bin/sh\nexit 0\n").expect("write fake npm");
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "npm-rollback-tok")
+        .crates(vec![demo_crate()])
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
+    // env_mutex; paired restore below.
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+    }
+
+    let res = NpmPublisher::new().rollback(&mut ctx, &npm_evidence(vec![npm_target("NPM_TOKEN")]));
+
+    // SAFETY: paired with the set above.
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+    }
+    res.expect("rollback is best-effort and returns Ok");
+
+    let msgs = capture.all_messages();
+    assert!(
+        msgs.iter()
+            .any(|(_, m)| m.contains("unpublished 'demo@1.2.3'")),
+        "a token-bearing target must be unpublished via npm: {msgs:?}"
+    );
+    assert!(
+        msgs.iter()
+            .any(|(_, m)| m.contains("rollback complete") && m.contains("1 unpublished")),
+        "the tally must report the successful unpublish: {msgs:?}"
+    );
+}
