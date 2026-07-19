@@ -37,11 +37,11 @@ use crate::rollback_only;
 /// `ctx.git_info` was not populated upstream and is worth
 /// investigating before invoking `--rollback-only`.
 ///
-/// Used by [`PublishStage::run`] before writing
-/// `<dist>/run-<id>/report.json`. The write is skipped entirely in
-/// snapshot / dry-run mode, so callers that derive the id outside of
-/// the write path should also gate on `ctx.is_snapshot()` /
-/// `ctx.is_dry_run()` if they want the same behavior.
+/// The derived id names the `<dist>/run-<id>/report.json` path. That
+/// report is written only outside snapshot / dry-run mode, so any
+/// code deriving the id independently of the write path should also
+/// gate on `ctx.is_snapshot()` / `ctx.is_dry_run()` to match that
+/// behavior.
 pub fn derive_run_id(ctx: &Context) -> String {
     if let Some(info) = ctx.git_info.as_ref() {
         if !info.tag.is_empty() && rollback_only::validate_run_id(&info.tag).is_ok() {

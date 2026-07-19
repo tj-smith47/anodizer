@@ -130,9 +130,9 @@ where
 pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageLogger) {
     let version = ctx.version();
     let mut jobs: Vec<post_publish::PollJob> = Vec::new();
-    // Mirrors `jobs` for the skip-path: when the CLI flag is set we
-    // never construct a `PollJob` (no cfg / no URL / no token needed),
-    // but we DO want to emit a `NotPolled` result per configured
+    // Mirrors `jobs` for the skip-path: when the CLI flag is set no
+    // `PollJob` is constructed (no cfg / no URL / no token needed),
+    // but a `NotPolled` result is still emitted per configured
     // publisher so summaries can render "skipped via flag" vs. "no
     // publishers configured" distinctly. `(publisher, package, version)`
     // triples are collected in dispatch order to match the result vec
