@@ -369,6 +369,20 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
         {
             continue;
         }
+        // The `if:` gate must match publish_uploads's active-entry check, or a
+        // deselected entry (`if: false`) leaks a phantom rollback target that a
+        // later rollback would then DELETE. Best-effort: a render error proceeds
+        // (never narrows the rollback checklist on ambiguity), mirroring the
+        // skip branch's `.unwrap_or(false)`.
+        if !anodizer_core::config::evaluate_if_condition(
+            entry.if_condition.as_deref(),
+            "uploads",
+            |t| ctx.render_template(t),
+        )
+        .unwrap_or(true)
+        {
+            continue;
+        }
         let entry_name = match entry.name.as_deref() {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
@@ -2236,5 +2250,62 @@ mod dryrun_and_pure_tests {
         );
         assert_eq!(targets[0].entry, "active");
         assert_eq!(targets[0].url, "http://host/repo/2.0.0/app-2.0.0.tar.gz");
+    }
+
+    /// Regression: an entry with `skip: false` but `if: false` is DESELECTED
+    /// by `publish_uploads` and therefore uploads nothing — so its URL must NOT
+    /// appear in the rollback checklist, or a rollback would DELETE a resource
+    /// this run never created. Guards against `collect_upload_targets` honoring
+    /// only `skip` while ignoring the `if:` gate (divergence from
+    /// `should_skip_publisher_with_if`).
+    #[test]
+    fn collect_upload_targets_excludes_if_false_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join("app-3.0.0.tar.gz");
+        std::fs::write(&art_path, b"bytes").unwrap();
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.uploads = Some(vec![
+            // `skip` is explicitly false (would-not-skip on skip alone) yet the
+            // `if:` condition is falsy — the entry is deselected and must not
+            // contribute a rollback target.
+            UploadConfig {
+                name: Some("gated".to_string()),
+                target: "http://host/repo/{{ .Version }}/".to_string(),
+                skip: Some(anodizer_core::config::StringOrBool::Bool(false)),
+                if_condition: Some("false".to_string()),
+                ..Default::default()
+            },
+            // A plainly-active entry so the vector is non-empty when the gate
+            // works — proving the test asserts on exclusion, not on an empty run.
+            UploadConfig {
+                name: Some("active".to_string()),
+                target: "http://host/live/{{ .Version }}/".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "3.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app-3.0.0.tar.gz".to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let targets = collect_upload_targets(&ctx);
+        assert_eq!(
+            targets.len(),
+            1,
+            "the `if: false` entry must be excluded; only `active` remains: {targets:?}"
+        );
+        assert_eq!(targets[0].entry, "active");
+        assert!(
+            !targets.iter().any(|t| t.entry == "gated"),
+            "deselected `if: false` entry leaked a phantom rollback target: {targets:?}"
+        );
     }
 }
