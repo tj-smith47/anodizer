@@ -715,6 +715,7 @@ pub enum Commands {
         version_selector: Option<String>,
         #[arg(
             long = "from-run",
+            value_parser = parse_run_id,
             help = "Promote what a prior release run recorded (reads dist/run-<id>/report.json)."
         )]
         from_run: Option<String>,

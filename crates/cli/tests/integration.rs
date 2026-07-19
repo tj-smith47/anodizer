@@ -5805,6 +5805,57 @@ crates:
     );
 }
 
+/// `promote --from-run=<id>` joins into a filesystem path exactly like
+/// `release --from-run`, so its clap `value_parser` must reject
+/// path-traversal at the binary surface too. Guards against the F14
+/// regression where the promote arg lacked the `parse_run_id` guard the
+/// release arg already carried.
+#[test]
+fn promote_from_run_rejects_path_traversal_at_binary_surface() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - name: test-project
+        publish: true
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "promote",
+            "--to",
+            "stable",
+            "--from-run",
+            "../../etc/passwd",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "promote --from-run=../../etc/passwd must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The clap value_parser must reject the traversal at the ARG surface —
+    // its rejection names the run-id character rule. Without the guard the
+    // run merely fails later with "no prior report found", so assert on the
+    // parser-specific wording to prove the guard, not just a non-zero exit.
+    assert!(
+        stderr.contains("invalid value") && stderr.contains("invalid characters"),
+        "stderr must be the value_parser rejection, not a downstream error, got: {}",
+        stderr
+    );
+}
+
 /// Invalid `--rollback` values are caught at the translation site before any
 /// pipeline work runs.
 #[test]
