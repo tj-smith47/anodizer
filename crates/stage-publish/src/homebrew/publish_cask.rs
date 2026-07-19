@@ -1,6 +1,6 @@
 //! `publish_cask` — standalone cask publisher (used when the cask needs its
 //! own tap repo, distinct from the formula tap).
-use super::cask::{CaskGenResult, generate_cask_from_context};
+use super::cask_scope::{CaskGenResult, generate_cask_from_context};
 use super::commit_msg::render_commit_msg;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;

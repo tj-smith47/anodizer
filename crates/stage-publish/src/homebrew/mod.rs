@@ -3,6 +3,7 @@
 //! Module layout:
 //! - [`formula`] — Tera template + `FormulaOptions` + `generate_formula*`.
 //! - [`cask`] — cask Tera template + `CaskParams` + `generate_cask*`.
+//! - [`cask_scope`] — artifact-scope resolution + `generate_cask_from_context`.
 //! - [`commit_msg`] — shared commit-message renderer (used by aur, scoop,
 //!   krew, nix, aur_source publishers as well).
 //! - [`publish_formula`] — `publish_to_homebrew` (per-crate formula + optional
@@ -12,6 +13,7 @@
 //!   `homebrew_casks:` config).
 
 mod cask;
+mod cask_scope;
 mod commit_msg;
 mod formula;
 mod publish_cask;
@@ -25,7 +27,7 @@ mod tests;
 pub use cask::{
     CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
 };
-pub(crate) use cask::{CaskGenResult, crate_has_macos_cask_artifact};
+pub(crate) use cask_scope::{CaskGenResult, crate_has_macos_cask_artifact};
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
 pub use formula::{
     FormulaOptions, build_completion_and_manpage_install_lines, generate_formula,

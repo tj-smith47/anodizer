@@ -2,9 +2,10 @@
 //! top-level `homebrew_casks:` config block (independent of any per-crate
 //! homebrew config).
 use super::cask::{
-    CaskParams, find_top_level_cask_artifact, generate_cask, render_additional_url_params,
-    render_uninstall_block, render_zap_block,
+    CaskParams, generate_cask, render_additional_url_params, render_uninstall_block,
+    render_zap_block,
 };
+use super::cask_scope::find_top_level_cask_artifact;
 use super::commit_msg::render_commit_msg;
 use super::formula::{build_conflicts_directives, build_depends_directives};
 use anodizer_core::config::HomebrewCaskConfig;
@@ -267,9 +268,9 @@ fn render_top_level_cask_inner(
     // architecture's binary to every Mac. The single-arch flat `url`/`sha256`
     // above stays the fallback for genuinely single-platform projects.
     let url_template = cask_cfg.url.as_ref().and_then(|u| u.template.as_deref());
-    let platform_blocks = super::cask::build_cask_platform_blocks(
+    let platform_blocks = super::cask_scope::build_cask_platform_blocks(
         ctx,
-        &super::cask::CaskArtifactScope::TopLevel {
+        &super::cask_scope::CaskArtifactScope::TopLevel {
             ids: cask_cfg.ids.as_deref(),
         },
         &version,
@@ -470,7 +471,7 @@ fn render_top_level_cask_inner(
             name: alt,
             display_name: alt,
             alternative_names: &[],
-            ..super::cask::clone_cask_params(&params)
+            ..super::cask_scope::clone_cask_params(&params)
         };
         let alt_body = generate_cask(&alt_params)?;
         crate::util::guard_no_unrendered(ctx, log, "homebrew cask", &alt_body)?;

@@ -18,10 +18,11 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 
-use super::api::{GithubApi, PrOutcome, RepoFile, download_sha256};
+use super::api::{GithubApi, PrOutcome, download_sha256};
 use super::formula::{
     FormulaRewrite, flat_formula_path, formula_is_current, rewrite_formula, sharded_formula_path,
 };
+use super::locate::locate_formula;
 
 simple_publisher!(
     HomebrewCorePublisher,
@@ -229,27 +230,6 @@ pub(crate) fn resolve_commit_message(
 
 /// Locate the formula file: the configured `path:` (templated), else the
 /// sharded core layout, else the flat tap layout.
-fn locate_formula(
-    ctx: &Context,
-    cfg: &HomebrewCoreConfig,
-    api: &GithubApi,
-    owner: &str,
-    repo: &str,
-    branch: &str,
-    formula: &str,
-) -> Result<Option<RepoFile>> {
-    if let Some(raw) = cfg.path.as_deref().filter(|p| !p.is_empty()) {
-        let path = ctx
-            .render_template(raw)
-            .context("homebrew-core: render path template")?;
-        return api.get_file(owner, repo, &path, branch);
-    }
-    if let Some(f) = api.get_file(owner, repo, &sharded_formula_path(formula), branch)? {
-        return Ok(Some(f));
-    }
-    api.get_file(owner, repo, &flat_formula_path(formula), branch)
-}
-
 /// Top-level publish entrypoint. Iterates each `homebrew_cores[]` entry and
 /// bumps its formula. `targets` is an out-param so a mid-loop error still
 /// yields rollback evidence for the PRs that already opened.

@@ -12,10 +12,13 @@
 //! - [`formula`] — pure formula-text rewrite + path layout helpers.
 //! - [`api`] — the minimal GitHub REST surface (contents / refs / forks /
 //!   pulls) the bump drives.
+//! - [`locate`] — formula-file location (explicit `path:` override or
+//!   sharded/flat layout fallback).
 //! - [`publisher`] — orchestration + the `Publisher` trait impl.
 
 pub(crate) mod api;
 pub(crate) mod formula;
+mod locate;
 pub mod publisher;
 
 #[cfg(test)]

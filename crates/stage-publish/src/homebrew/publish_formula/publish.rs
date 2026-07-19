@@ -1,4 +1,4 @@
-use super::super::cask::generate_cask_from_context;
+use super::super::cask_scope::generate_cask_from_context;
 use super::super::commit_msg::render_commit_msg;
 use super::super::formula::{FormulaOptions, generate_formula_with_opts};
 use anodizer_core::config::HomebrewConfig;
@@ -103,7 +103,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> Result<Option<super::super::cask::CaskGenResult>> {
+) -> Result<Option<super::super::cask_scope::CaskGenResult>> {
     let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
         return Ok(None);
     };

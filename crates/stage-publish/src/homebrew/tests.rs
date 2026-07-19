@@ -2303,7 +2303,7 @@ fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
         "https://e.com/mytool.dmg",
         "dmgsha",
     ));
-    let got = super::cask::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::DiskImage, "DiskImage preferred");
 }
 
@@ -2320,7 +2320,7 @@ fn find_top_level_cask_artifact_falls_back_to_archive() {
         "https://e.com/mytool.tar.gz",
         "archsha",
     ));
-    let got = super::cask::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::Archive);
 }
 
@@ -2336,7 +2336,7 @@ fn find_top_level_cask_artifact_returns_none_for_no_macos() {
         "https://e.com/mytool.tar.gz",
         "linuxsha",
     ));
-    assert!(super::cask::find_top_level_cask_artifact(&ctx, None).is_none());
+    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none());
 }
 
 /// `find_top_level_cask_artifact` excludes Apple-but-not-macOS archives
@@ -2360,7 +2360,7 @@ fn find_top_level_cask_artifact_excludes_apple_non_macos() {
         ));
     }
     assert!(
-        super::cask::find_top_level_cask_artifact(&ctx, None).is_none(),
+        super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none(),
         "iOS/watchOS/tvOS archives must not be selected as a cask url"
     );
 }
@@ -2382,10 +2382,11 @@ fn find_top_level_cask_artifact_filters_by_id() {
     ctx.artifacts.add(a);
     // Only `nightly` IDs are wanted => returns None.
     assert!(
-        super::cask::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()])).is_none()
+        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]))
+            .is_none()
     );
     // `stable` IDs requested => the artifact is returned.
-    let got = super::cask::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
         .expect("artifact must match");
     assert_eq!(got.kind, ArtifactKind::DiskImage);
 }
@@ -2525,8 +2526,9 @@ fn generate_cask_from_context_emits_every_os_arch_pair() {
     let hb_cfg = HomebrewConfig::default();
     let cask_cfg = HomebrewCaskConfig::default();
     let log = test_log();
-    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
-        .expect("multi-arch cask generation");
+    let result =
+        super::cask_scope::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
+            .expect("multi-arch cask generation");
     let cask = result.content;
 
     assert!(cask.contains("on_macos do"), "missing on_macos\n{cask}");
@@ -2583,8 +2585,9 @@ fn generate_cask_from_context_single_arch_still_valid() {
     let hb_cfg = HomebrewConfig::default();
     let cask_cfg = HomebrewCaskConfig::default();
     let log = test_log();
-    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
-        .expect("single-arch cask generation");
+    let result =
+        super::cask_scope::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
+            .expect("single-arch cask generation");
     let cask = result.content;
     assert!(cask.contains("sha_darwin_arm64"), "{cask}");
     assert!(
@@ -2745,9 +2748,14 @@ fn generate_cask_from_context_renders_configured_livecheck() {
         }),
         ..Default::default()
     };
-    let result =
-        super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &test_log())
-            .expect("cask generation");
+    let result = super::cask_scope::generate_cask_from_context(
+        &ctx,
+        "mytool",
+        &hb_cfg,
+        &cask_cfg,
+        &test_log(),
+    )
+    .expect("cask generation");
     assert!(
         result
             .content
@@ -4566,9 +4574,14 @@ fn per_crate_cask_string_fields_are_template_rendered() {
     };
     let ctx = rendered_field_ctx(HomebrewConfig::default());
     let hb_cfg = HomebrewConfig::default();
-    let result =
-        super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &test_log())
-            .expect("cask render");
+    let result = super::cask_scope::generate_cask_from_context(
+        &ctx,
+        "mytool",
+        &hb_cfg,
+        &cask_cfg,
+        &test_log(),
+    )
+    .expect("cask render");
     let c = result.content;
     assert!(
         c.contains("v1.2.3"),

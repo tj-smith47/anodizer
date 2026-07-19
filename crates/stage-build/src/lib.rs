@@ -56,8 +56,10 @@ pub use workspace::{resolve_reproducible_epoch, resolve_reproducible_epoch_with_
 
 pub struct BuildStage;
 
+mod prebuilt;
 mod run;
 mod run_helpers;
+mod rustflags;
 
 // ---------------------------------------------------------------------------
 // Tests

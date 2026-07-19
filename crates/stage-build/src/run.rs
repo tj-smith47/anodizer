@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::ArtifactKind;
-use anodizer_core::config::{BuildConfig, BuildIgnore, BuildOverride, BuilderKind, CrossStrategy};
+use anodizer_core::config::{BuildIgnore, BuildOverride, BuilderKind, CrossStrategy};
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_env as expand_env_vars;
 use anodizer_core::stage::Stage;
@@ -12,9 +12,7 @@ use anodizer_core::target::map_target;
 
 use anodizer_core::build_plan::{crate_declares_bin, planned_builds};
 
-use super::command::{
-    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
-};
+use super::command::{build_command, build_lib_command, detect_crate_type};
 use super::profile::detect_cargo_profile;
 use super::targets::{
     KNOWN_TARGETS, find_matching_override, is_target_ignored, resolve_target_env,
@@ -24,16 +22,18 @@ use super::workspace::{
     cargo_target_dir_with_env, check_workspace_package, ensure_targets_installed,
 };
 
+use crate::prebuilt::{no_default_binary_reason, plan_prebuilt_build};
 use crate::run_helpers::{
     BuildExec, BuildJob, apply_source_mutations, process_universal_binaries, run_dry_run,
     run_parallel, run_sequential, seed_determinism_state,
 };
+use crate::rustflags::merge_reproducible_rustflags;
 
 // Per-target template variable seeding lives in core
 // (`anodizer_core::build_env::seed_build_target_vars`) so the config-time
 // env projection seeds the exact set this planner renders with.
 use anodizer_core::build_env::{
-    build_amd64_variant, clear_build_target_vars, prebuilt_amd64_variant, seed_build_target_vars,
+    build_amd64_variant, clear_build_target_vars, seed_build_target_vars,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,79 +174,14 @@ impl Stage for super::BuildStage {
 // Build planning
 // ---------------------------------------------------------------------------
 
-struct PlanInputs<'a> {
+pub(crate) struct PlanInputs<'a> {
     crates: &'a [anodizer_core::config::CrateConfig],
     default_targets: &'a [String],
     default_strategy: &'a CrossStrategy,
     default_flags: &'a Option<Vec<String>>,
-    default_ignores: &'a [BuildIgnore],
+    pub(crate) default_ignores: &'a [BuildIgnore],
     default_overrides: &'a [BuildOverride],
     commit_timestamp: &'a str,
-}
-
-/// Merge reproducibility RUSTFLAGS for a build of `target` whose working
-/// directory is `cwd`, without clobbering externally-set flags.
-///
-/// `config` (a per-target `build.env` RUSTFLAGS) wins when present;
-/// otherwise fall back to `inherited` — the process env, where the
-/// determinism harness places the Windows-MSVC reproducibility flags
-/// (`/Brepro`, `/DEBUG:NONE`, `codegen-units=1`, ...) alongside its own
-/// `--remap-path-prefix` rules. A `--remap-path-prefix=<cwd>=/build` rule
-/// is appended so source paths normalize, UNLESS the chosen base already
-/// remaps `cwd` (the harness remaps the worktree, which is `cwd`) — a
-/// second rule for the same prefix is shadowed by rustc's first-match-wins
-/// and would only mislead.
-///
-/// When `target` is a `*-pc-windows-msvc` triple, the
-/// [`MSVC_DETERMINISM_RUSTFLAGS`](anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS)
-/// set is merged in (deduplicating any token already present from config or
-/// the inherited env). This is keyed on the TARGET triple, not the host, so
-/// a Windows binary cross-built from Linux is reproducible too. Without it,
-/// a consumer's `reproducible: true` Windows build would still stamp the PE
-/// COFF `TimeDateStamp` (offset 0x108) with wall-clock time and drift.
-///
-/// The cargo build inherits the process env (`Command::envs` adds, does
-/// not clear). Overwriting RUSTFLAGS here with only the remap rule would —
-/// per cargo's `RUSTFLAGS` over `CARGO_TARGET_<triple>_RUSTFLAGS`
-/// precedence — suppress the harness-injected flags and reintroduce the PE
-/// `TimeDateStamp` drift on Windows. Blank (whitespace-only) values are
-/// treated as unset.
-fn merge_reproducible_rustflags(
-    config: Option<&str>,
-    inherited: Option<&str>,
-    cwd: &str,
-    target: &str,
-) -> String {
-    let base = config
-        .filter(|s| !s.trim().is_empty())
-        .or(inherited.filter(|s| !s.trim().is_empty()))
-        .map(str::trim)
-        .unwrap_or("");
-    let with_remap = if base.is_empty() {
-        format!("--remap-path-prefix={cwd}=/build")
-    } else if base.contains(&format!("--remap-path-prefix={cwd}=")) {
-        base.to_string()
-    } else {
-        format!("{base} --remap-path-prefix={cwd}=/build")
-    };
-    if anodizer_core::target::is_windows_msvc(target) {
-        anodizer_core::determinism::merge_msvc_determinism_rustflags(&with_remap)
-    } else {
-        with_remap
-    }
-}
-
-/// Diagnostic reason a crate gets no default `--bin <crate>` build: a pure
-/// library (no binary targets at all) versus a library that carries only
-/// helper binaries whose names don't match the crate (so cargo would reject
-/// `--bin <crate>`). Surfaced in the skip line so a consumer can tell the two
-/// apart at a glance.
-fn no_default_binary_reason(crate_path: &str, crate_name: &str) -> String {
-    if crate_has_binary_target(crate_path) {
-        format!("no binary target named '{crate_name}' (only differently-named helper binaries)")
-    } else {
-        format!("no binary target named '{crate_name}' (library crate)")
-    }
 }
 
 /// Flatten the nested (crate, build, target) tree into a list of
@@ -919,324 +854,6 @@ fn plan_build_jobs(
     Ok((build_jobs, copy_jobs))
 }
 
-/// Plan a single `builder: prebuilt` build by rendering its
-/// `prebuilt.path` template per target, stat()-ing the rendered path,
-/// and registering an `ArtifactKind::Binary` directly in `ctx.artifacts`.
-///
-/// No `BuildJob` is emitted — the cargo runner has nothing to do for an
-/// imported binary. Hooks (`pre`/`post`), `skip:`, target filters
-/// (`--single-target`, `--split`, `ignore`), and the per-target
-/// template-var lifecycle (Os, Arch, Target, Amd64, ArtifactExt,
-/// ArtifactID) are all honoured the same way as the cargo path so
-/// downstream stages see a uniform artifact shape regardless of which
-/// builder produced the bytes.
-///
-/// Cargo-only knobs (`features`, `no_default_features`, `command`,
-/// `cross_tool`, `flags`, `reproducible`) are rejected at config-load
-/// time by [`anodizer_core::config::validate_builds`]; the planner can
-/// therefore assume the build entry is well-formed by the time it gets
-/// here. `targets:` is also required-explicit by that validator.
-fn plan_prebuilt_build(
-    ctx: &mut Context,
-    log: &anodizer_core::log::StageLogger,
-    crate_cfg: &anodizer_core::config::CrateConfig,
-    build: &BuildConfig,
-    inputs: &PlanInputs<'_>,
-) -> Result<()> {
-    let binary_field: String = build
-        .binary
-        .clone()
-        .unwrap_or_else(|| crate_cfg.name.clone());
-
-    let should_skip = match build.skip.as_ref() {
-        Some(s) => s
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| {
-                format!(
-                    "build: render skip template for prebuilt build '{}'",
-                    build.id.as_deref().unwrap_or(&binary_field)
-                )
-            })?,
-        None => false,
-    };
-    if should_skip {
-        log.status(&format!(
-            "skipped prebuilt build '{}' — skip: true",
-            build.id.as_deref().unwrap_or(&binary_field)
-        ));
-        return Ok(());
-    }
-
-    let prebuilt = build.prebuilt.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "internal: prebuilt build '{}' reached the planner without a `prebuilt:` block \
-             (validate_builds should have rejected this at config-load)",
-            build.id.as_deref().unwrap_or(&binary_field)
-        )
-    })?;
-    let path_template = prebuilt.path.clone();
-
-    // `targets:` is required-explicit for prebuilt builds (enforced by
-    // validate_builds). Honour `--single-target` / `--split` the same
-    // way the cargo path does so operators can shard prebuilt imports.
-    let mut targets: Vec<String> = build.targets.clone().unwrap_or_default();
-    if let Some(ref single) = ctx.options.single_target {
-        let original = targets.clone();
-        targets.retain(|t| t == single);
-        if targets.is_empty()
-            && let Some(matched) = anodizer_core::partial::find_runtime_target(single, &original)
-        {
-            log.verbose(&format!(
-                "host '{}' matched configured prebuilt target '{}' via alias table (--single-target)",
-                single, matched
-            ));
-            targets.push(matched);
-        }
-        if targets.is_empty() {
-            anyhow::bail!(
-                "--single-target: host triple '{}' is not in configured prebuilt targets for {}/{} \
-                 (configured: [{}]).",
-                single,
-                crate_cfg.name,
-                binary_field,
-                original.join(", ")
-            );
-        }
-    }
-    if let Some(ref partial) = ctx.options.partial_target {
-        targets = partial.filter_targets(&targets);
-        if targets.is_empty() {
-            log.verbose(&format!(
-                "skipped {}/{} — no prebuilt targets match partial filter",
-                crate_cfg.name, binary_field
-            ));
-            return Ok(());
-        }
-    }
-
-    let build_ignores: Vec<BuildIgnore> = build
-        .ignore
-        .clone()
-        .unwrap_or_else(|| inputs.default_ignores.to_vec());
-
-    for target in &targets {
-        if is_target_ignored(target, &build_ignores) {
-            log.verbose(&format!(
-                "ignoring prebuilt target {} (matched ignore rule)",
-                target
-            ));
-            continue;
-        }
-
-        let (os, _arch) = map_target(target);
-
-        seed_build_target_vars(
-            ctx.template_vars_mut(),
-            target,
-            &os,
-            build.id.as_deref().unwrap_or(""),
-        );
-        let binary_name = ctx.render_template(&binary_field).unwrap_or_else(|e| {
-            log.warn(&format!(
-                "failed to render binary template '{}': {}, using raw value",
-                binary_field, e
-            ));
-            binary_field.clone()
-        });
-
-        let rendered_path = ctx.render_template(&path_template).with_context(|| {
-            format!(
-                "build: render prebuilt.path template '{}' for target {}",
-                path_template, target
-            )
-        })?;
-
-        clear_build_target_vars(ctx.template_vars_mut());
-
-        let staged_path = std::path::PathBuf::from(&rendered_path);
-        let dry_run = ctx.options.dry_run;
-        if !dry_run {
-            std::fs::metadata(&staged_path).with_context(|| {
-                format!(
-                    "prebuilt: failed to stat imported binary at '{}' (rendered from \
-                     `prebuilt.path: {}`) for target '{}'. Stage the binary before running \
-                     `anodize build`, or check the path template renders to a real file.",
-                    rendered_path, path_template, target
-                )
-            })?;
-        }
-
-        let amd64_variant = prebuilt_amd64_variant(build, target);
-
-        let dist_dir = ctx.config.dist.clone();
-        crate::run_helpers::add_artifact(
-            ctx,
-            &dist_dir,
-            dry_run,
-            &staged_path,
-            ArtifactKind::Binary,
-            target,
-            &crate_cfg.name,
-            &binary_name,
-            &build.id,
-            false,
-            &amd64_variant,
-        )?;
-
-        if dry_run {
-            log.status(&format!(
-                "(dry-run) would import prebuilt {}/{} ({}) from {}",
-                crate_cfg.name,
-                binary_name,
-                target,
-                staged_path.display()
-            ));
-        } else {
-            log.status(&format!(
-                "imported prebuilt {}/{} ({}) from {}",
-                crate_cfg.name,
-                binary_name,
-                target,
-                staged_path.display()
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod reproducible_rustflags_tests {
-    use super::merge_reproducible_rustflags;
-
-    const CWD: &str = "/work";
-    const REMAP: &str = "--remap-path-prefix=/work=/build";
-    // A non-MSVC target so the MSVC determinism merge stays off — these cases
-    // exercise the remap/precedence logic in isolation.
-    const LINUX: &str = "x86_64-unknown-linux-gnu";
-    const WIN_MSVC: &str = "x86_64-pc-windows-msvc";
-
-    #[test]
-    fn preserves_inherited_msvc_flags_from_harness() {
-        // The determinism harness injects /Brepro into the child's process
-        // RUSTFLAGS. With no per-target config override, the build stage must
-        // carry it through — clobbering it reintroduces the PE timestamp drift.
-        let inherited = "-C link-arg=/Brepro -C link-arg=/DEBUG:NONE";
-        let merged = merge_reproducible_rustflags(None, Some(inherited), CWD, LINUX);
-        assert!(merged.contains("/Brepro"), "got {merged}");
-        assert!(merged.contains("/DEBUG:NONE"), "got {merged}");
-        assert!(merged.ends_with(REMAP), "remap must be appended: {merged}");
-    }
-
-    #[test]
-    fn config_override_wins_over_inherited() {
-        let merged = merge_reproducible_rustflags(
-            Some("-C target-cpu=native"),
-            Some("-C link-arg=/Brepro"),
-            CWD,
-            LINUX,
-        );
-        assert_eq!(merged, format!("-C target-cpu=native {REMAP}"));
-    }
-
-    #[test]
-    fn remap_only_when_nothing_inherited() {
-        assert_eq!(merge_reproducible_rustflags(None, None, CWD, LINUX), REMAP);
-        // Blank (whitespace-only) values are treated as unset, not as a real
-        // base to append to — no leading-space artifact.
-        assert_eq!(
-            merge_reproducible_rustflags(Some(""), Some("  "), CWD, LINUX),
-            REMAP
-        );
-    }
-
-    #[test]
-    fn does_not_double_remap_when_cwd_already_remapped() {
-        // The harness already remaps the worktree (== cwd) to /anodize.
-        // A second rule for the same prefix is shadowed (rustc first-match-
-        // wins) and only misleads, so it must not be appended.
-        let inherited = "-C link-arg=/Brepro --remap-path-prefix=/work=/anodize";
-        let merged = merge_reproducible_rustflags(None, Some(inherited), CWD, LINUX);
-        assert!(
-            merged.starts_with(inherited),
-            "must not append a shadowed cwd remap: {merged}"
-        );
-        assert_eq!(
-            merged.matches("--remap-path-prefix=/work=").count(),
-            1,
-            "exactly one remap rule for the cwd prefix: {merged}"
-        );
-    }
-
-    /// Regression (PE TimeDateStamp drift): a `reproducible: true` build
-    /// targeting `x86_64-pc-windows-msvc` must emit the full MSVC
-    /// determinism flag set — keyed on the TARGET triple, so it fires even
-    /// when cross-building Windows from a Linux host (where `cfg!(windows)`
-    /// is false). Without `/Brepro` the COFF TimeDateStamp at offset 0x108
-    /// is wall-clock and the .exe drifts between rebuilds.
-    #[test]
-    fn windows_msvc_target_gets_full_determinism_flag_set() {
-        let merged = merge_reproducible_rustflags(None, None, CWD, WIN_MSVC);
-        for needle in [
-            "-C codegen-units=1",
-            "-C link-arg=/Brepro",
-            "-C link-arg=/OPT:NOICF",
-            "-C link-arg=/INCREMENTAL:NO",
-            "-C link-arg=/DEBUG:NONE",
-            "-C strip=symbols",
-        ] {
-            assert!(
-                merged.contains(needle),
-                "windows-msvc reproducible build must carry `{needle}`. got={merged}"
-            );
-        }
-        assert!(
-            merged.contains(REMAP),
-            "remap rule must still be present: {merged}"
-        );
-    }
-
-    /// A non-MSVC target must NOT receive the MSVC-linker-only flags —
-    /// `/Brepro` and the `/...` link args make lld / ld error.
-    #[test]
-    fn non_msvc_target_gets_no_brepro() {
-        let merged = merge_reproducible_rustflags(None, None, CWD, LINUX);
-        assert!(
-            !merged.contains("/Brepro"),
-            "linux target must not carry the MSVC-only /Brepro: {merged}"
-        );
-        assert_eq!(
-            merged, REMAP,
-            "linux reproducible build is remap-only: {merged}"
-        );
-    }
-
-    /// Aarch64 Windows-MSVC is also covered by the target-keyed gate.
-    #[test]
-    fn aarch64_windows_msvc_target_gets_brepro() {
-        let merged = merge_reproducible_rustflags(None, None, CWD, "aarch64-pc-windows-msvc");
-        assert!(merged.contains("-C link-arg=/Brepro"), "got={merged}");
-    }
-
-    /// Idempotence: an inherited MSVC set (e.g. from the harness env) is not
-    /// duplicated when the target-keyed merge runs over it.
-    #[test]
-    fn windows_msvc_merge_does_not_duplicate_inherited_brepro() {
-        let inherited = "-C codegen-units=1 -C link-arg=/Brepro";
-        let merged = merge_reproducible_rustflags(None, Some(inherited), CWD, WIN_MSVC);
-        assert_eq!(
-            merged.matches("/Brepro").count(),
-            1,
-            "/Brepro must appear exactly once: {merged}"
-        );
-        assert_eq!(
-            merged.matches("codegen-units=1").count(),
-            1,
-            "codegen-units=1 must appear exactly once: {merged}"
-        );
-    }
-}
-
 #[cfg(test)]
 mod per_target_var_tests {
     use anodizer_core::build_env::{
@@ -1322,7 +939,7 @@ mod per_target_var_tests {
 #[cfg(test)]
 mod env_scope_tests {
     use super::*;
-    use anodizer_core::config::CrateConfig;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
 
     const LINUX: &str = "x86_64-unknown-linux-gnu";
