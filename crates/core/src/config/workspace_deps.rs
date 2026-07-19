@@ -48,6 +48,43 @@ pub fn extract_workspace_deps(
     deps
 }
 
+/// Extract the intra-workspace dev-dependencies that SURVIVE `cargo publish`'s
+/// manifest rewrite — the only ones that impose a publish-order requirement.
+///
+/// Cargo strips a dev-dependency carrying no `version` from the published
+/// manifest; a path-only dev-dep exists precisely to permit dev-only cycles
+/// (the serde ↔ serde_derive idiom), so deriving an edge from one fabricates a
+/// cycle the publish-order validator refuses — blocking a workspace `cargo
+/// publish` itself handles fine. Kept edges: an entry with an explicit
+/// `version`, or `workspace = true` (the workspace pin supplies the version —
+/// conservatively kept even if the root pin were somehow unversioned, since an
+/// extra edge on an acyclic graph is harmless while a missing one strands a
+/// backfill).
+fn extract_publishable_dev_deps(
+    dependencies: Option<&Value>,
+    member_names: &HashSet<String>,
+) -> Vec<String> {
+    let mut deps = vec![];
+    if let Some(Value::Table(table)) = dependencies {
+        for (dep_name, val) in table {
+            if !member_names.contains(dep_name) {
+                continue;
+            }
+            let Value::Table(t) = val else { continue };
+            let workspace_inherit = t
+                .get("workspace")
+                .is_some_and(|v| v.as_bool() == Some(true));
+            let versioned = t.contains_key("version");
+            let is_local = t.contains_key("path") || workspace_inherit;
+            if is_local && (versioned || workspace_inherit) {
+                deps.push(dep_name.clone());
+            }
+        }
+    }
+    deps.sort();
+    deps
+}
+
 /// Expand a glob pattern relative to `root` (only handles trailing `*`
 /// patterns, matching Cargo's own `members = ["crates/*"]` shorthand).
 /// Returns paths relative to `root`.
@@ -151,7 +188,12 @@ pub fn discover_cargo_workspace_member_names(base_dir: &Path) -> HashSet<String>
 /// inherits the workspace version, and `cargo publish` rejects the crate when
 /// that version is not yet on the index — the exact failure that stranded a
 /// backfill when `anodizer-stage-attest` published before its dev-dependency
-/// `anodizer-stage-checksum`.) The crate's own package name is filtered out: a
+/// `anodizer-stage-checksum`.) An UNVERSIONED path-only dev-dep is the one
+/// exception: cargo strips it from the published manifest, so it imposes no
+/// order requirement — and must not contribute an edge, or the standard
+/// dev-only-cycle idiom (B depends on A, A path-dev-deps B for tests) would
+/// derive a cycle the publish-order validator rejects. See
+/// [`extract_publishable_dev_deps`]. The crate's own package name is filtered out: a
 /// crate never depends on itself, and a `path`/`workspace` dev-dependency on
 /// its own package (a common test-helpers pattern) would otherwise appear as a
 /// self-edge and corrupt the topological order. Missing / unparsable
@@ -171,7 +213,7 @@ pub fn derive_depends_on_from_cargo_toml(
         doc.get("build-dependencies"),
         member_names,
     ));
-    deps.extend(extract_workspace_deps(
+    deps.extend(extract_publishable_dev_deps(
         doc.get("dev-dependencies"),
         member_names,
     ));
@@ -404,6 +446,64 @@ mod tests {
         let members: HashSet<String> = ["a", "test-helper"].into_iter().map(String::from).collect();
         let deps = derive_depends_on_from_cargo_toml(&root.path().join("crates/a"), &members);
         assert_eq!(deps, vec!["test-helper".to_string()]);
+    }
+
+    #[test]
+    fn derive_depends_on_from_cargo_toml_excludes_unversioned_path_dev_dependency() {
+        // The serde ↔ serde_derive idiom: `a` is a normal dependency of `b`
+        // elsewhere, and `a` dev-deps `b` via an UNVERSIONED path entry so its
+        // tests can use `b`. `cargo publish` strips that dev-dep from the
+        // published manifest, so it is NOT a publish-order requirement;
+        // deriving an edge from it fabricates an a↔b cycle that
+        // `validate_publish_order` would refuse — blocking a workspace cargo
+        // publishes fine.
+        let root = tempdir().unwrap();
+        write(
+            root.path(),
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n[dev-dependencies]\nb = { path = \"../b\" }\n",
+        );
+        let members: HashSet<String> = ["a", "b"].into_iter().map(String::from).collect();
+        let deps = derive_depends_on_from_cargo_toml(&root.path().join("crates/a"), &members);
+        assert!(
+            deps.is_empty(),
+            "an unversioned path-only dev-dep is stripped by `cargo publish` and must not \
+             derive a publish-order edge; got {deps:?}"
+        );
+    }
+
+    #[test]
+    fn derive_depends_on_from_cargo_toml_keeps_versioned_path_dev_dependency() {
+        // A `path` dev-dep that ALSO carries `version` survives in the
+        // published manifest — cargo rewrites it to the registry version — so
+        // it is a hard order requirement and the edge must be retained.
+        let root = tempdir().unwrap();
+        write(
+            root.path(),
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n[dev-dependencies]\n\
+             b = { path = \"../b\", version = \"0.1.0\" }\n",
+        );
+        let members: HashSet<String> = ["a", "b"].into_iter().map(String::from).collect();
+        let deps = derive_depends_on_from_cargo_toml(&root.path().join("crates/a"), &members);
+        assert_eq!(deps, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn derive_depends_on_from_cargo_toml_keeps_unversioned_path_normal_dependency() {
+        // The versioned-only filter applies to [dev-dependencies] ONLY. A
+        // path-only NORMAL dep still derives an edge: cargo requires a version
+        // for it at publish time anyway, and dropping the edge would regress
+        // the v0.19.0-class missing-member ordering guard.
+        let root = tempdir().unwrap();
+        write(
+            root.path(),
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n[dependencies]\nb = { path = \"../b\" }\n",
+        );
+        let members: HashSet<String> = ["a", "b"].into_iter().map(String::from).collect();
+        let deps = derive_depends_on_from_cargo_toml(&root.path().join("crates/a"), &members);
+        assert_eq!(deps, vec!["b".to_string()]);
     }
 
     #[test]
