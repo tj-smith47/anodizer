@@ -656,3 +656,211 @@ fn requirements_declare_git_and_krew_token_for_active_config() {
         "the PR-direct flow clones, so `git` must be required; got {dumped}"
     );
 }
+
+// -----------------------------------------------------------------------------
+// Rollback close-PR flow driven end-to-end over a loopback GitHub-API responder
+// -----------------------------------------------------------------------------
+//
+// `KrewPublisher::rollback` calls the NON-`_with_env` github_pr wrappers, which
+// read the API base from the PROCESS env, so these tests set
+// `ANODIZER_GITHUB_API_BASE` under the crate `env_mutex` (paired restore). The
+// rollback token is supplied through the Context's scoped env source
+// (`KREW_INDEX_TOKEN`). Each test scripts the two GitHub endpoints the close
+// flow hits: `GET .../pulls?state=open&head=...` then `PATCH .../pulls/{n}`.
+
+/// Drive one recorded krew PR target's rollback against `routes` and return the
+/// captured log. `routes` scripts the GitHub-API responder the close flow hits.
+fn run_krew_rollback_over(
+    routes: Vec<anodizer_core::test_helpers::scripted_responder::ScriptedRoute>,
+) -> (
+    anodizer_core::log::LogCapture,
+    std::sync::Arc<
+        std::sync::Mutex<Vec<anodizer_core::test_helpers::scripted_responder::RequestLog>>,
+    >,
+) {
+    use anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder;
+    let (addr, req_log) = spawn_scripted_responder(routes);
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = TestContextBuilder::new()
+        .env("KREW_INDEX_TOKEN", "krew-tok")
+        .build();
+    ctx.with_log_capture(capture.clone());
+    let mut evidence = PublishEvidence::new("krew");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
+            krew_targets: vec![KrewPrTarget {
+                target: "demo".into(),
+                upstream_owner: "kubernetes-sigs".into(),
+                upstream_repo: "krew-index".into(),
+                fork_owner: "acme".into(),
+                branch: "demo-v1.2.3".into(),
+                token_env_var: Some("KREW_INDEX_TOKEN".into()),
+            }],
+        });
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let prev = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
+    // env-ok: held under the crate env_mutex (above); paired restore below.
+    unsafe {
+        std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+    }
+
+    let res = KrewPublisher::new().rollback(&mut ctx, &evidence);
+
+    // env-ok: paired restore of the base set above, still under env_mutex.
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("ANODIZER_GITHUB_API_BASE", v),
+            None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
+        }
+    }
+    res.expect("rollback is best-effort and returns Ok");
+    (capture, req_log)
+}
+
+use anodizer_core::test_helpers::scripted_responder::ScriptedRoute;
+
+/// One open PR found + PATCH 200 ⇒ a fresh close: the summary reports one
+/// closed PR, and both the query and the close request were actually issued.
+#[test]
+fn krew_rollback_closes_open_pr() {
+    let (cap, req_log) = run_krew_rollback_over(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls?state=open&head=acme:demo-v1.2.3&per_page=100",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n[{\"number\":7}]",
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PATCH",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls/7",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        },
+    ]);
+    let all = cap.all_messages();
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("krew rollback closed 1, already-closed 0, failed 0")),
+        "one open PR PATCHed 200 must tally as a single fresh close: {all:?}"
+    );
+    let reqs = req_log.lock().unwrap();
+    assert!(
+        reqs.iter()
+            .any(|r| r.method == "PATCH" && r.path.ends_with("/pulls/7")),
+        "the close must issue a PATCH against the found PR: {reqs:?}"
+    );
+}
+
+/// No open PRs for the head ⇒ the empty-arm warn fires and NO PATCH is sent.
+#[test]
+fn krew_rollback_warns_when_no_open_pr_for_head() {
+    let (cap, req_log) = run_krew_rollback_over(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/kubernetes-sigs/krew-index/pulls?state=open&head=acme:demo-v1.2.3&per_page=100",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]",
+        times: None,
+    }]);
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("no open krew PRs found") && m.contains("acme:demo-v1.2.3")),
+        "an empty PR list must warn without closing anything: {:?}",
+        cap.warn_messages()
+    );
+    let reqs = req_log.lock().unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.method == "PATCH"),
+        "no PATCH may be issued when no PR is open: {reqs:?}"
+    );
+}
+
+/// A 403 on the PR query ⇒ the actionable auth-failure warn (not the
+/// misleading "no PR found"), and no close is attempted.
+#[test]
+fn krew_rollback_warns_on_pr_query_auth_failure() {
+    let (cap, req_log) = run_krew_rollback_over(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/kubernetes-sigs/krew-index/pulls?state=open&head=acme:demo-v1.2.3&per_page=100",
+        response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nforbidden",
+        times: None,
+    }]);
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("failed to query krew upstream kubernetes-sigs/krew-index")),
+        "a 403 on the query must surface the actionable failure warn: {:?}",
+        cap.warn_messages()
+    );
+    let reqs = req_log.lock().unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.method == "PATCH"),
+        "a failed query must not proceed to a close: {reqs:?}"
+    );
+}
+
+/// PATCH returns 410 ⇒ the desired end-state ("PR not open") is already true;
+/// bucketed as already-closed (a success), not a failure.
+#[test]
+fn krew_rollback_treats_gone_pr_as_already_closed() {
+    let (cap, _req_log) = run_krew_rollback_over(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls?state=open&head=acme:demo-v1.2.3&per_page=100",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n[{\"number\":7}]",
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PATCH",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls/7",
+            response: "HTTP/1.1 410 Gone\r\nContent-Length: 4\r\n\r\ngone",
+            times: None,
+        },
+    ]);
+    let all = cap.all_messages();
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("krew rollback closed 0, already-closed 1, failed 0")),
+        "a 410 PATCH must tally as already-closed, not failed: {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("already closed/deleted upstream")),
+        "the already-closed status line must name the existing state: {all:?}"
+    );
+}
+
+/// PATCH returns 500 ⇒ a genuine failure: bucketed as failed with a
+/// per-failure warn naming the PR URL.
+#[test]
+fn krew_rollback_counts_failed_close_on_server_error() {
+    let (cap, _req_log) = run_krew_rollback_over(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls?state=open&head=acme:demo-v1.2.3&per_page=100",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n[{\"number\":7}]",
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PATCH",
+            path_pattern: "/repos/kubernetes-sigs/krew-index/pulls/7",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nboom!",
+            times: None,
+        },
+    ]);
+    let all = cap.all_messages();
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("krew rollback closed 0, already-closed 0, failed 1")),
+        "a 500 PATCH must tally as a failure: {all:?}"
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("github.com/kubernetes-sigs/krew-index/pull/7")),
+        "the failure warn must name the PR URL for manual cleanup: {:?}",
+        cap.warn_messages()
+    );
+}
