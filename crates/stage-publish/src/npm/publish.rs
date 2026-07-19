@@ -802,13 +802,21 @@ pub(crate) fn probe_dist_tag_latest(
 /// `latest` back to the older version.
 ///
 /// When the configured tag is the default `latest` AND `publish_version` is
-/// strictly LOWER than the registry's current `latest`, this returns the version
-/// string itself as an INERT named dist-tag: the version still publishes
-/// (versions are immutable and always land), but the `latest` pointer is left on
-/// the newer release. Every non-regressing case returns the configured tag
-/// unchanged — a NON-default configured tag (the operator asked for an explicit
-/// tag), `registry_latest == None` (fail-open), an equal/newer version, or a
-/// version string that does not parse as semver.
+/// strictly LOWER than the registry's current `latest`, this returns an INERT
+/// named dist-tag `release-<version>`: the version still publishes (versions are
+/// immutable and always land), but the `latest` pointer is left on the newer
+/// release. Every non-regressing case returns the configured tag unchanged — a
+/// NON-default configured tag (the operator asked for an explicit tag),
+/// `registry_latest == None` (fail-open), an equal/newer version, or a version
+/// string that does not parse as semver.
+///
+/// The demoted tag is `release-<version>`, NOT the bare version: npm rejects any
+/// `--tag` that parses as a semver range (`npm publish`:
+/// `if (semver.validRange(tag)) throw "Tag name must not be a valid SemVer
+/// range"`), and node-semver strips a leading `v`, so neither `0.19.0` nor
+/// `v0.19.0` is a legal tag. The `release-` prefix makes the whole string
+/// unparseable as a range while staying per-version, so sequential backfills
+/// (0.19 → 0.20 → 0.21) never contend over one shared pointer.
 pub(crate) fn guard_latest_regression(
     configured_tag: &str,
     publish_version: &str,
@@ -823,7 +831,7 @@ pub(crate) fn guard_latest_regression(
             anodizer_core::git::parse_semver(current),
         ) {
             if pubv < cur {
-                return publish_version.to_string();
+                return format!("release-{publish_version}");
             }
         }
     }

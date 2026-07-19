@@ -3081,9 +3081,13 @@ fn probe_existence_transport_error_is_unknown() {
 fn guard_demotes_a_backfill_below_registry_latest() {
     // Configured `latest`, publishing 0.20.0 while the registry's `latest` is
     // the NEWER 0.21.0 (the backfill case): must NOT move `latest` back — return
-    // the version string as an inert named tag.
+    // an inert `release-<version>` tag (NOT the bare version, which npm rejects
+    // as a valid semver range).
     let got = guard_latest_regression("latest", "0.20.0", Some("0.21.0"));
-    assert_eq!(got, "0.20.0", "an older backfill must not claim `latest`");
+    assert_eq!(
+        got, "release-0.20.0",
+        "an older backfill must not claim `latest`"
+    );
 }
 
 #[test]
@@ -3112,7 +3116,7 @@ fn guard_is_prerelease_aware() {
     // is the final release must demote; the reverse must not.
     assert_eq!(
         guard_latest_regression("latest", "1.0.0-rc.1", Some("1.0.0")),
-        "1.0.0-rc.1"
+        "release-1.0.0-rc.1"
     );
     assert_eq!(
         guard_latest_regression("latest", "1.0.0", Some("1.0.0-rc.1")),
@@ -3154,6 +3158,34 @@ fn guard_fails_open_on_unparseable_versions() {
         guard_latest_regression("latest", "0.20.0", Some("garbage")),
         "latest"
     );
+}
+
+#[test]
+fn guard_demoted_tag_is_never_a_valid_semver_range() {
+    // npm hard-rejects a `--tag` that parses as a semver range ("Tag name must
+    // not be a valid SemVer range"), and node-semver strips a leading `v` — so a
+    // demoted backfill tag must be neither the bare version nor `v<version>`.
+    // Proxy npm's `validRange` with anodizer's own semver parser (both reject a
+    // bare version); check across release/prerelease/build-metadata backfills.
+    for (v, latest) in [
+        ("0.19.0", "0.22.1"),
+        ("0.20.0", "0.22.1"),
+        ("0.21.0", "0.22.1"),
+        ("1.0.0-rc.1", "1.0.0"),
+        ("1.2.3+build.7", "2.0.0"),
+    ] {
+        let tag = guard_latest_regression("latest", v, Some(latest));
+        assert_ne!(tag, v, "demoted tag must not be the bare version");
+        assert!(
+            anodizer_core::git::parse_semver(&tag).is_err(),
+            "demoted tag '{tag}' parses as semver — npm would reject it"
+        );
+        assert!(
+            anodizer_core::git::parse_semver(tag.trim_start_matches('v')).is_err(),
+            "demoted tag '{tag}' parses as semver after stripping a leading 'v' \
+             — node-semver strips it, so npm would reject it"
+        );
+    }
 }
 
 #[test]
@@ -3231,8 +3263,8 @@ fn guarded_helper_demotes_against_a_live_newer_latest() {
         &ctx.logger("p"),
     );
     assert_eq!(
-        got, "0.20.0",
-        "helper must demote a backfill to an inert tag"
+        got, "release-0.20.0",
+        "helper must demote a backfill to an inert non-semver tag"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
