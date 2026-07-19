@@ -8,6 +8,8 @@ use anyhow::{Context as _, Result};
 use super::api::{GithubApi, RepoFile};
 use super::formula::{flat_formula_path, sharded_formula_path};
 
+/// Locate the formula file: the configured `path:` (templated), else the
+/// sharded core layout, else the flat tap layout.
 pub(super) fn locate_formula(
     ctx: &Context,
     cfg: &HomebrewCoreConfig,

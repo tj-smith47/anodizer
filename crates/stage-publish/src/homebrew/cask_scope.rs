@@ -203,8 +203,9 @@ pub(super) fn build_cask_platform_blocks(
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
 ///
-/// This is the shared logic used by both [`publish_to_homebrew`] (when formula
-/// and cask share a tap repo) and [`publish_cask`] (standalone).
+/// Renders the cask's `url`/`sha256`/artifact stanzas (`binary`, `app`, `pkg`)
+/// and version block, returning a [`CaskGenResult`] with the finished `.rb`
+/// source, the resolved cask name, and any version-pinned alt-name files.
 pub(super) fn generate_cask_from_context(
     ctx: &Context,
     crate_name: &str,

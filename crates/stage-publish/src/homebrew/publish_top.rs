@@ -311,7 +311,7 @@ fn render_top_level_cask_inner(
     // Default to a single `binary "<cask_name>"` ONLY when neither `binaries:`
     // nor `app:` is configured, so a cask declares at least one artifact stanza
     // without emitting a spurious `binary` alongside an explicit `app`. Mirrors
-    // the per-crate cask renderer's default (`cask::generate_cask_from_context`).
+    // the per-crate cask renderer's default (`cask_scope::generate_cask_from_context`).
     let configured_binaries: Vec<super::cask::CaskBinaryEntry> = cask_cfg
         .binaries
         .as_deref()

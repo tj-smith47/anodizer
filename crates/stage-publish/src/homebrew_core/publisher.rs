@@ -228,8 +228,6 @@ pub(crate) fn resolve_commit_message(
     }
 }
 
-/// Locate the formula file: the configured `path:` (templated), else the
-/// sharded core layout, else the flat tap layout.
 /// Top-level publish entrypoint. Iterates each `homebrew_cores[]` entry and
 /// bumps its formula. `targets` is an out-param so a mid-loop error still
 /// yields rollback evidence for the PRs that already opened.
