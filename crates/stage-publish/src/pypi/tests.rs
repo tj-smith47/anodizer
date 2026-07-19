@@ -2447,3 +2447,247 @@ pypis:
     );
     assert!(PypiConfig::default().targets.is_none(), "default is None");
 }
+
+// -----------------------------------------------------------------------------
+// rollback: warn-only teardown of already-uploaded (one-way) PyPI files.
+// A published filename can never be re-uploaded, so rollback only surfaces
+// per-file guidance — no network. Two branches: empty evidence, and a
+// mixed set where a `skipped_existing` file (already live from an earlier
+// run) is excluded from the per-file warns while a freshly-uploaded one is
+// named.
+// -----------------------------------------------------------------------------
+
+fn pypi_file(
+    filename: &str,
+    skipped_existing: bool,
+) -> anodizer_core::publish_evidence::PypiFileSnapshot {
+    anodizer_core::publish_evidence::PypiFileSnapshot {
+        filename: filename.to_string(),
+        platform_tag: "manylinux_2_28_x86_64".to_string(),
+        sha256: "0".repeat(64),
+        repository: "https://upload.pypi.org/legacy/".to_string(),
+        skipped_existing,
+    }
+}
+
+fn pypi_evidence(
+    files: Vec<anodizer_core::publish_evidence::PypiFileSnapshot>,
+) -> anodizer_core::PublishEvidence {
+    let mut e = anodizer_core::PublishEvidence::new("pypi");
+    e.extra =
+        anodizer_core::PublishEvidenceExtra::Pypi(anodizer_core::publish_evidence::PypiExtra {
+            pypi_files: files,
+        });
+    e
+}
+
+#[test]
+fn rollback_warns_when_no_files_uploaded() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    PypiPublisher::new()
+        .rollback(&mut ctx, &pypi_evidence(Vec::new()))
+        .expect("rollback is best-effort and returns Ok");
+
+    assert!(
+        capture
+            .warn_messages()
+            .iter()
+            .any(|m| m.contains("pypi") && m.contains("uploaded files")),
+        "empty evidence must emit the no-files warning: {:?}",
+        capture.warn_messages()
+    );
+}
+
+#[test]
+fn rollback_warns_per_uploaded_file_skipping_idempotent_skips() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    PypiPublisher::new()
+        .rollback(
+            &mut ctx,
+            &pypi_evidence(vec![
+                pypi_file("my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl", false),
+                pypi_file("my_tool-1.2.3.tar.gz", true),
+            ]),
+        )
+        .expect("rollback is best-effort and returns Ok");
+
+    let warns = capture.warn_messages();
+    assert!(
+        warns.iter().any(|m| m
+            .contains("cannot undo 'my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl'")
+            && m.contains("one-way")),
+        "the freshly-uploaded file must get a one-way rollback warn: {warns:?}"
+    );
+    assert!(
+        !warns.iter().any(|m| m.contains("my_tool-1.2.3.tar.gz")),
+        "a skipped_existing file (already live from an earlier run) must not be \
+         named for rollback: {warns:?}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// run(): the Publisher trait entrypoint wrapping publish_to_pypi. On success
+// it returns evidence; on a mid-publish error it records a Failed outcome and
+// STILL returns Ok(evidence) so dispatch keeps the partial evidence rather
+// than dropping it.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn run_returns_empty_evidence_when_no_pypis_configured() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+
+    let evidence = PypiPublisher::new()
+        .run(&mut ctx)
+        .expect("run must return Ok(evidence) with no pypis configured");
+
+    assert_eq!(evidence.publisher, "pypi");
+    assert!(
+        evidence.primary_ref.is_none(),
+        "no files uploaded ⇒ no primary_ref: {:?}",
+        evidence.primary_ref
+    );
+    assert!(
+        matches!(evidence.extra, anodizer_core::PublishEvidenceExtra::Empty),
+        "no files uploaded ⇒ the Pypi extra is never attached: {:?}",
+        evidence.extra
+    );
+}
+
+#[test]
+fn run_records_failed_outcome_and_still_returns_evidence_on_publish_error() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    // An illegal PyPI project name makes publish_to_pypi bail via
+    // validate_project_name; run() must swallow the Err into a Failed
+    // outcome + an error log, returning Ok(evidence) regardless.
+    ctx.config.pypis = Some(vec![PypiConfig {
+        name: Some("Not A Legal Name!!".to_string()),
+        ..Default::default()
+    }]);
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    let evidence = PypiPublisher::new()
+        .run(&mut ctx)
+        .expect("run must convert a publish Err into Ok(evidence), never bubble it");
+
+    assert_eq!(evidence.publisher, "pypi");
+    assert!(
+        capture
+            .all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("pypi: publish failed")),
+        "a publish error must be surfaced via log.error, not swallowed: {:?}",
+        capture.all_messages()
+    );
+}
+
+/// A fully-populated `WheelSpec` drives the OPTIONAL twine form fields
+/// (`author`, `author_email`, `project_urls`, `description_content_type`) that
+/// `spec()` leaves unset — proving each optional block emits its multipart part.
+#[test]
+fn upload_carries_optional_author_project_url_and_content_type_fields() {
+    let mut s = spec("musllinux_1_2_x86_64");
+    s.author = Some("Anodize Team".to_string());
+    s.author_email = Some("team@example.com".to_string());
+    s.description_content_type = Some("text/markdown".to_string());
+    s.project_urls = vec![
+        ("Homepage".to_string(), "https://example.com".to_string()),
+        (
+            "Source".to_string(),
+            "https://github.com/anodize/tool".to_string(),
+        ),
+    ];
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let path =
+        build_wheel(&s, b"#!fake-binary", tmp.path(), Some(1700000000), "1.0.0").expect("wheel");
+    let client =
+        anodizer_core::http::blocking_client(std::time::Duration::from_secs(5)).expect("client");
+    let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/legacy/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: Some(1),
+    }]);
+
+    upload_file(
+        &client,
+        &format!("http://{addr}/legacy/"),
+        "pypi-AgToken",
+        "my-tool",
+        &s,
+        FileType::Wheel,
+        &path,
+        true,
+        &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("upload");
+
+    let entries = log.lock().unwrap();
+    let body = &entries[0].body;
+    for needle in [
+        "name=\"author\"\r\n\r\nAnodize Team",
+        "name=\"author_email\"\r\n\r\nteam@example.com",
+        "name=\"description_content_type\"\r\n\r\ntext/markdown",
+        "name=\"project_urls\"\r\n\r\nHomepage, https://example.com",
+        "name=\"project_urls\"\r\n\r\nSource, https://github.com/anodize/tool",
+    ] {
+        assert!(
+            body.contains(needle),
+            "the upload form must carry the optional field {needle:?}; body:\n{body}"
+        );
+    }
+}
+
+/// Live preflight: a custom-host `index_url` whose PEP 503 simple page already
+/// lists the version at play ⇒ the `already appears on the index` Warning (not
+/// a Blocker — the run path skips existing files idempotently).
+#[test]
+fn preflight_warns_when_version_already_on_the_index() {
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/simple/my-tool/",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 61\r\n\r\n\
+                   <a href=\"/x/my_tool-1.2.3-py3-none-any.whl\">my_tool-1.2.3</a>",
+        times: None,
+    }]);
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("demo", ".")])
+        .build();
+    ctx.config.pypis = Some(vec![PypiConfig {
+        name: Some("my-tool".into()),
+        // A custom (non-pypi.org) host routes the probe through the PEP 503
+        // /simple/ page served by the loopback responder above.
+        index_url: Some(format!("http://{addr}/legacy/")),
+        ..Default::default()
+    }]);
+    match PypiPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Warning(m) => assert!(
+            m.contains("already appears on the index") && m.contains("my-tool"),
+            "an index hit must warn (never block); got: {m}"
+        ),
+        other => panic!("expected an already-published Warning, got {other:?}"),
+    }
+}

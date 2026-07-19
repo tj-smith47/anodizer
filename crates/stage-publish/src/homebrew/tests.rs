@@ -3338,6 +3338,308 @@ fn publish_top_level_homebrew_casks_skip_then_error_propagates_second_failure() 
     );
 }
 
+// ===========================================================================
+// publish_top_level_homebrew_casks — the live clone → write → commit → push
+// path (beyond the early-exit / render-bail guards the tests above cover),
+// driven against a LOCAL bare git remote (no network). PR submission is left
+// disabled so `maybe_submit_pr` returns before any `gh`/API transport.
+// ===========================================================================
+
+/// Seed a bare "cask tap fork" repo with one commit on `branch`; the publish
+/// path clones it (a plain `git clone <localpath>`), writes the cask `.rb`,
+/// commits, and pushes back here. Returns `(bare_url, holder)`.
+fn make_bare_cask_tap(branch: &str) -> (String, tempfile::TempDir) {
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    let seed = tempfile::tempdir().expect("seed tempdir");
+    let git_ok =
+        |dir: &std::path::Path, args: &[&str]| anodizer_core::test_helpers::git_test_ok(dir, args);
+    git_ok(bare.path(), &["init", "--bare", "-b", branch]);
+    git_ok(seed.path(), &["init", "-b", branch]);
+    git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+    git_ok(seed.path(), &["config", "user.name", "T"]);
+    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+    std::fs::write(seed.path().join("README"), "cask tap\n").unwrap();
+    git_ok(seed.path(), &["add", "README"]);
+    git_ok(seed.path(), &["commit", "-m", "seed"]);
+    assert!(
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(["remote", "add", "origin"])
+                    .arg(bare.path())
+                    .current_dir(seed.path());
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success(),
+        "git remote add origin failed"
+    );
+    git_ok(seed.path(), &["push", "-u", "origin", branch]);
+    (bare.path().to_string_lossy().into_owned(), bare)
+}
+
+/// Build a version-carrying Context (`1.2.3`) with `homebrew_casks` set and a
+/// single darwin Archive carrying url + sha256 metadata (so the cask renders).
+fn cask_publish_ctx(cask: HomebrewCaskConfig) -> Context {
+    let config = Config {
+        project_name: "mytool".to_string(),
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.template_vars_mut().set("RawVersion", "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin.tar.gz",
+        "d".repeat(64).as_str(),
+    ));
+    ctx
+}
+
+/// A cask whose `repository.git.url` clones from the local bare tap and pushes
+/// back to `branch`; PR submission stays disabled.
+fn local_cask_cfg(bare_url: &str, branch: &str) -> HomebrewCaskConfig {
+    HomebrewCaskConfig {
+        name: Some("mycask".to_string()),
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-cask-tap".to_string()),
+            branch: Some(branch.to_string()),
+            git: Some(anodizer_core::config::GitRepoConfig {
+                url: Some(bare_url.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// FULL live publish: clone the local bare tap, write `Casks/mycask.rb`,
+/// commit, and push the branch back — asserting the bare repo gained the cask
+/// file with the rendered version and the run reports one applicable+pushed
+/// cask.
+#[test]
+fn publish_top_level_homebrew_casks_live_clone_writes_and_pushes() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+    let mut ctx = cask_publish_ctx(local_cask_cfg(&bare_url, "main"));
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("live cask publish must succeed against the local bare tap");
+
+    assert!(got.pushed_any, "the cask branch must be pushed: {got:?}");
+    assert_eq!(got.total, 1);
+    assert_eq!(got.applicable, 1, "the darwin cask is applicable");
+
+    let landed = anodizer_core::test_helpers::git_test_stdout(
+        bare.path(),
+        &["show", "main:Casks/mycask.rb"],
+    );
+    assert!(
+        landed.contains("cask \"mycask\"") && landed.contains("version \"1.2.3\""),
+        "the pushed cask must carry the rendered name+version; got:\n{landed}"
+    );
+    drop(bare);
+}
+
+/// A cask-level `if:` that renders falsy is skipped with the falsy-condition
+/// status line — before any clone is attempted.
+#[test]
+fn publish_top_level_homebrew_casks_if_false_skips_with_status() {
+    let mut cask = local_cask_cfg("unused://never-cloned", "main");
+    cask.if_condition = Some("{{ eq .Version \"9.9.9\" }}".to_string());
+    let mut ctx = cask_publish_ctx(cask);
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &log)
+        .expect("a falsy `if` must skip cleanly, never clone");
+    assert!(!got.pushed_any);
+    assert_eq!(got.applicable, 0, "a skipped cask is not applicable");
+    assert!(
+        capture
+            .all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("skipped cask 'mycask'") && m.contains("`if` condition")),
+        "the falsy-`if` skip must log its status line: {:?}",
+        capture.all_messages()
+    );
+}
+
+/// A non-default cask `directory:` emits the end-user-breakage warning before
+/// the (here dry-run-short-circuited) upload.
+#[test]
+fn publish_top_level_homebrew_casks_non_default_directory_warns() {
+    let mut cask = local_cask_cfg("unused://never-cloned", "main");
+    cask.directory = Some("NotCasks".to_string());
+    let mut ctx = cask_publish_ctx(cask);
+    ctx.options.dry_run = true; // stop before the clone; the warn fires first.
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+
+    super::publish_top_level_homebrew_casks(&mut ctx, &log)
+        .expect("dry-run cask publish is a no-op");
+    assert!(
+        capture
+            .warn_messages()
+            .iter()
+            .any(|m| m.contains("NotCasks") && m.contains("Casks")),
+        "a non-default directory must warn about the homebrew-cask convention: {:?}",
+        capture.warn_messages()
+    );
+}
+
+/// A second identical publish against the already-updated tap has nothing to
+/// commit ⇒ the `NoChanges` arm logs "already up to date" and reports not
+/// pushed (the tap is idempotent across re-runs).
+#[test]
+fn publish_top_level_homebrew_casks_second_run_is_noop_no_changes() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+
+    // First publish lands the cask on `main`.
+    let mut ctx1 = cask_publish_ctx(local_cask_cfg(&bare_url, "main"));
+    let first = super::publish_top_level_homebrew_casks(&mut ctx1, &quiet_log())
+        .expect("first publish lands the cask");
+    assert!(first.pushed_any, "first run must push");
+
+    // Second publish clones the now-current tap, writes identical bytes ⇒ no diff.
+    let mut ctx2 = cask_publish_ctx(local_cask_cfg(&bare_url, "main"));
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+    let second = super::publish_top_level_homebrew_casks(&mut ctx2, &log)
+        .expect("second publish is a clean no-op");
+    assert!(
+        !second.pushed_any,
+        "an identical re-publish must not push: {second:?}"
+    );
+    assert!(
+        capture
+            .all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("already up to date")),
+        "the NoChanges arm must log the up-to-date status: {:?}",
+        capture.all_messages()
+    );
+    drop(bare);
+}
+
+/// A PR-enabled cask still pushes the branch and then routes through
+/// `maybe_submit_pr` (recording its outcome). A `gh` stub forced absent makes
+/// the PR transport resolve to the in-process no-credential fallback — no live
+/// `gh pr create` / GitHub API call — while still exercising the
+/// update_existing_pr eval + submit + record_publisher_outcome seam.
+#[test]
+#[serial_test::serial(path_env)]
+fn publish_top_level_homebrew_casks_pr_enabled_pushes_and_records_outcome() {
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    let tools = FakeToolDir::new();
+    tools.tool("gh").exit(1).install();
+    let _guard = tools.activate();
+
+    let (bare_url, bare) = make_bare_cask_tap("main");
+    let mut cask = local_cask_cfg(&bare_url, "main");
+    if let Some(repo) = cask.repository.as_mut() {
+        repo.pull_request = Some(anodizer_core::config::PullRequestConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+    }
+    let mut ctx = cask_publish_ctx(cask);
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("PR-enabled cask publish must push even when PR submission has no transport");
+    assert!(
+        got.pushed_any,
+        "the cask branch must land regardless of PR submission: {got:?}"
+    );
+    let landed = anodizer_core::test_helpers::git_test_stdout(
+        bare.path(),
+        &["show", "main:Casks/mycask.rb"],
+    );
+    assert!(
+        landed.contains("cask \"mycask\""),
+        "the cask must be pushed to the tap; got:\n{landed}"
+    );
+    // The PR-submission seam ran: with `gh` absent and no token the transport
+    // resolves to a no-credential outcome that `maybe_submit_pr` returns and
+    // the loop records — distinguishing this from the PR-disabled path, which
+    // records nothing.
+    assert!(
+        ctx.take_pending_outcome().is_some(),
+        "the enabled-PR path must record a submission outcome"
+    );
+    drop(bare);
+}
+
+/// A cask carrying a versioned `alternative_names` entry (one with `@`) emits
+/// an EXTRA `<alt>.rb` alongside the primary cask — the `brew install
+/// myapp@1.2.3` pin file — and pushes both. Exercises the versioned-alt render
+/// loop and its per-alt file write.
+#[test]
+fn publish_top_level_homebrew_casks_versioned_alt_writes_extra_rb() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+    let mut cask = local_cask_cfg(&bare_url, "main");
+    cask.alternative_names = Some(vec!["mycask@1.2.3".to_string()]);
+    let mut ctx = cask_publish_ctx(cask);
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("versioned-alt cask publish must succeed");
+    assert!(got.pushed_any, "the cask branch must be pushed: {got:?}");
+
+    let primary = anodizer_core::test_helpers::git_test_stdout(
+        bare.path(),
+        &["show", "main:Casks/mycask.rb"],
+    );
+    assert!(
+        primary.contains("cask \"mycask\""),
+        "the primary cask must land; got:\n{primary}"
+    );
+    let versioned = anodizer_core::test_helpers::git_test_stdout(
+        bare.path(),
+        &["show", "main:Casks/mycask@1.2.3.rb"],
+    );
+    assert!(
+        versioned.contains("cask \"mycask@1.2.3\""),
+        "the versioned pin cask must be written alongside the primary; got:\n{versioned}"
+    );
+    drop(bare);
+}
+
+/// The offline render-only path (`render_top_level_homebrew_casks`) emits the
+/// primary cask body plus one extra body per versioned alt-name — the schema
+/// validator's view, with no git/network.
+#[test]
+fn render_top_level_homebrew_casks_includes_versioned_alt_bodies() {
+    let mut cask = local_cask_cfg("unused://render-only", "main");
+    cask.alternative_names = Some(vec!["mycask@1.2.3".to_string()]);
+    let ctx = cask_publish_ctx(cask);
+
+    let bodies = super::render_top_level_homebrew_casks(&ctx, &quiet_log())
+        .expect("render-only path must succeed");
+    assert!(
+        bodies.len() >= 2,
+        "the versioned alt must add a second rendered body: {} bodies",
+        bodies.len()
+    );
+    assert!(
+        bodies.iter().any(|b| b.contains("cask \"mycask\"")),
+        "the primary cask body must be present"
+    );
+    assert!(
+        bodies.iter().any(|b| b.contains("cask \"mycask@1.2.3\"")),
+        "the versioned alt body must be present"
+    );
+}
+
 /// publish_cask: when the cask-level `skip_upload` is unset, the fallback
 /// reads from the surrounding HomebrewConfig.skip_upload — so a tap-wide
 /// `skip_upload: true` correctly short-circuits the standalone cask

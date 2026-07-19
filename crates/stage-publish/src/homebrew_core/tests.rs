@@ -1438,6 +1438,265 @@ fn rollback_decodes_evidence_and_closes_the_pr() {
     );
 }
 
+// -----------------------------------------------------------------------------
+// rollback: per-branch coverage (empty / direct-commit / token-less /
+// query-fail / no-open-PR / already-closed / failed-close) driven end-to-end
+// over the loopback GitHub API through the Context env source (no process-env
+// mutation — `find_open_pr_numbers_for_head_with_env` /
+// `close_pr_via_api_with_env` resolve `ANODIZER_GITHUB_API_BASE` off `env`).
+// -----------------------------------------------------------------------------
+
+/// One recorded bump target. `direct_commit` marks the no-PR path; a
+/// non-direct target carries the fork head/branch the close flow queries.
+fn hbc_target(
+    direct_commit: bool,
+    token_env: Option<&str>,
+) -> anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot {
+    anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot {
+        formula: "my-tool".into(),
+        version: "1.2.3".into(),
+        upstream_owner: "Homebrew".into(),
+        upstream_repo: "homebrew-core".into(),
+        head_owner: "forkuser".into(),
+        branch: "bump-my-tool-1.2.3".into(),
+        direct_commit,
+        pr_url: (!direct_commit)
+            .then(|| "https://github.com/Homebrew/homebrew-core/pull/42".to_string()),
+        token_env_var: token_env.map(Into::into),
+    }
+}
+
+fn hbc_evidence(
+    targets: Vec<anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot>,
+) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("homebrew-core");
+    evidence.extra = anodizer_core::PublishEvidenceExtra::HomebrewCore(
+        anodizer_core::publish_evidence::HomebrewCoreExtra {
+            homebrew_core_targets: targets,
+        },
+    );
+    evidence
+}
+
+/// Drive `rollback` against `routes` with a log capture attached. `token` is
+/// the `(var, value)` pair injected into the Context env source, or `None` to
+/// leave every token source unset (the unresolvable-token path).
+fn run_hbc_rollback(
+    routes: Vec<ScriptedRoute>,
+    targets: Vec<anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot>,
+    token: Option<(&str, &str)>,
+) -> (anodizer_core::log::LogCapture, Vec<RequestLog>) {
+    let (addr, req_log) = spawn_scripted_responder(routes);
+    let mut builder = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("my-tool", ".")])
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+    if let Some((k, v)) = token {
+        builder = builder.env(k, v);
+    }
+    let mut ctx = builder.build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    HomebrewCorePublisher::new()
+        .rollback(&mut ctx, &hbc_evidence(targets))
+        .expect("rollback is best-effort and returns Ok");
+    (capture, logged(&req_log))
+}
+
+/// Empty evidence ⇒ the no-targets warning fires and no HTTP call is issued.
+#[test]
+fn rollback_warns_when_no_bump_prs_recorded() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![],
+        vec![],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("homebrew-core") && m.contains("bump PRs")),
+        "empty evidence must warn about no recorded bump PRs: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        reqs.is_empty(),
+        "no HTTP call may be made with no targets: {reqs:?}"
+    );
+}
+
+/// A `direct_commit` bump has no PR ⇒ warn-only naming the manual revert; no
+/// query/close is attempted.
+#[test]
+fn rollback_direct_commit_target_is_warn_only() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![],
+        vec![hbc_target(true, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("direct commit") && m.contains("revert the commit manually")),
+        "a direct-commit target must warn to revert manually: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        reqs.is_empty(),
+        "a direct-commit rollback must not query/close any PR: {reqs:?}"
+    );
+}
+
+/// No resolvable token ⇒ the skip warn naming the env vars; no HTTP call.
+#[test]
+fn rollback_warns_and_skips_when_no_token_resolvable() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![],
+        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        None,
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("no GitHub token resolvable") && m.contains("my-tool")),
+        "a token-less rollback must warn and skip: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        reqs.is_empty(),
+        "a token-less rollback must not reach the API: {reqs:?}"
+    );
+}
+
+/// A 500 on the PR query ⇒ the actionable query-failure warn; no close is
+/// attempted.
+#[test]
+fn rollback_warns_when_pr_query_fails() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/pulls?state=open&head=forkuser:bump-my-tool-1.2.3&per_page=100",
+            response: leak_resp("500 Internal Server Error", "boom"),
+            times: None,
+        }],
+        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("failed to query")
+                && m.contains("open bump PRs")
+                && m.contains("manual cleanup")),
+        "a failed query must surface the actionable warn: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        !reqs.iter().any(|r| r.method == "PATCH"),
+        "a failed query must not proceed to a close: {reqs:?}"
+    );
+}
+
+/// An empty open-PR list ⇒ the "nothing to close" warn; no PATCH issued.
+#[test]
+fn rollback_warns_when_no_open_pr_for_head() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/pulls?state=open&head=forkuser:bump-my-tool-1.2.3&per_page=100",
+            response: leak_resp("200 OK", "[]"),
+            times: None,
+        }],
+        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("no open PR found") && m.contains("nothing to close")),
+        "an empty PR list must warn without closing anything: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        !reqs.iter().any(|r| r.method == "PATCH"),
+        "no PATCH may be issued when no PR is open: {reqs:?}"
+    );
+}
+
+/// PATCH returns 410 ⇒ the desired end-state (PR not open) is already true;
+/// the already-closed status line fires, NOT a failure warn.
+#[test]
+fn rollback_treats_gone_pr_as_already_closed() {
+    let (cap, reqs) = run_hbc_rollback(
+        vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/Homebrew/homebrew-core/pulls?state=open&head=forkuser:bump-my-tool-1.2.3&per_page=100",
+                response: leak_resp("200 OK", "[{\"number\":42}]"),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/Homebrew/homebrew-core/pulls/42",
+                response: leak_resp("410 Gone", "gone"),
+                times: None,
+            },
+        ],
+        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("#42 already closed")),
+        "a 410 PATCH must record the already-closed status, not a failure: {:?}",
+        cap.all_messages()
+    );
+    assert!(
+        cap.warn_messages().is_empty(),
+        "an already-closed PR must not warn: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        reqs.iter()
+            .any(|r| r.method == "PATCH" && r.path.ends_with("/pulls/42")),
+        "the close must issue a PATCH against the found PR: {reqs:?}"
+    );
+}
+
+/// PATCH returns 500 ⇒ a genuine failure: the per-PR failure warn naming the
+/// PR for manual cleanup.
+#[test]
+fn rollback_warns_on_failed_close() {
+    let (cap, _reqs) = run_hbc_rollback(
+        vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/Homebrew/homebrew-core/pulls?state=open&head=forkuser:bump-my-tool-1.2.3&per_page=100",
+                response: leak_resp("200 OK", "[{\"number\":42}]"),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/Homebrew/homebrew-core/pulls/42",
+                response: leak_resp("500 Internal Server Error", "boom"),
+                times: None,
+            },
+        ],
+        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
+    );
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("failed to close bump PR")
+                && m.contains("#42")
+                && m.contains("close it manually")),
+        "a 500 PATCH must warn as a failed close: {:?}",
+        cap.warn_messages()
+    );
+}
+
 #[test]
 fn snapshot_serde_round_trips_without_token_value() {
     let snap = anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot {
@@ -1544,6 +1803,101 @@ fn preflight_warns_when_version_already_current() {
     }
 }
 
+/// No resolvable GitHub token ⇒ the missing-token Warning surfaces (never a
+/// Blocker) even though the probe may still proceed against the responder.
+#[test]
+fn preflight_warns_when_no_token_resolvable() {
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core",
+            response: repo_resp("master", false),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/contents/Formula/m/my-tool.rb?ref=master",
+            response: contents_resp(&archive_formula()),
+            times: None,
+        },
+    ];
+    let (addr, _log) = spawn_scripted_responder(routes);
+    // A ctx WITHOUT the HOMEBREW_CORE_GITHUB_TOKEN the shared `run_ctx` sets.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("my-tool", ".")])
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+        .build();
+    ctx.config.homebrew_cores = Some(vec![pinned_cfg()]);
+    match HomebrewCorePublisher::new()
+        .preflight(&ctx)
+        .expect("preflight")
+    {
+        PreflightCheck::Warning(m) => assert!(
+            m.contains("no GitHub token resolvable"),
+            "the missing-token warn must name the shortfall; got: {m}"
+        ),
+        other => panic!("expected a missing-token Warning, got {other:?}"),
+    }
+}
+
+/// The default-branch query failing ⇒ the `cannot query` Warning (never a
+/// hard stop), so a transient API blip doesn't block the release.
+#[test]
+fn preflight_warns_when_default_branch_query_fails() {
+    let routes = vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/Homebrew/homebrew-core",
+        response: leak_resp("500 Internal Server Error", "boom"),
+        times: None,
+    }];
+    let (addr, _log) = spawn_scripted_responder(routes);
+    let ctx = preflight_ctx(&addr, pinned_cfg());
+    match HomebrewCorePublisher::new()
+        .preflight(&ctx)
+        .expect("preflight")
+    {
+        PreflightCheck::Warning(m) => assert!(
+            m.contains("cannot query") && m.contains("homebrew-core"),
+            "a failed default-branch query must warn, not block; got: {m}"
+        ),
+        other => panic!("expected a query-failure Warning, got {other:?}"),
+    }
+}
+
+/// The formula-locate probe erroring (contents API 500) ⇒ the `could not
+/// probe` Warning — distinct from a clean Ok(None) not-found.
+#[test]
+fn preflight_warns_when_formula_probe_errors() {
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core",
+            response: repo_resp("master", false),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/contents/Formula/m/my-tool.rb?ref=master",
+            response: leak_resp("500 Internal Server Error", "boom"),
+            times: None,
+        },
+    ];
+    let (addr, _log) = spawn_scripted_responder(routes);
+    let ctx = preflight_ctx(&addr, pinned_cfg());
+    match HomebrewCorePublisher::new()
+        .preflight(&ctx)
+        .expect("preflight")
+    {
+        PreflightCheck::Warning(m) => assert!(
+            m.contains("could not probe formula"),
+            "a probe error must warn distinctly from not-found; got: {m}"
+        ),
+        other => panic!("expected a probe-error Warning, got {other:?}"),
+    }
+}
+
 // =============================================================================
 // config_fully_inactive
 // =============================================================================
@@ -1561,6 +1915,54 @@ fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
     assert!(
         !HomebrewCorePublisher::new().config_fully_inactive(&ctx),
         "an active homebrew_cores[] entry must keep the publisher live"
+    );
+}
+
+// =============================================================================
+// requirements() — the per-active-entry env-preflight declaration
+// =============================================================================
+
+/// A templated `repository.token` declares exactly the env refs it
+/// interpolates (an `EnvAllOf`), NOT the any-of token ladder — a bump whose
+/// token is pinned to `{{ .Env.X }}` must gate on `X` alone.
+#[test]
+fn requirements_templated_repository_token_declares_its_env_refs() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.homebrew_cores = Some(vec![HomebrewCoreConfig {
+        repository: Some(RepositoryConfig {
+            token: Some("{{ .Env.MY_CORE_TOKEN }}".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }]);
+
+    assert_eq!(
+        HomebrewCorePublisher::new().requirements(&ctx),
+        vec![anodizer_core::EnvRequirement::EnvAllOf {
+            vars: vec!["MY_CORE_TOKEN".to_string()],
+        }],
+    );
+}
+
+/// With no `repository.token`, the entry declares the full any-of token
+/// ladder — the dedicated homebrew-core vars followed by the standard GitHub
+/// ladder — where any ONE satisfies the bump.
+#[test]
+fn requirements_without_token_declares_the_full_any_of_ladder() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.homebrew_cores = Some(vec![HomebrewCoreConfig::default()]);
+
+    assert_eq!(
+        HomebrewCorePublisher::new().requirements(&ctx),
+        vec![anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: vec![
+                "HOMEBREW_CORE_GITHUB_TOKEN".to_string(),
+                "COMMITTER_TOKEN".to_string(),
+                "ANODIZER_GITHUB_TOKEN".to_string(),
+                "GITHUB_TOKEN".to_string(),
+                "GH_TOKEN".to_string(),
+            ],
+        }],
     );
 }
 
