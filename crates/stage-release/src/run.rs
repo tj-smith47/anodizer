@@ -2,15 +2,20 @@ use anodizer_core::artifact::{ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 
+use crate::dry_run::{DryRunSummary, dry_run_download_base, handle_dry_run};
+use crate::flags::{
+    ResolvedReleaseFlags, resolve_release_flags, validate_nightly_config, validate_release_flags,
+    warn_unsupported_nightly_retention,
+};
 use crate::release_body::{
     build_release_body, collect_extra_files, render_nondeterministic_exemptions_block,
-    resolve_content_source, resolve_header_footer, resolve_make_latest, resolve_release_tag,
+    resolve_content_source, resolve_header_footer, resolve_release_tag,
 };
 use crate::{
     compose_release_url, gitea, github, gitlab, populate_artifact_download_urls,
-    resolve_release_repo, should_mark_prerelease,
+    resolve_release_repo,
 };
 
 impl Stage for super::ReleaseStage {
@@ -103,49 +108,6 @@ impl Stage for super::ReleaseStage {
 
         Ok(())
     }
-}
-
-/// Emit once-per-run warnings about workspace-level nightly configuration
-/// combinations that are technically valid but operationally surprising.
-///
-/// Surfaces the gotcha that `nightly.draft = true`
-/// combined with `nightly.keep_single_release = true` leaves no published
-/// nightly release in a non-draft state, because each run replaces the prior
-/// draft before it can be promoted.
-fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger) {
-    if !ctx.is_nightly() {
-        return;
-    }
-    let Some(nightly_cfg) = ctx.config.nightly.as_ref() else {
-        return;
-    };
-    // keep_single_release (or retention.keep_last:1) + draft leaves no
-    // promoted nightly: each run replaces the prior draft before it publishes.
-    if nightly_cfg.draft == Some(true) && nightly_cfg.resolved_keep_last() == Some(1) {
-        log.warn(
-            "nightly with both draft=true and a keep_last:1 retention \
-             (keep_single_release) — no published nightly release will exist \
-             (each run replaces a prior draft)",
-        );
-    }
-}
-
-/// Validate release flag combinations that are mutually exclusive and would
-/// produce conflicting behavior if both are set.
-///
-/// Returns `Err` when the combination is invalid; `Ok(())` otherwise.
-fn validate_release_flags(
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    crate_name: &str,
-) -> Result<()> {
-    if release_cfg.resolved_replace_existing_draft() && release_cfg.resolved_use_existing_draft() {
-        bail!(
-            "release: crate '{}': cannot set both replace_existing_draft and \
-             use_existing_draft — replace deletes drafts that use_existing_draft needs",
-            crate_name
-        );
-    }
-    Ok(())
 }
 
 /// Check whether a crate's release should be skipped: evaluates the `skip`
@@ -600,161 +562,6 @@ fn compose_full_release_body(
     ))
 }
 
-/// Resolve the `skip_upload` decision for one crate's release.
-///
-/// Accepts a template (`{{ .IsSnapshot }}`, etc.) that renders to one of
-/// `true` / `false` / `auto` / `1` / `0` / "". `auto` resolves as:
-/// skip when the run is a snapshot. Any other rendered value bails with
-/// the actionable error message.
-fn resolve_skip_upload(
-    ctx: &Context,
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    crate_name: &str,
-) -> Result<bool> {
-    let Some(s) = release_cfg.skip_upload.as_ref() else {
-        return Ok(false);
-    };
-    let rendered = if s.is_template() {
-        ctx.render_template(s.as_str()).with_context(|| {
-            format!(
-                "release: render skip_upload template '{}' for crate '{}'",
-                s.as_str(),
-                crate_name
-            )
-        })?
-    } else {
-        s.as_str().to_string()
-    };
-    Ok(match rendered.trim() {
-        "auto" => ctx.is_snapshot(),
-        "true" | "1" => true,
-        "false" | "0" | "" => false,
-        other => bail!(
-            "release: invalid skip_upload value '{}' for crate '{}' \
-             (expected one of: true/false/auto/1/0, or a template that renders to one of those)",
-            other,
-            crate_name
-        ),
-    })
-}
-
-/// Resolved boolean/enum flags for one crate's release, computed once and
-/// threaded through the dry-run path and the live SCM backend dispatch.
-struct ResolvedReleaseFlags {
-    draft: bool,
-    prerelease: bool,
-    skip_upload: bool,
-    replace_existing_draft: bool,
-    replace_existing_artifacts: bool,
-    make_latest: Option<octocrab::repos::releases::MakeLatest>,
-    target_commitish: Option<String>,
-    discussion_category_name: Option<String>,
-    include_meta: bool,
-    use_existing_draft: bool,
-    /// Nightly retention: keep the N newest nightly releases and delete the
-    /// rest (+ their tags) AFTER the new release is created and published.
-    /// `Some(1)` is the rolling-single-release case (the `keep_single_release`
-    /// alias). Resolved from `NightlyConfig::resolved_keep_last` (which folds in
-    /// the legacy alias and its precedence). Only honored on `--nightly` runs,
-    /// and only acted on by the GitHub backend.
-    retention_keep_last: Option<usize>,
-    /// Nightly `publish_repo`: `(owner, repo)` to redirect the release to a
-    /// repo other than the source. Only honored on `--nightly` runs.
-    publish_repo_override: Option<(String, String)>,
-}
-
-/// Resolve all release flags from config + CLI overrides for one crate.
-fn resolve_release_flags(
-    ctx: &Context,
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    crate_name: &str,
-    tag: &str,
-) -> Result<ResolvedReleaseFlags> {
-    let skip_upload = resolve_skip_upload(ctx, release_cfg, crate_name)?;
-    let target_commitish = release_cfg
-        .target_commitish
-        .as_ref()
-        .map(|tc| ctx.render_template(tc))
-        .transpose()
-        .with_context(|| {
-            format!(
-                "release: render target_commitish for crate '{}'",
-                crate_name
-            )
-        })?;
-    // Nightly overrides: `nightly.draft` (Some(v) wins over `release.draft`)
-    // — only meaningful when `is_nightly()`.
-    let nightly_cfg = ctx.config.nightly.as_ref();
-    let draft = if ctx.is_nightly()
-        && let Some(d) = nightly_cfg.and_then(|n| n.draft)
-    {
-        d
-    } else {
-        release_cfg.resolved_draft()
-    };
-    // Retention (keep_last:N) and publish_repo are nightly-only. The
-    // resolved_keep_last() helper applies the back-compat precedence
-    // (retention block wins over the keep_single_release alias, which maps
-    // to keep_last:1) — the single source of truth for the backend sweep.
-    let retention_keep_last = if ctx.is_nightly() {
-        nightly_cfg.and_then(|n| n.resolved_keep_last())
-    } else {
-        None
-    };
-    let publish_repo_override = if ctx.is_nightly() {
-        nightly_cfg
-            .and_then(|n| n.publish_repo.as_deref())
-            .and_then(|s| s.split_once('/'))
-            .map(|(o, r)| (o.to_string(), r.to_string()))
-    } else {
-        None
-    };
-    Ok(ResolvedReleaseFlags {
-        draft,
-        prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
-        skip_upload,
-        replace_existing_draft: release_cfg.resolved_replace_existing_draft(),
-        replace_existing_artifacts: release_cfg.resolved_replace_existing_artifacts()
-            || ctx.options.replace_existing_artifacts,
-        make_latest: resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?,
-        target_commitish,
-        discussion_category_name: release_cfg.discussion_category_name.clone(),
-        include_meta: release_cfg.resolved_include_meta(),
-        use_existing_draft: release_cfg.resolved_use_existing_draft(),
-        retention_keep_last,
-        publish_repo_override,
-    })
-}
-
-/// Warn when nightly retention / `publish_repo` is configured for an SCM
-/// backend that does not act on it.
-///
-/// `nightly.retention` / `nightly.keep_single_release` and
-/// `nightly.publish_repo` are only wired into the GitHub backend's release
-/// sweep. On GitLab / Gitea they would silently no-op, so surface a clear
-/// reporter warning (not `eprintln!`) rather than let the user assume the old
-/// releases are being pruned.
-fn warn_unsupported_nightly_retention(
-    log: &anodizer_core::log::StageLogger,
-    backend_label: &str,
-    flags: &ResolvedReleaseFlags,
-) {
-    if flags.retention_keep_last.is_some() {
-        log.warn(&format!(
-            "nightly retention (keep_last / keep_single_release) is only \
-             applied on GitHub releases; it has no effect on {backend_label} \
-             and prior nightly releases will NOT be pruned"
-        ));
-    }
-    if let Some((owner, repo)) = &flags.publish_repo_override {
-        log.warn(&format!(
-            "nightly.publish_repo '{owner}/{repo}' is only honored on GitHub \
-             releases; it has no effect on {backend_label} (the release targets \
-             the configured {backend_label} repo)"
-        ));
-    }
-}
-
 /// Dispatch a single crate's release to the appropriate SCM backend
 /// (GitHub, GitLab, or Gitea) based on `ctx.token_type`.
 ///
@@ -870,176 +677,6 @@ fn dispatch_to_scm_backend(
             )?)
         }
     }
-}
-
-/// Per-release summary fields surfaced in dry-run output.
-///
-/// Bundles the long argument list for [`handle_dry_run`] so the signature
-/// stays under clippy's threshold and the call site reads like a struct
-/// literal rather than a positional dump.
-struct DryRunSummary<'a> {
-    crate_name: &'a str,
-    release_name: &'a str,
-    tag: &'a str,
-    draft: bool,
-    prerelease: bool,
-    release_mode: &'a str,
-    skip_upload: bool,
-    retention_keep_last: Option<usize>,
-    publish_repo_override: Option<(String, String)>,
-    artifact_entries: &'a [(std::path::PathBuf, Option<String>)],
-}
-
-/// Resolve the dry-run download-base URL for the active SCM provider.
-///
-/// Falls back to the public default for each provider when no override is
-/// configured. For Gitea, the download base is additionally derived from the
-/// API URL by stripping the `/api/v1` suffix.
-fn dry_run_download_base(ctx: &Context) -> String {
-    anodizer_core::download_url::default_download_base(ctx)
-}
-
-/// Log every configured `<provider>_urls.*` value in dry-run output so the
-/// user can see which override is active without re-running with a live
-/// token.
-fn log_dry_run_provider_urls(ctx: &Context, log: &anodizer_core::log::StageLogger) {
-    match ctx.token_type {
-        ScmTokenType::GitHub => {
-            if let Some(urls) = &ctx.config.github_urls {
-                if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run) github_urls.api = {}", api));
-                }
-                if let Some(upload) = &urls.upload {
-                    log.status(&format!("(dry-run) github_urls.upload = {}", upload));
-                }
-                if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run) github_urls.download = {}", download));
-                }
-                if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run) github_urls.skip_tls_verify = true");
-                }
-            }
-        }
-        ScmTokenType::GitLab => {
-            if let Some(urls) = &ctx.config.gitlab_urls {
-                if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run) gitlab_urls.api = {}", api));
-                }
-                if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run) gitlab_urls.download = {}", download));
-                }
-                if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run) gitlab_urls.skip_tls_verify = true");
-                }
-                if urls.use_package_registry.unwrap_or(false) {
-                    log.status("(dry-run) gitlab_urls.use_package_registry = true");
-                }
-                if urls.use_job_token.unwrap_or(false) {
-                    log.status("(dry-run) gitlab_urls.use_job_token = true");
-                }
-            }
-        }
-        ScmTokenType::Gitea => {
-            if let Some(urls) = &ctx.config.gitea_urls {
-                if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run) gitea_urls.api = {}", api));
-                }
-                if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run) gitea_urls.download = {}", download));
-                }
-                if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run) gitea_urls.skip_tls_verify = true");
-                }
-            }
-        }
-    }
-}
-
-/// Emit dry-run telemetry for one crate's release and populate artifact
-/// download URLs so publishers can render manifests with correct URLs even
-/// when no real release was created.
-fn handle_dry_run(
-    ctx: &mut Context,
-    log: &anodizer_core::log::StageLogger,
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    s: DryRunSummary<'_>,
-) -> Result<()> {
-    let backend_label = match ctx.token_type {
-        ScmTokenType::GitLab => "GitLab",
-        ScmTokenType::Gitea => "Gitea",
-        ScmTokenType::GitHub => "GitHub",
-    };
-
-    log_dry_run_provider_urls(ctx, log);
-
-    log.status(&format!(
-        "(dry-run) would create {} Release '{}' (tag={}, draft={}, prerelease={}, mode={}) for crate '{}'",
-        backend_label,
-        s.release_name,
-        s.tag,
-        s.draft,
-        s.prerelease,
-        s.release_mode,
-        s.crate_name,
-    ));
-    if let Some((owner, repo)) = &s.publish_repo_override {
-        log.status(&format!(
-            "(dry-run) would publish to override repo '{owner}/{repo}' (nightly.publish_repo)",
-        ));
-    }
-    // retention_keep_last folds in the keep_single_release alias (=> Some(1)).
-    if let Some(keep_last) = s.retention_keep_last {
-        if keep_last == 1 {
-            log.status(
-                "(dry-run) would delete prior nightly release(s) before recreating (nightly retention keep_last=1 / keep_single_release)",
-            );
-        } else {
-            log.status(&format!(
-                "(dry-run) would keep the {keep_last} newest nightly release(s) and delete the rest, incl. their tags (nightly retention)",
-            ));
-        }
-    }
-    if s.skip_upload {
-        log.status("(dry-run) skip_upload is set, would skip artifact uploads");
-    } else {
-        for (path, custom_name) in s.artifact_entries {
-            if let Some(name) = custom_name {
-                log.status(&format!(
-                    "(dry-run) would upload artifact {} (as '{}')",
-                    path.display(),
-                    name,
-                ));
-            } else {
-                log.status(&format!(
-                    "(dry-run) would upload artifact {}",
-                    path.display()
-                ));
-            }
-        }
-    }
-
-    let dry_dl_base = dry_run_download_base(ctx);
-    let dry_repo_cfg = resolve_release_repo(release_cfg, ctx.token_type, ctx)?;
-    let (dry_owner, dry_repo) = dry_repo_cfg
-        .as_ref()
-        .map(|r| (r.owner.as_str(), r.name.as_str()))
-        .unwrap_or(("", ""));
-    populate_artifact_download_urls(
-        ctx,
-        s.crate_name,
-        ctx.token_type,
-        &dry_dl_base,
-        dry_owner,
-        dry_repo,
-        s.tag,
-    );
-    if !dry_owner.is_empty() && !dry_repo.is_empty() {
-        let dry_release_url =
-            compose_release_url(ctx.token_type, &dry_dl_base, dry_owner, dry_repo, s.tag);
-        ctx.set_release_url(&dry_release_url);
-    }
-
-    Ok(())
 }
 
 /// Enumerate the release-upload candidate set for a single crate.

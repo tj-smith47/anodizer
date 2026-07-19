@@ -16,10 +16,12 @@ use anodizer_core::log::StageLogger;
 
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
+mod crate_commits;
 pub(crate) mod gitea;
 pub(crate) mod github;
 pub(crate) mod gitlab;
 
+pub(crate) use crate_commits::*;
 pub(crate) use gitea::fetch_gitea_commits;
 pub(crate) use github::fetch_github_commits;
 pub(crate) use gitlab::fetch_gitlab_commits;

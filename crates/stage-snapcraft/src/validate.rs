@@ -19,7 +19,7 @@ use anodizer_core::crate_scope::with_crate_scope;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use crate::build_stage::snapcraft_snap_yamls_for_crate;
+use crate::yaml::snapcraft_snap_yamls_for_crate;
 
 /// Per-crate tag resolver, threaded so each crate's snapcraft.yaml renders
 /// against its OWN version (workspace per-crate independent-version mode).

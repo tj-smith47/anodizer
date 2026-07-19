@@ -11,7 +11,9 @@
 mod arch;
 mod build_stage;
 mod command;
+mod gate;
 mod generate;
+mod prime;
 mod promote;
 mod publish_stage;
 mod targets;
@@ -21,7 +23,7 @@ mod yaml;
 #[cfg(test)]
 mod tests;
 
-pub use build_stage::{SnapcraftStage, snapcraft_snap_yamls_for_crate};
+pub use build_stage::SnapcraftStage;
 pub use command::{
     is_retriable_snap_push, resolve_effective_channels, snap_newest_revision_in_channel,
     snap_revision_for_version, snapcraft_command, snapcraft_release_command,
@@ -31,6 +33,7 @@ pub use generate::generate_snap_yaml;
 pub use promote::{SnapcraftPromoter, preflight as snapcraft_promote_preflight};
 pub use publish_stage::SnapcraftPublishStage;
 pub use validate::{TagResolver, validate_snapcraft_templates};
+pub use yaml::snapcraft_snap_yamls_for_crate;
 
 /// Environment requirements for the snapcraft build stage: the `snapcraft`
 /// CLI (plus `unsquashfs`, which snapcraft's pack path depends on) whenever

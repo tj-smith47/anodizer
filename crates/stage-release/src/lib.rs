@@ -21,6 +21,8 @@ pub use github::{PublishedAsset, fetch_published_assets};
 mod gitlab;
 mod promote;
 pub use promote::{GithubReleasePromoter, preflight as github_promote_preflight};
+mod dry_run;
+mod flags;
 pub mod publisher;
 mod release_body;
 mod run;

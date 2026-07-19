@@ -34,6 +34,7 @@ use crate::group::{
 };
 
 mod commit;
+mod crate_changelog;
 mod entry;
 mod merge;
 mod promote;
@@ -41,6 +42,7 @@ mod refresh;
 mod section;
 
 pub(crate) use commit::*;
+pub(crate) use crate_changelog::*;
 pub use entry::*;
 pub(crate) use merge::*;
 pub(crate) use promote::*;
