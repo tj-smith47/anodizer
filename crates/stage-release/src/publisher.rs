@@ -1500,4 +1500,107 @@ mod publisher_tests {
         capture_release_ids(mock.as_ref(), &mut targets);
         assert_eq!(mock.get_release_by_tag_call_count(), 2);
     }
+
+    fn one_target(tag: &str) -> GithubReleaseTarget {
+        GithubReleaseTarget {
+            crate_name: "demo".into(),
+            owner: "acme".into(),
+            repo: "widget".into(),
+            tag: tag.into(),
+            release_id: Some(999), // sentinel — must be overwritten by capture
+        }
+    }
+
+    #[test]
+    fn capture_release_ids_memoizes_identical_tuples_to_one_query() {
+        // Two targets sharing (owner, repo, tag) — the common monorepo shape
+        // (one workspace tag → one release). The memo must collapse them to a
+        // single API round-trip and reuse the cached id for the duplicate.
+        let mock = MockGitHubClient::new();
+        mock.set_get_release_by_tag_response(Ok(Some(anodizer_core::github_client::ReleaseInfo {
+            id: 4242,
+            html_url: "https://github.com/acme/widget/releases/4242".into(),
+            tag_name: "v1.0.0".into(),
+            name: None,
+            draft: false,
+        })));
+        let mock = Arc::new(mock);
+        let mut targets = vec![one_target("v1.0.0"), one_target("v1.0.0")];
+        capture_release_ids(mock.as_ref(), &mut targets);
+        assert_eq!(
+            mock.get_release_by_tag_call_count(),
+            1,
+            "the duplicate tuple must be served from the memo, not re-queried"
+        );
+        assert_eq!(targets[0].release_id, Some(4242));
+        assert_eq!(
+            targets[1].release_id,
+            Some(4242),
+            "the memoized id must backfill the duplicate target"
+        );
+    }
+
+    #[test]
+    fn capture_release_ids_sets_none_when_tag_has_no_release() {
+        // Ok(None) — the tag exists but has no release; the id must clear to
+        // None so rollback skips the release-delete for this row.
+        let mock = MockGitHubClient::new();
+        mock.set_get_release_by_tag_response(Ok(None));
+        let mock = Arc::new(mock);
+        let mut targets = vec![one_target("v1.0.0")];
+        capture_release_ids(mock.as_ref(), &mut targets);
+        assert_eq!(
+            targets[0].release_id, None,
+            "no release for the tag must clear the sentinel id to None"
+        );
+    }
+
+    #[test]
+    fn capture_release_ids_swallows_lookup_errors_to_none() {
+        // A transport/auth error during the post-publish enrichment must NOT
+        // fail the run; the id clears to None (rollback skips the delete) and
+        // the publish's already-landed evidence is preserved.
+        let mock = MockGitHubClient::new();
+        mock.set_get_release_by_tag_response(Err("HTTP 503 Service Unavailable".to_string()));
+        let mock = Arc::new(mock);
+        let mut targets = vec![one_target("v1.0.0")];
+        capture_release_ids(mock.as_ref(), &mut targets);
+        assert_eq!(
+            targets[0].release_id, None,
+            "a lookup error must clear the id to None, not abort"
+        );
+    }
+
+    #[test]
+    fn github_release_rollback_skips_delete_when_no_release_id() {
+        // A target with no captured release_id: rollback must NOT issue a
+        // release DELETE (it would 404), treat the row as already-absent, and
+        // still return Ok.
+        let mock = MockGitHubClient::new();
+        mock.set_delete_release_response(Ok(()));
+        let mock = Arc::new(mock);
+        let p = GithubReleasePublisher::with_client(mock.clone());
+
+        let target = GithubReleaseTarget {
+            crate_name: "demo".into(),
+            owner: "acme".into(),
+            repo: "widget".into(),
+            tag: "v1.0.0".into(),
+            release_id: None,
+        };
+        let mut evidence = PublishEvidence::new("github-release");
+        evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: vec![target],
+            },
+        );
+        let mut ctx = TestContextBuilder::new().build();
+        p.rollback(&mut ctx, &evidence)
+            .expect("rollback with no captured id returns Ok");
+        assert_eq!(
+            mock.delete_release_call_count(),
+            0,
+            "no release_id => no DELETE is issued for this row"
+        );
+    }
 }
