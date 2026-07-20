@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-07-20
+
+### Bug Fixes
+
+* bdcdb7606186 abort OIDC publish up front when a crate was never published ([@tj-smith47](https://github.com/tj-smith47))
+* 498da907e5ad stop deriving publish-order edges from unversioned dev-deps ([@tj-smith47](https://github.com/tj-smith47))
+* b6203253e464 guard promote --from-run against path traversal ([@tj-smith47](https://github.com/tj-smith47))
+* 7fa23abfad2f stop silently dropping a libc when gnu and musl target the same arch ([@tj-smith47](https://github.com/tj-smith47))
+* 5eaf608ff713 honor if_condition in uploads rollback target collection ([@tj-smith47](https://github.com/tj-smith47))
+* cd36c48cb8b5 record snap revision per arch and promote every architecture ([@tj-smith47](https://github.com/tj-smith47))
+* 48b9384f5d62 stop misclassifying connectivity/auth faults as an absent snap ([@tj-smith47](https://github.com/tj-smith47))
+* 1ac2ff37d536 split four god-files into cohesive siblings ([@tj-smith47](https://github.com/tj-smith47))
+* a9e359d22706 split four Wave-1 god-files into cohesive submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 8e70a325c127 split four Wave-2 god-files into cohesive submodules ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* dfb25aa21e9c derive publish order from Cargo.toml when depends_on unresolved ([@tj-smith47](https://github.com/tj-smith47))
+* bf8304a306d5 include versioned dev-dependencies in derived publish order ([@tj-smith47](https://github.com/tj-smith47))
+* b56ea5ab4a60 demote backfill dist-tag to release-<version>, not bare semver ([@tj-smith47](https://github.com/tj-smith47))
+* 8b7fae949b62 map darwin-universal target to universal2 wheel tag ([@tj-smith47](https://github.com/tj-smith47))
+* 59b39f59407f exempt surface-dependent checksums from cross-leg byte-compare #none ([@tj-smith47](https://github.com/tj-smith47))
+* aba7c6a493cb fix orphaned rustdoc and stale comments from Wave-1 split ([@tj-smith47](https://github.com/tj-smith47))
+* d7a406f9e565 reword rule-9 caller-ref and pronoun comments from Wave-3 split ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.22.1] - 2026-07-18
 
 ### Bug Fixes
@@ -693,7 +719,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.22.1
 [0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tj-smith47/anodizer/compare/v0.18.0...v0.19.0
