@@ -1674,3 +1674,289 @@ fn create_tag_local_only_reuses_already_signed_tag() {
         "already-signed tag must remain signed on reuse"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Path-taking (`*_in`) tag mutate/query helpers — driven against throwaway
+// git repos (no cwd mutation, so no `#[serial]` needed).
+// ---------------------------------------------------------------------------
+
+/// Run a git command in `dir`, asserting success.
+fn tags_run_git(dir: &std::path::Path, args: &[&str]) {
+    use std::process::Command;
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com");
+            cmd
+        },
+        "git",
+    );
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Init a repo in `dir` with one commit on `main`.
+fn tags_init_commit_repo(dir: &std::path::Path) {
+    tags_run_git(dir, &["init", "-q", "-b", "main"]);
+    tags_run_git(dir, &["config", "user.email", "test@test.com"]);
+    tags_run_git(dir, &["config", "user.name", "test"]);
+    std::fs::write(dir.join("README"), "init").unwrap();
+    tags_run_git(dir, &["add", "."]);
+    tags_run_git(dir, &["commit", "-q", "-m", "initial"]);
+}
+
+/// Add a bare `origin` remote to the repo in `dir`; returns the bare dir
+/// (keep it alive for the remote's lifetime).
+fn tags_add_bare_origin(dir: &std::path::Path) -> tempfile::TempDir {
+    let bare = tempfile::tempdir().unwrap();
+    tags_run_git(bare.path(), &["init", "--bare", "-q"]);
+    tags_run_git(
+        dir,
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    bare
+}
+
+fn tags_quiet_log() -> crate::log::StageLogger {
+    crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet)
+}
+
+#[test]
+fn get_branch_semver_tags_in_excludes_tags_unmerged_into_head() {
+    use super::tags::get_branch_semver_tags_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // v1.0.0 sits on main (merged into HEAD).
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    // v9.9.9 sits on a divergent branch that is NEVER merged into main.
+    tags_run_git(tmp.path(), &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(tmp.path().join("f"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "feature"]);
+    tags_run_git(tmp.path(), &["tag", "v9.9.9"]);
+    tags_run_git(tmp.path(), &["checkout", "-q", "main"]);
+
+    let tags = get_branch_semver_tags_in(tmp.path(), "v", None, None).unwrap();
+    // `--merged HEAD` must keep v1.0.0 and drop the unmerged v9.9.9.
+    assert_eq!(
+        tags,
+        vec!["v1.0.0".to_string()],
+        "only tags merged into HEAD are returned; v9.9.9 is on an unmerged branch"
+    );
+}
+
+#[test]
+fn create_and_push_tag_in_creates_tag_and_warns_without_origin() {
+    use super::tags::create_and_push_tag_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let log = tags_quiet_log();
+    // No origin, non-strict: the tag is created locally and the missing push
+    // is a warning (not an error).
+    create_and_push_tag_in(tmp.path(), "v1.0.0", "rel", false, false, &log, false)
+        .expect("tag creation must succeed without an origin in non-strict mode");
+    let out = super::git_output_in(tmp.path(), &["tag", "--list"]).unwrap();
+    assert!(
+        out.lines().any(|l| l == "v1.0.0"),
+        "the annotated tag must exist locally; got {out:?}"
+    );
+}
+
+#[test]
+fn create_and_push_tag_in_pushes_to_origin() {
+    use super::tags::{create_and_push_tag_in, list_remote_tag_names_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let _bare = tags_add_bare_origin(tmp.path());
+    let log = tags_quiet_log();
+    create_and_push_tag_in(tmp.path(), "v2.0.0", "rel", false, false, &log, true)
+        .expect("push to a present origin must succeed");
+    let names = list_remote_tag_names_in(tmp.path(), "origin").unwrap();
+    assert!(
+        names.contains(&"v2.0.0".to_string()),
+        "the tag must land on origin; got {names:?}"
+    );
+}
+
+#[test]
+fn create_and_push_tag_in_strict_bails_without_origin() {
+    use super::tags::create_and_push_tag_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let log = tags_quiet_log();
+    let err = create_and_push_tag_in(tmp.path(), "v3.0.0", "rel", false, false, &log, true)
+        .expect_err("strict mode with no origin must error");
+    assert!(
+        format!("{err:#}").contains("no 'origin' remote"),
+        "strict-mode error must name the missing origin: {err:#}"
+    );
+}
+
+#[test]
+fn delete_local_tag_in_is_idempotent_and_removes_present_tags() {
+    use super::tags::delete_local_tag_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    // Present tag: removed.
+    delete_local_tag_in(tmp.path(), "v1.0.0").expect("deleting a present tag succeeds");
+    let out = super::git_output_in(tmp.path(), &["tag", "--list"]).unwrap();
+    assert!(!out.lines().any(|l| l == "v1.0.0"), "tag must be gone");
+    // Missing tag: idempotent success (the `not found` branch).
+    delete_local_tag_in(tmp.path(), "v1.0.0")
+        .expect("deleting an already-absent tag must be idempotent, not an error");
+}
+
+#[test]
+fn delete_remote_tag_in_removes_a_present_remote_tag() {
+    use super::tags::{delete_remote_tag_in, list_remote_tag_names_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let _bare = tags_add_bare_origin(tmp.path());
+    // Seed a tag on origin, then delete it: the success path returns Ok and the
+    // ref is gone from the remote.
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    tags_run_git(tmp.path(), &["push", "-q", "origin", "v1.0.0"]);
+    assert!(
+        list_remote_tag_names_in(tmp.path(), "origin")
+            .unwrap()
+            .contains(&"v1.0.0".to_string()),
+        "precondition: the tag is on origin"
+    );
+    delete_remote_tag_in(tmp.path(), "v1.0.0").expect("deleting a present remote tag succeeds");
+    assert!(
+        !list_remote_tag_names_in(tmp.path(), "origin")
+            .unwrap()
+            .contains(&"v1.0.0".to_string()),
+        "the tag must be gone from origin after delete"
+    );
+}
+
+#[test]
+fn delete_remote_tag_in_bails_without_origin() {
+    use super::tags::delete_remote_tag_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // No origin at all: the push fails for a reason other than "already absent",
+    // so it must bubble up as an error.
+    let err = delete_remote_tag_in(tmp.path(), "v1.0.0")
+        .expect_err("a push with no origin remote must error");
+    assert!(
+        format!("{err:#}").contains("git push origin"),
+        "error must surface the failed push: {err:#}"
+    );
+}
+
+#[test]
+fn get_tags_at_sha_in_returns_empty_on_unknown_sha() {
+    use super::tags::get_tags_at_sha_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // A malformed object name makes `git tag --points-at` exit non-zero (a
+    // valid-form but non-existent 40-hex sha exits 0 with no output, which would
+    // pass through the success path instead); the helper must warn and return an
+    // empty list rather than erroring.
+    let tags = get_tags_at_sha_in(tmp.path(), "bad!!ref")
+        .expect("a malformed revision yields no tags, not an error");
+    assert!(
+        tags.is_empty(),
+        "malformed revision must yield no tags; got {tags:?}"
+    );
+}
+
+#[test]
+fn push_branch_and_tags_atomic_in_dry_run_pushes_nothing() {
+    use super::tags::{AtomicPushSpec, push_branch_and_tags_atomic_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    let _bare = tags_add_bare_origin(tmp.path());
+    let log = tags_quiet_log();
+    let tags = vec!["v1.0.0".to_string()];
+
+    // Dry-run with a REAL origin present: the tag must NOT reach the remote.
+    push_branch_and_tags_atomic_in(
+        tmp.path(),
+        &AtomicPushSpec {
+            remote: "origin",
+            branch: Some("main"),
+            tags: &tags,
+            dry_run: true,
+            strict: false,
+        },
+        &log,
+    )
+    .expect("dry-run push is a no-op");
+    let names = super::tags::list_remote_tag_names_in(tmp.path(), "origin").unwrap();
+    assert!(
+        names.is_empty(),
+        "dry-run must push nothing to origin; got {names:?}"
+    );
+}
+
+#[test]
+fn push_branch_and_tags_atomic_in_lands_branch_and_tags_on_origin() {
+    use super::tags::{AtomicPushSpec, list_remote_tag_names_in, push_branch_and_tags_atomic_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    let bare = tags_add_bare_origin(tmp.path());
+    let log = tags_quiet_log();
+    let tags = vec!["v1.0.0".to_string()];
+
+    // Real atomic push of branch HEAD + the tag: both refs must land on origin.
+    push_branch_and_tags_atomic_in(
+        tmp.path(),
+        &AtomicPushSpec {
+            remote: "origin",
+            branch: Some("main"),
+            tags: &tags,
+            dry_run: false,
+            strict: true,
+        },
+        &log,
+    )
+    .expect("atomic branch+tag push to a present origin must succeed");
+
+    let names = list_remote_tag_names_in(tmp.path(), "origin").unwrap();
+    assert!(
+        names.contains(&"v1.0.0".to_string()),
+        "the tag must land on origin; got {names:?}"
+    );
+    // The exact branch ref must exist on the bare remote too (show-ref --verify
+    // resolves the full refname, so a differently-named branch would not pass).
+    super::git_output_in(bare.path(), &["show-ref", "--verify", "refs/heads/main"])
+        .expect("refs/heads/main must exist on origin after the atomic push");
+}
+
+#[test]
+fn push_branch_and_tags_atomic_in_nothing_to_push_is_noop() {
+    use super::tags::{AtomicPushSpec, push_branch_and_tags_atomic_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let log = tags_quiet_log();
+    // No branch and no tags: the "nothing to push" guard returns Ok before any
+    // remote check (there is no origin, so reaching the remote check would err
+    // under strict — proving the guard short-circuits first).
+    push_branch_and_tags_atomic_in(
+        tmp.path(),
+        &AtomicPushSpec {
+            remote: "origin",
+            branch: None,
+            tags: &[],
+            dry_run: false,
+            strict: true,
+        },
+        &log,
+    )
+    .expect("nothing-to-push short-circuits before the remote check");
+}
