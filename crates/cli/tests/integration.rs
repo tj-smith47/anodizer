@@ -5807,9 +5807,9 @@ crates:
 
 /// `promote --from-run=<id>` joins into a filesystem path exactly like
 /// `release --from-run`, so its clap `value_parser` must reject
-/// path-traversal at the binary surface too. Guards against the F14
-/// regression where the promote arg lacked the `parse_run_id` guard the
-/// release arg already carried.
+/// path-traversal at the binary surface too. Guards against a regression
+/// where the promote arg lacked the `parse_run_id` guard the release arg
+/// already carried.
 #[test]
 fn promote_from_run_rejects_path_traversal_at_binary_surface() {
     let tmp = TempDir::new().unwrap();

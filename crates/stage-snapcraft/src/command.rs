@@ -232,13 +232,12 @@ fn revisions_by_arch(output: &str, keep: impl Fn(&[&str], usize, usize) -> bool)
 pub fn is_snap_absent_from_store(combined_output: &str) -> bool {
     const MARKERS: &[&str] = &[
         "not found in the snap store",
-        "could not find",
+        "could not find snap",
         "has no revisions",
         "no revisions available",
         "no revisions for",
         "is not registered",
         "not registered in the store",
-        "you are not the publisher or collaborator",
     ];
     let lower = combined_output.to_ascii_lowercase();
     MARKERS.iter().any(|m| lower.contains(m))
@@ -509,4 +508,47 @@ pub fn is_content_dedup_rejection(combined_output: &str) -> bool {
     const MARKERS: &[&str] = &["a file with this exact same content has already been uploaded"];
     let lower = combined_output.to_ascii_lowercase();
     MARKERS.iter().any(|m| lower.contains(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absence_probe_matches_only_genuine_snap_absence() {
+        for msg in [
+            "Snap 'mysnap' was not found in the Snap Store.",
+            "error: could not find snap 'mysnap' in the store",
+            "This snap has no revisions available.",
+            "snap 'mysnap' is not registered in the store",
+        ] {
+            assert!(
+                is_snap_absent_from_store(msg),
+                "genuine snap-absence wording must classify as absent: {msg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absence_probe_treats_connectivity_failure_as_a_hard_error() {
+        // A DNS/network fault ("could not find host …") must NOT masquerade as
+        // an unregistered snap — it carries no snap-does-not-exist wording, so
+        // the promote probe surfaces it honestly rather than silently skipping.
+        let msg = "snapcraft: error: could not find host api.snapcraft.io";
+        assert!(
+            !is_snap_absent_from_store(msg),
+            "a connectivity failure must stay a hard error, not an empty skip"
+        );
+    }
+
+    #[test]
+    fn absence_probe_treats_authorization_failure_as_a_hard_error() {
+        // The snap exists but belongs to another account: an authorization
+        // fault the operator must see, never a silent "nothing to promote".
+        let msg = "error: you are not the publisher or collaborator of this snap";
+        assert!(
+            !is_snap_absent_from_store(msg),
+            "a wrong-account auth failure must stay a hard error, not an empty skip"
+        );
+    }
 }

@@ -688,7 +688,7 @@ Rev    Uploaded              Arches  Version  Channels
 
     #[test]
     fn resolve_snap_names_excludes_build_only_snap() {
-        // F8: a `publish: false` (build-only) snap was never uploaded, so it
+        // A `publish: false` (build-only) snap was never uploaded, so it
         // must NOT enter the promote set — its store probe would otherwise
         // fail and, treated as an error, hard-fail the whole run.
         let cfg = Config {
@@ -722,7 +722,7 @@ Rev    Uploaded              Arches  Version  Channels
 
     #[test]
     fn resolve_snap_names_excludes_skipped_and_if_false() {
-        // F8: `skip: true` and a falsy `if:` mirror the publish stage's
+        // `skip: true` and a falsy `if:` mirror the publish stage's
         // gates — a snap the publish stage would not upload must not promote.
         let cfg = Config {
             project_name: "demo".to_string(),
@@ -867,8 +867,8 @@ Rev    Uploaded              Arches  Version  Channels
 
     #[test]
     fn resolve_revisions_from_run_releases_every_arch() {
-        // F7 + F1 for FromRun: a populated dual-arch publish snapshot must
-        // yield BOTH arch revisions (not NothingToPromote, not one arch).
+        // A populated dual-arch publish snapshot must yield BOTH arch
+        // revisions (not NothingToPromote, not one arch).
         use anodizer_core::publish_evidence::{SnapcraftExtra, SnapcraftTargetSnapshot};
         use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult};
 
@@ -961,7 +961,7 @@ Rev    Uploaded              Arches  Version  Channels
         }
     }
 
-    // F4: a missing Snap Store session must surface an actionable message
+    // A missing Snap Store session must surface an actionable message
     // BEFORE dispatch, not conflate with "snap unregistered" mid-promote.
     // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
     #[cfg(unix)]
@@ -987,7 +987,7 @@ Rev    Uploaded              Arches  Version  Channels
         );
     }
 
-    // F4: a logged-in session (`snapcraft whoami` exits 0) passes even with
+    // A logged-in session (`snapcraft whoami` exits 0) passes even with
     // the credential env var absent.
     #[cfg(unix)]
     #[test]
@@ -1008,7 +1008,7 @@ Rev    Uploaded              Arches  Version  Channels
         preflight().expect("a live whoami session ⇒ preflight ok");
     }
 
-    // F5: an unregistered / not-yet-released snap is a SKIP (nothing to
+    // An unregistered / not-yet-released snap is a SKIP (nothing to
     // promote), not a hard failure of the whole run.
     // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
     #[cfg(unix)]
@@ -1045,7 +1045,7 @@ Rev    Uploaded              Arches  Version  Channels
         );
     }
 
-    // F5: a genuine probe/auth error (non-zero exit with NO absent marker)
+    // A genuine probe/auth error (non-zero exit with NO absent marker)
     // must surface honestly as a failure, never masquerade as an empty skip.
     #[cfg(unix)]
     #[test]
