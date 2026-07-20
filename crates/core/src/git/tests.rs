@@ -1960,3 +1960,149 @@ fn push_branch_and_tags_atomic_in_nothing_to_push_is_noop() {
     )
     .expect("nothing-to-push short-circuits before the remote check");
 }
+
+#[test]
+fn push_branch_and_tags_atomic_in_branch_only_empty_tags_pushes_branch() {
+    use super::tags::{AtomicPushSpec, push_branch_and_tags_atomic_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let bare = tags_add_bare_origin(tmp.path());
+    let log = tags_quiet_log();
+    // branch = Some + empty tags: the tags-empty fork does a plain (non-atomic)
+    // branch push. The branch ref must land on origin.
+    push_branch_and_tags_atomic_in(
+        tmp.path(),
+        &AtomicPushSpec {
+            remote: "origin",
+            branch: Some("main"),
+            tags: &[],
+            dry_run: false,
+            strict: true,
+        },
+        &log,
+    )
+    .expect("branch-only push must succeed");
+    super::git_output_in(bare.path(), &["show-ref", "--verify", "refs/heads/main"])
+        .expect("refs/heads/main must exist on origin after the branch-only push");
+}
+
+#[test]
+fn push_branch_and_tags_atomic_in_strict_bails_without_remote() {
+    use super::tags::{AtomicPushSpec, push_branch_and_tags_atomic_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    let log = tags_quiet_log();
+    let tags = vec!["v1.0.0".to_string()];
+    tags_run_git(tmp.path(), &["tag", "v1.0.0"]);
+    // No origin + strict: the missing-remote guard must error.
+    let err = push_branch_and_tags_atomic_in(
+        tmp.path(),
+        &AtomicPushSpec {
+            remote: "origin",
+            branch: Some("main"),
+            tags: &tags,
+            dry_run: false,
+            strict: true,
+        },
+        &log,
+    )
+    .expect_err("strict push with no remote must error");
+    assert!(
+        format!("{err:#}").contains("no 'origin' remote"),
+        "strict-mode error must name the missing remote: {err:#}"
+    );
+}
+
+#[test]
+fn find_previous_tag_in_returns_none_when_repo_has_no_tags() {
+    use super::tags::find_previous_tag_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // A repo with a commit but zero tags: the empty-tag-list early return yields
+    // None (no previous tag to find).
+    let prev = find_previous_tag_in(tmp.path(), "v1.0.0", None, None).unwrap();
+    assert_eq!(prev, None, "a tagless repo has no previous tag");
+}
+
+#[test]
+fn get_first_commit_in_returns_the_root_commit() {
+    use super::tags::get_first_commit_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // A second commit so HEAD != root.
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    let root = get_first_commit_in(tmp.path()).unwrap();
+    // The reported root must match `git rev-list --max-parents=0 HEAD`.
+    let expected = super::git_output_in(tmp.path(), &["rev-list", "--max-parents=0", "HEAD"])
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        root, expected,
+        "must return the repository's root commit sha"
+    );
+}
+
+#[test]
+fn tag_points_at_head_in_true_for_head_tag_false_otherwise() {
+    use super::tags::tag_points_at_head_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "at-head"]);
+    // A tag on an EARLIER commit: advance HEAD past it.
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "at-head-2"]);
+
+    assert!(
+        tag_points_at_head_in(tmp.path(), "at-head-2").unwrap(),
+        "a tag on HEAD must report true"
+    );
+    assert!(
+        !tag_points_at_head_in(tmp.path(), "at-head").unwrap(),
+        "a tag on an earlier commit must report false"
+    );
+}
+
+#[test]
+fn get_tags_at_head_in_lists_only_head_tags() {
+    use super::tags::get_tags_at_head_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "old"]);
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "new"]);
+    let at_head = get_tags_at_head_in(tmp.path()).unwrap();
+    assert_eq!(
+        at_head,
+        vec!["new".to_string()],
+        "only the tag on HEAD is returned, not the one on the earlier commit"
+    );
+}
+
+#[test]
+fn list_tags_with_prefix_filters_and_sorts_by_reverse_semver() {
+    use super::tags::list_tags_with_prefix;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    for t in ["v1.0.0", "v1.2.0", "v2.0.0", "other-1"] {
+        tags_run_git(tmp.path(), &["tag", t]);
+    }
+    let tags = list_tags_with_prefix(tmp.path(), "v").unwrap();
+    // Only the `v`-prefixed tags, newest semver first; `other-1` excluded.
+    assert_eq!(
+        tags,
+        vec![
+            "v2.0.0".to_string(),
+            "v1.2.0".to_string(),
+            "v1.0.0".to_string()
+        ],
+    );
+}
