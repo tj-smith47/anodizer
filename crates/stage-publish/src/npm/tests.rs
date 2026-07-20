@@ -5173,3 +5173,187 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
         "the tally must report the successful unpublish: {msgs:?}"
     );
 }
+
+// -----------------------------------------------------------------------------
+// promote (live): dist-tag re-tag driven through a fake `npm` on PATH
+// -----------------------------------------------------------------------------
+
+/// Postinstall + Version selector: `resolve_version` returns the version
+/// verbatim (no `dist-tag ls` spawn) and the single metapackage is re-tagged
+/// with `npm dist-tag add <pkg>@<ver> <to>`. Proves the retag_config postinstall
+/// path, dist_tag_add success bookkeeping, and the promoted outcome.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(npm_counter)]
+fn promote_postinstall_version_retags_metapackage() {
+    use super::promote::NpmPromoter;
+    use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let calls = tmp.path().join("calls");
+
+    let npm = bin_dir.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "dist-tag" ] && [ "$2" = "add" ]; then
+  echo "$3 $4" >> "{calls}"
+  exit 0
+fi
+exit 0
+"#,
+            calls = calls.display()
+        ),
+    )
+    .expect("write fake npm");
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "fake-token")
+        .crates(vec![demo_crate()])
+        .build();
+    let mut ctx = ctx;
+    ctx.config.npms = Some(vec![npm_cfg()]);
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+    }
+
+    let selector = PromoteSelector::Version("1.2.3".to_string());
+    let outcome = NpmPromoter::default().promote(&PromoteRequest {
+        from: "next".to_string(),
+        to: "latest".to_string(),
+        selector: &selector,
+        dry_run: false,
+        ctx: &ctx,
+    });
+
+    // SAFETY: paired with the set above.
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+    }
+
+    let outcome = outcome.expect("postinstall version promote must succeed");
+    assert_eq!(outcome.status, PromoteStatus::Promoted);
+    assert_eq!(
+        outcome.what.as_deref(),
+        Some("1 package(s)"),
+        "one metapackage re-tagged"
+    );
+    let recorded = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        recorded.contains("anodize-demo@1.2.3 latest"),
+        "the metapackage must be re-tagged to the target dist-tag; got {recorded:?}"
+    );
+}
+
+/// optional-deps + Newest selector: `resolve_version` reads the current version
+/// under the from-tag via `npm dist-tag ls`, then re-tags the metapackage and
+/// (per `npm view … optionalDependencies`) each platform package. An empty
+/// optionalDependencies family exercises the parse-empty path, so only the
+/// metapackage is re-tagged. Proves resolve_version(Newest), platform_packages,
+/// and the optional-deps branch of retag_config.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(npm_counter)]
+fn promote_optional_deps_newest_reads_dist_tag_and_family() {
+    use super::promote::NpmPromoter;
+    use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let calls = tmp.path().join("calls");
+
+    let npm = bin_dir.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  "dist-tag ls")
+    echo "$1 $2 $3" >> "{calls}"
+    echo "next: 1.2.3"
+    echo "latest: 1.1.0"
+    exit 0
+    ;;
+  "dist-tag add")
+    echo "add $3 $4" >> "{calls}"
+    exit 0
+    ;;
+esac
+if [ "$1" = "view" ]; then
+  echo "view" >> "{calls}"
+  echo "{{}}"
+  exit 0
+fi
+exit 0
+"#,
+            calls = calls.display()
+        ),
+    )
+    .expect("write fake npm");
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "fake-token")
+        .crates(vec![demo_crate()])
+        .build();
+    ctx.config.npms = Some(vec![opt_cfg()]);
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+    }
+
+    let selector = PromoteSelector::Newest;
+    let outcome = NpmPromoter::default().promote(&PromoteRequest {
+        from: "next".to_string(),
+        to: "latest".to_string(),
+        selector: &selector,
+        dry_run: false,
+        ctx: &ctx,
+    });
+
+    // SAFETY: paired with the set above.
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+    }
+
+    let outcome = outcome.expect("optional-deps newest promote must succeed");
+    assert_eq!(outcome.status, PromoteStatus::Promoted);
+    let recorded = std::fs::read_to_string(&calls).unwrap_or_default();
+    // The from-tag (`next`) version was read via dist-tag ls …
+    assert!(
+        recorded.contains("dist-tag ls"),
+        "Newest must query the current from-tag version; got {recorded:?}"
+    );
+    // … then the metapackage was re-tagged at that resolved version (1.2.3).
+    assert!(
+        recorded.contains("add demo@1.2.3 latest"),
+        "the metapackage must be re-tagged at the from-tag version; got {recorded:?}"
+    );
+    // … and the platform family was listed via `npm view` (empty here).
+    assert!(
+        recorded.contains("view"),
+        "the optional-deps family must be listed via npm view; got {recorded:?}"
+    );
+}
