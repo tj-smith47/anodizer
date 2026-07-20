@@ -165,10 +165,15 @@ fn flip_one(
             repo.name
         );
     };
-    let (octo_raw, retry_after) = build_octocrab_client(token, &req.ctx.config.github_urls)?;
-    let octo = Arc::new(octo_raw);
-
     let flipped = rt.block_on(async {
+        // Build the octocrab client INSIDE the runtime: octocrab's tower
+        // `Buffer` service spawns its worker on the ambient runtime, so
+        // constructing the client on the bare thread (the `promote` verb runs
+        // synchronously and owns this runtime) would panic "no reactor running"
+        // on the first request. The github release backend builds inside its
+        // own `block_on` for the same reason.
+        let (octo_raw, retry_after) = build_octocrab_client(token, &req.ctx.config.github_urls)?;
+        let octo = Arc::new(octo_raw);
         let Some(release) =
             locate_release(&octo, repo, req, policy, to_stable, Some(&retry_after)).await?
         else {
@@ -1002,6 +1007,270 @@ mod tests {
         assert!(
             msg.contains("no github release repo resolved"),
             "unexpected promote bail message: {msg}"
+        );
+    }
+
+    // --- promote (live): the full flip drives locate + PATCH through the
+    //     production octocrab middleware stack against a loopback GitHub API ---
+
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::sync::atomic::Ordering;
+
+    /// One release JSON object shaped for octocrab's `Release` deserializer.
+    fn release_json(id: u64, tag: &str, prerelease: bool, draft: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "node_id": format!("RL_{id}"),
+            "tag_name": tag,
+            "target_commitish": "main",
+            "name": tag,
+            "draft": draft,
+            "prerelease": prerelease,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": null,
+            "author": null,
+            "assets": [],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("https://api.github.com/repos/acme/app/releases/{id}"),
+            "html_url": format!("https://github.com/acme/app/releases/{id}"),
+            "assets_url": format!("https://api.github.com/repos/acme/app/releases/{id}/assets"),
+            "upload_url": format!("https://uploads.github.com/repos/acme/app/releases/{id}/assets{{?name,label}}"),
+        })
+    }
+
+    /// A static 200 response wrapping a JSON body (owned → leaked to `'static`
+    /// so it satisfies the responder's `&'static str` contract).
+    fn ok_json_response(body: String) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    fn ok_release(v: serde_json::Value) -> &'static str {
+        ok_json_response(v.to_string())
+    }
+
+    fn ok_release_list(vs: Vec<serde_json::Value>) -> &'static str {
+        ok_json_response(serde_json::Value::Array(vs).to_string())
+    }
+
+    /// A non-2xx status response (JSON error body) for the failure paths.
+    fn err_status_response(status: &str) -> &'static str {
+        let body = r#"{"message":"boom","documentation_url":"https://x"}"#;
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    /// Context with ONE tokened `release.github` repo whose API base points at
+    /// the loopback `addr`, so `build_octocrab_client` talks to the responder.
+    fn loopback_ctx(addr: std::net::SocketAddr) -> Context {
+        use anodizer_core::config::{Config, GitHubUrlsConfig, WorkspaceConfig};
+        use anodizer_core::context::ContextOptions;
+        let config = Config {
+            project_name: "ws".to_string(),
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![github_crate_cfg("a", "acme", "app", Some("ghp_live"))],
+                ..Default::default()
+            }]),
+            github_urls: Some(GitHubUrlsConfig {
+                api: Some(format!("http://{addr}/")),
+                upload: Some(format!("http://{addr}/")),
+                download: Some(format!("http://{addr}/")),
+                skip_tls_verify: None,
+            }),
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    #[test]
+    fn promote_version_selector_flips_release_to_stable() {
+        use anodizer_core::promote::PromoteStatus;
+        // GET release-by-tag (a current prerelease) → PATCH it to stable.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            ok_release(release_json(42, "v1.2.3", true, false)),
+            ok_release(release_json(42, "v1.2.3", false, false)),
+        ]);
+        let ctx = loopback_ctx(addr);
+        let selector = PromoteSelector::Version("v1.2.3".to_string());
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: false,
+                ctx: &ctx,
+            })
+            .expect("live promote must locate then flip the release");
+        assert_eq!(outcome.status, PromoteStatus::Promoted);
+        assert_eq!(outcome.publisher, "github");
+        assert_eq!(
+            outcome.what.as_deref(),
+            Some("1 release(s)"),
+            "one repo flipped => one release counted"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one GET (locate by tag) + one PATCH (flip)"
+        );
+    }
+
+    #[test]
+    fn promote_version_selector_missing_release_reports_nothing_to_promote() {
+        use anodizer_core::promote::{PromoteSkipReason, PromoteStatus};
+        // GET release-by-tag → 404: a 404 is "nothing to promote" for the repo,
+        // not a failure. The only repo matched nothing => the run is skipped.
+        let (addr, _calls) =
+            spawn_oneshot_http_responder(vec![err_status_response("404 Not Found")]);
+        let ctx = loopback_ctx(addr);
+        let selector = PromoteSelector::Version("v9.9.9".to_string());
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: false,
+                ctx: &ctx,
+            })
+            .expect("a 404 on locate is 'nothing to promote', not an error");
+        assert_eq!(
+            outcome.status,
+            PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote),
+            "a repo whose tag 404s contributes nothing; with no other repo the run skips"
+        );
+    }
+
+    #[test]
+    fn promote_bails_when_the_flip_patch_fails() {
+        // GET locate succeeds (200), PATCH fails with a non-retryable 4xx: the
+        // repo lands in `failed`, and with nothing promoted the run bails with
+        // the partial-promotion error naming the failed target.
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            ok_release(release_json(42, "v1.2.3", true, false)),
+            err_status_response("422 Unprocessable Entity"),
+        ]);
+        let ctx = loopback_ctx(addr);
+        let selector = PromoteSelector::Version("v1.2.3".to_string());
+        let err = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: false,
+                ctx: &ctx,
+            })
+            .expect_err("a failed PATCH must surface as a run error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("acme/app"),
+            "the partial-promotion error names the failed repo: {msg}"
+        );
+        assert!(
+            msg.contains("failed on"),
+            "the error must use the partial-promotion phrasing: {msg}"
+        );
+    }
+
+    #[test]
+    fn promote_newest_selector_flips_the_newest_current_prerelease() {
+        use anodizer_core::promote::PromoteStatus;
+        // Newest → GET the release list (a stable release, then a prerelease).
+        // The direction filter (to_stable => wants a current prerelease) picks
+        // the prerelease, then PATCHes it. A stable release is not a candidate.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            ok_release_list(vec![
+                release_json(50, "v2.0.0", false, false),
+                release_json(49, "v2.0.0-rc.1", true, false),
+            ]),
+            ok_release(release_json(49, "v2.0.0-rc.1", false, false)),
+        ]);
+        let ctx = loopback_ctx(addr);
+        let selector = PromoteSelector::Newest;
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: false,
+                ctx: &ctx,
+            })
+            .expect("newest live promote must list then flip");
+        assert_eq!(outcome.status, PromoteStatus::Promoted);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one list-releases + one PATCH of the selected prerelease"
+        );
+    }
+
+    #[test]
+    fn promote_from_run_selector_flips_the_recorded_tag() {
+        use anodizer_core::promote::PromoteStatus;
+        use anodizer_core::publish_evidence::{GithubReleaseExtra, GithubReleaseTargetSnapshot};
+        use anodizer_core::{
+            PublishEvidence, PublishEvidenceExtra, PublisherGroup, PublisherOutcome,
+            PublisherResult,
+        };
+        // FromRun carries a report whose github-release evidence records the tag
+        // for acme/app; locate_release must read it and GET that exact tag, then
+        // PATCH the located release.
+        let mut evidence = PublishEvidence::new("github-release");
+        evidence.extra = PublishEvidenceExtra::GithubRelease(GithubReleaseExtra {
+            github_release_targets: vec![GithubReleaseTargetSnapshot {
+                crate_name: "app".into(),
+                owner: "acme".into(),
+                repo: "app".into(),
+                tag: "v3.0.0-rc.1".into(),
+                release_id: Some(77),
+            }],
+        });
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "github-release".into(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: Some(evidence),
+        });
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            ok_release(release_json(77, "v3.0.0-rc.1", true, false)),
+            ok_release(release_json(77, "v3.0.0-rc.1", false, false)),
+        ]);
+        let ctx = loopback_ctx(addr);
+        let selector = PromoteSelector::FromRun {
+            run_id: "run-123".to_string(),
+            report,
+        };
+        let outcome = GithubReleasePromoter
+            .promote(&PromoteRequest {
+                from: "prerelease".to_string(),
+                to: "stable".to_string(),
+                selector: &selector,
+                dry_run: false,
+                ctx: &ctx,
+            })
+            .expect("from-run live promote must read the recorded tag then flip");
+        assert_eq!(outcome.status, PromoteStatus::Promoted);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one GET of the recorded tag + one PATCH"
         );
     }
 }
