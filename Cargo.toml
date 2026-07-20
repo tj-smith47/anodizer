@@ -129,7 +129,7 @@ anodizer-stage-install-script = { path = "crates/stage-install-script", version 
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.22.2" }
 anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.22.2" }
 anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.22.2" }
-brontes = "0.2.0"
+brontes = "0.3.0"
 anyhow = "1"
 # Compile-time-exhaustive enum iteration: `PublisherKind` derives `EnumIter`
 # so `valid_publisher_names`, the `--skip` publisher vocabulary, and the
@@ -139,7 +139,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jsonschema = "0.47"
+jsonschema = "0.48"
 serde_yaml_ng = "0.10"
 roxmltree = "0.21"
 toml = "1.1"
