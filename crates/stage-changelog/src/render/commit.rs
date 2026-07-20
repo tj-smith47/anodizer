@@ -41,6 +41,17 @@ pub(crate) struct ChangelogRenderOpts<'a> {
 /// `Contributors: {{ AllAuthors }}` once at the bottom of a changelog
 /// footer (the per-line scope is the only template scope anodizer
 /// currently exposes from the changelog renderer).
+/// Total commits across the whole group tree, counting nested subgroups.
+/// `grouped.is_empty()` is not a reliable "rendered nothing" signal: a
+/// configured parent group whose bucket matched no commits still yields a
+/// headings-only node. Empty-state handling gates on this being zero.
+pub(crate) fn group_tree_commit_count(grouped: &[GroupedCommits]) -> usize {
+    grouped
+        .iter()
+        .map(|g| g.commits.len() + group_tree_commit_count(&g.subgroups))
+        .sum()
+}
+
 pub(crate) fn collect_all_authors(grouped: &[GroupedCommits]) -> String {
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     fn walk(group: &GroupedCommits, seen: &mut std::collections::BTreeSet<String>) {
@@ -138,6 +149,19 @@ pub(crate) fn render_changelog_with_provider(
     let changelog_title = title.unwrap_or(ChangelogConfig::DEFAULT_TITLE);
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
+    }
+    // `grouped.is_empty()` under-reports "rendered nothing": a configured parent
+    // group whose bucket matched no commits still yields a headings-only node,
+    // so `render_groups` would emit a phantom `### <group>` under a bare title.
+    // Gate on the recursive commit count instead — zero means emit an explicit
+    // empty-state (never a bare or phantom-heading body) and skip rendering. A
+    // suppressed title (`title: ""`, the KAC section path) yields an empty
+    // string so the caller's own empty handling applies.
+    if group_tree_commit_count(grouped) == 0 {
+        if !changelog_title.is_empty() {
+            out.push_str("_No notable changes._\n");
+        }
+        return Ok(out);
     }
     let all_authors = collect_all_authors(grouped);
     // The SCM compare backends supply `logins` from their API response; the

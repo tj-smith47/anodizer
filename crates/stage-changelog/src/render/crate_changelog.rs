@@ -190,6 +190,27 @@ pub(crate) fn render_crate_changelog(
         group_commits(&sorted, &opts.groups, log)?
     };
 
+    // A git/SCM-compare changelog that groups to nothing ships silent, empty
+    // release notes — the same failure `use=github-native` warns about. Surface
+    // WHY (the range had commits, but `changelog.filters`/`paths`/`groups`
+    // dropped every one) so the operator can loosen the config or confirm a
+    // genuinely change-free release, instead of discovering a blank release.
+    if crate::render::group_tree_commit_count(&grouped) == 0 {
+        log.warn(&format!(
+            "changelog for '{crate_name}' is EMPTY: {}. The release body will \
+             carry no notes — loosen `changelog.filters`/`paths`/`groups`, or \
+             confirm this release has no notable changes.",
+            if all_commit_infos.is_empty() {
+                "no commits in the range touched the configured paths".to_string()
+            } else {
+                format!(
+                    "all {} commit(s) in range were filtered out",
+                    all_commit_infos.len()
+                )
+            }
+        ));
+    }
+
     let scm_provider = ctx.token_type.to_string();
     render_changelog_with_provider(
         &grouped,

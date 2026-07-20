@@ -400,11 +400,10 @@ pub(crate) fn render_section_body(
             login_style: LoginStyle::Linked,
         },
     )?;
-    // `render_changelog_with_provider` always emits a `## <title>` line,
-    // suppressed here by passing `Some("")`, which produces `## \n\n`. Drop
-    // any empty heading at the start so the caller's `## [<version>]` heading
-    // stands alone.
-    let body = body.trim_start_matches("## \n\n").trim_start().to_string();
+    // `title: Some("")` above suppresses the `## <title>` heading entirely, so
+    // the body carries only the grouped commits; strip any leading blank line so
+    // the caller's `## [<version>]` heading stands alone.
+    let body = body.trim_start().to_string();
 
     Ok(Some((cfg, body)))
 }

@@ -1330,10 +1330,11 @@ fn test_integration_changelog_empty_after_filters() {
     assert!(grouped.is_empty());
 
     let md = render_changelog(&grouped, 7, None, "", "git", None, None);
-    // Default "## Changelog" title always emitted
+    // Default "## Changelog" title, then an explicit empty-state when every
+    // commit is filtered out (never a bare heading).
     assert_eq!(
-        md, "## Changelog\n\n",
-        "changelog should only have title when all commits are filtered"
+        md, "## Changelog\n\n_No notable changes._\n",
+        "an all-filtered changelog must render the empty-state under the title"
     );
 }
 
@@ -1751,10 +1752,12 @@ fn test_empty_changelog_when_all_commits_filtered() {
 
     let grouped = group_commits(&result, &[], &test_logger()).unwrap();
     let md = render_changelog(&grouped, 7, None, "", "git", None, None);
-    // With the default "## Changelog" title, empty groups still produce the title header
+    // With the default "## Changelog" title, empty groups emit an explicit
+    // empty-state beneath the heading rather than shipping a bare, broken-looking
+    // `## Changelog` as the release body.
     assert_eq!(
-        md, "## Changelog\n\n",
-        "changelog should be empty when no commits match"
+        md, "## Changelog\n\n_No notable changes._\n",
+        "an all-filtered changelog must render an explicit empty-state, not a bare header"
     );
 }
 
@@ -1901,10 +1904,74 @@ fn test_sort_commits_unknown_order_returns_error() {
 fn test_render_changelog_empty_groups() {
     let grouped: Vec<GroupedCommits> = vec![];
     let result = render_changelog(&grouped, 7, None, "", "git", None, None);
-    // Default title "## Changelog" is always emitted
+    // Default title "## Changelog", then the explicit empty-state — never a
+    // bare heading shipped as a release body.
     assert_eq!(
-        result, "## Changelog\n\n",
-        "empty groups should produce only the title heading"
+        result, "## Changelog\n\n_No notable changes._\n",
+        "empty groups should render the empty-state under the title heading"
+    );
+}
+
+#[test]
+fn phantom_parent_group_renders_empty_state_not_headings() {
+    // A configured parent group with subgroups whose buckets matched no commits
+    // yields a NON-empty `grouped` (a headings-only node). The empty-state must
+    // gate on the recursive commit count, not `grouped.is_empty()`, so the body
+    // is the explicit empty-state — never `## Changelog\n\n### Features\n\n`.
+    let grouped = vec![GroupedCommits {
+        title: "Features".into(),
+        commits: vec![],
+        subgroups: vec![GroupedCommits {
+            title: "Core".into(),
+            commits: vec![],
+            subgroups: vec![],
+        }],
+    }];
+    let md = render_changelog(&grouped, 7, None, "", "git", None, None);
+    assert_eq!(
+        md, "## Changelog\n\n_No notable changes._\n",
+        "a phantom heading-only group tree must render the empty-state, not the headings"
+    );
+}
+
+#[test]
+fn suppressed_title_empty_grouped_renders_nothing() {
+    // The KAC per-version section render passes `title: Some("")` and relies on
+    // an empty body (its own empty handling applies). A content-free group tree
+    // under a suppressed title must render to the empty string — no placeholder,
+    // no phantom heading.
+    let grouped = vec![GroupedCommits {
+        title: "Features".into(),
+        commits: vec![],
+        subgroups: vec![],
+    }];
+    let md = render_changelog(&grouped, 7, None, "", "git", Some(""), None);
+    assert_eq!(
+        md, "",
+        "a suppressed title with no content must render nothing, not the empty-state"
+    );
+}
+
+#[test]
+fn group_tree_commit_count_counts_nested_subgroups() {
+    use crate::render::group_tree_commit_count;
+    assert_eq!(group_tree_commit_count(&[]), 0);
+    let tree = vec![GroupedCommits {
+        title: "Features".into(),
+        commits: vec![ci("feat: a", "feat", "a", "x")],
+        subgroups: vec![GroupedCommits {
+            title: "Core".into(),
+            commits: vec![
+                ci("feat(core): b", "feat", "b", "y"),
+                ci("feat(core): c", "feat", "c", "z"),
+            ],
+            subgroups: vec![],
+        }],
+    }];
+    assert_eq!(
+        group_tree_commit_count(&tree),
+        3,
+        "count must include nested subgroup commits"
     );
 }
 
