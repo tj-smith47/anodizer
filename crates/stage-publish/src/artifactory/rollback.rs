@@ -1,6 +1,9 @@
 use super::*;
 
-// Fan-out DELETE concurrency cap, shared with the git-revert publishers.
+// Bound for parallel DELETE fan-out during rollback is shared with the
+// git-revert publishers via [`crate::util::ROLLBACK_PARALLELISM`].
+// Re-imported below so the local references in `parallel_delete` stay
+// terse.
 use crate::util::ROLLBACK_PARALLELISM;
 
 // ---------------------------------------------------------------------------
