@@ -169,6 +169,117 @@ impl anodizer_core::Publisher for CargoPublisher {
         out
     }
 
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        // Publisher-level `Complete` is claimed ONLY for the fully-recovered
+        // case: every planned crates.io crate already on the index with
+        // POSITIVELY VERIFIED content identity (the same
+        // `decide_already_published` guard the publish loop runs). Everything
+        // short of that — any crate absent, any probe failure, any
+        // verification error — falls through to `run()`, whose per-crate loop
+        // is the finer-grained reconcile mechanism (it skips verified
+        // published crates, publishes the rest, and hard-fails the
+        // content-diverged re-cut with the canonical bump message). Mapping
+        // ambiguity to `Absent`/`Unknown` here keeps every fail-closed error
+        // path byte-identical to today's publish loop.
+        if active_cargo_configs(ctx).is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let selected = ctx.options.selected_crates.clone();
+        // Quiet logger: plan resolution re-emits per-crate skip/if lines, and
+        // run() will resolve (and log) the same plan moments later on the
+        // Absent path.
+        let quiet = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let plan = cargo_publish_plan(ctx, &selected, &quiet)?;
+        if plan.order.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let retry_policy = ctx.retry_policy();
+
+        let mut published: Vec<(String, String, String)> = Vec::new();
+        for name in &plan.order {
+            let version = plan.versions.get(name).cloned().unwrap_or_default();
+            let cargo_cfg = plan.cfgs.get(name);
+            if version.is_empty() || !targets_crates_io(cargo_cfg) {
+                // Non-probeable (custom registry / unresolved version):
+                // run() owns the decision.
+                return Ok(ReconcileState::Absent);
+            }
+            match is_already_published(name, &version, &retry_policy, &quiet) {
+                Ok(Some(cksum)) => published.push((name.clone(), version, cksum)),
+                Ok(None) => return Ok(ReconcileState::Absent),
+                Err(e) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: format!("crates.io index probe for '{name}' failed: {e:#}"),
+                    });
+                }
+            }
+        }
+
+        // Every planned crate is already on the index — the recovery-re-run
+        // case. Verify content identity crate by crate before claiming
+        // Complete; the binstall table is (re-)emitted first so the local
+        // package reflects the same tree the original publish uploaded.
+        let log = ctx.logger("publish");
+        for (name, version, index_cksum) in &published {
+            let Some(crate_cfg) = plan.all_crates.iter().find(|c| &c.name == name).cloned() else {
+                return Ok(ReconcileState::Unknown {
+                    reason: format!("no crate config for published crate '{name}'"),
+                });
+            };
+            if let Err(e) = ensure_binstall_metadata_with(
+                ctx,
+                &crate_cfg,
+                false,
+                &log,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+            ) {
+                return Ok(ReconcileState::Unknown {
+                    reason: format!("binstall metadata for '{name}': {e:#}"),
+                });
+            }
+            let provenance = changelog_provenance_recorded(
+                ctx,
+                name,
+                version,
+                &crate_changelog_rel_path(&crate_cfg.path),
+                &log,
+            );
+            let cargo_cfg = plan.cfgs.get(name);
+            match decide_already_published(
+                name,
+                version,
+                index_cksum,
+                &crate_cfg,
+                cargo_cfg,
+                provenance,
+                |n, cc, cf| local_crate_cksum(n, cc, cf, &log),
+                |n, v| fetch_published_crate(n, v, &retry_policy, &log),
+                &log,
+            ) {
+                Ok(CargoSkipDecision::Skip) => {}
+                // `Publish` here is unexpected (the caller routed only
+                // crates.io targets); let run() own it.
+                Ok(CargoSkipDecision::Publish) => return Ok(ReconcileState::Absent),
+                // Both "genuinely diverged" and "cannot verify" surface as
+                // Err from the guard; run() re-derives the same decision and
+                // bails with the canonical message (bump-the-version for
+                // divergence, fail-closed for unverifiable) — never skip.
+                Err(e) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: format!("content verification for '{name}-{version}': {e:#}"),
+                    });
+                }
+            }
+        }
+        Ok(ReconcileState::Complete {
+            note: format!(
+                "all {} planned crate(s) already on crates.io with verified content",
+                published.len()
+            ),
+        })
+    }
+
     fn programmatic_rollback_on_failure(&self, evidence: &anodizer_core::PublishEvidence) -> bool {
         // A failed cargo run that already pushed one or more crates to
         // crates.io recorded them here; rollback must yank them even

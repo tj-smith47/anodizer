@@ -206,6 +206,64 @@ pub fn fake_counting_runs(
     (publisher, run_calls)
 }
 
+/// Minimal [`Publisher`] with an injectable [`ReconcileState`], counting
+/// both `reconcile()` and `run()` invocations. Used by the dispatch-arm
+/// tests: `Complete` must skip `run()` entirely, `Diverged` must
+/// abort/tolerate by `required`, and the dry-run / deselect paths must
+/// never pay for a reconcile probe.
+pub struct FakeReconcilingPublisher {
+    pub name: String,
+    pub group: PublisherGroup,
+    pub required: bool,
+    pub state: anodizer_core::ReconcileState,
+    pub run_calls: Arc<AtomicUsize>,
+    pub reconcile_calls: Arc<AtomicUsize>,
+}
+
+impl Publisher for FakeReconcilingPublisher {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn group(&self) -> PublisherGroup {
+        self.group
+    }
+    fn required(&self) -> bool {
+        self.required
+    }
+    fn skips_on_nightly(&self) -> bool {
+        false
+    }
+    fn reconcile(&self, _ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.state.clone())
+    }
+    fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+        self.run_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(PublishEvidence::new(self.name.clone()))
+    }
+}
+
+/// Convenience constructor for [`FakeReconcilingPublisher`]. Returns the
+/// boxed publisher with its shared `(run, reconcile)` invocation counters.
+pub fn fake_reconciling(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    state: anodizer_core::ReconcileState,
+) -> (Box<dyn Publisher>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let run_calls = Arc::new(AtomicUsize::new(0));
+    let reconcile_calls = Arc::new(AtomicUsize::new(0));
+    let publisher = Box::new(FakeReconcilingPublisher {
+        name: name.to_string(),
+        group,
+        required,
+        state,
+        run_calls: run_calls.clone(),
+        reconcile_calls: reconcile_calls.clone(),
+    });
+    (publisher, run_calls, reconcile_calls)
+}
+
 /// Minimal [`Publisher`] whose `run()` returns `Ok` but records an
 /// override [`PublisherOutcome`] on the context via
 /// [`Context::record_publisher_outcome`]. Used by dispatch-level tests

@@ -212,6 +212,107 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             .collect()
     }
 
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use crate::chocolatey::package::{FeedHashResult, classify_moderation, package_feed_hash};
+        use anodizer_core::ReconcileState;
+        // Publisher-level `Complete` covers the moderation-queue recovery
+        // case ONLY: a prior run's submission sitting in the community
+        // moderation queue (the state that used to hard-abort re-runs via the
+        // global preflight gate). Approved/published versions are left to
+        // `run()`'s hash-match guard — verifying content identity needs the
+        // freshly built nupkg, which does not exist at reconcile time — and
+        // `republish_in_moderation: true` deliberately falls through so the
+        // opted-in displacement push still happens.
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let version = ctx.version();
+        let selected = ctx.options.selected_crates.clone();
+        // (crate name, pkg name, feed source, republish opt-in) per active entry.
+        let entries: Vec<(
+            String,
+            String,
+            String,
+            Option<anodizer_core::config::StringOrBool>,
+        )> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter_map(|c| Some((c, c.publish.as_ref()?.chocolatey.as_ref()?)))
+            .filter(|(_, ch)| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    ch.skip.as_ref(),
+                    None,
+                    ch.if_condition.as_deref(),
+                )
+            })
+            .map(|(c, ch)| {
+                (
+                    c.name.clone(),
+                    ch.name.as_deref().unwrap_or(&c.name).to_string(),
+                    ch.source_repo
+                        .as_deref()
+                        .unwrap_or("https://push.chocolatey.org/")
+                        .to_string(),
+                    ch.republish_in_moderation.clone(),
+                )
+            })
+            .collect();
+        if entries.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let mut notes: Vec<String> = Vec::new();
+        for (_crate_name, pkg_name, source, republish) in &entries {
+            match package_feed_hash(source, pkg_name, &version, &policy, &log) {
+                FeedHashResult::Present {
+                    status,
+                    is_approved,
+                    ..
+                } => {
+                    let (reason, in_moderation) =
+                        classify_moderation(status.as_deref(), is_approved);
+                    if !in_moderation {
+                        // Approved/published: run()'s nupkg hash guard owns
+                        // the skip-vs-bump decision.
+                        return Ok(ReconcileState::Absent);
+                    }
+                    let status_label = status.as_deref().unwrap_or("Unknown").to_string();
+                    if status_label.eq_ignore_ascii_case("Rejected") {
+                        return Ok(ReconcileState::Diverged {
+                            detail: format!(
+                                "chocolatey '{pkg_name}-{version}' was REJECTED by the community \
+                                 moderators — address the rejection reason on the gallery and \
+                                 bump the version before re-pushing"
+                            ),
+                        });
+                    }
+                    let do_republish = match republish {
+                        Some(v) => v
+                            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                            .unwrap_or(false),
+                        None => false,
+                    };
+                    if do_republish {
+                        // Operator opted into displacing the queued nupkg.
+                        return Ok(ReconcileState::Absent);
+                    }
+                    notes.push(format!("'{pkg_name}-{version}' {reason} ({status_label})"));
+                }
+                // Exists-without-hash and absent both route to run(), whose
+                // conservative push path lets the registry's own conflict
+                // handling backstop. A probe failure surfaces as Absent from
+                // the feed helper — same fail-safe-toward-publishing shape.
+                FeedHashResult::PresentNoHash | FeedHashResult::Absent => {
+                    return Ok(ReconcileState::Absent);
+                }
+            }
+        }
+        Ok(ReconcileState::Complete {
+            note: format!("in the moderation queue: {}", notes.join(", ")),
+        })
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<ChocolateyTarget> = Vec::new();

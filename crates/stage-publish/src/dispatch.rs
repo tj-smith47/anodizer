@@ -59,7 +59,8 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::{
-    PublishReport, Publisher, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
+    PublishReport, Publisher, PublisherGroup, PublisherOutcome, PublisherResult, ReconcileState,
+    SkipReason,
 };
 
 /// Knobs for [`dispatch`].
@@ -242,6 +243,89 @@ pub fn dispatch(
                 continue;
             }
 
+            // Reconcile consult — ordered LAST in the skip cascade (after the
+            // one-way-door gate, deselect, config-inactive, and nightly
+            // checks) and BEFORE the lazy verify-gate eval and `run()`:
+            // * deselect must win the recorded skip reason (same precedent as
+            //   `deselect_wins_over_config_fully_inactive`) — the operator's
+            //   explicit signal is never masked by an inference;
+            // * `reconcile()` is a network probe; a gated/deselected/inactive
+            //   publisher must never pay for one;
+            // * a `Complete` publisher must not trigger
+            //   `ensure_verify_gate_evaluated` — an all-already-published
+            //   re-run costs zero verify-gate round-trips.
+            // Skipped under dry-run (offline snapshot/CI gates must not hit
+            // the network; `run()`'s own dry-run handling reports instead).
+            // This arm is what makes re-running a partially-failed release
+            // CONVERGE: done targets skip, undone targets run.
+            let simulated = ctx
+                .options
+                .simulate_failure_publishers
+                .iter()
+                .any(|name| name == p.name());
+            if !simulated && !ctx.is_dry_run() {
+                match p.reconcile(ctx) {
+                    Ok(ReconcileState::Complete { note }) => {
+                        ctx.logger("publish").status(&format!(
+                            "skipping {} — already published for this version ({note})",
+                            p.name()
+                        ));
+                        report.results.push(PublisherResult {
+                            name: p.name().into(),
+                            group,
+                            required: p.required(),
+                            outcome: PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
+                            evidence: None,
+                        });
+                        snapshot(ctx, &report);
+                        continue;
+                    }
+                    Ok(ReconcileState::Diverged { detail }) if p.required() => {
+                        anyhow::bail!(
+                            "{}: this version is already published upstream with DIFFERENT \
+                             content — bump the version and re-release. {detail}",
+                            p.name()
+                        );
+                    }
+                    Ok(ReconcileState::Diverged { detail }) => {
+                        // Optional + immutable-version-exists: cannot publish,
+                        // must not abort. required==false keeps the one-way-door
+                        // gate open (gate-neutral tolerated failure).
+                        ctx.logger("publish").warn(&format!(
+                            "{}: version already published with different content — cannot \
+                             republish (optional publisher, continuing): {detail}",
+                            p.name()
+                        ));
+                        report.results.push(PublisherResult {
+                            name: p.name().into(),
+                            group,
+                            required: p.required(),
+                            outcome: PublisherOutcome::Failed(format!(
+                                "already published with different content: {detail}"
+                            )),
+                            evidence: None,
+                        });
+                        snapshot(ctx, &report);
+                        continue;
+                    }
+                    Ok(ReconcileState::Absent) => {}
+                    Ok(ReconcileState::Unknown { reason }) => {
+                        // Fail-safe toward publishing: the registry's own
+                        // conflict handling is the backstop.
+                        ctx.logger("publish").verbose(&format!(
+                            "{}: reconcile state unknown ({reason}); proceeding to publish",
+                            p.name()
+                        ));
+                    }
+                    Err(err) => {
+                        ctx.logger("publish").verbose(&format!(
+                            "{}: reconcile probe failed ({err:#}); proceeding to publish",
+                            p.name()
+                        ));
+                    }
+                }
+            }
+
             // Pre-submitter verify-release gate, evaluated LAZILY via
             // `ensure_verify_gate_evaluated`: the first time a
             // Submitter-group publisher survives every skip filter above
@@ -298,11 +382,6 @@ pub fn dispatch(
             // `p.run()` entirely and record a synthetic failure so the
             // gate / rollback / report paths can be exercised
             // deterministically without monkey-patching the publisher.
-            let simulated = ctx
-                .options
-                .simulate_failure_publishers
-                .iter()
-                .any(|name| name == p.name());
             let (outcome, evidence) = if simulated {
                 (
                     PublisherOutcome::Failed(format!("simulated failure: {}", p.name())),
@@ -366,6 +445,158 @@ pub fn dispatch(
 mod tests {
     use super::*;
     use crate::testing::*;
+
+    use anodizer_core::ReconcileState;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn reconcile_complete_records_already_published_and_never_runs() {
+        let mut ctx = Context::test_fixture();
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Complete {
+                note: "all crates on crates.io".into(),
+            },
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0, "run() must be skipped");
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
+        ));
+        assert!(
+            !report.submitter_gate_closed(),
+            "an already-published skip must not close the one-way-door gate"
+        );
+    }
+
+    #[test]
+    fn reconcile_diverged_required_aborts_with_bump_message() {
+        let mut ctx = Context::test_fixture();
+        let (p, run_calls, _) = fake_reconciling(
+            "npm",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Diverged {
+                detail: "tarball sha mismatch".into(),
+            },
+        );
+        let err = dispatch(&[p], &mut ctx, &DispatchOptions::default())
+            .expect_err("required Diverged must abort");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bump the version"), "{msg}");
+        assert!(msg.contains("npm"), "{msg}");
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reconcile_diverged_optional_records_tolerated_failure_and_continues() {
+        let mut ctx = Context::test_fixture();
+        let (diverged, diverged_runs, _) = fake_reconciling(
+            "gemfury",
+            PublisherGroup::Submitter,
+            false,
+            ReconcileState::Diverged {
+                detail: "content differs".into(),
+            },
+        );
+        let (later, later_runs, _) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        let report = dispatch(&[diverged, later], &mut ctx, &DispatchOptions::default())
+            .expect("optional Diverged must not abort");
+        assert_eq!(diverged_runs.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Failed(_)
+        ));
+        assert!(
+            !report.submitter_gate_closed(),
+            "optional divergence is gate-neutral"
+        );
+        assert_eq!(
+            later_runs.load(Ordering::SeqCst),
+            1,
+            "later publishers must still dispatch past an optional divergence"
+        );
+    }
+
+    #[test]
+    fn reconcile_absent_and_unknown_fall_through_to_run() {
+        let mut ctx = Context::test_fixture();
+        let (absent, absent_runs, _) = fake_reconciling(
+            "homebrew",
+            PublisherGroup::Manager,
+            false,
+            ReconcileState::Absent,
+        );
+        let (unknown, unknown_runs, _) = fake_reconciling(
+            "scoop",
+            PublisherGroup::Manager,
+            false,
+            ReconcileState::Unknown {
+                reason: "feed unreachable".into(),
+            },
+        );
+        dispatch(&[absent, unknown], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(absent_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            unknown_runs.load(Ordering::SeqCst),
+            1,
+            "Unknown must fail safe toward publishing"
+        );
+    }
+
+    #[test]
+    fn reconcile_not_consulted_on_dry_run() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.dry_run = true;
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Complete {
+                note: "would skip".into(),
+            },
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            0,
+            "dry-run must not pay for a network probe"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reconcile_not_consulted_for_deselected_publisher() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.skip_stages = vec!["npm".to_string()];
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "npm",
+            PublisherGroup::Manager,
+            false,
+            ReconcileState::Complete {
+                note: "unused".into(),
+            },
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            matches!(
+                report.results[0].outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "deselect must win the recorded skip reason over reconcile"
+        );
+    }
 
     #[test]
     fn empty_registry_yields_empty_report() {

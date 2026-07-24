@@ -94,7 +94,7 @@ pub use publish_evidence::{PublishEvidence, PublishEvidenceExtra};
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
 };
-pub use publisher::{PreflightCheck, Publisher, rollback_empty_warning_msg};
+pub use publisher::{PreflightCheck, Publisher, ReconcileState, rollback_empty_warning_msg};
 pub use publisher_kind::PublisherKind;
 pub use verify_release_summary::VerifyReleaseSummary;
 

@@ -183,7 +183,15 @@ impl PreflightChecker for Winget {
         // the PR `"New version: <PackageIdentifier> version <Version>"`, but
         // GitHub's `in:title` matches words independently so the query
         // works for any title that mentions both tokens.
-        match query_winget_pr(package, version, self.token.as_deref(), &self.policy, log) {
+        match query_winget_pr(
+            "microsoft",
+            "winget-pkgs",
+            package,
+            version,
+            self.token.as_deref(),
+            &self.policy,
+            log,
+        ) {
             Ok(WingetPrLookup::Found(url)) => PublisherState::PRPending(url),
             Ok(WingetPrLookup::NotFound) => PublisherState::Clean,
             Ok(WingetPrLookup::ItemWithoutUrl) => PublisherState::Unknown {
@@ -200,7 +208,7 @@ impl PreflightChecker for Winget {
 /// "no PR" from "PR row returned but `html_url` was missing" — the second
 /// case used to fall back to the listing URL, which is not a PR.
 #[derive(Debug)]
-pub(super) enum WingetPrLookup {
+pub(crate) enum WingetPrLookup {
     Found(String),
     NotFound,
     ItemWithoutUrl,
@@ -219,7 +227,10 @@ pub(super) enum WingetPrLookup {
 /// GitHub's `in:title` operator matches words independently, so a query
 /// containing `<id>` + `<version>` finds the PR even though the title also
 /// contains the literal word "version".
-fn query_winget_pr(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn query_winget_pr(
+    upstream_owner: &str,
+    upstream_repo: &str,
     package: &str,
     version: &str,
     token: Option<&str>,
@@ -227,8 +238,8 @@ fn query_winget_pr(
     log: &StageLogger,
 ) -> Result<WingetPrLookup> {
     let query = format!(
-        "repo:microsoft/winget-pkgs is:pr is:open {} {} in:title",
-        package, version
+        "repo:{}/{} is:pr is:open {} {} in:title",
+        upstream_owner, upstream_repo, package, version
     );
     let encoded = anodizer_core::url::percent_encode_unreserved(&query);
     // The [`PreflightChecker`] trait carries no env plumbing, so the base

@@ -396,6 +396,89 @@ impl anodizer_core::Publisher for WingetPublisher {
         active_winget_configs(ctx).is_empty()
     }
 
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        // `Complete` = an OPEN PR for this exact `<PackageIdentifier> <version>`
+        // already exists on the upstream — a re-run must not open a duplicate.
+        // A merged/closed PR is `Absent` (a republish proceeds), matching the
+        // dup-PR semantics the global preflight used to enforce as a hard
+        // blocker; here it becomes a local self-skip so the rest of the
+        // release converges instead of aborting. winget's `run()` has no
+        // duplicate-PR self-check of its own, so this override is what closes
+        // that gap once the preflight gate goes report-only.
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let selected = ctx.options.selected_crates.clone();
+        let crate_names: Vec<String> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.winget.as_ref())
+                    .is_some_and(|w| {
+                        !crate::publisher_helpers::entry_inactive(
+                            ctx,
+                            None,
+                            w.skip_upload.as_ref(),
+                            w.if_condition.as_deref(),
+                        )
+                    })
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if crate_names.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let mut notes: Vec<String> = Vec::new();
+        for crate_name in &crate_names {
+            let Some(target) = collect_winget_target(ctx, crate_name, &log)? else {
+                // Unresolvable target (no repo owner, …): run() owns the
+                // decision (it no-ops with its own diagnostics).
+                return Ok(ReconcileState::Absent);
+            };
+            let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.winget.as_ref());
+            let token =
+                util::resolve_repo_token(ctx, cfg.and_then(|w| w.repository.as_ref()), None);
+            match crate::preflight::query_winget_pr(
+                &target.upstream_owner,
+                &target.upstream_repo,
+                &target.package_id,
+                &target.version,
+                token.as_deref(),
+                &policy,
+                &log,
+            ) {
+                Ok(crate::preflight::WingetPrLookup::Found(url)) => {
+                    notes.push(format!(
+                        "open PR for {} {}: {url}",
+                        target.package_id, target.version
+                    ));
+                }
+                Ok(crate::preflight::WingetPrLookup::NotFound) => {
+                    return Ok(ReconcileState::Absent);
+                }
+                Ok(crate::preflight::WingetPrLookup::ItemWithoutUrl) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: "winget search response missing html_url".into(),
+                    });
+                }
+                Err(e) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: format!("winget PR search failed: {e:#}"),
+                    });
+                }
+            }
+        }
+        Ok(ReconcileState::Complete {
+            note: notes.join(", "),
+        })
+    }
+
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         active_winget_configs(ctx)
             .into_iter()

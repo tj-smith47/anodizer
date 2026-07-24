@@ -51,6 +51,53 @@ impl PreflightCheck {
     }
 }
 
+/// A publisher's upstream state for the exact version+content this run would
+/// publish — the answer to "am I already done?", owned by ONE trait method
+/// ([`Publisher::reconcile`]) instead of being re-derived ad hoc by per-`run()`
+/// self-skips, the global preflight gate, and the burn-guard probes.
+///
+/// Consumed by two surfaces with one contract:
+/// * the publish dispatch loop — `Complete` skips `run()`
+///   (`SkipReason::AlreadyPublished`), `Diverged` aborts for a required
+///   publisher (bump the version) and records a tolerated failure for an
+///   optional one, `Absent`/`Unknown` fall through to `run()`;
+/// * `anodizer preflight` — prints the per-publisher reconcile table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconcileState {
+    /// Not present upstream. `run()` must publish.
+    Absent,
+    /// This exact version+content is already published/submitted for this
+    /// target (cargo version live with matching cksum, chocolatey submission
+    /// in moderation with matching hash, winget open PR for this exact
+    /// version, …). `run()` must be skipped — recording it is a no-op
+    /// success/pending, and a re-run of a partially-failed release converges
+    /// instead of wedging on the publisher's own prior success.
+    ///
+    /// `Complete` requires a POSITIVE upstream match (version present with
+    /// matching content, or an open submission for this exact version) —
+    /// never an inference from absence, which would silently under-publish.
+    Complete {
+        /// Operator-facing context ("in moderation since …", "open PR #123").
+        note: String,
+    },
+    /// The version exists upstream but the LOCAL artifact bytes differ from
+    /// what landed. The one true blocker at any time: the operator must bump
+    /// the version. Honors [`Publisher::required`] at the dispatch arm — a
+    /// required publisher's divergence aborts, an optional one's records a
+    /// gate-neutral tolerated failure.
+    Diverged {
+        /// What diverged (hash mismatch details, comparison evidence).
+        detail: String,
+    },
+    /// Could not determine (network failure, unparseable feed). NEVER blocks
+    /// a release: `run()` proceeds and the registry's own conflict handling
+    /// is the backstop — fail-safe toward publishing, not skipping.
+    Unknown {
+        /// Why the probe was inconclusive.
+        reason: String,
+    },
+}
+
 /// Publisher contract — one implementer per upstream registry / channel.
 ///
 /// Required methods describe the publisher's identity, behavior, and how
@@ -110,6 +157,26 @@ pub trait Publisher: Send + Sync {
     /// unreachable) or warnings (duplicate-but-matching upload).
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<PreflightCheck> {
         Ok(PreflightCheck::Pass)
+    }
+
+    /// Cheap, read-only "am I already done for this exact version+content?"
+    ///
+    /// The single owner of the reconcile question (see [`ReconcileState`]).
+    /// Default probes nothing (`Absent`) so a publisher with no idempotency
+    /// concern — every same-version-overwrite Manager, the idempotent Assets
+    /// re-uploads — needs no override. Publishers that self-skip (cargo's
+    /// already-published index check, chocolatey's in-moderation hash match,
+    /// winget's open-PR probe) implement this with that exact logic so the
+    /// forward dispatch and the `anodizer preflight` report consume ONE
+    /// probe instead of three drifting ones.
+    ///
+    /// Must be read-only toward upstream (probes, never writes): dispatch
+    /// calls it before `run()` on every non-skipped publisher of a real
+    /// (non-dry-run) release. `&mut Context` matches `run()` — probes may
+    /// need template-var crate scoping or local staging (cargo's local
+    /// `.crate` checksum), but never a registry write.
+    fn reconcile(&self, _ctx: &mut Context) -> anyhow::Result<ReconcileState> {
+        Ok(ReconcileState::Absent)
     }
 
     /// Opt-in OAuth / token scope rollback would require, if any.
