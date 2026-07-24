@@ -49,6 +49,72 @@ pub fn render_ignore_patterns(
     (rendered_tags, rendered_prefixes)
 }
 
+/// Whether `tag` carries anodizer's own nightly marker: the literal tag
+/// `nightly` (the default `nightly.tag_name`), or a `nightly` token delimited
+/// by `-` / `.` / `+` inside the version portion — the shape every supported
+/// `nightly.version_template` produces (default
+/// `…-{{ ShortCommit }}-nightly`, nushell-style `…-nightly.{{ NightlyBuild }}+…`).
+///
+/// Nightly tags are an implementation detail of the nightly pipeline, never a
+/// user release signal, so stable-release surfaces (crate selection from
+/// tags-at-HEAD, latest-tag / previous-tag resolution) exclude them
+/// UNCONDITIONALLY — a stranded tag from a failed nightly run must not poison
+/// the next stable release regardless of `git.ignore_tags` config. A leading
+/// `nightly` with no preceding delimiter (e.g. a crate genuinely named
+/// `nightly-tools`, tag `nightly-tools-v1.0.0`) is NOT matched.
+pub fn is_nightly_tag(tag: &str) -> bool {
+    if tag == "nightly" {
+        return true;
+    }
+    const DELIMS: [char; 3] = ['-', '.', '+'];
+    let bytes = tag.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = tag[from..].find("nightly") {
+        let start = from + pos;
+        let end = start + "nightly".len();
+        let preceded = start > 0 && DELIMS.contains(&(bytes[start - 1] as char));
+        let followed = end == tag.len() || DELIMS.contains(&(bytes[end] as char));
+        if preceded && followed {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Built-in `git describe --exclude` globs equivalent to [`is_nightly_tag`]
+/// for the describe-based previous-tag path (glob(7) bracket classes match
+/// the same delimited-`nightly`-token shapes).
+const NIGHTLY_EXCLUDE_GLOBS: [&str; 3] = ["nightly", "*[-.+]nightly", "*[-.+]nightly[-.+]*"];
+
+/// Filter an arbitrary tag list through the user's `ignore_tags` (glob) /
+/// `ignore_tag_prefixes` (starts-with) config plus the unconditional
+/// [`is_nightly_tag`] exclusion — the same semantics
+/// [`find_latest_tag_matching_in`] applies to its candidate set, packaged for
+/// callers that obtain tags elsewhere (e.g. tags-at-HEAD crate selection).
+/// Ignore patterns are template-rendered when `vars` is provided.
+pub fn filter_ignored_tags(
+    tags: &[String],
+    git_config: Option<&GitConfig>,
+    vars: Option<&TemplateVars>,
+) -> Vec<String> {
+    let (rendered_ignore_tags, rendered_ignore_prefixes) = render_ignore_patterns(git_config, vars);
+    let ignore_tag_globs: Vec<glob::Pattern> = rendered_ignore_tags
+        .iter()
+        .filter_map(|pat| glob::Pattern::new(pat).ok())
+        .collect();
+    tags.iter()
+        .filter(|t| !is_nightly_tag(t))
+        .filter(|t| !ignore_tag_globs.iter().any(|g| g.matches(t)))
+        .filter(|t| {
+            !rendered_ignore_prefixes
+                .iter()
+                .any(|p| !p.is_empty() && t.starts_with(p.as_str()))
+        })
+        .cloned()
+        .collect()
+}
+
 /// The four accepted placeholder forms for the version variable in tag templates.
 const VERSION_PLACEHOLDERS: &[&str] = &[
     "{{ .Version }}",
@@ -146,6 +212,7 @@ fn semver_pairs_filtered(
     };
     tags_output
         .lines()
+        .filter(|t| !is_nightly_tag(t))
         .filter(|t| {
             monorepo_prefix
                 .map(|pfx| t.starts_with(pfx))
@@ -360,6 +427,7 @@ fn collect_semver_tags_in(
 
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
+        .filter(|t| !is_nightly_tag(t))
         .filter(|t| t.starts_with(prefix))
         .filter(|t| !ignore_tag_globs.iter().any(|g| g.matches(t)))
         .filter(|t| {
@@ -700,6 +768,11 @@ pub fn find_previous_tag_with_prefix_in(
         .collect();
     for pfx in &rendered_ignore_prefixes {
         exclude_args.push(format!("--exclude={}*", pfx));
+    }
+    // Unconditional nightly exclusion (see `is_nightly_tag`): git-side globs
+    // so this path filters the same shapes the list-based paths do.
+    for pat in NIGHTLY_EXCLUDE_GLOBS {
+        exclude_args.push(format!("--exclude={}", pat));
     }
 
     // When monorepo_prefix is set, constrain git describe to only consider

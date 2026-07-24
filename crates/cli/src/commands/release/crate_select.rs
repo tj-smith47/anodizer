@@ -36,7 +36,7 @@ pub(crate) fn resolve_selected_crates(
         opts.crate_names.clone()
     } else {
         // Default: read tags pointing at HEAD and map each to a crate.
-        map_head_tags_to_crates(all_known_crates, log)?
+        map_head_tags_to_crates(all_known_crates, config.git.as_ref(), log)?
     };
     Ok(topo_sort_selected(all_known_crates, &selected))
 }
@@ -45,13 +45,19 @@ pub(crate) fn resolve_selected_crates(
 /// per-crate `tag_template` prefix matching.
 ///
 /// Tags that don't match any configured crate are silently ignored — this
-/// allows foreign tags (e.g. a nightly build tag) to coexist without
-/// aborting the release pipeline.
+/// allows foreign tags to coexist without aborting the release pipeline.
+/// Before matching, the tag set is routed through the shared ignore filters
+/// (`git.ignore_tags` globs, `git.ignore_tag_prefixes`, and the unconditional
+/// nightly-shape exclusion) so a stranded per-crate nightly tag at HEAD can
+/// never drive stable crate selection — the tags anodizer's own nightly runs
+/// mint would otherwise scope the release to whichever crates last had a
+/// nightly, collapsing the shard target matrix.
 ///
 /// Returns an empty vec when HEAD has no tags; the caller treats that as a
 /// no-op.
 pub(crate) fn map_head_tags_to_crates(
     all_known_crates: &[CrateConfig],
+    git_config: Option<&anodizer_core::config::GitConfig>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     let head_tags = git::get_tags_at_head().with_context(|| "failed to read tags at HEAD")?;
@@ -60,7 +66,13 @@ pub(crate) fn map_head_tags_to_crates(
         return Ok(Vec::new());
     }
     log.verbose(&format!("tags at HEAD = {}", head_tags.join(", ")));
-    Ok(select_crates_for_tags(&head_tags, all_known_crates, log))
+    let kept = git::filter_ignored_tags(&head_tags, git_config, None);
+    for dropped in head_tags.iter().filter(|t| !kept.contains(t)) {
+        log.verbose(&format!(
+            "excluded tag '{dropped}' from crate selection (ignored or nightly-shaped)"
+        ));
+    }
+    Ok(select_crates_for_tags(&kept, all_known_crates, log))
 }
 
 /// Map a concrete list of tags to the set of crates they select, in

@@ -1,9 +1,10 @@
 use super::remote::{parse_github_remote, parse_remote_owner_repo, parse_remote_web_base};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
-    create_tag_local_only, find_latest_tag_matching, find_latest_tag_matching_with_prefix,
-    find_previous_tag, find_previous_tag_with_prefix, get_all_semver_tags,
-    list_remote_tag_names_in, strip_monorepo_prefix, tag_is_signed,
+    create_tag_local_only, filter_ignored_tags, find_latest_tag_matching,
+    find_latest_tag_matching_with_prefix, find_previous_tag, find_previous_tag_with_prefix,
+    get_all_semver_tags, is_nightly_tag, list_remote_tag_names_in, strip_monorepo_prefix,
+    tag_is_signed,
 };
 use crate::redact::redact_url_credentials;
 use crate::test_helpers::CwdGuard;
@@ -466,6 +467,78 @@ fn init_repo_with_tags(dir: &std::path::Path, tags: &[&str]) {
     for tag in tags {
         run(&["tag", tag]);
     }
+}
+
+#[test]
+fn is_nightly_tag_matches_minted_shapes_only() {
+    // anodizer's own minted shapes (default + per-crate prefix + nushell-style).
+    for t in [
+        "nightly",
+        "v0.5.1-9a0d7ed0-nightly",
+        "operator-v0.5.1-9a0d7ed0-nightly",
+        "csi-v0.5.1-9a0d7ed0-nightly",
+        "v1.2.3-nightly.4+abc1234",
+        "app-v2.0.0-nightly",
+    ] {
+        assert!(is_nightly_tag(t), "{t} must be nightly-shaped");
+    }
+    // Real release tags — including a crate genuinely named `nightly-*` —
+    // must never be swallowed.
+    for t in [
+        "v1.2.3",
+        "core-v0.5.0",
+        "v0.2.0-beta.3",
+        "nightly-tools-v1.0.0",
+        "v1.0.0-rc.1",
+        "vnightlyish-1.0.0",
+    ] {
+        assert!(!is_nightly_tag(t), "{t} must NOT be nightly-shaped");
+    }
+}
+
+#[test]
+fn filter_ignored_tags_applies_config_and_nightly_exclusion() {
+    let tags: Vec<String> = [
+        "v1.0.0",
+        "operator-v0.5.1-9a0d7ed0-nightly",
+        "withdrawn-v0.9.9",
+        "rc-v2.0.0",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let gc = crate::config::GitConfig {
+        ignore_tags: Some(vec!["withdrawn-*".to_string()]),
+        ignore_tag_prefixes: Some(vec!["rc-".to_string()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        filter_ignored_tags(&tags, Some(&gc), None),
+        vec!["v1.0.0".to_string()]
+    );
+    // Nightly exclusion holds with NO git config at all — the stranded-tag
+    // poisoning must not depend on the consumer's ignore_tags being right.
+    assert_eq!(
+        filter_ignored_tags(&tags[..2], None, None),
+        vec!["v1.0.0".to_string()]
+    );
+}
+
+#[test]
+#[serial]
+fn find_latest_tag_skips_stranded_nightly_tags_unconditionally() {
+    // A failed nightly strands `<prefix>v<higher-semver>-<sha>-nightly`;
+    // latest-tag resolution must keep returning the real latest stable tag
+    // even with NO ignore_tags config (cfgd nightly 2026-07-21 incident:
+    // the stranded csi tag outranked the real latest 0.5.0).
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &["v0.5.0", "v0.5.1-9a0d7ed0-nightly", "nightly"]);
+
+    let _cwd = CwdGuard::new(dir).unwrap();
+
+    let result = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
+    assert_eq!(result, Some("v0.5.0".to_string()));
 }
 
 #[test]

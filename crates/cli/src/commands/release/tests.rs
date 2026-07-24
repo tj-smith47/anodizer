@@ -1522,7 +1522,34 @@ fn map_head_tags_no_tags_at_head_is_noop() {
 /// selection wiring — not a parallel mirror — is what fails.
 fn run_tag_mapping(crates: &[CrateConfig], head_tags: &[String]) -> Vec<String> {
     let log = StageLogger::new("test", Verbosity::Quiet);
-    select_crates_for_tags(head_tags, crates, &log)
+    // Mirror the wrapper's ignore-filter step so these tests cover the same
+    // two-stage path (filter, then select) production runs.
+    let kept = anodizer_core::git::filter_ignored_tags(head_tags, None, None);
+    select_crates_for_tags(&kept, crates, &log)
+}
+
+#[test]
+fn map_head_tags_stranded_nightly_tags_never_drive_selection() {
+    // Stranded per-crate nightly tags at HEAD (failed nightly run) must not
+    // scope a stable release to just those crates — with only nightly tags
+    // present the selection is EMPTY (release no-op), not operator+csi.
+    let crates = vec![
+        make_crate_with_template("cfgd", ".", "v{{ .Version }}"),
+        make_crate_with_template("operator", "crates/operator", "operator-v{{ .Version }}"),
+        make_crate_with_template("csi", "crates/csi", "csi-v{{ .Version }}"),
+    ];
+    let head_tags = vec![
+        "operator-v0.5.1-9a0d7ed0-nightly".to_string(),
+        "csi-v0.5.1-9a0d7ed0-nightly".to_string(),
+    ];
+    assert!(run_tag_mapping(&crates, &head_tags).is_empty());
+
+    // A real stable tag alongside the stranded ones selects normally.
+    let head_tags = vec![
+        "operator-v0.5.1-9a0d7ed0-nightly".to_string(),
+        "v0.6.0".to_string(),
+    ];
+    assert_eq!(run_tag_mapping(&crates, &head_tags), vec!["cfgd"]);
 }
 
 fn make_crate_with_template(name: &str, path: &str, template: &str) -> CrateConfig {
