@@ -111,6 +111,20 @@ impl Context {
         self.built_crate_names = Some(names);
     }
 
+    /// Record a working-tree path anodizer itself wrote during this run
+    /// (repo-relative, `/`-separated). Called by the writers of expected
+    /// in-run mutations (the binstall metadata emitter) so cleanliness
+    /// guards can distinguish the tool's own residue from operator drift.
+    pub fn record_tree_mutation(&mut self, rel_path: impl Into<String>) {
+        self.tree_mutations.insert(rel_path.into());
+    }
+
+    /// Repo-relative paths anodizer itself wrote this run (see
+    /// [`Context::record_tree_mutation`]).
+    pub fn tree_mutations(&self) -> &std::collections::BTreeSet<String> {
+        &self.tree_mutations
+    }
+
     /// Record an intentional skip from a per-sub-config loop
     /// (`signs`, `docker_signs`, `publishers`, …). `stage` identifies the
     /// owning stage, `label` identifies the sub-config (id / name / index),

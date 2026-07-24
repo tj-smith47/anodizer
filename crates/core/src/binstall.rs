@@ -147,6 +147,20 @@ pub fn generate_binstall_metadata(
 
     std::fs::write(&cargo_toml_path, doc.to_string())
         .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
+    // Register the write as anodizer's own expected working-tree residue so
+    // the publish clean-tree guard doesn't flag it as operator drift when a
+    // sibling crate publishes later in the same run. Repo-relative,
+    // `/`-separated — the shape `git status --porcelain` reports.
+    let dir = crate_cfg
+        .path
+        .trim_start_matches("./")
+        .trim_end_matches('/');
+    let rel = if dir.is_empty() || dir == "." {
+        "Cargo.toml".to_string()
+    } else {
+        format!("{dir}/Cargo.toml")
+    };
+    ctx.record_tree_mutation(rel);
 
     log.status(&format!(
         "updated [package.metadata.binstall] in {}",
@@ -615,6 +629,37 @@ mod tests {
     ) -> Result<()> {
         crate_cfg.path = path.to_string();
         generate_binstall_metadata(&crate_cfg, cfg, default_targets, ctx, false)
+    }
+
+    #[test]
+    fn write_records_tree_mutation_for_clean_tree_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let binstall_cfg = BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some("https://example.com/{ version }.tar.gz".to_string()),
+            bin_dir: None,
+            pkg_fmt: None,
+            overrides: None,
+        };
+        let mut ctx = make_ctx();
+        let path = tmp.path().to_str().unwrap();
+        gen_meta(path, &binstall_cfg, &mut ctx, false).unwrap();
+        assert!(
+            ctx.tree_mutations()
+                .contains(&format!("{}/Cargo.toml", path.trim_end_matches('/'))),
+            "write must be registered as expected residue: {:?}",
+            ctx.tree_mutations()
+        );
+
+        // Dry-run performs no write and must record nothing.
+        let mut dry_ctx = make_ctx();
+        gen_meta(path, &binstall_cfg, &mut dry_ctx, true).unwrap();
+        assert!(dry_ctx.tree_mutations().is_empty());
     }
 
     #[test]

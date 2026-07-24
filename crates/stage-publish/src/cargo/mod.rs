@@ -63,3 +63,5 @@ mod partial_rollback_tests;
 mod publisher_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_clean_tests;

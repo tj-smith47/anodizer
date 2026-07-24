@@ -199,6 +199,17 @@ pub struct Context {
     /// provider sends it. Only message bodies are affected; titles and other
     /// templated fields still render normally.
     pub literal_message: bool,
+    /// Repo-relative (`/`-separated) paths anodizer itself wrote into the
+    /// working tree during this run — e.g. the `[package.metadata.binstall]`
+    /// table the cargo publisher emits into a crate's `Cargo.toml` right
+    /// before `cargo publish`. Dirt on exactly these paths is the tool's own
+    /// expected residue, not operator-authored drift: the clean-tree publish
+    /// guard exempts them so a mutation made for crate A cannot false-trip
+    /// the guard when crate B publishes later in the same run (per-crate
+    /// `--publish-only` iterates the whole publish pipeline once per crate
+    /// against one persistent context). Recorded via
+    /// [`Context::record_tree_mutation`].
+    tree_mutations: std::collections::BTreeSet<String>,
     /// When true (the default), outbound announce message BODIES have
     /// known-secret env values masked before send (same policy as log
     /// redaction). `anodizer notify --allow-secrets` sets this false to send a
@@ -244,6 +255,7 @@ impl Context {
             #[cfg(feature = "test-helpers")]
             log_capture: None,
             render_strict: std::cell::Cell::new(false),
+            tree_mutations: std::collections::BTreeSet::new(),
             literal_message: false,
             redact_body: true,
         };

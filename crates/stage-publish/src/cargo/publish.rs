@@ -84,11 +84,20 @@ pub(crate) fn crate_changelog_rel_path(crate_path: &str) -> String {
 /// no longer trustworthy.
 ///
 /// Called ONCE before the publish loop's first binstall write, so anodizer's
-/// own (expected) binstall mutation is not itself flagged. Fails loud rather
-/// than silently skipping (a poison hole) or hard-failing on content (which
-/// would misattribute the divergence to a code change). The message lists the
-/// dirty paths and prescribes re-running from a clean tag checkout.
-fn ensure_publish_tree_clean(ctx: &Context) -> Result<()> {
+/// own (expected) binstall mutation is not itself flagged within a single
+/// `publish_to_cargo` call. Across calls — per-crate `--publish-only` runs the
+/// whole publish pipeline once per crate against one persistent context, so an
+/// earlier crate's binstall write is still on disk when a later crate's guard
+/// runs — dirt on the exact paths recorded via `Context::record_tree_mutation`
+/// is exempted: it is the tool's own residue, and `cargo package`'s dirty
+/// stamp is package-scoped (verified: dirt on crate A's manifest does not
+/// stamp `"dirty": true` into crate B's `.cargo_vcs_info.json`), so it cannot
+/// perturb any OTHER crate's checksum comparison. Fails loud on all remaining
+/// dirt rather than silently skipping (a poison hole) or hard-failing on
+/// content (which would misattribute the divergence to a code change). The
+/// message lists the dirty paths and prescribes re-running from a clean tag
+/// checkout.
+pub(super) fn ensure_publish_tree_clean(ctx: &Context, log: &StageLogger) -> Result<()> {
     let repo = ctx
         .options
         .project_root
@@ -108,7 +117,33 @@ fn ensure_publish_tree_clean(ctx: &Context) -> Result<()> {
              Release job does this automatically)."
         ),
     };
-    if porcelain.trim().is_empty() {
+    // Exempt anodizer's own recorded writes; everything else stays a hard
+    // stop. Porcelain v1 lines are `XY <path>` (rename entries carry
+    // `old -> new`; the NEW path is the one that exists on disk).
+    let expected = ctx.tree_mutations();
+    let residual: Vec<&str> = porcelain
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| {
+            // `XY <path>` per porcelain v1 — but the helper trims the overall
+            // output, so the first line's leading status space is gone; split
+            // on the first space run instead of a fixed-width prefix.
+            let path = line
+                .trim_start()
+                .split_once(' ')
+                .map(|(_, rest)| rest.trim_start())
+                .unwrap_or("");
+            let path = path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"');
+            !expected.contains(path)
+        })
+        .collect();
+    if residual.is_empty() {
+        if !porcelain.trim().is_empty() {
+            log.verbose(&format!(
+                "clean-tree check: ignoring anodizer's own in-run write(s): {}",
+                expected.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
         return Ok(());
     }
     anyhow::bail!(
@@ -117,7 +152,8 @@ fn ensure_publish_tree_clean(ctx: &Context) -> Result<()> {
          checksum would NOT match what was published from the clean release tag — \
          already-published content verification is unreliable. Re-run from a clean checkout of \
          the release tag (the Release job does this automatically; `git status` must show no \
-         changes). Uncommitted changes:\n{porcelain}"
+         changes). Uncommitted changes:\n{}",
+        residual.join("\n")
     );
 }
 
@@ -503,7 +539,7 @@ pub(crate) fn publish_to_cargo_with_guard(
                 .is_empty()
     });
     if any_guarded {
-        ensure_publish_tree_clean(ctx)?;
+        ensure_publish_tree_clean(ctx, log)?;
     }
 
     for (i, name) in sorted_names.iter().enumerate() {
