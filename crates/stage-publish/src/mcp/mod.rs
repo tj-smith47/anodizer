@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result};
 
 use anodizer_core::config::{McpAuthMethod, McpConfig};
@@ -227,6 +227,10 @@ pub(crate) fn publish_with_registry(
     }
 
     let policy = ctx.retry_policy();
+    // One wall-clock budget for the whole publish sequence — auth exchange and
+    // the publish POST share it, so a wedged registry cannot spend the full
+    // attempt ladder in each of them and blow past the run's retry ceiling.
+    let deadline = ctx.retry_deadline();
 
     // Surface the env-var fallback path BEFORE constructing the provider.
     // When `auth.type=github` and `auth.token` rendered empty (e.g. the user
@@ -244,6 +248,7 @@ pub(crate) fn publish_with_registry(
         registry_url,
         &mcp_rendered.auth.token,
         &policy,
+        deadline,
     );
     provider.login().context("mcp: could not login")?;
     let token = provider
@@ -253,12 +258,11 @@ pub(crate) fn publish_with_registry(
     let body = serde_json::to_string(&server).context("mcp: serialize ServerJSON")?;
 
     // ---- POST /v0/publish with retries ----
-    let publish_url = format!("{}/v0/publish", registry_url.trim_end_matches('/'));
     match publish_payload(
-        &publish_url,
         &body,
         &token,
         &policy,
+        deadline,
         log,
         &server.name,
         registry_url,
@@ -676,10 +680,11 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
     }
 }
 
-/// POST `body` to `publish_url` with `Authorization: Bearer <token>`,
-/// retrying transient 5xx / 429 / network failures per `policy`. 200 and
-/// 201 are both treated as success (the registry uses 201 for fresh
-/// publishes, 200 for re-publishes / status updates). 4xx fast-fails.
+/// POST `body` to `{registry_url}/v0/publish` with
+/// `Authorization: Bearer <token>`, retrying transient 5xx / 429 / network
+/// failures per `policy` and stopping once the next backoff would cross
+/// `deadline`. 200 and 201 are both treated as success (the registry uses 201
+/// for fresh publishes, 200 for re-publishes / status updates). 4xx fast-fails.
 ///
 /// On success, parses the response body for `_meta.official.status` and
 /// logs `published to MCP registry name=<...> status=<...>`.
@@ -797,16 +802,17 @@ fn is_duplicate_version_rejection(status: u16, body: &str) -> bool {
 }
 
 fn publish_payload(
-    publish_url: &str,
     body: &str,
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     name: &str,
     registry_url: &str,
 ) -> Result<McpPublishOutcome> {
     use std::cell::RefCell;
 
+    let publish_url = format!("{}/v0/publish", registry_url.trim_end_matches('/'));
     let client = build_client(Duration::from_secs(60))?;
 
     let request_body_len = body.len();
@@ -820,13 +826,14 @@ fn publish_payload(
     let last_error: RefCell<Option<(u16, String)>> = RefCell::new(None);
 
     // reqwest validates header values; CRLF in `token` surfaces as a send-error, not header injection.
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new("mcp: POST /v0/publish", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client
-                .post(publish_url)
+                .post(&publish_url)
                 .header("Content-Type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(body.to_string())

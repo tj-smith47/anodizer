@@ -14,12 +14,14 @@
 //! The retry policy is threaded through every HTTP call — auth-exchange
 //! 5xx / transport failures retry per the user's top-level `retry:` block,
 //! 4xx fast-fails so a bad token surfaces immediately instead of after
-//! a 10-attempt sleep cascade.
+//! a 10-attempt sleep cascade. The wall-clock deadline
+//! (`Context::retry_deadline`) rides alongside it so a wedged registry cannot
+//! spend the whole attempt ladder inside the auth exchange.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -88,12 +90,14 @@ pub fn provider_for(
     registry_url: &str,
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<Instant>,
 ) -> Box<dyn McpAuthProvider> {
     provider_for_with_env(
         method,
         registry_url,
         token,
         policy,
+        deadline,
         Arc::new(ProcessEnvSource),
     )
 }
@@ -108,6 +112,7 @@ pub fn provider_for_with_env(
     registry_url: &str,
     token: &str,
     policy: &RetryPolicy,
+    deadline: Option<Instant>,
     env: Arc<dyn EnvSource>,
 ) -> Box<dyn McpAuthProvider> {
     match method {
@@ -115,16 +120,19 @@ pub fn provider_for_with_env(
             registry_url: registry_url.to_string(),
             token: token.to_string(),
             policy: *policy,
+            deadline,
         }),
         McpAuthMethod::Github => Box::new(GithubAtAuthProvider {
             registry_url: registry_url.to_string(),
             token: token.to_string(),
             policy: *policy,
+            deadline,
             env: Arc::clone(&env),
         }),
         McpAuthMethod::GithubOidc => Box::new(GithubOidcAuthProvider {
             registry_url: registry_url.to_string(),
             policy: *policy,
+            deadline,
             env: Arc::clone(&env),
         }),
     }
@@ -145,6 +153,9 @@ pub struct NoneAuthProvider {
     pub registry_url: String,
     pub token: String,
     pub policy: RetryPolicy,
+    /// Wall-clock retry budget shared with the publish call, so the auth
+    /// exchange cannot consume the run's whole retry allowance on its own.
+    pub deadline: Option<Instant>,
 }
 
 impl McpAuthProvider for NoneAuthProvider {
@@ -154,9 +165,10 @@ impl McpAuthProvider for NoneAuthProvider {
         }
         let url = format!("{}/v0/auth/none", self.registry_url.trim_end_matches('/'));
         let client = build_client(Duration::from_secs(30))?;
-        let (_, body) = retry_http_blocking(
+        let (_, body) = retry_http_blocking_deadline(
             RetryLog::new("mcp: /v0/auth/none", log),
             &self.policy,
+            self.deadline,
             SuccessClass::Strict,
             |_| client.post(&url).send(),
             |status, body| {
@@ -191,6 +203,9 @@ pub struct GithubAtAuthProvider {
     pub registry_url: String,
     pub token: String,
     pub policy: RetryPolicy,
+    /// Wall-clock retry budget shared with the publish call, so the auth
+    /// exchange cannot consume the run's whole retry allowance on its own.
+    pub deadline: Option<Instant>,
     /// Injected env source for resolving the `MCP_GITHUB_TOKEN`
     /// fallback. Production passes [`ProcessEnvSource`]; tests inject
     /// a [`anodizer_core::MapEnvSource`].
@@ -224,9 +239,10 @@ impl McpAuthProvider for GithubAtAuthProvider {
         })
         .context("mcp: serialize github-at request body")?;
         let client = build_client(Duration::from_secs(30))?;
-        let (_, response_body) = retry_http_blocking(
+        let (_, response_body) = retry_http_blocking_deadline(
             RetryLog::new("mcp: /v0/auth/github-at", log),
             &self.policy,
+            self.deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -271,6 +287,9 @@ impl McpAuthProvider for GithubAtAuthProvider {
 pub struct GithubOidcAuthProvider {
     pub registry_url: String,
     pub policy: RetryPolicy,
+    /// Wall-clock retry budget shared with the publish call, so the two-hop
+    /// exchange cannot consume the run's whole retry allowance on its own.
+    pub deadline: Option<Instant>,
     /// Injected env source for the Actions OIDC token fetch
     /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN`).
     /// Production passes [`ProcessEnvSource`]; tests inject a
@@ -287,6 +306,7 @@ impl McpAuthProvider for GithubOidcAuthProvider {
             |k| self.env.var(k),
             &audience,
             &self.policy,
+            self.deadline,
             log,
             "mcp",
         )?;
@@ -301,9 +321,10 @@ impl McpAuthProvider for GithubOidcAuthProvider {
             oidc_token: &oidc_value,
         })
         .context("mcp: serialize github-oidc exchange body")?;
-        let (_, exchange_body) = retry_http_blocking(
+        let (_, exchange_body) = retry_http_blocking_deadline(
             RetryLog::new("mcp: /v0/auth/github-oidc", log),
             &self.policy,
+            self.deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -469,6 +490,7 @@ mod tests {
             registry_url: "http://127.0.0.1:1".to_string(),
             token: "preissued-jwt".to_string(),
             policy: fast_policy(),
+            deadline: None,
         };
         p.login().expect("default login is a no-op");
         assert_eq!(p.get_token(&log()).unwrap(), "preissued-jwt");
@@ -487,6 +509,7 @@ mod tests {
             registry_url: format!("http://{addr}/"),
             token: String::new(),
             policy: fast_policy(),
+            deadline: None,
         };
         assert_eq!(p.get_token(&log()).unwrap(), "anon-reg-jwt");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -500,6 +523,7 @@ mod tests {
             registry_url: format!("http://{addr}"),
             token: String::new(),
             policy: fast_policy(),
+            deadline: None,
         };
         let err = p.get_token(&log()).unwrap_err().to_string();
         assert!(err.contains("missing registry_token"), "{err}");
@@ -513,6 +537,7 @@ mod tests {
             registry_url: format!("http://{addr}"),
             token: String::new(),
             policy: fast_policy(),
+            deadline: None,
         };
         let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("parse anonymous token response"), "{err}");
@@ -530,6 +555,7 @@ mod tests {
             registry_url: format!("http://{addr}"),
             token: String::new(),
             policy: fast_policy(),
+            deadline: None,
         };
         let err = format!("{:#}", p.get_token(&log()).unwrap_err());
         assert!(err.contains("HTTP 401"), "{err}");
@@ -552,6 +578,7 @@ mod tests {
             &format!("http://{addr}/"),
             "ghp_config_token",
             &fast_policy(),
+            None,
             empty_env(),
         );
         assert_eq!(p.get_token(&log()).unwrap(), "pat-reg-jwt");
@@ -572,6 +599,7 @@ mod tests {
             &format!("http://{addr}"),
             "",
             &fast_policy(),
+            None,
             env,
         );
         assert_eq!(p.get_token(&log()).unwrap(), "env-reg-jwt");
@@ -585,6 +613,7 @@ mod tests {
             "http://127.0.0.1:1",
             "",
             &fast_policy(),
+            None,
             empty_env(),
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -601,6 +630,7 @@ mod tests {
             &format!("http://{addr}"),
             "ghp_x",
             &fast_policy(),
+            None,
             empty_env(),
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -620,6 +650,7 @@ mod tests {
             &format!("http://{addr}"),
             "ghp_bad",
             &fast_policy(),
+            None,
             empty_env(),
         );
         let err = format!("{:#}", p.get_token(&log()).unwrap_err());
@@ -637,6 +668,7 @@ mod tests {
             "http://127.0.0.1:1",
             "",
             &fast_policy(),
+            None,
             empty_env(),
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -653,6 +685,7 @@ mod tests {
             "http://127.0.0.1:1",
             "",
             &fast_policy(),
+            None,
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -671,6 +704,7 @@ mod tests {
             "http://127.0.0.1:1",
             "",
             &fast_policy(),
+            None,
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -700,6 +734,7 @@ mod tests {
             &format!("http://{addr}"),
             "ignored-static-token",
             &fast_policy(),
+            None,
             env,
         );
         assert_eq!(p.get_token(&log()).unwrap(), "oidc-reg-jwt");
@@ -727,6 +762,7 @@ mod tests {
             &format!("http://{addr}"),
             "",
             &fast_policy(),
+            None,
             env,
         );
         assert_eq!(p.get_token(&log()).unwrap(), "oidc-reg-jwt");
@@ -747,6 +783,7 @@ mod tests {
             &format!("http://{addr}"),
             "",
             &fast_policy(),
+            None,
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -774,6 +811,7 @@ mod tests {
             &format!("http://{addr}"),
             "",
             &fast_policy(),
+            None,
             env,
         );
         let err = p.get_token(&log()).unwrap_err().to_string();
@@ -801,6 +839,7 @@ mod tests {
             &format!("http://{addr}"),
             "",
             &fast_policy(),
+            None,
             env,
         );
         let err = format!("{:#}", p.get_token(&log()).unwrap_err());

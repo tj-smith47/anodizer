@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anodizer_core::url::percent_encode_unreserved;
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
@@ -45,10 +45,16 @@ pub(crate) fn context_available(get_env: impl Fn(&str) -> Option<String>) -> boo
 /// `"pypi"`, `"mcp"`). Never falls back to anything — an absent request env or
 /// a failed fetch is an error. The returned JWT is exchanged by the caller at
 /// its own registry endpoint.
+///
+/// `deadline` is the caller's wall-clock retry budget
+/// ([`anodizer_core::context::Context::retry_deadline`]); a stalled Actions
+/// token endpoint gives up when the next backoff would cross it instead of
+/// spending the publisher's whole ladder before the exchange even begins.
 pub(crate) fn request_id_token(
     get_env: impl Fn(&str) -> Option<String>,
     audience: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     who: &str,
 ) -> Result<String> {
@@ -77,9 +83,10 @@ pub(crate) fn request_id_token(
         percent_encode_unreserved(audience)
     );
     let desc = format!("{who}: GitHub Actions OIDC token");
-    let (_, body) = retry_http_blocking(
+    let (_, body) = retry_http_blocking_deadline(
         RetryLog::new(&desc, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client

@@ -72,8 +72,14 @@ pub(crate) fn mint_trusted_publishing_token(
     log: &StageLogger,
 ) -> Result<String> {
     // Hop 1: fetch the Actions id-token for the `crates.io` audience.
-    let id_token =
-        actions_oidc::request_id_token(|k| ctx.env_var(k), CARGO_AUDIENCE, policy, log, "cargo")?;
+    let id_token = actions_oidc::request_id_token(
+        |k| ctx.env_var(k),
+        CARGO_AUDIENCE,
+        policy,
+        ctx.retry_deadline(),
+        log,
+        "cargo",
+    )?;
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(30))
         .context("cargo: build OIDC HTTP client")?;

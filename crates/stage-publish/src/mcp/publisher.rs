@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking_deadline};
 use anodizer_core::url::percent_encode_unreserved;
 use anyhow::Context as _;
 
@@ -80,11 +80,15 @@ fn rollback_one_target(
         .context("mcp: render auth.token for rollback")?;
 
     let policy = ctx.retry_policy();
+    // One wall-clock budget for this target's auth exchange plus its PATCH, so
+    // a wedged registry cannot stall the rollback sweep past the run's ceiling.
+    let deadline = ctx.retry_deadline();
     let provider = provider_for(
         target.auth_method,
         &target.registry_url,
         &rendered_token,
         &policy,
+        deadline,
     );
     provider.login().context("mcp: rollback login")?;
     let token = provider
@@ -113,9 +117,10 @@ fn rollback_one_target(
     let client =
         build_client(Duration::from_secs(60)).context("mcp: build rollback HTTP client")?;
 
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new("mcp: PATCH status", log),
         &policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client
@@ -328,6 +333,7 @@ impl anodizer_core::Publisher for McpPublisher {
             &registry_url,
             &mcp_rendered.auth.token,
             &policy,
+            ctx.retry_deadline(),
         );
         let probe = provider
             .login()

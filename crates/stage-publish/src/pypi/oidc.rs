@@ -93,8 +93,14 @@ pub(crate) fn mint_trusted_publishing_token(
 
     // Hop 1: fetch the Actions id-token for the `pypi` audience (shared with
     // every other OIDC publisher).
-    let id_token =
-        actions_oidc::request_id_token(|k| ctx.env_var(k), PYPI_AUDIENCE, policy, log, "pypi")?;
+    let id_token = actions_oidc::request_id_token(
+        |k| ctx.env_var(k),
+        PYPI_AUDIENCE,
+        policy,
+        ctx.retry_deadline(),
+        log,
+        "pypi",
+    )?;
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(30))
         .context("pypi: build OIDC HTTP client")?;
