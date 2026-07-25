@@ -359,7 +359,7 @@ fn check_snapcraft_landing(
     let mut seen: std::collections::HashSet<(String, String, Option<String>)> =
         std::collections::HashSet::new();
     for t in targets {
-        // Pre-`version` snapshots (older runs replayed via --from-run) carry
+        // Pre-`version` snapshots (written by older anodizer versions) carry
         // no version to look for — nothing honest to probe.
         let Some(version) = t.version.as_deref() else {
             log.verbose(&format!(
@@ -1077,8 +1077,8 @@ mod tests {
 
     #[test]
     fn snapcraft_versionless_snapshot_is_skipped_not_probed() {
-        // A pre-`version` snapshot replayed via --from-run has nothing honest
-        // to probe — the panicking probe proves it is never consulted.
+        // A pre-`version` snapshot has nothing honest to probe — the
+        // panicking probe proves it is never consulted.
         let extra =
             PublishEvidenceExtra::Snapcraft(anodizer_core::publish_evidence::SnapcraftExtra {
                 snapcraft_targets: vec![SnapcraftTargetSnapshot {

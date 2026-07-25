@@ -851,6 +851,47 @@ fn decide_already_published_slow_path_real_drift_hard_fails() {
         msg.contains("c-1.0.0/src/lib.rs"),
         "error must name the differing path: {msg}"
     );
+    // Typed, not just worded: `reconcile()` reports `Diverged` off this
+    // downcast, and a real divergence reported as `Unknown` would tell an
+    // operator that a version needing a bump was merely unprobeable.
+    assert!(
+        err.downcast_ref::<super::already_published::ContentDivergence>()
+            .is_some(),
+        "genuine drift must be typed as ContentDivergence: {msg}"
+    );
+}
+
+/// The counterpart to the test above: a failure that means "could not
+/// verify" must NOT be typed as a divergence, or every unreachable-CDN
+/// re-run would be reported to the operator as a version that needs bumping.
+#[test]
+fn decide_already_published_unverifiable_is_not_typed_as_divergence() {
+    let cfg = CrateConfig::default();
+    let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+    let local = |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+        Ok(Some(LocalCrate {
+            cksum: "local_sha".to_string(),
+            bytes: Vec::new(),
+        }))
+    };
+    let fetch = |_: &str, _: &str| anyhow::bail!("cdn unreachable");
+    let err = decide_already_published(
+        "c",
+        "1.0.0",
+        "index_sha",
+        &cfg,
+        None,
+        false,
+        local,
+        fetch,
+        &log,
+    )
+    .expect_err("unfetchable published crate ⇒ fail closed");
+    assert!(
+        err.downcast_ref::<super::already_published::ContentDivergence>()
+            .is_none(),
+        "an unverifiable result must stay Unknown, not Diverged: {err:#}"
+    );
 }
 
 #[test]
@@ -3693,34 +3734,6 @@ fn decode_cargo_yank_targets_empty_for_non_cargo_variant() {
     // non-Cargo variant must decode to an empty target list.
     let extra = anodizer_core::PublishEvidenceExtra::default();
     assert!(decode_cargo_yank_targets(&extra).is_empty());
-}
-
-/// `programmatic_rollback_on_failure` is gated on a non-empty recorded
-/// target set: a run that published nothing stays inert (no rollback),
-/// while a run that recorded a yank target opts into rollback.
-#[test]
-fn programmatic_rollback_gated_on_recorded_targets() {
-    use anodizer_core::Publisher;
-    let p = CargoPublisher::new();
-
-    let mut empty = anodizer_core::PublishEvidence::new("cargo");
-    empty.extra = encode_cargo_yank_targets(&[]);
-    assert!(
-        !p.programmatic_rollback_on_failure(&empty),
-        "empty record ⇒ no rollback"
-    );
-
-    let mut nonempty = anodizer_core::PublishEvidence::new("cargo");
-    nonempty.extra = encode_cargo_yank_targets(&[CargoYankTarget {
-        name: "x".into(),
-        version: "1.0.0".into(),
-        registry: None,
-        index: None,
-    }]);
-    assert!(
-        p.programmatic_rollback_on_failure(&nonempty),
-        "recorded target ⇒ rollback"
-    );
 }
 
 /// Dry-run rollback takes the `is_dry_run` branch: it returns Ok WITHOUT

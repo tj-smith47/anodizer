@@ -1,7 +1,7 @@
 //! `publish_to_homebrew` — per-crate formula (and optional same-tap cask)
 //! publisher.
 
-mod publish;
+pub(crate) mod publish;
 mod render;
 
 pub use publish::*;

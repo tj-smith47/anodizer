@@ -23,7 +23,7 @@ Anodizer's release pipeline is one ordered list of stages. Most operators run it
 | `anodizer continue` | release, blob, publish, snapcraft-publish, announce, after-hooks | build, archive, nfpm, sbom, checksum, sign | single-host stage-resume (paused release, transient publish failure) |
 | `anodizer continue --merge` | shard-merge → sign, checksum, sbom, release, blob, publish, snapcraft-publish, announce | build, archive, nfpm | multi-host split-merge resume (mirrors GR Pro `goreleaser continue --merge`) |
 
-`anodizer release --rollback-only --from-run=<id>` is an additional escape hatch for the post-failure recovery flow; see [recovery flags](@/docs/advanced/recovery-flags.md) for the surrounding context.
+`anodizer tag rollback` is the deliberate-withdrawal command for the post-failure recovery flow; see [Release Resilience](@/docs/advanced/release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback) for the full flag matrix and [recovery flags](@/docs/advanced/recovery-flags.md) for the surrounding context.
 
 For composition with the `--skip=` flag (used to drop individual stages from any invocation above), see the inline help on `anodizer release --skip --help`.
 
@@ -75,6 +75,14 @@ Both consume a populated `dist/` and run the release / blob / publish chain. The
 
 Neither is being deprecated. Prefer `continue` for the resume-after-failure use case; reach for `publish` when you explicitly want the unframed publish chain without the announce / after-hook fan-out.
 
+> **`continue` resumes STAGES; a plain re-run reconciles PUBLISHERS.** They
+> answer different questions, so pick by what failed:
+>
+> | What failed | What to type |
+> |---|---|
+> | a build/package stage, or a `--prepare` run is paused mid-pipeline | `anodizer continue` — the completed stages are not redone |
+> | a publisher, with `dist/` already populated | re-run the identical `anodizer release` command — every publisher reconciles and self-skips (see [Release resilience](@/docs/advanced/release-resilience.md#the-recovery-model)) |
+
 ## Idempotency of `--publish-only` retries
 
 `release --publish-only` is safe to re-run against a `dist/` that already
@@ -82,11 +90,11 @@ has a `<dist>/run-<id>/report.json`. Publishers converge: each one
 reconciles against its own upstream before dispatching and skips itself
 when this exact version is already landed there.
 
-```bash
+```text
 $ anodizer release --publish-only
-• publish: cargo: skipped — already published (crates.io has 0.2.1)
-• publish: homebrew: skipped — already published (open PR homebrew-tap#41)
-• publish: gemfury: publishing anodizer 0.2.1
+   • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+   • skipping homebrew — already published for this version (open PR for widget 0.2.1: https://github.com/acme/homebrew-tap/pull/41)
+   • pushing widget_0.2.1_amd64.deb (deb) → https://push.fury.io/acme (gemfury account 'acme')
 ```
 
 Reconciliation fails toward publishing — a publisher skips only on a full
@@ -96,20 +104,21 @@ assuming it succeeded.
 
 Two things this does NOT replace:
 
-1. **Rollback.** `anodizer release --rollback-only --from-run=<id>` still
-   exists to *revert* a partial publish. Re-running converges forward; it
-   never undoes anything.
+1. **Deliberate withdrawal.** `anodizer tag rollback` still exists to *withdraw*
+   a release you've decided should not exist — deleting the tag, reverting
+   the bump commit, and unwinding whatever already published. Re-running
+   `release` only converges forward; it never undoes anything.
 2. **Content drift.** If a version is already published upstream with
    different content, that publisher records a failure telling you to bump
    the version. Immutable releases cannot be overwritten by re-running.
 
-The contract for `report.json`: it exists for replay (the `--rollback-only`
-flow) and for human triage. Skip decisions come from the live upstream
-state, not from the report.
+The contract for `report.json`: it exists for human triage. Skip decisions
+come from the live upstream state via each publisher's `reconcile()`, never
+from the report.
 
 ## See also
 
 - [Split / merge (distributed builds)](@/docs/advanced/split-merge.md) — for the `--merge` half of the split-merge flow.
 - [Determinism Harness](@/docs/advanced/determinism.md) — for the `--preserve-dist` source that `release --publish-only` typically consumes.
-- [Release resilience](@/docs/advanced/release-resilience.md) — for the `--rollback-only` flow referenced above.
+- [Release resilience](@/docs/advanced/release-resilience.md) — for the convergent re-run model and `tag rollback` referenced above.
 - [Recovery flags](@/docs/advanced/recovery-flags.md) — for per-publisher overrides that change the recovery semantics.

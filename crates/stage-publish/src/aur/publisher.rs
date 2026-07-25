@@ -59,7 +59,7 @@ pub(crate) struct AurOurTarget {
     /// `ctx.config.crates[*].publish.aur.private_key` by matching
     /// `git_url`.
     ///
-    /// SECURITY: persistence tasks (`--rollback-only --from-run`,
+    /// SECURITY: persistence tasks (`anodizer tag rollback`,
     /// `--summary-json`, the announce-time release-body summary) all
     /// round-trip evidence through serde JSON; `#[serde(skip)]` is
     /// the single point of control that keeps the SSH key from

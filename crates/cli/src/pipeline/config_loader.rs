@@ -239,6 +239,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate release.on_failure appears only in the root release block.
     anodizer_core::config::validate_on_failure_root_only(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
+    // Validate release.on_failure never selects the removed `rollback` policy.
+    // Without this the key parses and is then never read, silently degrading a
+    // deliberate policy choice into the default.
+    anodizer_core::config::validate_on_failure_not_rollback(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate nightly.publish_repo is "owner/repo" shaped (fail at config
     // time rather than as a confusing 404 when the release is created).
     anodizer_core::config::validate_nightly_publish_repo(&config)
@@ -1033,6 +1038,72 @@ crates:
             format!("{err:#}").contains("unknown variant `v9`"),
             "crates-axis garbage gets the same rejection: {err:#}"
         );
+    }
+
+    /// `release.on_failure: rollback` must be rejected by the loader itself,
+    /// not merely by a validator someone remembered to call. Every surface
+    /// that reads a config (`check config`, `release`, `tag`, …) goes through
+    /// `load_config`, so pinning the refusal here is what makes the documented
+    /// hard error real — a validator that is defined but unwired passes its own
+    /// unit tests while the config silently loads clean.
+    #[test]
+    fn load_config_rejects_removed_on_failure_rollback_policy() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+release:
+  on_failure: rollback
+"#,
+        )
+        .unwrap();
+        let err = load_config(&cfg_path)
+            .expect_err("release.on_failure: rollback must fail the config load");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("release.on_failure: rollback is no longer supported"),
+            "the loader must surface the migration error: {msg}"
+        );
+        assert!(
+            msg.contains("anodizer tag rollback"),
+            "the migration error must point at the replacement: {msg}"
+        );
+
+        // The crate-level placement is rejected by the same load. It trips the
+        // root-only validator first, so assert only that the load refuses.
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ Version }}"
+    release:
+      on_failure: rollback
+"#,
+        )
+        .unwrap();
+        load_config(&cfg_path)
+            .expect_err("a crate-level rollback policy must fail the config load too");
+    }
+
+    /// A config that omits `on_failure` — and one that spells out the only
+    /// supported value — must still load. The rollback refusal has to be
+    /// value-specific, not a blanket rejection of the key.
+    #[test]
+    fn load_config_accepts_hold_and_unset_on_failure() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        for body in [
+            "release:\n  on_failure: hold\n",
+            "release:\n  draft: true\n",
+        ] {
+            fs::write(&cfg_path, format!("project_name: test\n{body}")).unwrap();
+            load_config(&cfg_path).unwrap_or_else(|e| panic!("{body:?} must load: {e:#}"));
+        }
     }
 
     /// The positive half of the defaults axis: a VALID level set only on

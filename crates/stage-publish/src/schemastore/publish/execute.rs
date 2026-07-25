@@ -608,7 +608,7 @@ pub(super) fn schemastore_branch(version: &str) -> String {
     format!("schemastore-v{version}")
 }
 
-/// Build the PR-target evidence so a later `--rollback-only` can close the PR.
+/// Build the PR-target evidence so a later `anodizer tag rollback` can close the PR.
 pub(super) fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvidence {
     let mut evidence = PublishEvidence::new("schemastore");
     evidence.extra = anodizer_core::PublishEvidenceExtra::Schemastore(

@@ -8,34 +8,38 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use crate::rollback_only;
+use crate::rollback;
 
 /// Derive a stable per-run identifier suitable for the
 /// `<dist>/run-<id>/` directory written by [`write_report_to_run_dir`]
-/// and read back by [`rollback_only::run`].
+/// and read back by [`rollback::run`].
 ///
 /// Priority order:
 /// 1. `ctx.git_info.tag` — what the operator typed (e.g. `v0.2.1`).
-///    Naturally fits the `[A-Za-z0-9._-]` shape expected by
-///    [`rollback_only::validate_run_id`].
+///    Every tag shape anodize cuts — including a semver build-metadata
+///    suffix like `v1.2.3+build.1` — fits the `[A-Za-z0-9._+-]` charset
+///    [`rollback::validate_run_id`] enforces, so the tag branch is what
+///    real releases take. That matters beyond tidiness: `anodizer tag
+///    rollback` locates a run's recorded publisher state by probing
+///    `run-<tag>/`, so a tag that fell through to the commit fallback here
+///    would leave published state the unwind can never find.
 /// 2. `ctx.git_info.short_commit` — fallback for snapshot / dry-run /
 ///    detached-HEAD scenarios where there's no tag.
 /// 3. The literal `"local"` — final fallback for genuinely-no-git
 ///    contexts (e.g. some integration tests).
 ///
 /// All three branches return a string that satisfies
-/// [`rollback_only::validate_run_id`]; the candidates from `git_info`
+/// [`rollback::validate_run_id`]; the candidates from `git_info`
 /// are pre-filtered against the validator so a malformed value (e.g. a
 /// short_commit somehow containing slashes) falls through to the next
 /// step instead of producing an invalid path. The `"local"` literal is
 /// fixed and always valid.
 ///
-/// Operators replaying a `--from-run=local` invocation are addressing
-/// the no-git fallback path; for production releases (which always
-/// have a tag or short_commit), this branch should never fire. Seeing
+/// The `"local"` branch is the no-git fallback; for production releases
+/// (which always have a tag or short_commit) it should never fire. Seeing
 /// `dist/run-local/` in a real release is a signal that
 /// `ctx.git_info` was not populated upstream and is worth
-/// investigating before invoking `--rollback-only`.
+/// investigating before invoking `anodizer tag rollback`.
 ///
 /// The derived id names the `<dist>/run-<id>/report.json` path. That
 /// report is written only outside snapshot / dry-run mode, so any
@@ -44,12 +48,10 @@ use crate::rollback_only;
 /// behavior.
 pub fn derive_run_id(ctx: &Context) -> String {
     if let Some(info) = ctx.git_info.as_ref() {
-        if !info.tag.is_empty() && rollback_only::validate_run_id(&info.tag).is_ok() {
+        if !info.tag.is_empty() && rollback::validate_run_id(&info.tag).is_ok() {
             return info.tag.clone();
         }
-        if !info.short_commit.is_empty()
-            && rollback_only::validate_run_id(&info.short_commit).is_ok()
-        {
+        if !info.short_commit.is_empty() && rollback::validate_run_id(&info.short_commit).is_ok() {
             return info.short_commit.clone();
         }
     }
@@ -59,7 +61,7 @@ pub fn derive_run_id(ctx: &Context) -> String {
 /// Resolve `<dist>/run-<id>/` for a derived `run_id` — formatted with
 /// [`anodizer_core::dist::RUN_DIR_PREFIX`], the same constant the
 /// run-summary scanner matches on. Shared by [`report_path_for`],
-/// [`run_summary::summary_path`], [`rollback_only`], and the writer in
+/// [`run_summary::summary_path`], [`rollback`], and the writer in
 /// [`write_report_to_run_dir`]. Anchors on
 /// `ctx.config.dist`, which per-crate workspace mode re-anchors onto
 /// `dist/<crate>/`, so the helper composes correctly across every config mode.
@@ -73,7 +75,7 @@ pub fn run_dir(ctx: &Context, run_id: &str) -> PathBuf {
 /// path helper kept alongside [`derive_run_id`] so consumers driving
 /// the announce-only flow share the same path-shape contract as the
 /// writer in [`write_report_to_run_dir`] and the reader in
-/// [`rollback_only::run`].
+/// [`rollback::run`].
 pub fn report_path_for(ctx: &Context, run_id: &str) -> PathBuf {
     run_dir(ctx, run_id).join(anodizer_core::dist::REPORT_JSON)
 }
@@ -92,7 +94,7 @@ pub(crate) fn existing_run_report_path(ctx: &Context) -> Option<PathBuf> {
         return None;
     }
     let run_id = derive_run_id(ctx);
-    rollback_only::validate_run_id(&run_id).ok()?;
+    rollback::validate_run_id(&run_id).ok()?;
     let path = report_path_for(ctx, &run_id);
     path.exists().then_some(path)
 }
@@ -101,7 +103,7 @@ pub(crate) fn existing_run_report_path(ctx: &Context) -> Option<PathBuf> {
 /// [`anodizer_core::publish_report::PublishReport`].
 ///
 /// Errors when the file is missing or unparseable. The recovery hint
-/// mirrors the message [`rollback_only::run`] produces because the two
+/// mirrors the message [`rollback::run`] produces because the two
 /// share the same `dist/run-<id>/` contract.
 pub fn load_prior_report(
     ctx: &Context,
@@ -113,8 +115,8 @@ pub fn load_prior_report(
         format!(
             "no prior report found at {} (run_id={}). The announce-only \
              flow consumes a `report.json` written by a successful prior \
-             release run; re-run `anodize release` end-to-end first or \
-             pass `--from-run=<id>` to point at an existing run dir.",
+             release run; re-run `anodize release` end-to-end first so the \
+             run dir exists.",
             path.display(),
             run_id,
         )
@@ -129,7 +131,7 @@ pub fn load_prior_report(
 }
 
 /// Persist `ctx.publish_report` to `<config.dist>/run-<run_id>/report.json`
-/// so a later `--rollback-only --from-run=<run_id>` invocation can
+/// so a later `anodizer tag rollback` unwind can
 /// re-attempt rollback against the same run.
 ///
 /// Best-effort: any IO / serialization failure is logged as a warn and
@@ -144,14 +146,14 @@ pub fn load_prior_report(
 ///   `publish_report` independently, so the empty-check correctly
 ///   covers "no work done at all."
 ///
-/// Mirrors the path-derivation in
-/// [`rollback_only::report_path`] — the two helpers form the
-/// writer/reader contract for the `--rollback-only` flow.
+/// Mirrors the path-derivation `rollback.rs` uses internally to locate
+/// this same file — the two form the writer/reader contract that
+/// [`rollback::run`] replays against.
 ///
 /// Pretty-prints so operators reading the file directly do not have
 /// to pipe through `jq`. A future contributor tempted to switch to
 /// compact JSON for byte-size should know the format is part of the
-/// operator-facing contract — `--rollback-only` consumers may read it
+/// operator-facing contract — `anodizer tag rollback` consumers may read it
 /// by hand to triage which step failed before invoking the replay.
 ///
 /// # Atomicity
@@ -161,7 +163,7 @@ pub fn load_prior_report(
 /// (closed sums, malformed Unicode in a publisher name, ...) happens
 /// BEFORE the target file is touched, so a partially-written /
 /// truncated `report.json` cannot leak onto disk and trip a later
-/// `--rollback-only --from-run=<id>` parse error. Matches the sibling
+/// `anodizer tag rollback` parse error. Matches the sibling
 /// pattern in `crates/stage-publish/src/run_summary.rs::write_summary_json`.
 ///
 /// No explicit `fsync`: `fs::write` does not expose a sync hook, and
@@ -186,7 +188,7 @@ pub fn load_prior_report(
 /// This writer creates one `dist/run-<id>/` directory per release
 /// run; the pipeline does NOT auto-prune. Operators own retention and
 /// should periodically clean stale run directories — they hold the
-/// only on-disk state needed for `--rollback-only --from-run=<id>`
+/// only on-disk state needed for `anodizer tag rollback`
 /// replay, so a deletion is recoverable only by re-running the
 /// release.
 ///
@@ -215,7 +217,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
     // valid id, but a future refactor could regress that invariant. If
     // the id is bad, skip the write rather than write to an invalid
     // path — the operator loses replay; the release is unaffected.
-    if let Err(e) = rollback_only::validate_run_id(&run_id) {
+    if let Err(e) = rollback::validate_run_id(&run_id) {
         log.warn(&format!(
             "skipped run-report write — derived run_id '{}' failed validation: {}",
             run_id, e,
@@ -236,7 +238,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
     }
 
     // Serialize first, then write — so a serialize-failure cannot
-    // leave a truncated/corrupt file on disk for the rollback_only
+    // leave a truncated/corrupt file on disk for the rollback replay
     // reader to choke on. Matches `run_summary::write_summary_json`.
     let text = match serde_json::to_string_pretty(report) {
         Ok(t) => t,

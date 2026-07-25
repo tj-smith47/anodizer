@@ -325,9 +325,18 @@ fn open_pr_for_target(
         cfg.and_then(|w| w.repository.as_ref()),
         Some("WINGET_PKGS_TOKEN"),
     );
+    let expect_title = crate::winget::identifier::render_winget_commit_msg(
+        cfg.and_then(|w| w.commit_msg_template.as_deref()),
+        &target.package_id,
+        &target.version,
+        log,
+        false,
+    )
+    .ok();
     crate::preflight::query_open_version_pr(
         &crate::preflight::OpenPrQuery {
             publisher: "winget",
+            expect_title: expect_title.as_deref(),
             upstream_owner: &target.upstream_owner,
             upstream_repo: &target.upstream_repo,
             package: &target.package_id,

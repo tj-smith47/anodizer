@@ -10,7 +10,7 @@
 //!
 //! "Submitter group, no-rollback" contract for chocolatey: record
 //! `(crate_name, package_id, version)` tuples in
-//! [`anodizer_core::PublishEvidence::extra`] so a `--rollback-only`
+//! [`anodizer_core::PublishEvidence::extra`] so a `anodizer tag rollback`
 //! invocation can surface the exact package page the operator needs to
 //! address manually. The `rollback` method itself is warn-only and does
 //! not call out to the gallery.

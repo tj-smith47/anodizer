@@ -5,7 +5,6 @@ use super::*;
 /// Encodes the gating rules so they can be unit-tested without dragging
 /// the entire pipeline up. The rules are:
 ///
-/// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
 /// - `publish` in `skip` → caller opted out of one-way doors.
 /// - otherwise → true. `--publish-only` runs it like a regular release: it
@@ -21,13 +20,12 @@ use super::*;
 /// an earlier short-circuit in `run_publisher_preflight` and so is not a
 /// parameter here.
 pub(crate) fn should_run_preflight_auto(
-    no_preflight: bool,
     snapshot: bool,
     dry_run: bool,
     split: bool,
     publish_skipped: bool,
 ) -> bool {
-    !no_preflight && !snapshot && !dry_run && !split && !publish_skipped
+    !snapshot && !dry_run && !split && !publish_skipped
 }
 
 /// `--prepare`: runs local build/archive/sign/checksum/sbom stages but skips
@@ -143,8 +141,8 @@ pub(crate) fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOp
 
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
 /// otherwise a populated dist is a hard error.
-/// `--merge` / `--publish-only` / `--rollback-only` skip the non-empty check
-/// because each of those modes requires preserved dist content;
+/// `--merge` / `--publish-only` skip the non-empty check because each of
+/// those modes requires preserved dist content;
 /// `--preflight-secrets` skips it because the secrets gate is a
 /// zero-mutation check that never reads or writes dist.
 pub(crate) fn enforce_dist_state(
@@ -164,7 +162,6 @@ pub(crate) fn enforce_dist_state(
     if !opts.clean
         && !opts.merge
         && !opts.publish_only
-        && !opts.rollback_only
         && !opts.announce_only
         && !opts.preflight_secrets
     {
@@ -195,20 +192,6 @@ pub(crate) fn read_release_notes_template(opts: &ReleaseOpts) -> Result<Option<(
         Ok(Some((tmpl_path.clone(), content)))
     } else {
         Ok(None)
-    }
-}
-
-/// Translate `--rollback=<v>` into the enum; reject invalid values up front
-/// so the dispatch site can rely on a clean value.
-pub(crate) fn parse_rollback_mode(rollback: Option<&str>) -> Result<Option<RollbackMode>> {
-    match rollback {
-        Some("none") => Ok(Some(RollbackMode::None)),
-        Some("best-effort") => Ok(Some(RollbackMode::BestEffort)),
-        Some(other) => anyhow::bail!(
-            "invalid --rollback value: {} (expected: none, best-effort)",
-            other
-        ),
-        None => Ok(None),
     }
 }
 
@@ -389,7 +372,6 @@ pub(crate) fn build_context_options(
     opts: &ReleaseOpts,
     skip_stages: Vec<String>,
     selected_sorted: Vec<String>,
-    rollback_mode: Option<RollbackMode>,
     simulate_failure_publishers: Vec<String>,
     runtime_nondeterministic_allowlist: Vec<(String, String)>,
     project_root: Option<PathBuf>,
@@ -417,7 +399,6 @@ pub(crate) fn build_context_options(
         preflight_secrets: opts.preflight_secrets,
         project_root,
         strict: opts.strict,
-        strict_preflight: opts.strict_preflight,
         resume_release: opts.resume_release || opts.publish_only,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
@@ -426,11 +407,8 @@ pub(crate) fn build_context_options(
         } else {
             None
         },
-        rollback_mode,
         simulate_failure_publishers,
-        rollback_only: opts.rollback_only,
         show_skipped: opts.show_skipped,
-        from_run: opts.from_run.clone(),
         runtime_nondeterministic_allowlist,
         summary_json_path: opts.summary_json.clone(),
         allow_ai_failure: opts.allow_ai_failure,

@@ -50,13 +50,20 @@ jobs:
         # cargo-zigbuild for the aarch64-linux-gnu cross build; macOS builds
         # darwin targets with the built-in toolchain; Windows builds the msvc
         # target natively but keeps auto-install for configured-stage tools.
+        #
+        # timeout is per-shard because the windows leg is structurally the
+        # long one: `from-branch: master` compiles anodizer itself before it
+        # can run (~18m on a windows runner, vs ~6m on ubuntu), then builds
+        # TWO msvc targets serially at ~35m each. Measured cold-cache total is
+        # ~95m; 60 cancelled the aarch64 build every night for weeks with no
+        # error message, because a timeout reads as "cancelled", not "failed".
         include:
-          - { os: ubuntu-latest,  shard: linux,   auto_install: 'true' }
-          - { os: macos-latest,   shard: darwin,  auto_install: 'false' }
-          - { os: windows-latest, shard: windows, auto_install: 'true' }
+          - { os: ubuntu-latest,  shard: linux,   auto_install: 'true',  timeout: 60 }
+          - { os: macos-latest,   shard: darwin,  auto_install: 'false', timeout: 60 }
+          - { os: windows-latest, shard: windows, auto_install: 'true',  timeout: 150 }
     name: Nightly build (${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -70,7 +77,12 @@ jobs:
         with:
           from-branch: master
           auto-install: ${{ matrix.auto_install }}
-          args: release --nightly --split --no-preflight
+          # --all --force pins selection to the whole workspace instead of
+          # falling back to tags-at-HEAD. anodizer is lockstep, so the
+          # fallback happens to select every crate today — but that holds only
+          # while no crate carries a distinct tag_template, and a nightly
+          # should not depend on change detection at all.
+          args: release --nightly --split --all --force
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -111,7 +123,9 @@ jobs:
         with:
           from-branch: master
           auto-install: 'true'
-          args: release --nightly --merge --no-preflight
+          # Same selection pin as the split legs: the merge validates shard
+          # contexts against its own selection, so the two must agree.
+          args: release --nightly --merge --all --force
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}

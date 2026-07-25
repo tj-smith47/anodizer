@@ -97,6 +97,81 @@ impl Default for DispatchOptions {
     }
 }
 
+/// Snapshot every in-scope artifact's content-hash metadata (written by
+/// stage-checksum under the `Checksum` key as `sha256:<hex>`) into a
+/// NAME -> digest map. Deliberately reads the whole registry rather than a
+/// per-publisher artifact subset: a false "digests differ" only costs a
+/// network round-trip (safe), while a false "digests match" would wrongly
+/// skip a publisher (unsafe) — the wider set can only produce the safe
+/// failure mode. Artifacts with no `Checksum` metadata are simply absent
+/// from the map.
+fn snapshot_artifact_digests(ctx: &Context) -> std::collections::BTreeMap<String, String> {
+    ctx.artifacts
+        .all()
+        .iter()
+        .filter_map(|a| {
+            a.metadata
+                .get("Checksum")
+                .map(|d| (a.name.clone(), d.clone()))
+        })
+        .collect()
+}
+
+/// Ledger fast-path consulted before the network reconcile probe: does a
+/// prior `summary.json` for this tag already record this publisher as
+/// `succeeded` / `pending-*` with artifact digests matching the CURRENT
+/// local artifacts? If so, return the [`ReconcileState::Complete`] that
+/// `p.reconcile(ctx)` would otherwise need a remote call to establish.
+///
+/// A missing or empty digest map on the ledger row (a v1 summary, written
+/// before digests existed) never counts as a match — treating "no recorded
+/// digests" as a match would mask exactly the rebuilt-different-bytes case
+/// [`ReconcileState::Diverged`] exists to catch. Any IO/parse error, tag
+/// mismatch, or digest mismatch simply falls through to `None` so the
+/// caller proceeds to the real network probe.
+fn ledger_fast_path(
+    ctx: &Context,
+    publisher_name: &str,
+    current_digests: &std::collections::BTreeMap<String, String>,
+) -> Option<ReconcileState> {
+    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
+    for path in crate::run_summary::collect_run_summary_paths(&ctx.config.dist) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(summary) = crate::run_summary::parse_run_summary_lenient(&text) else {
+            continue;
+        };
+        if summary.tag != tag {
+            continue;
+        }
+        for result in &summary.results {
+            if result.name != publisher_name {
+                continue;
+            }
+            if result.status != "succeeded" && !result.status.starts_with("pending-") {
+                continue;
+            }
+            let Some(evidence) = result.evidence.as_ref() else {
+                continue;
+            };
+            if evidence.artifact_digests.is_empty() {
+                continue;
+            }
+            let all_match = evidence
+                .artifact_digests
+                .iter()
+                .all(|(name, digest)| current_digests.get(name).is_some_and(|cur| cur == digest));
+            if all_match {
+                return Some(ReconcileState::Complete {
+                    note: format!("ledger: {} ({})", path.display(), result.status),
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Dispatch publishers in Assets -> Manager -> Submitter order, applying
 /// the Submitter gate when a required Assets/Manager publisher failed.
 /// Returns Ok(partial-report) on per-publisher failure or fail-fast;
@@ -263,7 +338,26 @@ pub fn dispatch(
                 .iter()
                 .any(|name| name == p.name());
             if !simulated && !ctx.is_dry_run() {
-                match p.reconcile(ctx) {
+                // Ledger fast-path: a prior `summary.json` for this tag may
+                // already prove this publisher `Complete` from local state
+                // (current artifact digests matching what the ledger row
+                // recorded), sparing the network round-trip `reconcile()`
+                // would otherwise make. Falls through to the real probe on
+                // any tag/digest mismatch, missing ledger row, or v1
+                // summary with no recorded digests.
+                let current_digests = snapshot_artifact_digests(ctx);
+                let reconciled = match ledger_fast_path(ctx, p.name(), &current_digests) {
+                    Some(state) => {
+                        ctx.logger("publish").verbose(&format!(
+                            "{}: ledger fast-path — prior summary digests matched, \
+                             skipping network reconcile probe",
+                            p.name()
+                        ));
+                        Ok(state)
+                    }
+                    None => p.reconcile(ctx),
+                };
+                match reconciled {
                     Ok(ReconcileState::Complete { note }) => {
                         ctx.logger("publish").status(&format!(
                             "skipping {} — already published for this version ({note})",
@@ -405,7 +499,7 @@ pub fn dispatch(
                 // makes the scope exact — one publisher runs at a time.
                 let _retry_scope = anodizer_core::retry::RetryScope::enter(p.name());
                 match p.run(ctx) {
-                    Ok(evidence) => {
+                    Ok(mut evidence) => {
                         // If `run` recorded an outcome override (e.g.
                         // chocolatey moderation skip or PR-already-exists
                         // skip) use it instead of the default `Succeeded`
@@ -417,6 +511,11 @@ pub fn dispatch(
                         // A successful run owns its return value; any stale
                         // partial-evidence slot is irrelevant.
                         let _ = ctx.take_pending_evidence();
+                        // Snapshot the whole in-scope artifact set's content
+                        // hashes into the evidence, not a per-publisher
+                        // subset — feeds the M4 ledger fast-path on a later
+                        // re-run.
+                        evidence.artifact_digests = snapshot_artifact_digests(ctx);
                         (outcome, Some(evidence))
                     }
                     // A failing run may have done irreversible work before
@@ -2306,5 +2405,277 @@ mod tests {
             "winget (deselected) must report Deselected, not VerifyGateBlocked: {:?}",
             winget.outcome
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // M4 ledger fast-path
+    // -----------------------------------------------------------------------
+
+    fn ledger_artifact(name: &str, digest: &str) -> anodizer_core::artifact::Artifact {
+        anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("dist/{name}")),
+            name: name.to_string(),
+            target: None,
+            crate_name: "demo".to_string(),
+            metadata: std::collections::HashMap::from([(
+                "Checksum".to_string(),
+                digest.to_string(),
+            )]),
+            size: None,
+        }
+    }
+
+    /// Write a single-result `summary.json` for `tag` at
+    /// `<dist>/run-fixture/summary.json` (the layout
+    /// [`crate::run_summary::collect_run_summary_paths`] scans), recording
+    /// `publisher_name` with `status` and the given evidence digests.
+    fn write_ledger_summary(
+        dist: &std::path::Path,
+        tag: &str,
+        publisher_name: &str,
+        status: &str,
+        digests: std::collections::BTreeMap<String, String>,
+    ) {
+        let mut evidence = anodizer_core::PublishEvidence::new(publisher_name);
+        evidence.artifact_digests = digests;
+        let summary = crate::run_summary::RunSummary {
+            schema_version: crate::run_summary::RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: tag.to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            verify_release: None,
+            retry_backoff_secs: 0.0,
+            retry_by_scope: vec![],
+            results: vec![crate::run_summary::RunSummaryResult {
+                name: publisher_name.to_string(),
+                group: PublisherGroup::Submitter,
+                required: true,
+                status: status.to_string(),
+                evidence: Some(evidence),
+            }],
+            determinism_allowlist: crate::run_summary::DeterminismAllowlist::default(),
+        };
+        let path = dist
+            .join("run-fixture")
+            .join(anodizer_core::dist::SUMMARY_JSON);
+        crate::run_summary::write_summary_json(&summary, &path).expect("write fixture summary");
+    }
+
+    #[test]
+    fn ledger_fast_path_skips_network_probe_on_matching_digests() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        write_ledger_summary(
+            tmp.path(),
+            "v0.0.0-test",
+            "cargo",
+            "succeeded",
+            std::collections::BTreeMap::from([(
+                "cargo-crate.tar.gz".to_string(),
+                "sha256:aaa".to_string(),
+            )]),
+        );
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            0,
+            "matching ledger digests must short-circuit before the network probe"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0, "run() must be skipped");
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
+        ));
+    }
+
+    #[test]
+    fn ledger_fast_path_falls_through_on_digest_mismatch() {
+        // The anti-masking case: a rebuild produced different bytes at the
+        // same version. The ledger row must NOT short-circuit — it must
+        // fall through to the real reconcile probe so a genuine `Diverged`
+        // can still be detected.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:CURRENT"));
+        write_ledger_summary(
+            tmp.path(),
+            "v0.0.0-test",
+            "cargo",
+            "succeeded",
+            std::collections::BTreeMap::from([(
+                "cargo-crate.tar.gz".to_string(),
+                "sha256:STALE".to_string(),
+            )]),
+        );
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            1,
+            "a digest mismatch must fall through to the network probe, not mask it"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1, "run() must proceed");
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Succeeded
+        ));
+    }
+
+    #[test]
+    fn ledger_fast_path_ignores_v1_summary_with_no_recorded_digests() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        // Empty digest map — the shape a v1 summary (written before
+        // `artifact_digests` existed) deserializes to.
+        write_ledger_summary(
+            tmp.path(),
+            "v0.0.0-test",
+            "cargo",
+            "succeeded",
+            std::collections::BTreeMap::new(),
+        );
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            1,
+            "an empty/absent digest map must never count as a match"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ledger_fast_path_ignores_non_succeeded_non_pending_status() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        write_ledger_summary(
+            tmp.path(),
+            "v0.0.0-test",
+            "cargo",
+            "failed",
+            std::collections::BTreeMap::from([(
+                "cargo-crate.tar.gz".to_string(),
+                "sha256:aaa".to_string(),
+            )]),
+        );
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            1,
+            "a `failed` ledger row must never short-circuit"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ledger_fast_path_ignores_corrupt_summary_json() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        let run_dir = tmp.path().join("run-fixture");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(
+            run_dir.join(anodizer_core::dist::SUMMARY_JSON),
+            "{ not valid json",
+        )
+        .expect("write corrupt fixture");
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default())
+            .expect("a corrupt ledger file must never fail the run");
+
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Succeeded
+        ));
+    }
+
+    #[test]
+    fn ledger_fast_path_ignores_summary_for_a_different_tag() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        write_ledger_summary(
+            tmp.path(),
+            "v9.9.9-not-this-run",
+            "cargo",
+            "succeeded",
+            std::collections::BTreeMap::from([(
+                "cargo-crate.tar.gz".to_string(),
+                "sha256:aaa".to_string(),
+            )]),
+        );
+
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            1,
+            "a summary for a different tag must never match"
+        );
+        assert_eq!(run_calls.load(Ordering::SeqCst), 1);
     }
 }

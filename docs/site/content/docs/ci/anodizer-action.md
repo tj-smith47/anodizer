@@ -123,7 +123,7 @@ the caller needing to know the harness CLI. See
 | `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on `if: needs.<job>.outputs.tagged == 'true'` for single-crate / lockstep repos (the lockstep counterpart to the per-crate `crates != '[]'` gate). |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target — the version-sync bump commit, or the original HEAD when no bump was needed). Check this out in downstream jobs so the tree matches the tag. |
-| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned. Forensic signal for **custom** recovery steps; the default failure handling is anodizer's in-process `release.on_failure` policy, which already refuses to roll back past one-way doors, so most workflows never read this. Gate any manual destructive step on `steps.<id>.outputs.irreversibly_published != 'true'`. |
+| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned. anodizer never rolls anything back automatically (`on_failure: hold` is the only behavior), so most workflows never need this; it exists for **custom** destructive recovery steps you wire yourself. Gate any such step on `steps.<id>.outputs.irreversibly_published != 'true'`. |
 
 ## Common patterns
 
@@ -156,7 +156,7 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 ```
 
-No failure-handling steps are needed: `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage and executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process on a pipeline failure.
+No failure-handling steps are needed: `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure it leaves everything exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recover by fixing the cause and re-running the identical `anodizer release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run).
 
 ### Auto-tag on push to main
 
@@ -404,14 +404,16 @@ For integration testing a downstream project against an in-flight anodizer PR �
 
 The `Run anodizer` step retries up to 3 times for transient failures (registry rate limits, Docker push auth expiry, network blips). Between retries it prunes generated artifacts from `dist/` while preserving split context files (`dist/*/context.json`) so `--merge` can still find them. Deterministic failures (config errors, compile failures) will fail identically on every attempt, but the cost of two extra 10s waits is low relative to a flaky release run.
 
-**Stateful commands are never retried.** The action detects three modes and
+**Stateful commands are never retried.** The action detects two modes and
 runs them exactly once:
 
-- `release --publish-only` — re-running would re-trigger PR-based publishers
-  (homebrew, scoop, nix, krew, MCP) and open DUPLICATE PRs against the
-  same tag. Recovery: use `release --rollback-only --from-run=<id>` first.
-- `release --rollback-only` — idempotent at the entry level (already-rolled
-  back entries no-op), but a retry could mask a real partial failure.
+- `release --publish-only` — every publisher reconciles against its own
+  upstream before dispatching and skips itself when this exact version is
+  already landed there (PR-based publishers included: homebrew, scoop, nix,
+  krew, MCP each look for an already-open PR and skip rather than open a
+  duplicate), so a manual re-run of the identical command is always safe.
+  The action still avoids an automatic in-step retry so a real failure
+  surfaces on its own attempt rather than being masked by a silent retry.
 - `tag rollback` — already a recovery primitive; retrying would re-attempt
   remote tag deletes (which 404 the second time) and re-push the revert
   (which would fail with "Everything up-to-date" or a non-fast-forward

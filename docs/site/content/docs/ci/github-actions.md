@@ -38,12 +38,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That one step is the whole release job. Before any stage runs, anodizer verifies the environment with a config-derived [preflight](@/docs/general/preflight.md) (required tools, secrets, key material, endpoints), and on a pipeline failure it executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process — rolling back the tag and version bump by default, auto-degrading to `hold` once any one-way-door publisher (crates.io, chocolatey, ...) has landed. Failure policy lives in `.anodizer.yaml`, not in workflow steps:
+That one step is the whole release job. Before any stage runs, anodizer verifies the environment with a config-derived [preflight](@/docs/general/preflight.md) (required tools, secrets, key material, endpoints), and on a pipeline failure it leaves everything exactly where it landed — [`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure) is the only accepted behavior. Recover by re-running the identical `anodizer release` command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) rather than double-publishing. No workflow-level rollback step is needed:
 
 ```yaml
 # .anodizer.yaml
 release:
-  on_failure: rollback   # rollback | hold; default rollback
+  on_failure: hold   # the only accepted value; also the default
 ```
 
 `auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.

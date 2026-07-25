@@ -473,19 +473,29 @@ pub(super) fn check_not_burned_on_npm_pypi(
 /// (single-crate / lockstep layout) and `<dist>/<crate>/run-*/summary.json`
 /// (per-crate workspace layout). Unreadable or unparseable files warn
 /// and are skipped — they carry no usable evidence either way.
+///
+/// Parsing goes through `parse_run_summary_lenient`, not a strict
+/// deserialize: `RunSummary` is `deny_unknown_fields` and the removed v1
+/// `failure_policy` key is only ever present on summaries a FAILED run
+/// wrote — precisely the ones a rollback interrogates. A strict read drops
+/// them as "unreadable", losing the burn evidence for submitters with no
+/// network-probe backstop and turning an attributed tag unattributed.
 pub(super) fn collect_run_summaries(
     dist: &std::path::Path,
     log: &StageLogger,
 ) -> Vec<anodizer_stage_publish::run_summary::RunSummary> {
     let mut out = Vec::new();
     for path in anodizer_stage_publish::run_summary::collect_run_summary_paths(dist) {
-        match std::fs::read_to_string(&path)
-            .map_err(anyhow::Error::from)
-            .and_then(|text| Ok(serde_json::from_str(&text)?))
-        {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{e}"))
+            .and_then(|text| {
+                anodizer_stage_publish::run_summary::parse_run_summary_lenient(&text)
+                    .ok_or_else(|| "not a recognized run summary document".to_string())
+            });
+        match parsed {
             Ok(summary) => out.push(summary),
             Err(e) => log.warn(&format!(
-                "ignoring unreadable run summary {}: {e:#}",
+                "ignoring unreadable run summary {}: {e}",
                 path.display()
             )),
         }

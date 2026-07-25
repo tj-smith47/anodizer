@@ -9,7 +9,7 @@ use crate::publisher_kind::PublisherKind;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use crate::verify_release_summary::VerifyReleaseSummary;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};

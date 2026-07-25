@@ -20,10 +20,10 @@
 //! probe reached the host but got no verdict) every probe degrades to
 //! [`PreflightCheck::Warning`]: a transient network blip must surface but must
 //! not abort a release that would otherwise succeed. Under strict preflight
-//! (`--strict-preflight`, the global `--strict`, or `preflight.strict: true`)
-//! those indeterminate outcomes are promoted to [`PreflightCheck::Blocker`]
-//! (fail-closed); definitive failures keep their required→Blocker /
-//! optional→Warning severity either way.
+//! (the global `--strict`, or `preflight.strict: true`) those indeterminate
+//! outcomes are promoted to [`PreflightCheck::Blocker`] (fail-closed);
+//! definitive failures keep their required→Blocker / optional→Warning
+//! severity either way.
 
 use std::time::Duration;
 

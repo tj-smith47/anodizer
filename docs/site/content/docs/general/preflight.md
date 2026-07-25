@@ -25,7 +25,7 @@ side effect:
 •   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
 •   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing trailing newline after end marker [needed by: publish:aur]
 •   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
-Error: preflight: 4 environment failure(s) across 24 check(s); fix the issues above or re-run with --no-preflight to override
+Error: preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
 ```
 
 Secret **values** are never printed — only env-var names. Key material
@@ -39,7 +39,43 @@ operator-orchestrated partial pipelines. `--announce-only` runs a
 preflight scoped to the announce stage's requirements: announcers fire
 sequentially with real side effects, so a missing token aborts before the
 first post instead of after half the channels are notified.
-`--no-preflight` overrides it explicitly.
+
+## Publisher-state report
+
+Alongside the environment preflight above, `anodizer release` also queries
+each one-way-door publisher (cargo, chocolatey, winget, aur) for the target
+version's current upstream state and prints a report before publishing
+starts:
+
+```text
+• Pre-flight publisher check
+• cargo mycrate@1.2.3       clean
+• chocolatey mycrate@1.2.3  in-moderation — package in moderation queue
+• winget mycrate@1.2.3      pr-pending — https://github.com/microsoft/winget-pkgs/pull/123
+• aur mycrate@1.2.3         unknown — AUR RPC returned 503
+```
+
+A row already live upstream renders under the success marker
+(`✓ cargo mycrate@1.2.3  published`); every other state is a plain `•`
+status line.
+
+This report is **informational, not a gate** — none of the five states
+abort the release:
+
+| State | Meaning |
+|---|---|
+| `clean` | Version not present upstream; safe to publish |
+| `published` | Version already published / approved; the publisher's `reconcile()` skips it (idempotent) |
+| `in-moderation` | Submitted, awaiting review; `reconcile()` treats a still-pending submission as already-done work and skips |
+| `pr-pending` | A manifest PR is already open for this version; `reconcile()` finds it and skips re-submitting |
+| `unknown` | The state query itself failed (network error, unexpected response); `reconcile()` falls through and lets the publisher run |
+
+Each publisher's own `reconcile()` step makes the skip-vs-dispatch call
+from this same state at the moment it actually runs, so a re-run of an
+in-flight release converges instead of erroring on work that is already
+underway. `--preflight` runs this report and exits before publishing;
+without it, the report prints and the pipeline continues regardless of
+what it found.
 
 ## Standalone command
 
@@ -53,9 +89,67 @@ $ anodizer preflight --json             # machine-readable report
 $ anodizer preflight --skip=docker,blob # same stage names as release --skip
 ```
 
-The exit code is non-zero when anything is missing, and the JSON report
-carries a `kind` per failure (`missing_tool`, `missing_env`,
-`endpoint_unreachable`, `docker_unavailable`, `bad_key_material`).
+It reports on two independent axes: whether this runner **can** publish
+(the environment report above) and whether the target version is **already**
+published (the reconcile table below). The table calls the same
+`reconcile()` each publisher runs at dispatch time, so the canary and the
+release cannot answer differently:
+
+```text
+• Reconcile state
+✓ cargo       complete — 1.2.3 live with matching cksum
+• npm         absent — will publish
+✓ winget      complete — open PR https://github.com/microsoft/winget-pkgs/pull/123
+• aur         unknown — probe failed: AUR RPC returned 503
+```
+
+| State | Meaning | Blocks? |
+|---|---|---|
+| `absent` | Not upstream yet; the publisher will publish | no |
+| `complete` | This exact version **and content** is already upstream (live, in moderation, or an open PR); the publisher skips | no |
+| `diverged` | The version is upstream but the local artifact bytes differ | **yes, if the publisher is required** |
+| `unknown` | The probe was inconclusive (network error, unparseable feed) | no |
+
+`complete` is deliberately not an error: it is the green light a resumed
+release wants. `unknown` is deliberately not an error either — an
+unreachable registry must not veto a release, and the registry's own
+conflict handling is the backstop. A `diverged` **optional** publisher is
+reported as a warning rather than an error, because the release itself
+tolerates it too — the canary is never stricter than the pipeline it guards.
+
+### Exit codes
+
+| Condition | Exit |
+|---|---|
+| Everything present, no divergence | `0` |
+| Any environment requirement missing | non-zero |
+| A **required** publisher `diverged` | non-zero |
+| An **optional** publisher `diverged` | `0` (warning) |
+| Publishers `complete` / `unknown` only | `0` |
+
+> **Contract change.** `anodizer preflight` previously exited non-zero when a
+> publisher was in moderation or had a manifest PR open. It no longer does:
+> those are `complete`, the expected state of a resumed release, and treating
+> them as failures is what wedged partially-failed releases. CI scripts that
+> read "non-zero == do not publish" now only trip on a genuine content
+> divergence or a missing credential. To act on the old signal, read the
+> `--json` `reconcile[].state` field instead of the exit code.
+
+The JSON report carries a `kind` per environment failure (`missing_tool`,
+`missing_env`, `endpoint_unreachable`, `docker_unavailable`,
+`bad_key_material`) alongside a `reconcile` array — one object per
+publisher with `publisher`, `state`, `detail`, and `blocking`:
+
+```json
+{
+  "checks": 24,
+  "failures": [],
+  "reconcile": [
+    { "publisher": "cargo", "state": "complete", "detail": "1.2.3 live with matching cksum", "blocking": false },
+    { "publisher": "npm", "state": "absent", "blocking": false }
+  ]
+}
+```
 
 ## Secrets-only pre-tag gate
 
@@ -117,9 +211,8 @@ jobs:
     # …auto-tag only once the secret gate is green…
 ```
 
-`--preflight-secrets` and `--no-preflight` are mutually exclusive. The
-gate runs even when HEAD carries no release tag (it is a *pre-tag* check)
-and ignores dirty-tree / dist state, since it never reads or writes
+The gate runs even when HEAD carries no release tag (it is a *pre-tag*
+check) and ignores dirty-tree / dist state, since it never reads or writes
 either.
 
 ## What gets derived

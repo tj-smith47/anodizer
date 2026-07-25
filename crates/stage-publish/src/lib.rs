@@ -27,9 +27,9 @@ pub mod npm;
 pub mod post_publish;
 pub mod preflight;
 pub mod pypi;
+pub mod reconcile_report;
 pub mod registry;
 pub mod rollback;
-pub mod rollback_only;
 pub mod run_summary;
 pub mod schema_validation;
 pub(crate) mod schemastore;
@@ -62,10 +62,10 @@ pub use registry::{configured_publishers, group_dispatch_order};
 pub use schema_validation::{TagResolver, validate_publisher_schemas};
 
 use anodizer_core::config::PublishConfig;
-use anodizer_core::context::{Context, RollbackMode};
+use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
-use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome, SkipReason};
+use anodizer_core::{PublisherOutcome, SkipReason};
 use anyhow::Result;
 
 pub(crate) use poll::run_post_publish_pollers;
@@ -104,49 +104,6 @@ where
         .collect()
 }
 
-/// Run best-effort rollback when the trigger conditions are met:
-///
-/// 1. At least one required Assets or Manager publisher failed, AND
-/// 2. `ctx.options.rollback_mode != Some(RollbackMode::None)`.
-///
-/// When `ctx.options.rollback_mode` is `None`, this defaults to
-/// `RollbackMode::BestEffort` so the rollback path engages by default.
-/// The `--rollback=none` CLI flag plumbs `Some(RollbackMode::None)` here
-/// to suppress rollback entirely.
-///
-/// The function takes `ctx.publish_report` out, mutates it via
-/// `rollback::run`, and writes it back. Doing the dance here keeps the
-/// `&mut Context` borrow scope tight: `rollback::run` needs mutable
-/// access to `ctx` (each publisher's `rollback()` is `&mut Context`),
-/// which would otherwise conflict with an active `&mut PublishReport`
-/// borrow through `ctx.publish_report`.
-/// Whether any required Submitter publisher *failed* yet still has a
-/// non-empty programmatic rollback to perform (per
-/// [`Publisher::programmatic_rollback_on_failure`]).
-///
-/// The motivating case is cargo: a multi-crate `cargo publish` that
-/// succeeds on crate A then fails on crate B records A in its evidence and
-/// lands on a `Failed` Submitter row. The default rollback trigger only
-/// considers Assets/Manager failures, so this predicate is what arms the
-/// machinery to yank A. A failed Submitter with an empty record (nothing
-/// went live) does not arm rollback.
-fn has_failed_submitter_with_programmatic_rollback(
-    report: &anodizer_core::PublishReport,
-    publishers: &[Box<dyn Publisher>],
-) -> bool {
-    report.results.iter().any(|r| {
-        r.group == PublisherGroup::Submitter
-            && r.required
-            && matches!(r.outcome, PublisherOutcome::Failed(_))
-            && r.evidence.as_ref().is_some_and(|ev| {
-                publishers
-                    .iter()
-                    .find(|p| p.name() == r.name)
-                    .is_some_and(|p| p.programmatic_rollback_on_failure(ev))
-            })
-    })
-}
-
 /// Fire `on_error` hooks for every failed publisher in `ctx.publish_report`,
 /// now that rollback outcomes are final. `rolled_back` is `true` when at
 /// least one publisher transitioned to `RolledBack` or `RollbackFailed` —
@@ -181,45 +138,6 @@ fn fire_on_error_hooks(ctx: &Context, log: &StageLogger) {
     for (result, err) in targets {
         failure_hooks::fire_on_error(ctx, &result, &err, rollback_happened, &run_report, log);
     }
-}
-
-fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], log: &StageLogger) {
-    let mode = ctx
-        .options
-        .rollback_mode
-        .unwrap_or(RollbackMode::BestEffort);
-    if mode == RollbackMode::None {
-        return;
-    }
-
-    let needs_rollback = ctx.publish_report.as_ref().is_some_and(|r| {
-        r.any_failed(PublisherGroup::Assets, true)
-            || r.any_failed(PublisherGroup::Manager, true)
-            // A failed required Submitter (cargo) that already pushed one or
-            // more crates to crates.io carries a non-empty programmatic
-            // rollback set in its evidence. Arm rollback so those live crates
-            // get yanked — the Assets/Manager-only gate would otherwise leave
-            // a partial multi-crate publish stranded on the registry.
-            || has_failed_submitter_with_programmatic_rollback(r, publishers)
-    });
-    if !needs_rollback {
-        return;
-    }
-
-    log.status("required failure(s) detected; invoking best-effort rollback");
-
-    // Take the report out so `rollback::run` can mutate it while
-    // calling `publisher.rollback(ctx, ...)` (which itself needs
-    // `&mut Context`). We unconditionally write it back below.
-    let Some(mut report) = ctx.publish_report.take() else {
-        // Defensive: `needs_rollback` was true above, so the Option
-        // must have been `Some`. If a future refactor changes that
-        // invariant, log and bail rather than panic.
-        log.warn("rollback found no publish_report; nothing to dispatch");
-        return;
-    };
-    rollback::run(publishers, &mut report, ctx, mode);
-    ctx.set_publish_report(report);
 }
 
 /// Verify every `--allow-nondeterministic <name>=<reason>` entry
@@ -410,8 +328,8 @@ impl PublishStage {
     }
 
     /// Everything `Stage::run` does after the publisher registry is built:
-    /// dispatch, rollback, `on_error` hooks, report/summary persistence,
-    /// post-publish polling, and the in-stage required-failure gate.
+    /// dispatch, `on_error` hooks, report/summary persistence, post-publish
+    /// polling, and the in-stage required-failure gate.
     /// Factored out of `Stage::run` so tests can drive the FULL stage
     /// sequence with a synthetic publisher slice and observe the gate's
     /// `Err` alongside the persisted report.
@@ -422,37 +340,19 @@ impl PublishStage {
     ) -> Result<()> {
         Self::run_with_publishers(ctx, log, publishers)?;
 
-        // ---- Best-effort rollback dispatch ----
-        //
-        // Runs (unless `--rollback=none`) when a required Assets/Manager
-        // publisher failed, OR a required Submitter that opts into a
-        // programmatic rollback failed with live state recorded (cargo:
-        // crate A published, crate B failed). Reversible Assets/Manager
-        // publishers that recorded `Succeeded` get their
-        // `Publisher::rollback` invoked and flip to `RolledBack` /
-        // `RollbackFailed` / `RollbackSkippedNoScope`; a failed cargo
-        // Submitter gets its recorded crates yanked while KEEPING its
-        // `Failed` outcome on a successful yank. Every other Submitter has
-        // no programmatic rollback and is left untouched (protected by the
-        // dispatch-time submitter gate).
-        run_rollback_if_needed(ctx, publishers, log);
-
         // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
         //
-        // Writer half of the `--rollback-only --from-run=<id>` contract
-        // (`rollback_only::run` is the reader). Runs AFTER
-        // `run_rollback_if_needed` so per-publisher rollback outcomes
-        // (`RolledBack` / `RollbackFailed`) are captured — the file
-        // represents END-OF-PIPELINE state, not mid-pipeline — and BEFORE
-        // `fire_on_error_hooks`, so an operator hook reading the run report
-        // (via `$ANODIZER_RUN_REPORT`) observes THIS run's outcomes rather
-        // than a previous run's file (hooks only read `&Context`; nothing
-        // they do can change reportable state after the write). Snapshot /
-        // dry-run modes and empty-result reports are no-ops; IO failure
-        // is best-effort (warn + continue, never fail the pipeline).
+        // Writer half of the `anodizer tag rollback` contract (`rollback::run`
+        // is the reader). Runs BEFORE `fire_on_error_hooks`, so an operator
+        // hook reading the run report (via `$ANODIZER_RUN_REPORT`) observes
+        // THIS run's outcomes rather than a previous run's file (hooks only
+        // read `&Context`; nothing they do can change reportable state after
+        // the write). Snapshot / dry-run modes and empty-result reports are
+        // no-ops; IO failure is best-effort (warn + continue, never fail the
+        // pipeline).
         write_report_to_run_dir(ctx, log);
 
-        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
+        // ---- Fire on_error hooks ----
         fire_on_error_hooks(ctx, log);
 
         // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
@@ -792,22 +692,21 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Rollback dispatch integration - end-to-end PublishStage::run path
-    // through `run_with_publishers` + `run_rollback_if_needed`.
+    // Dispatch + on_error-hook integration - end-to-end PublishStage::run
+    // path through `run_with_publishers` + `fire_on_error_hooks`.
     // -----------------------------------------------------------------------
 
     /// Helper to drive the same end-to-end shape `Stage::run` exercises
-    /// (dispatch -> rollback) but with a synthetic publisher slice.
+    /// (dispatch -> on_error hooks) but with a synthetic publisher slice.
     /// Skips the post-publish polling fan-out because the fan-out only
     /// reads per-crate config blocks; with no chocolatey/winget blocks
     /// configured, the helper is a no-op.
-    fn run_dispatch_and_rollback(
+    fn run_dispatch_and_hooks(
         ctx: &mut Context,
         publishers: &[Box<dyn anodizer_core::Publisher>],
     ) -> Result<()> {
         let log = ctx.logger("publish-test");
         PublishStage::run_with_publishers(ctx, &log, publishers)?;
-        run_rollback_if_needed(ctx, publishers, &log);
         fire_on_error_hooks(ctx, &log);
         Ok(())
     }
@@ -848,67 +747,21 @@ mod tests {
             true,
             FakeOutcome::Fail("tap rejected".into()),
         )];
-        run_dispatch_and_rollback(&mut ctx, &publishers)
-            .expect("dispatch+rollback helper returns Ok; the stage-level gate errors separately");
+        run_dispatch_and_hooks(&mut ctx, &publishers)
+            .expect("dispatch+hooks helper returns Ok; the stage-level gate errors separately");
 
         let body = std::fs::read_to_string(dir.path().join("fired.txt"))
-            .expect("on_error hook must have fired after run_dispatch_and_rollback");
+            .expect("on_error hook must have fired after run_dispatch_and_hooks");
         assert_eq!(body.trim(), "homebrew:tap rejected");
-    }
-
-    #[test]
-    fn publish_stage_invokes_rollback_after_required_failure() {
-        use crate::testing::*;
-        use anodizer_core::PublisherGroup;
-
-        let mut ctx = Context::test_fixture();
-        // Required Manager publisher fails; Assets publisher succeeds.
-        // Rollback dispatch should flip the Assets entry to RolledBack.
-        let publishers = vec![
-            fake(
-                "assets",
-                PublisherGroup::Assets,
-                false,
-                FakeOutcome::Succeed,
-            ),
-            fake(
-                "manager",
-                PublisherGroup::Manager,
-                true,
-                FakeOutcome::Fail("manager boom".into()),
-            ),
-        ];
-        run_dispatch_and_rollback(&mut ctx, &publishers)
-            .expect("dispatch+rollback helper returns Ok; the stage-level gate errors separately");
-
-        let report = ctx.publish_report().expect("publish_report set");
-        let assets = report
-            .results
-            .iter()
-            .find(|r| r.name == "assets")
-            .expect("assets entry present");
-        assert!(
-            matches!(assets.outcome, anodizer_core::PublisherOutcome::RolledBack),
-            "expected Assets publisher to be rolled back, got {:?}",
-            assets.outcome
-        );
-        // Manager remains Failed (rollback doesn't touch failed entries).
-        let manager = report
-            .results
-            .iter()
-            .find(|r| r.name == "manager")
-            .expect("manager entry present");
-        assert!(matches!(
-            manager.outcome,
-            anodizer_core::PublisherOutcome::Failed(_)
-        ));
     }
 
     /// A required publisher failure makes the STAGE itself return Err — the
     /// in-stage defense-in-depth gate — while every bookkeeping obligation
     /// still completes first: all publishers dispatch (no early abort of
-    /// siblings), rollback runs, and report.json + summary.json land on
-    /// disk. The error must name the failed required publisher.
+    /// siblings, no automatic rollback), and report.json + summary.json
+    /// land on disk. The error must name the failed required publisher.
+    /// Re-running the pipeline is how a Succeeded sibling converges;
+    /// deliberate withdrawal is `anodizer tag rollback`.
     #[test]
     fn publish_stage_errs_on_required_failure_after_persisting_state() {
         use crate::testing::*;
@@ -948,14 +801,16 @@ mod tests {
         );
 
         // Bookkeeping completed BEFORE the Err: both publishers dispatched,
-        // rollback flipped the succeeded Assets row, and the run dir carries
-        // report.json + summary.json.
+        // and the run dir carries report.json + summary.json. No automatic
+        // rollback fires — the succeeded Assets row stays Succeeded; a
+        // re-run converges it, and deliberate withdrawal is a separate
+        // `anodizer tag rollback` invocation.
         let report = ctx.publish_report().expect("publish_report set");
         assert_eq!(report.results.len(), 2, "all publishers dispatched");
         assert!(
             report.results.iter().any(|r| r.name == "assets"
-                && matches!(r.outcome, anodizer_core::PublisherOutcome::RolledBack)),
-            "rollback bookkeeping must run before the gate errors"
+                && matches!(r.outcome, anodizer_core::PublisherOutcome::Succeeded)),
+            "no automatic rollback: the succeeded publisher stays Succeeded"
         );
         let run_dir = tmp.path().join("run-v0.0.0-gate");
         assert!(
@@ -1005,212 +860,15 @@ mod tests {
         );
     }
 
-    /// END-TO-END partial cargo failure: a required Submitter named
-    /// `cargo` records crate-a as published, then fails (crate-b). The
-    /// REAL dispatcher builds the report (failed row + partial evidence),
-    /// then the REAL `run_rollback_if_needed` must ARM rollback on the
-    /// failed Submitter and `rollback::run` must invoke the publisher's
-    /// programmatic rollback — issuing `cargo yank` for crate-a ONLY.
-    ///
-    /// This exercises the full orchestration a direct `rollback()` call
-    /// cannot: dispatch -> report -> run_rollback_if_needed -> rollback::run
-    /// -> Publisher::rollback. A `cargo` PATH stub records the yank argv.
-    #[cfg(unix)]
     #[test]
-    #[serial_test::serial(path_env)]
-    fn end_to_end_failed_cargo_submitter_yanks_only_succeeded_crate() {
-        use crate::cargo::{CargoPublisher, CargoYankTarget, encode_cargo_yank_targets};
-        use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
-        use std::os::unix::fs::PermissionsExt;
-
-        // A `cargo`-named Submitter whose run() records crate-a as
-        // published then fails on crate-b — exactly the partial-failure
-        // shape `CargoPublisher::run` produces, but without the network
-        // (no `cargo publish` / index GET). rollback + the opt-in
-        // predicate delegate to a REAL CargoPublisher so the actual decode
-        // + `cargo yank` spawn surface is what runs.
-        struct PartialCargo {
-            inner: CargoPublisher,
-        }
-        impl Publisher for PartialCargo {
-            fn name(&self) -> &str {
-                "cargo"
-            }
-            fn group(&self) -> PublisherGroup {
-                PublisherGroup::Submitter
-            }
-            fn required(&self) -> bool {
-                true
-            }
-            fn skips_on_nightly(&self) -> bool {
-                true
-            }
-            fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-                // crate-a went live; crate-b then failed.
-                let mut ev = PublishEvidence::new("cargo");
-                ev.extra = encode_cargo_yank_targets(&[CargoYankTarget {
-                    name: "crate-a".into(),
-                    version: "1.0.0".into(),
-                    registry: Some("my-registry".into()),
-                    index: None,
-                }]);
-                ctx.record_pending_evidence(ev);
-                anyhow::bail!("crate-b publish failed after crate-a succeeded")
-            }
-            fn rollback(
-                &self,
-                ctx: &mut Context,
-                evidence: &PublishEvidence,
-            ) -> anyhow::Result<()> {
-                self.inner.rollback(ctx, evidence)
-            }
-            fn programmatic_rollback_on_failure(&self, evidence: &PublishEvidence) -> bool {
-                self.inner.programmatic_rollback_on_failure(evidence)
-            }
-            fn rollback_scope_needed(&self) -> Option<&'static str> {
-                // Drop the scope gate for this test so the rollback path
-                // isn't short-circuited by a missing CARGO_REGISTRY_TOKEN.
-                None
-            }
-        }
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let argv_log = tmp.path().join("argv.log");
-        let stub = tmp.path().join("cargo");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
-                argv_log.display()
-            ),
-        )
-        .expect("write cargo stub");
-        let mut perms = std::fs::metadata(&stub).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&stub, perms).expect("chmod");
-
-        let mut ctx = Context::test_fixture();
-        let publishers: Vec<Box<dyn anodizer_core::Publisher>> = vec![Box::new(PartialCargo {
-            inner: CargoPublisher::new(),
-        })];
-
-        let _env = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Read the previous PATH under the lock so a concurrent mutator
-        // cannot interleave between the read and the set below.
-        let prev_path = std::env::var("PATH").ok();
-        let new_path = format!(
-            "{}:{}",
-            tmp.path().display(),
-            prev_path.clone().unwrap_or_default()
-        );
-        // SAFETY: serialised by env_mutex above (shared with every other
-        // PATH mutator) plus this test's serial group; paired restore below.
-        // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
-        unsafe { std::env::set_var("PATH", &new_path) };
-        let res = run_dispatch_and_rollback(&mut ctx, &publishers);
-        // SAFETY: restore PATH within the same serial group.
-        unsafe {
-            match prev_path {
-                // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
-                Some(p) => std::env::set_var("PATH", p),
-                // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
-                None => std::env::remove_var("PATH"),
-            }
-        }
-        res.expect("stage run returns Ok even when cargo fails");
-
-        // The yank ran for crate-a ONLY, on its configured registry.
-        let yanks: Vec<String> = std::fs::read_to_string(&argv_log)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("yank"))
-            .map(str::to_string)
-            .collect();
-        assert_eq!(yanks.len(), 1, "exactly one yank, for crate-a: {yanks:?}");
-        let line = &yanks[0];
-        assert!(
-            line.contains("--version 1.0.0"),
-            "yank carries version: {line}"
-        );
-        assert!(line.contains("crate-a"), "yank targets crate-a: {line}");
-        assert!(
-            line.contains("--registry my-registry"),
-            "yank targets the recorded registry: {line}"
-        );
-        assert!(
-            !line.contains("crate-b"),
-            "crate-b never published; must not be yanked: {line}"
-        );
-
-        // The cargo row stays Failed on a successful yank — the release
-        // genuinely failed and must not masquerade as RolledBack.
-        let report = ctx.publish_report().expect("publish_report set");
-        let cargo_row = report
-            .results
-            .iter()
-            .find(|r| r.name == "cargo")
-            .expect("cargo entry present");
-        assert!(
-            matches!(cargo_row.outcome, PublisherOutcome::Failed(_)),
-            "cargo row stays Failed after a successful partial yank, got {:?}",
-            cargo_row.outcome
-        );
-    }
-
-    #[test]
-    fn publish_stage_skips_rollback_when_mode_is_none() {
-        use crate::testing::*;
-        use anodizer_core::PublisherGroup;
-
-        let mut ctx = Context::new(
-            anodizer_core::config::Config::default(),
-            ContextOptions {
-                rollback_mode: Some(RollbackMode::None),
-                ..Default::default()
-            },
-        );
-        // Same fixture as the prior test, but `--rollback=none`
-        // (Some(None)) suppresses the rollback dispatch.
-        let publishers = vec![
-            fake(
-                "assets",
-                PublisherGroup::Assets,
-                false,
-                FakeOutcome::Succeed,
-            ),
-            fake(
-                "manager",
-                PublisherGroup::Manager,
-                true,
-                FakeOutcome::Fail("manager boom".into()),
-            ),
-        ];
-        run_dispatch_and_rollback(&mut ctx, &publishers)
-            .expect("stage run returns Ok in rollback=none mode");
-
-        let report = ctx.publish_report().expect("publish_report set");
-        let assets = report
-            .results
-            .iter()
-            .find(|r| r.name == "assets")
-            .expect("assets entry present");
-        assert!(
-            matches!(assets.outcome, anodizer_core::PublisherOutcome::Succeeded),
-            "expected Assets publisher to remain Succeeded under rollback=none, got {:?}",
-            assets.outcome
-        );
-    }
-
-    #[test]
-    fn publish_stage_skips_rollback_when_no_required_failure() {
+    fn publish_stage_records_optional_manager_failure_without_touching_assets() {
         use crate::testing::*;
         use anodizer_core::PublisherGroup;
 
         let mut ctx = Context::test_fixture();
-        // Optional Manager publisher fails - rollback should NOT fire
-        // because no REQUIRED publisher failed.
+        // Optional Manager publisher fails; the Assets publisher must be
+        // unaffected — dispatch records per-publisher outcomes independently,
+        // with no cross-publisher reaction to a non-required failure.
         let publishers = vec![
             fake(
                 "assets",
@@ -1225,7 +883,7 @@ mod tests {
                 FakeOutcome::Fail("manager boom".into()),
             ),
         ];
-        run_dispatch_and_rollback(&mut ctx, &publishers)
+        run_dispatch_and_hooks(&mut ctx, &publishers)
             .expect("stage run returns Ok on optional failure");
 
         let report = ctx.publish_report().expect("publish_report set");
@@ -1979,13 +1637,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
-    // derive_run_id + write_report_to_run_dir — B4 (writer for the
-    // `--rollback-only --from-run=<id>` contract). The writer half was
-    // missing in production; `rollback_only::run` was structurally
-    // unreachable. Tests below pin: (a) the run_id fallback chain
-    // (tag -> short_commit -> "local") with the validator gate, and
-    // (b) the writer's no-op/IO behavior including snapshot/dry-run
-    // skip and empty-results skip.
+    // derive_run_id + write_report_to_run_dir — writer half of the
+    // `anodizer tag rollback` contract (`rollback::run` is the reader).
+    // Tests below pin: (a) the run_id fallback chain (tag -> short_commit ->
+    // "local") with the validator gate, and (b) the writer's no-op/IO
+    // behavior including snapshot/dry-run skip and empty-results skip.
     // -----------------------------------------------------------------------
 
     mod run_report_persistence {
@@ -2059,6 +1715,26 @@ mod tests {
             assert_eq!(derive_run_id(&ctx), "abc123d");
         }
 
+        /// A build-metadata tag must NAME the run dir, not fall through to
+        /// the commit fallback. The rollback unwind probes `run-<tag>/`
+        /// only, so a fallback here silently strands the run's recorded
+        /// publisher state while the tag and release are destroyed.
+        #[test]
+        fn derive_run_id_uses_a_build_metadata_tag_rather_than_the_commit() {
+            for tag in ["v1.2.3+build.1", "mycrate-v1.2.3-rc.1+sha.abc"] {
+                let mut ctx = TestContextBuilder::new()
+                    .tag("v1.2.3")
+                    .commit("abc123def4567890")
+                    .build();
+                ctx.git_info.as_mut().unwrap().tag = tag.to_string();
+                assert_eq!(
+                    derive_run_id(&ctx),
+                    tag,
+                    "the writer must key the run dir on {tag}, matching what the unwind probes"
+                );
+            }
+        }
+
         #[test]
         fn derive_run_id_always_passes_validate_run_id() {
             // Table-driven: every branch of the fallback chain must
@@ -2097,7 +1773,7 @@ mod tests {
             for (label, make_ctx) in cases {
                 let ctx = make_ctx();
                 let id = derive_run_id(&ctx);
-                rollback_only::validate_run_id(&id).unwrap_or_else(|e| {
+                rollback::validate_run_id(&id).unwrap_or_else(|e| {
                     panic!(
                         "case '{label}' produced invalid run_id '{id}': {e}",
                         label = label,
@@ -2274,10 +1950,7 @@ mod tests {
 
         #[test]
         fn publish_stage_run_writes_report_at_end_of_pipeline() {
-            // End-to-end via run_with_publishers + run_rollback_if_needed
-            // + write_report_to_run_dir, exercising the order
-            // (rollback BEFORE write) so any rollback outcomes show up
-            // in the on-disk file.
+            // End-to-end via run_with_publishers + write_report_to_run_dir.
             let tmp = tempfile::tempdir().expect("tempdir");
             let mut ctx = TestContextBuilder::new()
                 .tag("v0.0.0-test")
@@ -2292,7 +1965,6 @@ mod tests {
             let log = ctx.logger("publish-test");
             PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
                 .expect("run_with_publishers Ok");
-            run_rollback_if_needed(&mut ctx, &publishers, &log);
             write_report_to_run_dir(&ctx, &log);
 
             let path = tmp.path().join("run-v0.0.0-test").join("report.json");
@@ -2301,182 +1973,6 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(parsed.results.len(), 1);
             assert_eq!(parsed.results[0].name, "manager-only");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // on_rollback firing — the two questions on_error cannot answer:
-    // (a) a publisher that SUCCEEDED then got reverted by a sibling's failure
-    //     fires on_rollback but NOT on_error;
-    // (b) a publisher that FAILED and was rolled back (cargo yank) fires BOTH.
-    // Exercised through the real stage sequence (dispatch / synthetic report →
-    // run_rollback_if_needed → fire_on_error_hooks).
-    // -----------------------------------------------------------------------
-    mod on_rollback_firing {
-        use super::*;
-        use crate::testing::*;
-        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
-        use anodizer_core::test_helpers::TestContextBuilder;
-        use anodizer_core::{
-            PublishEvidence, PublishReport, Publisher, PublisherGroup, PublisherOutcome,
-            PublisherResult, context::Context,
-        };
-
-        /// An env-var probe hook: appends `$ANODIZER_PUBLISHER` to `out` so the
-        /// test can assert WHICH publisher a given hook fired for, with no
-        /// template-brace escaping.
-        fn publisher_probe(out: &std::path::Path) -> HookEntry {
-            let out_sh = out.display().to_string().replace('\\', "/");
-            HookEntry::Structured(StructuredHook {
-                cmd: format!("printf '%s\\n' \"$ANODIZER_PUBLISHER\" >> {out_sh}"),
-                ..Default::default()
-            })
-        }
-
-        /// Single-crate context carrying BOTH an `on_error` probe (writes to
-        /// `on_error_out`) and an `on_rollback` probe (writes to
-        /// `on_rollback_out`), so a run can prove which hook fired for whom.
-        fn ctx_with_both_hooks(
-            on_error_out: &std::path::Path,
-            on_rollback_out: &std::path::Path,
-            dist: std::path::PathBuf,
-        ) -> Context {
-            let publish = PublishConfig {
-                on_error: Some(vec![publisher_probe(on_error_out)]),
-                on_rollback: Some(vec![publisher_probe(on_rollback_out)]),
-                ..Default::default()
-            };
-            TestContextBuilder::new()
-                .tag("v1.0.0")
-                .dist(dist)
-                .crates(vec![CrateConfig {
-                    name: "app".to_string(),
-                    path: ".".to_string(),
-                    publish: Some(publish),
-                    ..Default::default()
-                }])
-                .build()
-        }
-
-        /// A succeeded Manager (homebrew) reverted because a sibling required
-        /// Manager (krew) failed: homebrew's `on_rollback` fires, its
-        /// `on_error` does NOT; krew's `on_error` fires, its `on_rollback`
-        /// does NOT.
-        #[test]
-        fn succeeded_then_reverted_fires_on_rollback_not_on_error() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let on_error_out = dir.path().join("on_error.txt");
-            let on_rollback_out = dir.path().join("on_rollback.txt");
-            let mut ctx =
-                ctx_with_both_hooks(&on_error_out, &on_rollback_out, dir.path().join("dist"));
-
-            let publishers = vec![
-                fake(
-                    "homebrew",
-                    PublisherGroup::Manager,
-                    false,
-                    FakeOutcome::Succeed,
-                ),
-                fake(
-                    "krew",
-                    PublisherGroup::Manager,
-                    true,
-                    FakeOutcome::Fail("krew PR rejected".into()),
-                ),
-            ];
-            let log = ctx.logger("publish-test");
-            PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
-                .expect("run_with_publishers Ok");
-            run_rollback_if_needed(&mut ctx, &publishers, &log);
-            fire_on_error_hooks(&ctx, &log);
-
-            let on_rollback = std::fs::read_to_string(&on_rollback_out)
-                .expect("on_rollback hook must have run for the reverted publisher");
-            assert_eq!(
-                on_rollback.trim(),
-                "homebrew",
-                "on_rollback fires only for the reverted (succeeded) publisher"
-            );
-            let on_error = std::fs::read_to_string(&on_error_out)
-                .expect("on_error hook must have run for the failed publisher");
-            assert_eq!(
-                on_error.trim(),
-                "krew",
-                "on_error fires only for the failed publisher — never the reverted one"
-            );
-        }
-
-        /// A cargo-shaped submitter that yanks its recorded crates on failure.
-        struct YankSubmitter;
-        impl Publisher for YankSubmitter {
-            fn name(&self) -> &str {
-                "cargo"
-            }
-            fn group(&self) -> PublisherGroup {
-                PublisherGroup::Submitter
-            }
-            fn required(&self) -> bool {
-                true
-            }
-            fn skips_on_nightly(&self) -> bool {
-                false
-            }
-            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-                Ok(PublishEvidence::new("cargo"))
-            }
-            fn rollback(
-                &self,
-                _ctx: &mut Context,
-                _evidence: &PublishEvidence,
-            ) -> anyhow::Result<()> {
-                Ok(())
-            }
-            fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
-                true
-            }
-        }
-
-        /// A failed cargo submitter whose recorded crates get yanked fires
-        /// BOTH `on_error` (it failed) and `on_rollback` (it was rolled back),
-        /// while its row keeps the `Failed` outcome on a successful yank. The
-        /// report is seeded directly because a `FakePublisher` cannot record
-        /// the partial-publish evidence real cargo lands a `Failed`+evidence
-        /// row with.
-        #[test]
-        fn failed_and_rolled_back_fires_both_hooks() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let on_error_out = dir.path().join("on_error.txt");
-            let on_rollback_out = dir.path().join("on_rollback.txt");
-            let mut ctx =
-                ctx_with_both_hooks(&on_error_out, &on_rollback_out, dir.path().join("dist"));
-
-            let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(YankSubmitter)];
-            let mut report = PublishReport::default();
-            report.results.push(PublisherResult {
-                name: "cargo".to_string(),
-                group: PublisherGroup::Submitter,
-                required: true,
-                outcome: PublisherOutcome::Failed("crate B publish rejected".into()),
-                evidence: Some(PublishEvidence::new("cargo")),
-            });
-            ctx.set_publish_report(report);
-
-            let log = ctx.logger("publish-test");
-            run_rollback_if_needed(&mut ctx, &publishers, &log);
-            fire_on_error_hooks(&ctx, &log);
-
-            // Row keeps Failed on a successful yank.
-            let final_report = ctx.publish_report().expect("report present");
-            assert!(
-                matches!(final_report.results[0].outcome, PublisherOutcome::Failed(_)),
-                "a successful yank keeps the Failed outcome"
-            );
-            let on_rollback = std::fs::read_to_string(&on_rollback_out)
-                .expect("on_rollback must fire for the yanked publisher");
-            assert_eq!(on_rollback.trim(), "cargo");
-            let on_error = std::fs::read_to_string(&on_error_out)
-                .expect("on_error must fire for the failed publisher");
-            assert_eq!(on_error.trim(), "cargo");
         }
     }
 

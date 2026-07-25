@@ -186,6 +186,7 @@ impl PreflightChecker for Winget {
         match query_open_version_pr(
             &OpenPrQuery {
                 publisher: self.publisher_name(),
+                expect_title: None,
                 upstream_owner: "microsoft",
                 upstream_repo: "winget-pkgs",
                 package,
@@ -230,6 +231,14 @@ pub(crate) struct OpenPrQuery<'a> {
     pub upstream_repo: &'a str,
     pub package: &'a str,
     pub version: &'a str,
+    /// When set, a candidate row counts only if its title matches this
+    /// string EXACTLY. GitHub's `in:title` matches words independently, so
+    /// a `foo` + `1.2.3` query also hits a sibling crate's "Update foo-cli
+    /// to 1.2.3" in a shared tap — tolerable for a warn-level preflight,
+    /// but a decision to SKIP a publisher must not be satisfiable by some
+    /// other package's PR. Callers that skip on a hit pass the exact title
+    /// their own submitter would open.
+    pub expect_title: Option<&'a str>,
 }
 
 /// Query the GitHub search API for open PRs matching an [`OpenPrQuery`].
@@ -257,8 +266,17 @@ pub(crate) fn query_open_version_pr(
     // production caller of this override reads. Tests inject a responder
     // URL via [`query_open_version_pr_at`] instead.
     let base = anodizer_core::http::github_api_base(&anodizer_core::ProcessEnvSource);
-    let url = format!("{}/search/issues?q={}&per_page=1", base, encoded);
-    query_open_version_pr_at(query.publisher, &url, token, policy, log)
+    // A page of 1 would hide an exact match behind an unrelated row that the
+    // word-level query also matched.
+    let url = format!("{}/search/issues?q={}&per_page=30", base, encoded);
+    query_open_version_pr_at(
+        query.publisher,
+        query.expect_title,
+        &url,
+        token,
+        policy,
+        log,
+    )
 }
 
 /// Variant of [`query_open_version_pr`] that takes a pre-built URL. Sole call
@@ -267,6 +285,7 @@ pub(crate) fn query_open_version_pr(
 /// end-to-end.
 pub(super) fn query_open_version_pr_at(
     publisher: &str,
+    expect_title: Option<&str>,
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
@@ -333,18 +352,25 @@ pub(super) fn query_open_version_pr_at(
         return Ok(OpenPrLookup::NotFound);
     }
 
-    let pr_url = v
-        .get("items")
-        .and_then(|items| items.get(0))
-        .and_then(|item| item.get("html_url"))
-        .and_then(|u| u.as_str())
-        .map(str::to_string);
+    let items = v.get("items").and_then(|i| i.as_array());
+    let row = match expect_title {
+        // No exact title to hold the row to: the caller only warns on a hit,
+        // so the first row the word-level query matched is good enough.
+        None => items.and_then(|rows| rows.first()),
+        Some(want) => items.and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("title").and_then(|t| t.as_str()) == Some(want))
+        }),
+    };
+    let Some(row) = row else {
+        return Ok(OpenPrLookup::NotFound);
+    };
 
     // Surface "row returned but no html_url" as a distinct outcome so the
     // caller can flag it as Unknown rather than synthesizing a misleading
     // listing-page URL.
-    match pr_url {
-        Some(u) => Ok(OpenPrLookup::Found(u)),
+    match row.get("html_url").and_then(|u| u.as_str()) {
+        Some(u) => Ok(OpenPrLookup::Found(u.to_string())),
         None => Ok(OpenPrLookup::ItemWithoutUrl),
     }
 }

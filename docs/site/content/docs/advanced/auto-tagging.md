@@ -496,11 +496,12 @@ anodizer tag rollback "$GITHUB_SHA"       # delete tag(s) at SHA + revert the bu
 anodizer tag rollback --dry-run HEAD       # preview without mutation
 ```
 
-In CI this runs automatically: a failed `anodizer release` executes the
-[`release.on_failure` policy](./release-resilience.md#release-on-failure-the-in-process-failure-policy)
-in-process, which performs this same rollback by default. Reach for the
-manual command when a run was killed before it could execute its own policy,
-or when `on_failure: hold` deliberately left the tag in place. See
+This never runs automatically: a failed `anodizer release` leaves the tag
+exactly where it is under [`on_failure: hold`](./release-resilience.md#release-on-failure)
+— the only accepted behavior. Recovering a step failure is
+[re-running the identical release command](./release-resilience.md#convergent-re-run),
+never a rollback. Reach for `tag rollback` only when you have decided a
+release should not exist at all. See
 [Release resilience — Recovering a poisoned tag](./release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback)
 for the full flag matrix (`--scope`, `--mode`, `--branch`, `--no-push`) and
-the manual-recovery flows.
+the publisher-unwind step it also performs.

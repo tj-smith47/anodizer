@@ -33,12 +33,12 @@ When `.anodizer.yaml` contains a non-empty `workspaces:` block, that wins over `
 
 `anodizer tag` detects which crates have changed since their last tag, bumps versions, and creates per-crate tags in one commit — locally by default. Pass `--push` (as every recipe below does) to advance the branch and land the tags atomically so the release job can see them. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
 
-Every strategy below is two steps end-to-end: tag, then release. Environment validation and failure handling are in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) (tag + bump rollback by default, auto-degrading to `hold` once a one-way-door publisher has landed). No preflight or rollback steps belong in the workflow YAML:
+Every strategy below is two steps end-to-end: tag, then release. Environment validation is in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage — and a pipeline failure leaves everything exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure), the only accepted value). Recovery is re-running the identical command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) instead of double-publishing. No preflight or rollback steps belong in the workflow YAML:
 
 ```yaml
 # .anodizer.yaml
 release:
-  on_failure: rollback   # rollback | hold; default rollback
+  on_failure: hold   # the only accepted value; also the default
 ```
 
 ## Canonical strategies

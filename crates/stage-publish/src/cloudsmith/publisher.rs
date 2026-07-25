@@ -161,7 +161,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let mut evidence = anodizer_core::PublishEvidence::new("cloudsmith");
         // The `artifact_paths` slot keeps the operator-readable
         // `<org>/<repo>/<filename>` form for the text-only
-        // --rollback-only summary; the structured copy in `extra` is the
+        // anodizer tag rollback summary; the structured copy in `extra` is the
         // authoritative source for the DELETE call.
         let path_view: Vec<std::path::PathBuf> = targets
             .iter()

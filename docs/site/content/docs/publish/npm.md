@@ -363,7 +363,13 @@ Scoped packages (`@org/name`) on npmjs.org default to **restricted** access unle
 
 ## Rollback
 
-Within the 72-hour window after publishing, `anodize publish --rollback-only` runs `npm unpublish <name>@<version> --force` for each recorded target (every per-platform package and the metapackage in `optional-deps` mode). Outside the window, npm refuses unpublish requests, and anodizer surfaces a warning pointing at `npm deprecate` as the remaining remediation surface.
+`anodizer tag rollback`'s publisher-unwind step is npm's rollback path.
+Within the 72-hour window after publishing, it runs `npm unpublish
+<name>@<version> --force` for each recorded target (every per-platform
+package and the metapackage in `optional-deps` mode). Outside the window,
+npm refuses unpublish requests, and anodizer surfaces a warning pointing at
+`npm deprecate` as the remaining remediation surface. See [Release
+resilience — Recovering a poisoned tag](../advanced/release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback).
 
 ## Common gotchas
 

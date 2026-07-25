@@ -287,9 +287,9 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 /// assets to object storage and records a `Succeeded` `blob` row directly into
 /// `ctx.publish_report`. Because that row carries structured
 /// `blob_targets` evidence, its rollback is a real
-/// [`object_store::ObjectStore`] `delete`. The rollback paths
-/// ([`crate::rollback::run`] and [`crate::rollback_only::run_with_publishers`])
-/// resolve a report row to a publisher by name; without this list neither could
+/// [`object_store::ObjectStore`] `delete`. The rollback path
+/// ([`crate::rollback::run_with_publishers`])
+/// resolves a report row to a publisher by name; without this list it could not
 /// find a `blob` publisher (it is deliberately absent from
 /// [`configured_publishers`] to avoid a second upload), so a teardown after a
 /// successful blob upload would mark the row

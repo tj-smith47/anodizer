@@ -28,8 +28,8 @@ pub(crate) use crate::command::{SNAPCRAFT_PROBE_TIMEOUT, SNAPCRAFT_UPLOAD_TIMEOU
 // `SnapcraftPublishStage` is the load-bearing snapcraft runner. Following
 // the `BlobStage` pattern (commit 026c854), the stage writes its own
 // `PublisherResult` directly into `ctx.publish_report` so the Submitter gate
-// (and any downstream consumers, e.g. announce-gating, `--rollback-only
-// --from-run`) observes outcomes uniformly. A parallel trait-based
+// (and any downstream consumers, e.g. announce-gating,
+// `anodizer tag rollback`) observes outcomes uniformly. A parallel trait-based
 // `SnapcraftPublisher` registration would fire `snapcraft upload` a
 // second time per release — see the doc comment on
 // `stage-publish::registry::configured_publishers`.
@@ -193,7 +193,7 @@ impl Stage for SnapcraftPublishStage {
         // stamping the per-arch revision it mints. The recorded per-arch
         // entries returned below feed
         // `PublishEvidence::extra.snapcraft_targets` on success so
-        // `promote --from-run` / `--rollback-only --from-run` consumers can
+        // `promote --from-run` / `anodizer tag rollback` consumers can
         // release every architecture's revision.
         let planned = collect_snapcraft_targets(ctx);
 

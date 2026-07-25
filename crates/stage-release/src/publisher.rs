@@ -28,8 +28,8 @@
 //! release/tag pair.
 //!
 //! A 404 response buckets as [`ReleaseDeleteOutcome::AlreadyAbsent`]
-//! so re-running `--rollback-only` after a partial success does not
-//! surface false failures.
+//! so re-running `anodizer tag rollback` after a partial success does
+//! not surface false failures.
 //!
 //! # ID capture
 //!
@@ -1280,8 +1280,8 @@ mod publisher_tests {
 
     /// GitHub sometimes returns 410 Gone for tag refs that were recently
     /// deleted (the ref was tombstoned but still surfaces in the error
-    /// shape). Bucket as `AlreadyAbsent` so re-running `--rollback-only`
-    /// does not surface a spurious manual-cleanup warn.
+    /// shape). Bucket as `AlreadyAbsent` so re-running
+    /// `anodizer tag rollback` does not surface a spurious manual-cleanup warn.
     #[test]
     fn classify_delete_error_treats_410_gone_as_already_absent() {
         let err = anyhow::anyhow!("HTTP 410 Gone");

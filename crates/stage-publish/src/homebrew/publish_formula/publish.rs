@@ -9,6 +9,20 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
+/// The pull-request title for a formula bump, naming the co-published
+/// same-tap cask when there is one — formula and cask land in a SINGLE PR,
+/// not one each. Shared with the reconcile probe so a converged re-run looks
+/// for the title this function produced.
+pub(crate) fn pr_title(formula_name: &str, cask_name: Option<&str>, version: &str) -> String {
+    match cask_name {
+        Some(cask) => format!(
+            "Update {} formula and {} cask to {}",
+            formula_name, cask, version
+        ),
+        None => format!("Update {} formula to {}", formula_name, version),
+    }
+}
+
 /// Owner/name/clone-path triple describing the tap checkout. Bundled to
 /// keep helper signatures readable.
 struct TapLocation<'a> {
@@ -270,10 +284,7 @@ fn submit_homebrew_pr(
     let version = ident.version;
     let (pr_title, pr_body) = if let Some(cask_name) = cask_name {
         (
-            format!(
-                "Update {} formula and {} cask to {}",
-                formula_name, cask_name, version
-            ),
+            pr_title(formula_name, Some(cask_name), version),
             format!(
                 "## Formula\n- **Name**: {}\n- **Version**: {}\n\n## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
                 formula_name,
@@ -285,7 +296,7 @@ fn submit_homebrew_pr(
         )
     } else {
         (
-            format!("Update {} formula to {}", formula_name, version),
+            pr_title(formula_name, None, version),
             format!(
                 "## Formula\n- **Name**: {}\n- **Version**: {}\n\n{}",
                 formula_name,

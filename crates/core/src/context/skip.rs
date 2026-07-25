@@ -1,26 +1,5 @@
 use super::*;
 
-/// Rollback policy after the publish stage. `BestEffort` is the default when
-/// pre-flight ran clean; `None` is the implicit default otherwise (callers
-/// should warn that rollback is disabled). The CLI flag `--rollback=<v>`
-/// sets `ContextOptions::rollback_mode` to `Some(v)` to override the
-/// default-resolution at the dispatch site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RollbackMode {
-    /// Do not attempt rollback. Useful when the operator wants to inspect
-    /// half-published state before deciding.
-    None,
-    /// Run best-effort rollback for every reversible publisher whose
-    /// evidence is present in the report. Most irreversible publishers
-    /// (chocolatey moderation, winget PRs, AUR) are never rolled back —
-    /// the Submitter gate is their only protection. The exception is
-    /// cargo: a partial multi-crate publish that left live crates records
-    /// them and gets those crates yanked even on a failed run.
-    #[default]
-    BestEffort,
-}
-
 /// Non-publisher `--skip` tokens for the `release` command: the pipeline
 /// stage / phase names that are NOT publishers.
 ///

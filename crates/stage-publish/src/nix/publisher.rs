@@ -4,7 +4,7 @@
 //!
 //! Rollback shape mirrors the other git-revert publishers (homebrew /
 //! scoop / our-AUR): every push to the configured nix overlay repo is
-//! recorded so a `--rollback-only` re-clones, runs `git revert HEAD
+//! recorded so a `anodizer tag rollback` re-clones, runs `git revert HEAD
 //! --no-edit`, and pushes the revert back to the same branch.
 //!
 //! CREDENTIAL HANDLING: [`NixTarget`] stores `token_env_var` — the
@@ -349,12 +349,23 @@ impl anodizer_core::Publisher for NixPublisher {
                         nix_cfg.repository.as_ref(),
                         Some("NIX_PKGS_TOKEN"),
                     );
+                    // run() submits through `maybe_submit_pr`, which resolves
+                    // base-else-fork. Probing the bare fork searches a repo the
+                    // PR never lands in whenever `pull_request.base` is set.
+                    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
+                        nix_cfg.repository.as_ref(),
+                        &repo_owner,
+                        &repo_name,
+                        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+                    );
+                    let version = ctx.version();
                     Ok(Some(crate::util::PrReconcileTarget {
                         publisher: NixPublisher::PUBLISHER_NAME.into(),
-                        upstream_owner: repo_owner,
-                        upstream_repo: repo_name,
+                        title: crate::nix::publish::build::pr_title(&name, &version),
+                        upstream_owner,
+                        upstream_repo,
                         package: name,
-                        version: ctx.version(),
+                        version,
                         token,
                     }))
                 },

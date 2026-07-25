@@ -232,9 +232,10 @@ fn rollback_var_values(
         ("Required", bool_str(required)),
         ("RollbackFailed", bool_str(rollback_failed)),
         ("Error", error.to_string()),
-        // The run-wide sibling failure(s) that triggered the unwind — distinct
-        // from `Error` (this publisher's own revert failure). Empty on the
-        // `--rollback-only` replay path, which has no live trigger in scope.
+        // The trigger cause behind the unwind — distinct from `Error` (this
+        // publisher's own revert failure). Empty from `anodizer tag rollback`,
+        // which replays state a prior process persisted: the cause lived in
+        // that process, not this one.
         ("Reason", reason.to_string()),
     ]
 }
@@ -280,12 +281,11 @@ const ROLLBACK_ENV_VARS: [(&str, &str); 8] = [
 /// which fires solely for the failed publisher, cannot reach. It also fires
 /// when the revert itself failed: `rollback_failed` is then `true` (exposed as
 /// `{{ .RollbackFailed }}`) and `error` carries the rollback failure message
-/// (`{{ .Error }}`, empty on a clean revert). `reason` is the run-wide
-/// triggering cause — the sibling required failure(s) that unwound the run —
-/// exposed as `{{ .Reason }}`; distinct from `error`, and empty on the
-/// `--rollback-only` replay path (no live trigger in scope). Independent of
-/// `on_error`: a publisher that both failed and was rolled back fires both
-/// hooks.
+/// (`{{ .Error }}`, empty on a clean revert). `reason` is the trigger cause
+/// behind the unwind, exposed as `{{ .Reason }}`; distinct from `error`, and
+/// empty from `anodizer tag rollback` (which replays state a prior process
+/// persisted, so the cause is not in scope here). Independent of `on_error`:
+/// a publisher that both failed and was rolled back fires both hooks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_on_rollback(
     ctx: &Context,

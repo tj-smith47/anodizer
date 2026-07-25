@@ -57,7 +57,10 @@ pub(super) fn decode_krew_targets(
 /// the dispatch logic in `publish_to_krew`: prefer
 /// `repository.pull_request.base` when set, else fall back to the
 /// canonical kubernetes-sigs/krew-index.
-fn resolve_krew_upstream(krew_cfg: &anodizer_core::config::KrewConfig) -> (String, String) {
+fn resolve_krew_upstream(
+    krew_cfg: &anodizer_core::config::KrewConfig,
+    render: &dyn Fn(&str) -> String,
+) -> (String, String) {
     if let Some(base) = krew_cfg
         .repository
         .as_ref()
@@ -65,7 +68,7 @@ fn resolve_krew_upstream(krew_cfg: &anodizer_core::config::KrewConfig) -> (Strin
         .and_then(|pr| pr.base.as_ref())
         && let (Some(o), Some(n)) = (base.owner.as_deref(), base.name.as_deref())
     {
-        return (o.to_string(), n.to_string());
+        return (render(o), render(n));
     }
     ("kubernetes-sigs".to_string(), "krew-index".to_string())
 }
@@ -106,7 +109,9 @@ pub(super) fn collect_krew_target(
         ctx.render_template(t)
     })?;
     let branch = format!("{}-v{}", plugin_name, version);
-    let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
+    let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg, &|t| {
+        ctx.render_template(t).unwrap_or_else(|_| t.to_string())
+    });
     Ok(Some(KrewPrTarget {
         target: c.name.clone(),
         upstream_owner,
@@ -311,18 +316,22 @@ impl anodizer_core::Publisher for KrewPublisher {
                     else {
                         return Ok(None);
                     };
-                    let (upstream_owner, upstream_repo) = resolve_krew_upstream(&krew_cfg);
+                    let (upstream_owner, upstream_repo) = resolve_krew_upstream(&krew_cfg, &|t| {
+                        ctx.render_template(t).unwrap_or_else(|_| t.to_string())
+                    });
                     let token = crate::util::resolve_repo_token(
                         ctx,
                         krew_cfg.repository.as_ref(),
                         Some("KREW_INDEX_TOKEN"),
                     );
+                    let version = ctx.version();
                     Ok(Some(crate::util::PrReconcileTarget {
                         publisher: KrewPublisher::PUBLISHER_NAME.into(),
+                        title: crate::krew::publish::pr_title(crate_name, &version),
                         upstream_owner,
                         upstream_repo,
                         package: plugin_name,
-                        version: ctx.version(),
+                        version,
                         token,
                     }))
                 },
@@ -514,7 +523,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // `already_closed` is a success bucket — 404 / 410 / 422 from
         // the PATCH means the desired end-state ("PR not open") is
         // already true (maintainer closed it, repo renamed, PR
-        // deleted). Re-running --rollback-only after a partial
+        // deleted). Re-running anodizer tag rollback after a partial
         // success must NOT surface those as failures.
         let counts = std::sync::Mutex::new((0usize, 0usize, 0usize));
         for chunk in jobs.chunks(crate::util::ROLLBACK_PARALLELISM) {

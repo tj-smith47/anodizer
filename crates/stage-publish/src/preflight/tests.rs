@@ -1,7 +1,16 @@
 use super::*;
 use anodizer_core::log::StageLogger;
 use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
+use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 use std::time::Duration;
+
+fn fast_retry() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+    }
+}
 
 // Minimal mock checker for report-aggregation tests.
 struct MockChecker {
@@ -37,20 +46,12 @@ fn run_mocks(checkers: Vec<(&'static str, PublisherState)>) -> PreflightReport {
     report
 }
 
+/// Preflight is report-only. Every publisher state — including the two that
+/// used to hard-abort a release — must reach the report, and none may gate.
+/// Each publisher's own `reconcile()` decides skip-vs-dispatch now, so a
+/// pending PR or moderation entry is exactly what an in-flight re-run finds.
 #[test]
-fn mock_all_clean_no_blockers() {
-    let report = run_mocks(vec![
-        ("cargo", PublisherState::Clean),
-        ("chocolatey", PublisherState::Clean),
-        ("winget", PublisherState::Clean),
-        ("aur", PublisherState::Clean),
-    ]);
-    assert!(!report.has_blockers(false));
-    assert_eq!(report.clean_count(), 4);
-}
-
-#[test]
-fn mock_in_moderation_is_blocker() {
+fn mock_states_all_reach_the_report_without_gating() {
     let report = run_mocks(vec![
         ("cargo", PublisherState::Clean),
         (
@@ -59,72 +60,56 @@ fn mock_in_moderation_is_blocker() {
                 reason: "package in moderation queue".into(),
             },
         ),
-        ("winget", PublisherState::Clean),
-        ("aur", PublisherState::Published),
+        (
+            "winget",
+            PublisherState::PRPending("https://github.com/microsoft/winget-pkgs/pull/9999".into()),
+        ),
+        (
+            "aur",
+            PublisherState::Unknown {
+                reason: "timeout connecting to AUR".into(),
+            },
+        ),
     ]);
-    assert!(report.has_blockers(false));
-    let blockers = report.blockers(false);
-    assert_eq!(blockers.len(), 1);
-    assert_eq!(blockers[0].publisher, "chocolatey");
-}
-
-#[test]
-fn mock_pr_pending_is_blocker() {
-    let report = run_mocks(vec![(
-        "winget",
-        PublisherState::PRPending("https://github.com/microsoft/winget-pkgs/pull/9999".into()),
-    )]);
-    assert!(report.has_blockers(false));
-}
-
-#[test]
-fn mock_published_is_not_blocker() {
-    let report = run_mocks(vec![
-        ("cargo", PublisherState::Published),
-        ("aur", PublisherState::Published),
-    ]);
-    assert!(!report.has_blockers(false));
-    assert!(!report.has_blockers(true));
-}
-
-#[test]
-fn mock_unknown_non_strict_not_blocker() {
-    let report = run_mocks(vec![(
-        "aur",
-        PublisherState::Unknown {
-            reason: "timeout connecting to AUR".into(),
-        },
-    )]);
-    assert!(!report.has_blockers(false));
-    assert!(report.has_blockers(true));
-}
-
-// ---- HTTP-mock tests for crates.io index check ------------------------
-
-use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-
-fn fast_retry() -> RetryPolicy {
-    RetryPolicy {
-        max_attempts: 3,
-        base_delay: Duration::from_millis(1),
-        max_delay: Duration::from_millis(2),
+    assert_eq!(report.entries.len(), 4);
+    assert_eq!(report.clean_count(), 1);
+    let rendered = report
+        .entry_rows()
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for label in ["clean", "in-moderation", "pr-pending", "unknown"] {
+        assert!(
+            rendered.contains(label),
+            "{label} missing from the operator's report: {rendered}"
+        );
     }
 }
 
 #[test]
-fn crates_io_checker_absent_on_404() {
-    let (addr, _calls) =
-        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
-    let url = format!("http://{}/", addr);
-    let result = query_crates_io(
-        &url,
-        "foo",
-        "1.0.0",
-        &fast_retry(),
-        anodizer_core::test_helpers::test_logger(),
+fn mock_all_clean_counts_every_entry() {
+    let report = run_mocks(vec![
+        ("cargo", PublisherState::Clean),
+        ("chocolatey", PublisherState::Clean),
+        ("winget", PublisherState::Clean),
+        ("aur", PublisherState::Clean),
+    ]);
+    assert_eq!(report.clean_count(), 4);
+}
+
+#[test]
+fn mock_published_is_not_counted_clean() {
+    let report = run_mocks(vec![
+        ("cargo", PublisherState::Published),
+        ("aur", PublisherState::Published),
+    ]);
+    assert_eq!(
+        report.clean_count(),
+        0,
+        "`clean` means nothing is upstream yet; an already-published version \
+         is a different state and must not inflate the count"
     );
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "absent on 404");
 }
 
 #[test]
@@ -229,6 +214,7 @@ fn winget_pr_absent_on_empty_results() {
     );
     let result = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         None,
         &fast_retry(),
@@ -239,6 +225,68 @@ fn winget_pr_absent_on_empty_results() {
         matches!(result, OpenPrLookup::NotFound),
         "no PR when total_count=0"
     );
+}
+
+/// The false-`Complete` regression guard. Reconcile SKIPS a publisher on a
+/// hit, so a sibling package's PR must never satisfy the probe: in a
+/// workspace where `foo` and `foo-cli` share one tap at the same version,
+/// GitHub's word-level `in:title` matching returns the sibling's PR for
+/// `foo`'s query. Without the exact-title requirement that reads as "foo
+/// already shipped" and `foo` silently never publishes.
+#[test]
+fn open_pr_exact_title_rejects_sibling_package_match() {
+    let body = r#"{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://github.com/acme/homebrew-tap/pull/7","title":"Update foo-cli manifest to 1.2.3"}]}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
+    let url = format!("http://{}/search/issues", addr);
+    let result = query_open_version_pr_at(
+        "scoop",
+        Some("Update foo manifest to 1.2.3"),
+        &url,
+        None,
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("ok");
+    assert!(
+        matches!(result, OpenPrLookup::NotFound),
+        "a sibling package's PR must not satisfy an exact-title probe: {result:?}"
+    );
+}
+
+/// The exact match must be found even when the fuzzy query ranks an
+/// unrelated row first — a one-row page would hide it and report NotFound,
+/// which re-opens a duplicate PR on every converged re-run.
+#[test]
+fn open_pr_exact_title_finds_the_matching_row() {
+    let body = r#"{"total_count":2,"incomplete_results":false,"items":[{"html_url":"https://github.com/acme/homebrew-tap/pull/7","title":"Update foo-cli manifest to 1.2.3"},{"html_url":"https://github.com/acme/homebrew-tap/pull/8","title":"Update foo manifest to 1.2.3"}]}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
+    let url = format!("http://{}/search/issues", addr);
+    let result = query_open_version_pr_at(
+        "scoop",
+        Some("Update foo manifest to 1.2.3"),
+        &url,
+        None,
+        &fast_retry(),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("ok");
+    match result {
+        OpenPrLookup::Found(url) => assert!(
+            url.ends_with("/pull/8"),
+            "must return the exactly-matching row's URL, got {url}"
+        ),
+        other => panic!("expected Found for the exact-title row, got {other:?}"),
+    }
 }
 
 #[test]
@@ -256,6 +304,7 @@ fn winget_pr_present_on_result() {
     );
     let result = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         None,
         &fast_retry(),
@@ -282,6 +331,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     let url = format!("http://{}/search/issues", addr);
     let result = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         None,
         &fast_retry(),
@@ -308,6 +358,7 @@ fn winget_pr_malformed_json_is_error() {
     let url = format!("http://{}/search/issues", addr);
     let err = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         None,
         &fast_retry(),
@@ -360,6 +411,7 @@ fn winget_pr_422_maps_to_not_found() {
     let url = format!("http://{}/search/issues", addr);
     let result = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         None,
         &fast_retry(),
@@ -384,6 +436,7 @@ fn winget_pr_server_error_bubbles_as_err() {
     let url = format!("http://{}/search/issues", addr);
     let err = query_open_version_pr_at(
         "winget",
+        None,
         &url,
         Some("tok"),
         &fast_retry(),
@@ -523,6 +576,7 @@ fn winget_pr_sends_authorization_header_when_token_set() {
     // effect, not the response body.
     query_open_version_pr_at(
         "winget",
+        None,
         &url,
         Some("secret-token"),
         &fast_retry(),
@@ -795,10 +849,11 @@ fn run_preflight_aggregates_per_publisher_in_config_order() {
         assert_eq!(entry.version, "1.0.0");
     }
 
-    // Blocker tally: 2 hard blockers (InModeration + PRPending), AUR
-    // Unknown only blocks in strict.
-    assert_eq!(report.blockers(false).len(), 2);
-    assert_eq!(report.blockers(true).len(), 3);
+    // Report-only: every probed state reaches the report and none gates.
+    let labels: Vec<&str> = report.entries.iter().map(|e| e.state.label()).collect();
+    assert!(labels.contains(&"in-moderation"), "labels: {labels:?}");
+    assert!(labels.contains(&"pr-pending"), "labels: {labels:?}");
+    assert!(labels.contains(&"unknown"), "labels: {labels:?}");
 }
 
 #[test]
@@ -865,10 +920,11 @@ fn deselected_publisher_contributes_no_state_probe_entry() {
         vec!["cargo"],
         "only the allowlisted publisher may be probed; deselected doors must not gate the run"
     );
-    assert!(
-        report.blockers(false).is_empty(),
-        "no deselected publisher may contribute a blocker: {:?}",
-        report.blockers(false)
+    assert_eq!(
+        report.entries.len(),
+        1,
+        "a deselected publisher must not contribute a probe entry at all: {:?}",
+        report.entries
     );
 }
 
@@ -885,10 +941,7 @@ fn deselected_publisher_contributes_no_state_probe_entry() {
 /// configured. Used by the rollback-scope tests below; the
 /// CargoPublisher is the canonical `required=true` publisher with a
 /// scope label (`"CARGO_REGISTRY_TOKEN yank"`).
-fn fixture_cargo_publisher(
-    strict: bool,
-    rollback_mode: Option<anodizer_core::context::RollbackMode>,
-) -> anodizer_core::context::Context {
+fn fixture_cargo_publisher(strict: bool) -> anodizer_core::context::Context {
     use anodizer_core::config::{CargoPublishConfig, Config, CrateConfig, PublishConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -908,7 +961,6 @@ fn fixture_cargo_publisher(
     };
     let options = ContextOptions {
         strict,
-        rollback_mode,
         ..Default::default()
     };
     let mut ctx = Context::new(config, options);
@@ -929,7 +981,7 @@ fn empty_factory() -> CannedFactory {
 fn preflight_warns_on_missing_rollback_scope() {
     use anodizer_core::log::{StageLogger, Verbosity};
 
-    let mut ctx = fixture_cargo_publisher(false, None);
+    let mut ctx = fixture_cargo_publisher(false);
     // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     let log = StageLogger::new("preflight", Verbosity::Normal);
@@ -958,7 +1010,7 @@ fn preflight_warns_on_missing_rollback_scope() {
 fn preflight_blocks_on_missing_rollback_scope_when_strict() {
     use anodizer_core::log::{StageLogger, Verbosity};
 
-    let mut ctx = fixture_cargo_publisher(true, None);
+    let mut ctx = fixture_cargo_publisher(true);
     // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     let log = StageLogger::new("preflight", Verbosity::Normal);
@@ -984,48 +1036,19 @@ fn preflight_blocks_on_missing_rollback_scope_when_strict() {
 }
 
 #[test]
-fn preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort() {
-    use anodizer_core::context::RollbackMode;
-    use anodizer_core::log::{StageLogger, Verbosity};
-
-    let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
-    // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
-    ctx.set_env_source(anodizer_core::MapEnvSource::new());
-    let log = StageLogger::new("preflight", Verbosity::Normal);
-    let factory = empty_factory();
-    let err = run_preflight_with_factory(&mut ctx, &log, &factory).expect_err(
-        "must bail when required publisher lacks rollback scope under --rollback=best-effort",
-    );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("--rollback=best-effort"),
-        "error message must name the requested rollback mode: {}",
-        msg
-    );
-    assert!(
-        msg.contains("cargo"),
-        "error message must name the offending publisher: {}",
-        msg
-    );
-}
-
-#[test]
 fn deselected_publisher_is_not_preflighted() {
-    use anodizer_core::context::RollbackMode;
     use anodizer_core::log::{StageLogger, Verbosity};
 
-    // Same fixture that bails in
-    // `preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort`
-    // — except cargo is now deselected via `--skip cargo`, so the run path
-    // would never run it and the gate must not bail (nor warn) on it.
-    let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+    // Cargo is deselected via `--skip cargo`, so the run path would never
+    // run it and the gate must not warn (nor block) on its missing scope.
+    let mut ctx = fixture_cargo_publisher(false);
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     ctx.options.skip_stages = vec!["cargo".to_string()];
     let log = StageLogger::new("preflight", Verbosity::Normal);
     let factory = empty_factory();
 
     let report = run_preflight_with_factory(&mut ctx, &log, &factory)
-        .expect("a deselected required publisher must not bail the rollback-scope gate");
+        .expect("preflight succeeds for a deselected required publisher");
     assert!(
         report.blockers.is_empty(),
         "deselected cargo must contribute no blocker: {:?}",
@@ -1040,19 +1063,18 @@ fn deselected_publisher_is_not_preflighted() {
 
 #[test]
 fn nightly_skipped_publisher_is_not_preflighted() {
-    use anodizer_core::context::RollbackMode;
     use anodizer_core::log::{StageLogger, Verbosity};
 
     // cargo `skips_on_nightly() == true`; under `--nightly` it never runs,
-    // so its missing rollback scope must not bail the best-effort gate.
-    let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+    // so its missing rollback scope must contribute no warning or blocker.
+    let mut ctx = fixture_cargo_publisher(false);
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     ctx.options.nightly = true;
     let log = StageLogger::new("preflight", Verbosity::Normal);
     let factory = empty_factory();
 
     let report = run_preflight_with_factory(&mut ctx, &log, &factory)
-        .expect("a nightly-skipped required publisher must not bail the rollback-scope gate");
+        .expect("preflight succeeds for a nightly-skipped required publisher");
     assert!(
         report.blockers.is_empty(),
         "nightly-skipped cargo must contribute no blocker: {:?}",

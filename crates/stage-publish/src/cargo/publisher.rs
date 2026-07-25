@@ -265,7 +265,17 @@ impl anodizer_core::Publisher for CargoPublisher {
                 // Err from the guard; run() re-derives the same decision and
                 // bails with the canonical message (bump-the-version for
                 // divergence, fail-closed for unverifiable) — never skip.
+                // Only the guard's typed divergence earns `Diverged`, so a
+                // probe that merely could not verify still reports `Unknown`
+                // and lets run() own the fail-closed decision.
                 Err(e) => {
+                    if let Some(divergence) =
+                        e.downcast_ref::<crate::cargo::already_published::ContentDivergence>()
+                    {
+                        return Ok(ReconcileState::Diverged {
+                            detail: divergence.to_string(),
+                        });
+                    }
                     return Ok(ReconcileState::Unknown {
                         reason: format!("content verification for '{name}-{version}': {e:#}"),
                     });
@@ -278,14 +288,6 @@ impl anodizer_core::Publisher for CargoPublisher {
                 published.len()
             ),
         })
-    }
-
-    fn programmatic_rollback_on_failure(&self, evidence: &anodizer_core::PublishEvidence) -> bool {
-        // A failed cargo run that already pushed one or more crates to
-        // crates.io recorded them here; rollback must yank them even
-        // though the overall outcome is `Failed`. An empty record means
-        // nothing went live — keep the failure inert.
-        !decode_cargo_yank_targets(&evidence.extra).is_empty()
     }
 
     fn retain_on_rollback(&self) -> bool {

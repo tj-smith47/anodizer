@@ -10,12 +10,14 @@
 //! ```text
 //! Clean      → safe to publish
 //! Published  → idempotent skip (not a blocker)
-//! InModeration { reason } → blocker (version submitted, moderation queue)
-//! PRPending  → blocker (PR already open for this version)
-//! Unknown { reason } → warn-and-allow unless --strict-preflight
+//! InModeration { reason } → reported, never blocking (version submitted, moderation queue)
+//! PRPending  → reported, never blocking (PR already open for this version)
+//! Unknown { reason } → warn-and-allow unless --strict
 //! ```
 
 use std::fmt;
+
+use crate::log::StageLogger;
 
 // ---------------------------------------------------------------------------
 // PublisherState
@@ -28,29 +30,19 @@ pub enum PublisherState {
     Clean,
     /// Version already published / approved. Idempotent skip (not a blocker).
     Published,
-    /// Submitted but pending review / moderation. Blocker. `reason` is a
-    /// short human-readable explanation (e.g. "package in moderation queue").
+    /// Submitted but pending review / moderation. Reported, never blocking:
+    /// the publisher's own `reconcile()` decides whether to skip or dispatch.
+    /// `reason` is a short human-readable explanation.
     InModeration { reason: String },
-    /// PR already open against the upstream registry. Blocker.
+    /// PR already open against the upstream registry. Reported, never
+    /// blocking — an open PR is exactly what a converged re-run expects.
     PRPending(String),
-    /// Couldn't determine state. Warn-and-allow unless `--strict-preflight`.
-    /// `reason` carries a short error description for diagnostics.
+    /// Couldn't determine state. `reason` carries a short error description
+    /// for diagnostics.
     Unknown { reason: String },
 }
 
 impl PublisherState {
-    /// Returns `true` when this state blocks the release.
-    ///
-    /// `InModeration` and `PRPending` are hard blockers.
-    /// `Unknown` only blocks when `strict` is `true`.
-    pub fn is_blocker(&self, strict: bool) -> bool {
-        match self {
-            PublisherState::InModeration { .. } | PublisherState::PRPending(_) => true,
-            PublisherState::Unknown { .. } => strict,
-            _ => false,
-        }
-    }
-
     /// A short human-readable label for table output.
     pub fn label(&self) -> &'static str {
         match self {
@@ -61,6 +53,41 @@ impl PublisherState {
             PublisherState::Unknown { .. } => "unknown",
         }
     }
+
+    /// Which `StageLogger` register a report row for this state renders
+    /// under. `InModeration` and `PRPending` are reported states, not
+    /// failures — the publisher's own `reconcile()` decides whether to skip
+    /// or dispatch, so only `Published` earns the `✓` success marker.
+    pub fn row_kind(&self) -> RowKind {
+        match self {
+            PublisherState::Published => RowKind::Ok,
+            PublisherState::Clean
+            | PublisherState::InModeration { .. }
+            | PublisherState::PRPending(_)
+            | PublisherState::Unknown { .. } => RowKind::Info,
+        }
+    }
+
+    /// Trailing summary text for a report row, e.g. `"in-moderation —
+    /// package in moderation queue"`.
+    pub fn row_summary(&self) -> String {
+        match self {
+            PublisherState::Clean => "clean".to_string(),
+            PublisherState::Published => "published".to_string(),
+            PublisherState::InModeration { reason } => format!("in-moderation — {reason}"),
+            PublisherState::PRPending(url) => format!("pr-pending — {url}"),
+            PublisherState::Unknown { reason } => format!("unknown — {reason}"),
+        }
+    }
+}
+
+/// Which `StageLogger` register a preflight report row renders under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Green `✓` — `log.success`.
+    Ok,
+    /// Cyan `•` — `log.status`.
+    Info,
 }
 
 impl fmt::Display for PublisherState {
@@ -69,9 +96,9 @@ impl fmt::Display for PublisherState {
             PublisherState::Clean => write!(f, "clean"),
             PublisherState::Published => write!(f, "already published (idempotent skip)"),
             PublisherState::InModeration { reason } => {
-                write!(f, "in moderation queue: {} — BLOCKER", reason)
+                write!(f, "in moderation queue: {}", reason)
             }
-            PublisherState::PRPending(url) => write!(f, "PR already open: {} — BLOCKER", url),
+            PublisherState::PRPending(url) => write!(f, "PR already open: {}", url),
             PublisherState::Unknown { reason } => write!(f, "unknown ({})", reason),
         }
     }
@@ -105,8 +132,8 @@ pub struct PreflightEntry {
 /// messages produced by the release-resilience preflight extension: rollback
 /// token scope checks and per-publisher `Publisher::preflight()` hook
 /// results. The two channels are kept separate from `entries` so that
-/// the existing one-way-door consumers (state-machine queries like
-/// `has_blockers` / `clean_count`) stay focused on publisher state, while the
+/// the report-only publisher-state channel (queried via `clean_count`)
+/// stays focused on publisher state, while the
 /// CLI's operator-facing output can still surface every warning and blocker
 /// the preflight pipeline produced.
 #[derive(Debug, Default)]
@@ -137,55 +164,51 @@ impl PreflightReport {
             .count()
     }
 
-    /// Whether any entry is a blocker given the strict flag.
-    pub fn has_blockers(&self, strict: bool) -> bool {
-        self.entries.iter().any(|e| e.state.is_blocker(strict))
-    }
-
-    /// Entries that are blockers.
-    pub fn blockers(&self, strict: bool) -> Vec<&PreflightEntry> {
+    /// One `(kind, text)` row per entry, ready for `StageLogger` dispatch.
+    ///
+    /// Each `text` is the subject `{publisher} {package}@{version}`
+    /// left-aligned and padded to the width of the widest subject present,
+    /// followed by two spaces and [`PublisherState::row_summary`], so the
+    /// summaries line up in a column across every row.
+    pub fn entry_rows(&self) -> Vec<(RowKind, String)> {
+        let subjects: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| format!("{} {}@{}", e.publisher, e.package, e.version))
+            .collect();
+        let width = subjects.iter().map(String::len).max().unwrap_or(0);
         self.entries
             .iter()
-            .filter(|e| e.state.is_blocker(strict))
+            .zip(subjects)
+            .map(|(entry, subject)| {
+                (
+                    entry.state.row_kind(),
+                    format!("{subject:width$}  {}", entry.state.row_summary()),
+                )
+            })
             .collect()
     }
-}
 
-impl fmt::Display for PreflightReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Pre-flight publisher check:")?;
-        for entry in &self.entries {
-            writeln!(
-                f,
-                "  [{:>14}]  {} {}@{}",
-                entry.state.label(),
-                entry.publisher,
-                entry.package,
-                entry.version
-            )?;
-            // Print extra detail for states that carry context.
-            match &entry.state {
-                PublisherState::PRPending(url) => {
-                    writeln!(f, "               PR: {}", url)?;
-                }
-                PublisherState::Unknown { reason } | PublisherState::InModeration { reason } => {
-                    writeln!(f, "               reason: {}", reason)?;
-                }
-                _ => {}
+    /// Render this report through `log`, one `StageLogger` call per row.
+    ///
+    /// Publisher entries route through [`PublisherState::row_kind`]
+    /// (`✓`/`•`); free-form `warnings` and `blockers` from the
+    /// release-resilience preflight extension route through the logger's
+    /// own `Warning` / `Error` labels.
+    pub fn emit(&self, log: &StageLogger) {
+        log.status("Pre-flight publisher check");
+        for (kind, text) in self.entry_rows() {
+            match kind {
+                RowKind::Ok => log.success(&text),
+                RowKind::Info => log.status(&text),
             }
         }
-        // Surface free-form warnings/blockers from the resilience extension
-        // (rollback-scope checks + `Publisher::preflight()` results) so they
-        // flow through the same Display channel the CLI prints. Suppressed
-        // when both are empty to preserve the existing one-line-per-entry
-        // cadence for clean reports.
         for w in &self.warnings {
-            writeln!(f, "  [       warning]  {}", w)?;
+            log.warn(w);
         }
         for b in &self.blockers {
-            writeln!(f, "  [       blocker]  {}", b)?;
+            log.error(b);
         }
-        Ok(())
     }
 }
 
@@ -206,9 +229,14 @@ mod tests {
         }
     }
 
+    /// Preflight is report-only: every publisher state, including the two
+    /// that used to hard-abort a release, must survive into the report the
+    /// operator reads and none of them may gate. Convergence moved the
+    /// decision to each publisher's own `reconcile()`, and a pending PR or
+    /// moderation entry is exactly what a re-run of an in-flight release is
+    /// supposed to find.
     #[test]
     fn report_aggregation_four_publishers() {
-        // Mock 4 publishers, one in each non-trivial state, assert categorisation.
         let mut report = PreflightReport::new();
         report.push(entry("cargo", PublisherState::Clean));
         report.push(entry(
@@ -228,68 +256,118 @@ mod tests {
             },
         ));
 
-        // clean_count
         assert_eq!(report.clean_count(), 1);
+        assert_eq!(report.entries.len(), 4);
+        let rows = report.entry_rows();
+        for label in ["clean", "in-moderation", "pr-pending", "unknown"] {
+            assert!(
+                rows.iter().any(|(_, text)| text.contains(label)),
+                "every state must reach the operator's report: {label} missing from {rows:?}"
+            );
+        }
+    }
 
-        // non-strict: Unknown is not a blocker
-        assert!(report.has_blockers(false));
-        let blockers = report.blockers(false);
-        assert_eq!(blockers.len(), 2);
-        assert!(blockers.iter().any(|e| e.publisher == "chocolatey"));
-        assert!(blockers.iter().any(|e| e.publisher == "winget"));
+    /// State→`RowKind` mapping: only `Published` earns the `Ok` (`✓`)
+    /// marker. `InModeration` and `PRPending` are reported states, not
+    /// blockers — a converged re-run expects to find them.
+    #[test]
+    fn row_kind_matches_state() {
+        assert_eq!(PublisherState::Published.row_kind(), RowKind::Ok);
+        assert_eq!(PublisherState::Clean.row_kind(), RowKind::Info);
+        assert_eq!(
+            PublisherState::InModeration {
+                reason: "queue".into()
+            }
+            .row_kind(),
+            RowKind::Info
+        );
+        assert_eq!(
+            PublisherState::PRPending("https://example.com/pr/1".into()).row_kind(),
+            RowKind::Info
+        );
+        assert_eq!(
+            PublisherState::Unknown {
+                reason: "503".into()
+            }
+            .row_kind(),
+            RowKind::Info
+        );
+    }
 
-        // strict: Unknown also blocks
-        assert!(report.has_blockers(true));
-        let strict_blockers = report.blockers(true);
-        assert_eq!(strict_blockers.len(), 3);
+    /// Subjects of different lengths must still align: every row's summary
+    /// starts at the same column.
+    #[test]
+    fn entry_rows_align_summaries_to_widest_subject() {
+        let mut report = PreflightReport::new();
+        report.push(PreflightEntry {
+            publisher: "cargo".to_string(),
+            package: "cfgd".to_string(),
+            version: "0.6.0".to_string(),
+            state: PublisherState::Clean,
+        });
+        report.push(PreflightEntry {
+            publisher: "chocolatey".to_string(),
+            package: "cfgd-core".to_string(),
+            version: "0.6.0".to_string(),
+            state: PublisherState::Published,
+        });
+
+        let rows = report.entry_rows();
+        assert_eq!(rows.len(), 2);
+        let starts: Vec<usize> = rows
+            .iter()
+            .zip(&report.entries)
+            .map(|((_, text), entry)| {
+                text.find(&entry.state.row_summary())
+                    .expect("summary substring must be found in its own row text")
+            })
+            .collect();
+        assert_eq!(
+            starts[0], starts[1],
+            "summaries must start at the same column across rows of different subject length: {rows:?}"
+        );
     }
 
     #[test]
-    fn report_all_clean_no_blockers() {
+    fn entry_rows_empty_report_returns_empty_vec() {
+        let report = PreflightReport::new();
+        assert!(report.entry_rows().is_empty());
+    }
+
+    /// `InModeration`/`PRPending` are non-blocking reported states; the
+    /// `Display` message must not assert a `BLOCKER` label that no longer
+    /// applies.
+    #[test]
+    fn display_does_not_label_reported_states_as_blocker() {
+        let in_moderation = PublisherState::InModeration {
+            reason: "package in moderation queue".into(),
+        }
+        .to_string();
+        let pr_pending = PublisherState::PRPending("https://example.com/pr/1".into()).to_string();
+
+        assert!(!in_moderation.contains("BLOCKER"), "{in_moderation}");
+        assert!(!pr_pending.contains("BLOCKER"), "{pr_pending}");
+    }
+
+    #[test]
+    fn report_all_clean_counts_every_entry() {
         let mut report = PreflightReport::new();
         report.push(entry("cargo", PublisherState::Clean));
         report.push(entry("aur", PublisherState::Clean));
 
-        assert!(!report.has_blockers(false));
-        assert!(!report.has_blockers(true));
         assert_eq!(report.clean_count(), 2);
     }
 
     #[test]
-    fn published_is_not_blocker() {
+    fn published_is_not_counted_clean() {
         let mut report = PreflightReport::new();
         report.push(entry("cargo", PublisherState::Published));
 
-        assert!(!report.has_blockers(false));
-        assert!(!report.has_blockers(true));
-    }
-
-    #[test]
-    fn unknown_only_blocks_when_strict() {
-        let mut report = PreflightReport::new();
-        report.push(entry(
-            "aur",
-            PublisherState::Unknown {
-                reason: "timeout".into(),
-            },
-        ));
-
-        assert!(!report.has_blockers(false));
-        assert!(report.has_blockers(true));
-    }
-
-    #[test]
-    fn display_includes_blocker_label() {
-        let mut report = PreflightReport::new();
-        report.push(entry(
-            "chocolatey",
-            PublisherState::InModeration {
-                reason: "package in moderation queue".into(),
-            },
-        ));
-
-        let s = report.to_string();
-        assert!(s.contains("in-moderation"), "display: {s}");
-        assert!(s.contains("chocolatey"), "display: {s}");
+        assert_eq!(
+            report.clean_count(),
+            0,
+            "`clean` means nothing is upstream yet; an already-published \
+             version is a different state and must not inflate the count"
+        );
     }
 }

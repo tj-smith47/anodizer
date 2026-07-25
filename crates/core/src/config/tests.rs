@@ -9,8 +9,8 @@ use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, In
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
     validate_exclude_globs, validate_format_overrides, validate_homebrew_cask_url_template,
-    validate_on_failure_root_only, validate_tag_sort, validate_version,
-    validate_winget_dependency_architectures, validate_winget_upgrade_behavior,
+    validate_on_failure_not_rollback, validate_on_failure_root_only, validate_tag_sort,
+    validate_version, validate_winget_dependency_architectures, validate_winget_upgrade_behavior,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -851,11 +851,14 @@ fn test_release_resolved_bool_user_values_win() {
 }
 
 #[test]
-fn test_release_resolved_on_failure_defaults_to_rollback() {
-    let cfg = ReleaseConfig::default();
-    assert_eq!(cfg.resolved_on_failure(), OnFailureConfig::Rollback);
+fn test_release_on_failure_defaults_to_unset() {
+    assert_eq!(ReleaseConfig::default().on_failure, None);
+    assert_eq!(OnFailureConfig::default(), OnFailureConfig::Hold);
 }
 
+/// The removed `rollback` value must stay PARSEABLE so the validator can
+/// name it in the migration error. A serde-level rejection would instead
+/// emit an opaque "unknown variant" that says nothing about the migration.
 #[test]
 fn test_release_on_failure_parses_both_values() {
     for (yaml, expected) in [
@@ -863,7 +866,7 @@ fn test_release_on_failure_parses_both_values() {
         ("on_failure: hold", OnFailureConfig::Hold),
     ] {
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.resolved_on_failure(), expected, "yaml: {yaml}");
+        assert_eq!(cfg.on_failure, Some(expected), "yaml: {yaml}");
     }
 }
 
@@ -943,6 +946,84 @@ fn test_validate_on_failure_root_only_rejects_workspace_crate_setting() {
     let err = validate_on_failure_root_only(&config)
         .expect_err("workspace-crate on_failure must be rejected");
     assert!(err.contains("ws-member"), "must name the offender: {err}");
+}
+
+#[test]
+fn test_validate_on_failure_not_rollback_accepts_unset_and_hold() {
+    for on_failure in [None, Some(OnFailureConfig::Hold)] {
+        let config = Config {
+            project_name: "test".into(),
+            release: Some(ReleaseConfig {
+                on_failure,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        validate_on_failure_not_rollback(&config)
+            .unwrap_or_else(|e| panic!("on_failure={on_failure:?} must be accepted: {e}"));
+    }
+}
+
+#[test]
+fn test_validate_on_failure_not_rollback_rejects_root_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        release: Some(ReleaseConfig {
+            on_failure: Some(OnFailureConfig::Rollback),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = validate_on_failure_not_rollback(&config)
+        .expect_err("root-level rollback must be rejected");
+    assert!(
+        err.contains("anodizer release") && err.contains("anodizer tag rollback"),
+        "must name the migration path: {err}"
+    );
+}
+
+#[test]
+fn test_validate_on_failure_not_rollback_rejects_crate_level_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: ".".into(),
+            tag_template: Some("v{{ .Version }}".into()),
+            release: Some(ReleaseConfig {
+                on_failure: Some(OnFailureConfig::Rollback),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    validate_on_failure_not_rollback(&config)
+        .expect_err("crate-level rollback must also be rejected");
+}
+
+#[test]
+fn test_validate_on_failure_not_rollback_rejects_workspace_crate_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws".into(),
+            crates: vec![CrateConfig {
+                name: "ws-member".into(),
+                path: "crates/member".into(),
+                tag_template: Some("member-v{{ .Version }}".into()),
+                release: Some(ReleaseConfig {
+                    on_failure: Some(OnFailureConfig::Rollback),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    validate_on_failure_not_rollback(&config)
+        .expect_err("workspace-crate rollback must also be rejected");
 }
 
 // ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----

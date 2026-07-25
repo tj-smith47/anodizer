@@ -288,7 +288,7 @@ For split/merge fan-out, GPG key import, registry login, and per-platform varian
 ## CLI Reference
 
 ```
-anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only, --rollback-only)
+anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only)
 anodizer tag           Auto-tag from commit directives
 anodizer tag rollback  Delete anodize-managed tags at a SHA and revert the bump commit
 anodizer bump          Bump crate versions (Conventional Commits → semver level) without tagging

@@ -5,7 +5,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 // Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
-// manifest is recorded so a `--rollback-only` re-clones the bucket,
+// manifest is recorded so a `anodizer tag rollback` re-clones the bucket,
 // runs `git revert HEAD --no-edit`, and pushes the revert. Scoop is
 // always per-crate (no top-level Scoop config block), so the run loop
 // only walks the per-crate universe (`Config::crate_universe`).
@@ -150,12 +150,14 @@ fn build_scoop_reconcile_target(
         scoop_cfg.repository.as_ref(),
         Some("SCOOP_BUCKET_TOKEN"),
     );
+    let version = ctx.version();
     Ok(Some(crate::util::PrReconcileTarget {
         publisher: ScoopPublisher::PUBLISHER_NAME.into(),
+        title: crate::scoop::publish::pr_title(&package, &version),
         upstream_owner,
         upstream_repo,
         package,
-        version: ctx.version(),
+        version,
         token,
     }))
 }

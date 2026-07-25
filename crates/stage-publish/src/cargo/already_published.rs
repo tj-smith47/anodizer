@@ -590,6 +590,27 @@ pub(crate) enum CargoSkipDecision {
 /// a confirmed source-equivalent match (release-process artifacts only)
 /// against the verified published artifact; every other ("cannot verify")
 /// outcome fails closed.
+/// The one [`decide_already_published`] failure that means "upstream and
+/// local genuinely differ", as opposed to the several that mean "content
+/// identity could not be verified".
+///
+/// Both classes fail closed for `run()` — it bails either way, and this type
+/// renders the same message it always did. The distinction exists for
+/// `reconcile()`, which must report a real divergence as
+/// [`anodizer_core::ReconcileState::Diverged`]: collapsing it into `Unknown`
+/// would tell an operator running `anodizer preflight` that a version needing
+/// a bump was merely unprobeable.
+#[derive(Debug)]
+pub(crate) struct ContentDivergence(String);
+
+impl std::fmt::Display for ContentDivergence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ContentDivergence {}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_already_published(
     name: &str,
@@ -694,16 +715,14 @@ pub(crate) fn decide_already_published(
             ));
             Ok(CargoSkipDecision::Skip)
         }
-        CrateContentMatch::Differs(paths) => {
-            anyhow::bail!(
-                "publish: '{name}-{version}' is ALREADY published on crates.io with DIFFERENT \
-                 content (index cksum {index_cksum}, local .crate cksum {}). Re-publishing would \
-                 be SILENTLY SKIPPED by cargo, so the changed code would never ship under this \
-                 version. Differing entries: {}. Bump the version (crates.io versions are \
-                 immutable) and re-run.",
-                local.cksum,
-                paths.join(", ")
-            );
-        }
+        CrateContentMatch::Differs(paths) => Err(anyhow::Error::new(ContentDivergence(format!(
+            "publish: '{name}-{version}' is ALREADY published on crates.io with DIFFERENT \
+             content (index cksum {index_cksum}, local .crate cksum {}). Re-publishing would \
+             be SILENTLY SKIPPED by cargo, so the changed code would never ship under this \
+             version. Differing entries: {}. Bump the version (crates.io versions are \
+             immutable) and re-run.",
+            local.cksum,
+            paths.join(", ")
+        )))),
     }
 }

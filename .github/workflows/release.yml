@@ -417,11 +417,10 @@ jobs:
           UPLOAD_JARVISPRO_TARGET: ${{ secrets.UPLOAD_JARVISPRO_TARGET }}
           UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
-      # No workflow-side rollback step: the binary executes the
-      # `release.on_failure` policy in-process (rollback by default,
-      # auto-degrading to hold once any one-way-door publisher landed).
-      # A cancelled run cannot execute its own policy; recover manually
-      # with `anodizer tag rollback` / `release --rollback-only` after
+      # No workflow-side rollback step: a failed run holds everything
+      # exactly where it landed. Recovery is re-running the same release
+      # command (publishers reconcile and skip what already landed);
+      # `anodizer tag rollback` withdraws the release deliberately after
       # reading the uploaded summary.
       - name: Upload run summary
         if: always()

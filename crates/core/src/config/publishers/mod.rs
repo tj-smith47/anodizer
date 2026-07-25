@@ -179,13 +179,14 @@ pub struct PublishConfig {
     /// Nix derivation publishing configuration.
     pub nix: Option<NixConfig>,
 
-    /// Hooks that fire once per FAILED publisher, after rollback has been
-    /// attempted. Each entry is a standard hook (`cmd` / `dir` / `env` /
-    /// `output`); the template surface adds `{{ .Publisher }}`,
+    /// Hooks that fire once per FAILED publisher. Each entry is a standard
+    /// hook (`cmd` / `dir` / `env` / `output`); the template surface adds
+    /// `{{ .Publisher }}`,
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`,
-    /// `{{ .RolledBack }}` — true if any publisher was rolled back (or
-    /// rollback was attempted and failed) during this run — and
+    /// `{{ .RolledBack }}` — always `false` during a release, which never
+    /// withdraws anything on its own; withdrawal is `anodizer tag rollback`
+    /// — and
     /// `{{ .RunReport }}`, the path of this run's already-written
     /// `dist/run-<id>/report.json` (per-publisher outcomes including
     /// rollback results; empty in snapshot/dry-run or when the report
@@ -215,10 +216,10 @@ pub struct PublishConfig {
     /// ```
     pub on_error: Option<Vec<HookEntry>>,
 
-    /// Hooks that fire once per publisher that a triggered rollback REVERTED —
-    /// including a publisher that itself `Succeeded` and was only reverted
-    /// because a sibling required publisher failed (the case `on_error`, which
-    /// fires solely for the failed publisher, never reaches). A publisher whose
+    /// Hooks that fire once per publisher `anodizer tag rollback` REVERTED —
+    /// including a publisher that itself `Succeeded` and is being withdrawn
+    /// because the whole release is (the case `on_error`, which fires solely
+    /// for a failed publisher, never reaches). A publisher whose
     /// rollback was attempted but could not complete fires this too, with
     /// `{{ .RollbackFailed }}` set to `true` so the hook can escalate the
     /// orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` /
@@ -227,8 +228,8 @@ pub struct PublishConfig {
     /// (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}`
     /// (`true` when the revert itself failed), `{{ .Error }}` (the rollback
     /// failure message, empty on a clean revert), and `{{ .Reason }}` (the
-    /// run-wide sibling failure(s) that triggered the unwind — distinct from
-    /// `{{ .Error }}`; empty on a `--rollback-only` replay). The same values are
+    /// trigger cause, distinct from `{{ .Error }}` — empty here, because the
+    /// unwind replays state a prior process persisted). The same values are
     /// exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`,
     /// `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`,
     /// `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and

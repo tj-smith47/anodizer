@@ -315,21 +315,16 @@ fn base_release_opts() -> ReleaseOpts {
         resume_release: false,
         replace_existing: false,
         preflight: false,
-        no_preflight: false,
         preflight_secrets: false,
-        strict_preflight: false,
         no_post_publish_poll: false,
         no_gate_submitter: false,
-        rollback: None,
         simulate_failure: vec![],
-        rollback_only: false,
-        from_run: None,
         show_skipped: false,
         allow_nondeterministic: vec![],
         summary_json: None,
         allow_ai_failure: false,
         allow_snapshot_publish: false,
-        no_failure_policy: false,
+        no_env_preflight: false,
     }
 }
 
@@ -931,65 +926,37 @@ fn should_run_preflight_auto_default_runs() {
     // No flag set → run. `--publish-only` is intentionally NOT a gate:
     // it is the one mode that actually crosses the one-way doors, so
     // the read-only publisher-state / credential probes must run there
-    // by default (only `--no-preflight` opts out).
-    assert!(should_run_preflight_auto(false, false, false, false, false));
-}
-
-#[test]
-fn should_run_preflight_auto_no_preflight_skips() {
-    assert!(!should_run_preflight_auto(true, false, false, false, false));
+    // by default.
+    assert!(should_run_preflight_auto(false, false, false, false));
 }
 
 #[test]
 fn should_run_preflight_auto_snapshot_skips() {
-    assert!(!should_run_preflight_auto(false, true, false, false, false));
+    assert!(!should_run_preflight_auto(true, false, false, false));
 }
 
 #[test]
 fn should_run_preflight_auto_dry_run_skips() {
-    assert!(!should_run_preflight_auto(false, false, true, false, false));
+    assert!(!should_run_preflight_auto(false, true, false, false));
 }
 
 #[test]
 fn should_run_preflight_auto_split_skips() {
-    assert!(!should_run_preflight_auto(false, false, false, true, false));
-}
-
-#[test]
-fn should_run_preflight_auto_no_preflight_wins_over_default() {
-    // The escape hatch beats the default-run rule in every remaining
-    // mode combination.
-    assert!(!should_run_preflight_auto(true, false, false, false, false));
-    assert!(!should_run_preflight_auto(true, true, true, true, true));
+    assert!(!should_run_preflight_auto(false, false, true, false));
 }
 
 #[test]
 fn should_run_preflight_auto_publish_skipped_skips() {
-    assert!(!should_run_preflight_auto(false, false, false, false, true));
+    assert!(!should_run_preflight_auto(false, false, false, true));
 }
 
-/// `--strict-preflight`, the global `--strict`, and `preflight.strict`
-/// all fold into one effective flag (`Context::preflight_is_strict`):
-/// any of them must promote Unknown to a blocker, none of them leaves
-/// Unknown non-blocking. It's the gating contract a CI script relies
-/// on, so pin it against the real combiner.
+/// The global `--strict` and `preflight.strict` fold into one effective
+/// flag (`Context::preflight_is_strict`): either one turns on strict
+/// per-publisher preflight promotion, neither leaves it off. Pin it
+/// against the real combiner.
 #[test]
-fn strict_or_strict_preflight_promotes_unknown_to_blocker() {
-    use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
-
-    let mut report = PreflightReport::new();
-    report.push(PreflightEntry {
-        publisher: "aur".into(),
-        package: "foo".into(),
-        version: "1.0.0".into(),
-        state: PublisherState::Unknown {
-            reason: "timeout".into(),
-        },
-    });
-
-    // The call site consumes `ctx.preflight_is_strict()`; drive the real
-    // combiner across all three inputs.
-    let combine = |strict: bool, strict_pref: bool, cfg_strict: bool| {
+fn strict_or_config_strict_promotes_preflight_to_strict() {
+    let combine = |strict: bool, cfg_strict: bool| {
         let config = Config {
             preflight: anodizer_core::config::PreflightConfig { strict: cfg_strict },
             ..Default::default()
@@ -998,17 +965,15 @@ fn strict_or_strict_preflight_promotes_unknown_to_blocker() {
             config,
             ContextOptions {
                 strict,
-                strict_preflight: strict_pref,
                 ..Default::default()
             },
         );
         ctx.preflight_is_strict()
     };
-    assert!(!report.has_blockers(combine(false, false, false)));
-    assert!(report.has_blockers(combine(true, false, false)));
-    assert!(report.has_blockers(combine(false, true, false)));
-    assert!(report.has_blockers(combine(false, false, true)));
-    assert!(report.has_blockers(combine(true, true, true)));
+    assert!(!combine(false, false));
+    assert!(combine(true, false));
+    assert!(combine(false, true));
+    assert!(combine(true, true));
 }
 
 // ---- gate_required_failures -----------------------------------------
@@ -1634,15 +1599,7 @@ fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
 fn build_context_options_propagates_project_root() {
     let opts = base_release_opts();
     let root = std::path::PathBuf::from("/tmp/example-project");
-    let ctx_opts = build_context_options(
-        &opts,
-        vec![],
-        vec![],
-        None,
-        vec![],
-        vec![],
-        Some(root.clone()),
-    );
+    let ctx_opts = build_context_options(&opts, vec![], vec![], vec![], vec![], Some(root.clone()));
     assert_eq!(
         ctx_opts.project_root,
         Some(root),
@@ -1685,41 +1642,6 @@ fn validate_allowlist_without_strict_is_ok() {
         ..base_release_opts()
     };
     assert!(validate_strict_vs_allowlist(&opts).is_ok());
-}
-
-// -----------------------------------------------------------------------
-// parse_rollback_mode
-// -----------------------------------------------------------------------
-
-#[test]
-fn parse_rollback_mode_none_keyword() {
-    assert_eq!(
-        parse_rollback_mode(Some("none")).unwrap(),
-        Some(RollbackMode::None)
-    );
-}
-
-#[test]
-fn parse_rollback_mode_best_effort_keyword() {
-    assert_eq!(
-        parse_rollback_mode(Some("best-effort")).unwrap(),
-        Some(RollbackMode::BestEffort)
-    );
-}
-
-#[test]
-fn parse_rollback_mode_unset_is_none_option() {
-    assert_eq!(parse_rollback_mode(None).unwrap(), None);
-}
-
-#[test]
-fn parse_rollback_mode_invalid_lists_accepted_values() {
-    let err = parse_rollback_mode(Some("yolo")).unwrap_err().to_string();
-    assert!(err.contains("invalid --rollback value: yolo"));
-    assert!(
-        err.contains("none, best-effort"),
-        "error must enumerate accepted values, got: {err}"
-    );
 }
 
 // -----------------------------------------------------------------------

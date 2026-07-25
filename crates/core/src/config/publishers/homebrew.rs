@@ -49,7 +49,7 @@ pub struct HomebrewConfig {
     /// Custom commit message template. Rendered via Tera with the standard
     /// release template variables (`ProjectName`, `Tag`, `Version`, etc.).
     /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
-    /// (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).
+    /// (set in `crates/stage-publish/src/homebrew/commit_msg.rs`).
     pub commit_msg_template: Option<String>,
     // Legacy flat `commit_author_name` / `commit_author_email` fields are
     // gone; use the structured `commit_author: { name, email, signing }`.

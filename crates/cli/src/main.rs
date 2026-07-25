@@ -349,9 +349,7 @@ fn run() {
             release_notes,
             workspace,
             preflight,
-            no_preflight,
             preflight_secrets,
-            strict_preflight,
             draft,
             release_header,
             release_header_tmpl,
@@ -368,16 +366,19 @@ fn run() {
             replace_existing,
             no_post_publish_poll,
             no_gate_submitter,
-            rollback,
             simulate_failure,
-            rollback_only,
-            from_run,
             show_skipped,
             allow_nondeterministic,
             summary_json,
             allow_ai_failure,
             allow_snapshot_publish,
-            no_failure_policy,
+            no_env_preflight,
+            // Removed flags: the clap value parser rejects them before any
+            // value can land here, so there is nothing to dispatch on.
+            removed_rollback: _,
+            removed_rollback_only: _,
+            removed_from_run: _,
+            removed_no_failure_policy: _,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -469,21 +470,16 @@ fn run() {
                     resume_release,
                     replace_existing,
                     preflight,
-                    no_preflight,
                     preflight_secrets,
-                    strict_preflight,
                     no_post_publish_poll,
                     no_gate_submitter,
-                    rollback,
                     simulate_failure,
-                    rollback_only,
-                    from_run,
                     show_skipped,
                     allow_nondeterministic,
                     summary_json,
                     allow_ai_failure,
                     allow_snapshot_publish,
-                    no_failure_policy,
+                    no_env_preflight,
                 })
             })
         }
@@ -1315,6 +1311,31 @@ mod tests {
         }
     }
 
+    /// `--branch` help must describe what `resolve_push_branch` actually
+    /// does. It auto-resolves via `git branch -r --contains <bump_sha>`,
+    /// which covers the ordinary CI tag-push case, so calling the flag
+    /// "required" there sends operators hunting for a value they don't need
+    /// — and hides the two cases where it genuinely is needed.
+    #[test]
+    fn tag_rollback_branch_help_matches_the_auto_resolution_it_documents() {
+        let mut cmd = Cli::command();
+        let help = cmd
+            .find_subcommand_mut("tag")
+            .expect("tag subcommand")
+            .find_subcommand_mut("rollback")
+            .expect("tag rollback subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.contains("auto-resolved"),
+            "--branch help must say the branch is auto-resolved: {help}"
+        );
+        assert!(
+            !help.contains("Required when HEAD is detached"),
+            "--branch help must not claim it is required in the ordinary CI case: {help}"
+        );
+    }
+
     #[test]
     fn test_cli_parses_release_nightly_flag() {
         let cli = Cli::try_parse_from(["anodizer", "release", "--nightly"]);
@@ -1950,25 +1971,47 @@ mod tests {
         }
     }
 
+    /// The automatic-rollback flag surface was removed with the policy it
+    /// drove. A script still passing one must be rejected at parse time AND
+    /// told what replaced it — a bare `is_err()` would also pass if clap
+    /// rejected the flag for an unrelated reason (a typo'd `long`, a
+    /// conflicts_with clash), and the pre-fix behavior even suggested the
+    /// unrelated `--prepare-only` for `--rollback-only`.
     #[test]
-    fn release_parses_rollback_none() {
-        let cli =
-            Cli::try_parse_from(["anodizer", "release", "--rollback", "none"]).expect("parses");
-        if let Some(Commands::Release { rollback, .. }) = cli.command {
-            assert_eq!(rollback.as_deref(), Some("none"));
-        } else {
-            panic!("expected Release command");
-        }
-    }
-
-    #[test]
-    fn release_parses_rollback_best_effort() {
-        let cli = Cli::try_parse_from(["anodizer", "release", "--rollback", "best-effort"])
-            .expect("parses");
-        if let Some(Commands::Release { rollback, .. }) = cli.command {
-            assert_eq!(rollback.as_deref(), Some("best-effort"));
-        } else {
-            panic!("expected Release command");
+    fn release_rejects_removed_rollback_flags() {
+        for argv in [
+            vec!["anodizer", "release", "--rollback", "none"],
+            vec!["anodizer", "release", "--rollback", "best-effort"],
+            vec!["anodizer", "release", "--rollback-only"],
+            vec![
+                "anodizer",
+                "release",
+                "--rollback-only",
+                "--from-run",
+                "v1.0.0",
+            ],
+            vec!["anodizer", "release", "--from-run", "v1.0.0"],
+            vec!["anodizer", "release", "--no-failure-policy"],
+        ] {
+            let err = Cli::try_parse_from(argv.clone())
+                .err()
+                .unwrap_or_else(|| panic!("{argv:?} must be rejected — the flag was removed"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{argv:?} must be rejected by the removed-flag parser, got {:?}",
+                err.kind()
+            );
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("re-running `anodizer release`")
+                    && rendered.contains("anodizer tag rollback"),
+                "{argv:?} must carry the migration, got: {rendered}"
+            );
+            assert!(
+                !rendered.contains("--prepare-only"),
+                "{argv:?} must not suggest the unrelated --prepare-only, got: {rendered}"
+            );
         }
     }
 
@@ -1994,33 +2037,11 @@ mod tests {
     }
 
     #[test]
-    fn release_from_run_requires_rollback_only() {
-        // --from-run without --rollback-only should be rejected by clap
-        // because the `requires = "rollback_only"` attribute fires.
-        let result = Cli::try_parse_from(["anodizer", "release", "--from-run", "abc123"]);
-        assert!(
-            result.is_err(),
-            "--from-run without --rollback-only must error"
-        );
-    }
-
-    #[test]
-    fn release_rollback_only_requires_from_run() {
-        // Symmetric requirement: --rollback-only without --from-run errors.
-        let result = Cli::try_parse_from(["anodizer", "release", "--rollback-only"]);
-        assert!(
-            result.is_err(),
-            "--rollback-only without --from-run must error"
-        );
-    }
-
-    #[test]
-    fn release_from_run_rejects_path_traversal() {
-        // `--from-run` is joined into a filesystem path by the
-        // rollback-only replay code; clap's value_parser must reject any
-        // operator-typed value that could traverse out of <dist>/run-*/.
-        // The error must surface at parse time so no pipeline work runs
-        // with a poisoned id.
+    fn promote_from_run_rejects_path_traversal() {
+        // `--from-run` is joined into a filesystem path by the run-report
+        // reader; clap's value_parser must reject any operator-typed value
+        // that could traverse out of <dist>/run-*/. The error must surface
+        // at parse time so no work runs with a poisoned id.
         for bad in [
             "../etc/passwd",
             "foo/bar",
@@ -2032,18 +2053,26 @@ mod tests {
             "foo bar",
             "foo;rm",
         ] {
-            let result =
-                Cli::try_parse_from(["anodizer", "release", "--rollback-only", "--from-run", bad]);
-            assert!(
-                result.is_err(),
-                "--from-run={:?} must be rejected at parse time",
-                bad
+            // `--to` is supplied so a missing-required-argument error can
+            // never stand in for the value_parser's rejection — the parser
+            // is the only thing left that can fail this parse.
+            let Err(err) =
+                Cli::try_parse_from(["anodizer", "promote", "--to", "stable", "--from-run", bad])
+            else {
+                panic!("--from-run={bad:?} must be rejected at parse time");
+            };
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "--from-run={:?} must fail the run-id value_parser, got {:?}",
+                bad,
+                err.kind()
             );
         }
     }
 
     #[test]
-    fn release_from_run_accepts_normal_ids() {
+    fn promote_from_run_accepts_normal_ids() {
         // The happy-path shapes a real run_id might take. These should
         // PARSE successfully (the command may still fail later because
         // the report.json doesn't exist on disk; that's a runtime
@@ -2056,7 +2085,7 @@ mod tests {
             "DEADBEEF",
         ] {
             let result =
-                Cli::try_parse_from(["anodizer", "release", "--rollback-only", "--from-run", good]);
+                Cli::try_parse_from(["anodizer", "promote", "--to", "stable", "--from-run", good]);
             assert!(
                 result.is_ok(),
                 "--from-run={:?} should parse, got {:?}",
@@ -2119,9 +2148,6 @@ mod tests {
             .to_string();
         for flag in [
             "--no-gate-submitter",
-            "--rollback",
-            "--rollback-only",
-            "--from-run",
             "--allow-nondeterministic",
             "--summary-json",
         ] {
@@ -2131,10 +2157,44 @@ mod tests {
                 flag
             );
         }
+        // The automatic-rollback surface is gone; a stale help entry would
+        // advertise a flag the parser rejects.
+        for removed in ["--rollback", "--rollback-only", "--from-run"] {
+            assert!(
+                !release_help.contains(removed),
+                "release help must NOT mention the removed {} flag",
+                removed
+            );
+        }
         // --simulate-failure is hidden; it should NOT appear in --help.
         assert!(
             !release_help.contains("--simulate-failure"),
             "release help should NOT mention --simulate-failure (it's hide=true)"
         );
+    }
+
+    /// Convergent re-run is the operational contract of this command — it is
+    /// how a failed release is recovered, and the reason a repeated
+    /// invocation is safe. An operator reading `release --help` and finding
+    /// no mention of it has to guess, and the wrong guess (a manual cleanup
+    /// before retrying) is destructive.
+    #[test]
+    fn release_help_states_the_convergent_rerun_contract() {
+        let mut cmd = Cli::command();
+        // `render_long_help` is what `--help` prints; `render_help` is the
+        // `-h` form, which by clap convention carries only the summary line.
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_long_help()
+            .to_string();
+        // Single words only: the renderer hard-wraps to the terminal width,
+        // so a multi-word phrase can straddle a line break at any width.
+        for word in ["Re-running", "converges", "DIVERGED", "rollback`"] {
+            assert!(
+                release_help.contains(word),
+                "release help must state the convergent re-run contract (missing {word:?})"
+            );
+        }
     }
 }

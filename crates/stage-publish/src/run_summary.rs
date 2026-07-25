@@ -64,15 +64,6 @@ pub struct RunSummary {
     /// versions parseable by newer readers.
     #[serde(default)]
     pub irreversibly_published: bool,
-    /// Outcome of the in-process failure policy (`release.on_failure`),
-    /// recorded after a release-pipeline failure so the summary states
-    /// which recovery path the run took. `None` on successful runs and
-    /// on summaries written before the policy executed.
-    ///
-    /// `#[serde(default)]` keeps summaries written by older anodize
-    /// versions parseable by newer readers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_policy: Option<FailurePolicyRecord>,
     /// Outcome of the post-publish verification gate (`verify_release:`),
     /// recorded on a SEPARATE axis from the publisher rows. The gate runs
     /// LAST — after the irreversible publish — so the publisher rows still
@@ -139,30 +130,6 @@ pub struct VerifyReleaseRecord {
     pub issues: Vec<String>,
 }
 
-/// What the in-process failure policy decided and executed after a
-/// release-pipeline failure. See `release.on_failure`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FailurePolicyRecord {
-    /// Configured policy: `rollback` or `hold`.
-    pub configured: String,
-    /// Action actually taken: `rolled-back`, `held`, or
-    /// `rollback-failed` (rollback was attempted and refused/errored;
-    /// state is effectively held).
-    pub action: String,
-    /// True when a configured `rollback` degraded to hold because a
-    /// one-way-door publisher had already landed.
-    pub degraded: bool,
-    /// Submitter-group publishers whose publish landed and burned the
-    /// version (the degrade evidence). Empty unless `degraded`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub burned_publishers: Vec<String>,
-    /// Error from the rollback execution when `action` is
-    /// `rollback-failed`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rollback_error: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RunSummaryResult {
@@ -189,7 +156,11 @@ pub struct DeterminismAllowlistEntry {
 }
 
 impl RunSummary {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+    /// v2 drops the `failure_policy` field: automatic rollback (the only
+    /// producer of that field) was removed in favor of convergent reconcile
+    /// and `anodizer tag rollback`. [`parse_run_summary_lenient`] keeps v1
+    /// documents (written with the field present) parseable.
+    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
     /// Build a `RunSummary` from `Context`. Pulls per-publisher results
     /// from `ctx.publish_report`, the compile-time and runtime
@@ -292,7 +263,6 @@ impl RunSummary {
             publishers_succeeded,
             publishers_failed,
             irreversibly_published,
-            failure_policy: None,
             verify_release,
             retry_backoff_secs: anodizer_core::retry::total_retry_backoff().as_secs_f64(),
             retry_by_scope: anodizer_core::retry::retry_scope_breakdown()
@@ -523,40 +493,18 @@ pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
-/// Stamp `record` onto every parseable run summary under `dist` (both
-/// layout levels — see [`collect_run_summary_paths`]) and rewrite them
-/// in place. Returns the number of summaries updated. Unreadable or
-/// unparseable files are skipped via `warn`: the record is a secondary
-/// observability channel and must never mask the release failure that
-/// triggered it.
-pub fn record_failure_policy(
-    dist: &Path,
-    record: &FailurePolicyRecord,
-    warn: &mut dyn FnMut(&str),
-) -> usize {
-    let mut updated = 0;
-    for path in collect_run_summary_paths(dist) {
-        let parsed: Result<RunSummary> = fs::read_to_string(&path)
-            .map_err(anyhow::Error::from)
-            .and_then(|text| Ok(serde_json::from_str(&text)?));
-        match parsed {
-            Ok(mut summary) => {
-                summary.failure_policy = Some(record.clone());
-                match write_summary_json(&summary, &path) {
-                    Ok(_) => updated += 1,
-                    Err(e) => warn(&format!(
-                        "failure-policy record write failed for {}: {e:#}",
-                        path.display()
-                    )),
-                }
-            }
-            Err(e) => warn(&format!(
-                "failure-policy record skipped unreadable summary {}: {e:#}",
-                path.display()
-            )),
-        }
+/// Parse a `summary.json` document tolerant of fields dropped since it was
+/// written. Schema v1 documents may carry a `failure_policy` key that v2's
+/// `deny_unknown_fields` would otherwise reject outright; stripping that one
+/// known-removed key before the strict deserialize keeps old ledger entries
+/// (consumed by `ledger_fast_path`) readable without loosening the schema
+/// for genuinely-unrecognized drift.
+pub fn parse_run_summary_lenient(text: &str) -> Option<RunSummary> {
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("failure_policy");
     }
-    updated
+    serde_json::from_value(value).ok()
 }
 
 /// How far the publish stage got this run, for the zero-results
@@ -727,7 +675,6 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
-            failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
             retry_by_scope: vec![],
@@ -742,6 +689,7 @@ mod tests {
                         publisher: "github-release".to_string(),
                         primary_ref: Some("https://example.com/r/v1".to_string()),
                         artifact_paths: vec![],
+                        artifact_digests: Default::default(),
                         nondeterministic: None,
                         extra: anodizer_core::PublishEvidenceExtra::Empty,
                     }),
@@ -1459,7 +1407,6 @@ mod tests {
             publishers_succeeded: 0,
             publishers_failed: 0,
             irreversibly_published: false,
-            failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
             retry_by_scope: vec![],
@@ -1507,7 +1454,6 @@ mod tests {
             publishers_succeeded: 0,
             publishers_failed: 0,
             irreversibly_published: false,
-            failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
             retry_by_scope: vec![],
@@ -1539,7 +1485,6 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
-            failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
             retry_by_scope: vec![],
@@ -1592,7 +1537,6 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
-            failure_policy: None,
             verify_release: None,
             retry_backoff_secs: 0.0,
             retry_by_scope: vec![],
@@ -1632,30 +1576,63 @@ mod tests {
     }
 
     #[test]
-    fn missing_failure_policy_field_defaults_to_none() {
-        // Summaries written before the failure-policy field existed must
-        // stay parseable by newer readers.
-        let mut value = serde_json::to_value(populated_summary()).unwrap();
-        value.as_object_mut().unwrap().remove("failure_policy");
-        let parsed: RunSummary = serde_json::from_value(value).unwrap();
-        assert!(parsed.failure_policy.is_none());
+    fn parse_run_summary_lenient_accepts_v1_document_with_failure_policy() {
+        // A real schema-v1 summary.json, captured before `failure_policy`
+        // was removed for v2. `deny_unknown_fields` would reject this
+        // verbatim; the ledger fast path must still read it.
+        let v1_json = r#"{
+            "schema_version": 1,
+            "anodize_version": "0.21.0",
+            "tag": "v0.21.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "publishers_succeeded": 1,
+            "publishers_failed": 0,
+            "irreversibly_published": true,
+            "failure_policy": {
+                "configured": "rollback",
+                "action": "held",
+                "degraded": true,
+                "burned_publishers": ["cargo"],
+                "rollback_error": null
+            },
+            "results": [
+                {
+                    "name": "cargo",
+                    "group": "Submitter",
+                    "required": true,
+                    "status": "succeeded",
+                    "evidence": null
+                }
+            ],
+            "determinism_allowlist": { "compile_time": [], "runtime": [] }
+        }"#;
+        let parsed = parse_run_summary_lenient(v1_json).expect("v1 document parses");
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.tag, "v0.21.0");
+        assert_eq!(parsed.results.len(), 1);
+        assert_eq!(parsed.results[0].name, "cargo");
     }
 
     #[test]
-    fn failure_policy_record_round_trips() {
-        let mut summary = populated_summary();
-        summary.failure_policy = Some(FailurePolicyRecord {
-            configured: "rollback".to_string(),
-            action: "held".to_string(),
-            degraded: true,
-            burned_publishers: vec!["cargo".to_string()],
-            rollback_error: None,
-        });
-        let text = serde_json::to_string(&summary).unwrap();
-        let parsed: RunSummary = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed, summary);
-        // Optional sub-fields stay off the wire when empty.
-        assert!(!text.contains("rollback_error"));
+    fn parse_run_summary_lenient_rejects_genuinely_unknown_field() {
+        // Stripping ONLY the known-removed `failure_policy` key must not
+        // turn into a blanket "ignore anything unrecognized" — a field this
+        // reader has never heard of should still fail the strict parse.
+        let json = r#"{
+            "schema_version": 2,
+            "anodize_version": "0.22.0",
+            "tag": "v0.22.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "publishers_succeeded": 0,
+            "publishers_failed": 0,
+            "irreversibly_published": false,
+            "some_future_field": true,
+            "results": [],
+            "determinism_allowlist": { "compile_time": [], "runtime": [] }
+        }"#;
+        assert!(parse_run_summary_lenient(json).is_none());
     }
 
     #[test]
@@ -1681,59 +1658,5 @@ mod tests {
                 root_run.join("summary.json")
             ]
         );
-    }
-
-    #[test]
-    fn record_failure_policy_stamps_every_summary_in_both_layouts() {
-        let dist = tempfile::tempdir().unwrap();
-        let root_path = dist.path().join("run-v1.0.0").join("summary.json");
-        let crate_path = dist
-            .path()
-            .join("crate-a")
-            .join("run-crate-a-v1.0.0")
-            .join("summary.json");
-        write_summary_json(&populated_summary(), &root_path).unwrap();
-        write_summary_json(&populated_summary(), &crate_path).unwrap();
-
-        let record = FailurePolicyRecord {
-            configured: "rollback".to_string(),
-            action: "rolled-back".to_string(),
-            degraded: false,
-            burned_publishers: vec![],
-            rollback_error: None,
-        };
-        let mut warnings: Vec<String> = Vec::new();
-        let updated =
-            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
-        assert_eq!(updated, 2, "warnings: {warnings:?}");
-        for path in [&root_path, &crate_path] {
-            let parsed: RunSummary =
-                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(parsed.failure_policy.as_ref(), Some(&record));
-            // Stamping must not disturb the publish results.
-            assert_eq!(parsed.results.len(), 2);
-        }
-    }
-
-    #[test]
-    fn record_failure_policy_skips_unparseable_summary_with_warning() {
-        let dist = tempfile::tempdir().unwrap();
-        let bad = dist.path().join("run-v1.0.0").join("summary.json");
-        fs::create_dir_all(bad.parent().unwrap()).unwrap();
-        fs::write(&bad, "not json").unwrap();
-
-        let record = FailurePolicyRecord {
-            configured: "hold".to_string(),
-            action: "held".to_string(),
-            degraded: false,
-            burned_publishers: vec![],
-            rollback_error: None,
-        };
-        let mut warnings: Vec<String> = Vec::new();
-        let updated =
-            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
-        assert_eq!(updated, 0);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("summary"), "got: {warnings:?}");
     }
 }

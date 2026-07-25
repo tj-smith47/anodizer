@@ -13,7 +13,7 @@ use crate::targets::SnapcraftTarget;
 ///
 /// `primary_ref` points at the first uploaded package's snapcraft.io
 /// listing; `extra.snapcraft_targets` carries the full per-target
-/// snapshot used by `--rollback-only --from-run` to surface the
+/// snapshot used by `anodizer tag rollback` to surface the
 /// (package, channel) tuples an operator needs to address manually.
 pub(crate) fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
     let mut evidence = PublishEvidence::new("snapcraft");

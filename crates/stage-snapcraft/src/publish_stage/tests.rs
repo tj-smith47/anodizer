@@ -38,6 +38,24 @@ fn snap_artifact(crate_name: &str) -> anodizer_core::artifact::Artifact {
     }
 }
 
+/// Context options anchored at an empty directory, plus the temp dir that
+/// must outlive the context.
+///
+/// The upload loop resolves each crate's version from its git tag, and tag
+/// discovery falls back to the process CWD when `project_root` is unset — so a
+/// fixture without one resolves against whatever repository the test binary
+/// runs inside, and the snap version tracks that repository's latest tag
+/// instead of the version the fixture set. Anchoring at a tagless directory
+/// leaves the context version as the only reachable answer.
+fn tagless_project_root() -> (tempfile::TempDir, anodizer_core::context::ContextOptions) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let options = anodizer_core::context::ContextOptions {
+        project_root: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
+    (dir, options)
+}
+
 // ---------------------------------------------------------------
 // Idempotent retry floor — the snapcraft upload is an opaque subprocess
 // (`run_capture_timeout`) with no in-process retry-mock seam, so the
@@ -83,7 +101,7 @@ fn upload_policy_applies_idempotent_floor() {
 
 #[test]
 fn build_snapcraft_evidence_pins_success_wire_shape() {
-    // Success-path evidence is what `--rollback-only --from-run`
+    // Success-path evidence is what `anodizer tag rollback`
     // and any replay consumer reads back. Pin the three load-bearing
     // fields: publisher name, primary_ref pointing at the first
     // package's snapcraft.io listing, and the full per-target
@@ -525,7 +543,7 @@ fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
     // Load-bearing invariant: a failed snap upload lands as a
     // `Failed(_)` entry, NOT a stage-error bail. This is the
     // property the announce gate (`AnnounceGate::AllPublishers`)
-    // and `--rollback-only --from-run` consumers depend on —
+    // and `anodizer tag rollback` consumers depend on —
     // without this entry, neither downstream surface knows the
     // snap upload tried and failed.
     let mut ctx = TestContextBuilder::new().build();
@@ -1671,7 +1689,8 @@ fn dedup_rejection_with_matching_revision_promotes_instead_of_failing() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -1780,7 +1799,8 @@ fn dedup_rejection_promotion_failure_is_reported_distinctly() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -1876,7 +1896,8 @@ fn preupload_probe_promotes_orphaned_revision_instead_of_skipping() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -1981,7 +2002,8 @@ fn preupload_probe_fully_released_revision_still_skips_cleanly() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -2072,7 +2094,8 @@ fn preupload_promotion_failure_is_reported_as_failed() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -2162,7 +2185,8 @@ fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,
@@ -2280,7 +2304,8 @@ fn fresh_dual_arch_upload_records_a_revision_per_arch() {
         }],
         ..Default::default()
     };
-    let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+    let (_tagless_root, options) = tagless_project_root();
+    let mut ctx = Context::new(config, options);
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Snap,

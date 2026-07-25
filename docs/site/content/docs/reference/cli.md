@@ -25,7 +25,7 @@ Release Rust projects with ease
 
 ### `anodizer release`
 
-Run the full release pipeline
+Run the full release pipeline. Re-running the identical command converges on already-published state instead of double-publishing, so a re-run is how a failed release is recovered
 
 
 | Flag | Short | Default | Description |
@@ -49,9 +49,7 @@ Run the full release pipeline
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 | `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
-| `--no-preflight` | — | — | Skip the automatic pre-flight publisher-state check |
 | `--preflight-secrets` | — | — | Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline. |
-| `--strict-preflight` | — | — | Strict pre-flight: treat Unknown publisher state and indeterminate probe results (5xx / rate-limit / network failure / undeterminable permissions) as blockers. Implied by --strict; configurable per-project via preflight.strict |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |
 | `--release-header-tmpl` | — | — | Path to a template file for release header (rendered with template variables) |
@@ -60,9 +58,6 @@ Run the full release pipeline
 | `--release-notes-tmpl` | — | — | Path to a template file for release notes (rendered with template variables, overrides --release-notes) |
 | `--fail-fast` | — | — | Abort immediately on first error during publishing |
 | `--no-gate-submitter` | — | — | Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed, or when the pre-submitter verify-release check did not pass |
-| `--rollback` | — | — | Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise. |
-| `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
-| `--from-run` | — | — | Prior run id whose state to load when running --rollback-only. Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a full re-roll. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |
 | `--show-skipped` | — | — | Show per-crate 'no <publisher> config block' skip lines at default verbosity (normally only visible with --debug). Use to diagnose why a publisher didn't run for a given crate. |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state. |
@@ -177,7 +172,7 @@ Check availability of required external tools
 
 ### `anodizer preflight`
 
-Verify the environment can run the configured release: required tools, env vars/secrets (presence only — values are never printed), endpoint reachability, docker daemon, and loadable key material, all derived from the resolved config. Every failure is reported in one pass and the exit code is non-zero when anything is missing. The same checks run automatically at the start of `anodizer release`
+Verify the environment can run the configured release: required tools, env vars/secrets (presence only — values are never printed), endpoint reachability, docker daemon, and loadable key material, all derived from the resolved config. Every failure is reported in one pass and the exit code is non-zero when anything is missing. The same checks run automatically at the start of `anodizer release`. Also prints the per-publisher reconcile table (is the target version already published?); only a required publisher's content divergence exits non-zero — an already-complete or unreachable publisher does not
 
 
 | Flag | Short | Default | Description |
@@ -268,7 +263,7 @@ Auto-tag based on commit message directives
 
 ### `anodizer tag rollback`
 
-Rollback anodize-managed tags at a SHA, then revert (or reset past) the bump commit they point at
+Withdraw a release: unwind the publishers the run recorded, delete the anodize-managed tags at a SHA, then revert (or reset past) the bump commit they point at
 
 
 | Flag | Short | Default | Description |
@@ -279,7 +274,7 @@ Rollback anodize-managed tags at a SHA, then revert (or reset past) the bump com
 | `--force` | — | — | Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, when the crates.io index shows the tag's crate@version live (GLOBAL state — published by any prior run, not just this one; an unreachable index also refuses), or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward |
 | `--scope` | — | `all` | Tag-shape filter: all | lockstep | per-crate |
 | `--mode` | — | `revert` | Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push) |
-| `--branch` | — | — | Branch name to push the revert commit to. Required when HEAD is detached and no local branch points at it (typical CI tag-push context, where GITHUB_REF_NAME is the tag — not the bump-commit branch). Pass --branch master (or whichever branch the bump commit was created on). |
+| `--branch` | — | — | Branch name to push the revert commit to. Usually unnecessary: the branch is auto-resolved from the bump commit via `git branch -r --contains <sha>`, which covers the ordinary CI tag-push case (detached HEAD, GITHUB_REF_NAME set to the tag). Needed only when that resolution is ambiguous or empty — the bump commit is on two or more remote branches, or on none and HEAD cannot be resolved either. Both cases fail with an error naming this flag. Pass --branch master (or whichever branch the bump commit was created on). |
 
 
 ### `anodizer continue`

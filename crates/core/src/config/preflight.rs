@@ -20,8 +20,8 @@ pub struct PreflightConfig {
     /// credentials are actually valid; `strict: true` makes them abort
     /// instead (fail-closed). Definitive failures (credentials rejected,
     /// target missing) keep their required→blocker / optional→warning
-    /// severity regardless of this setting. Equivalent to passing
-    /// `--strict-preflight` (or the global `--strict`) on every run.
+    /// severity regardless of this setting. Equivalent to passing the
+    /// global `--strict` on every run.
     pub strict: bool,
 }
 

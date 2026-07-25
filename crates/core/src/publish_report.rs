@@ -30,12 +30,10 @@ pub enum PublisherGroup {
     /// **npm**, and **pypi** are immutable registries whose landed publish
     /// burns the version (npm/pypi rollback is warn-only; cargo has a real
     /// programmatic `yank`). The one exception with a programmatic rollback
-    /// is **cargo**. A multi-crate
-    /// `cargo publish` that succeeds on crate A then fails on crate B
-    /// records A and opts in via
-    /// [`Publisher::programmatic_rollback_on_failure`](crate::Publisher::programmatic_rollback_on_failure),
-    /// so the rollback path issues `cargo yank` for A even though the row's
-    /// outcome is `Failed`.
+    /// is **cargo**: a multi-crate `cargo publish` that succeeds on crate A
+    /// then fails on crate B records A in its evidence, and `anodizer tag
+    /// rollback`'s replay path issues `cargo yank` for A even though the
+    /// row's outcome is `Failed`.
     Submitter,
 }
 
@@ -66,7 +64,11 @@ pub enum PublisherOutcome {
     PendingModeration,
     /// Publisher succeeded but a downstream validation step is still polling (winget).
     PendingValidation,
-    /// Publisher succeeded; rollback was skipped because `--rollback=none` was set.
+    /// Legacy: a publisher that succeeded while the (removed) automatic
+    /// rollback policy was disabled. No code path produces this outcome
+    /// any more; the variant survives so reports and summaries written by
+    /// older anodizer versions still deserialize — `anodizer tag rollback`
+    /// reads them to decide what to withdraw.
     PublishedNoRollback,
 }
 
@@ -251,44 +253,6 @@ impl PublishReport {
             .collect()
     }
 
-    /// A concise, run-wide human summary of the required failure(s) that
-    /// triggered a rollback — each failed required publisher rendered as
-    /// `<name>: <error>` and joined with `; `. Empty when no required
-    /// publisher failed.
-    ///
-    /// Threaded into the `on_rollback` hook surface as `{{ .Reason }}` /
-    /// `ANODIZER_ROLLBACK_REASON` so a reverted-but-never-failed publisher's
-    /// hook learns WHY the unwind fired (which sibling failure), a fact
-    /// `{{ .Error }}` (that publisher's own revert error, empty on a clean
-    /// revert) cannot carry. Shares the required-failure filter with
-    /// [`Self::required_failure_names`] so the reason names exactly the set
-    /// the exit gate reports.
-    pub fn required_failure_reason(&self) -> String {
-        self.results
-            .iter()
-            .filter(|r| r.required && r.outcome.is_required_release_failure())
-            .map(|r| {
-                // Exhaustive match (not `_ =>`) mirrors
-                // `is_required_release_failure`: a future message-carrying
-                // required-failure variant must be compile-forced to extract
-                // its message here rather than silently rendering `<name>: `
-                // with an empty reason.
-                let msg = match &r.outcome {
-                    PublisherOutcome::Failed(m) | PublisherOutcome::RollbackFailed(m) => m.as_str(),
-                    PublisherOutcome::Succeeded
-                    | PublisherOutcome::Skipped(_)
-                    | PublisherOutcome::RolledBack
-                    | PublisherOutcome::RollbackSkippedNoScope
-                    | PublisherOutcome::PendingModeration
-                    | PublisherOutcome::PendingValidation
-                    | PublisherOutcome::PublishedNoRollback => "",
-                };
-                format!("{}: {}", r.name, msg)
-            })
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
-
     /// Returns true if any publisher in `group` failed.
     ///
     /// When `required_only` is true, only publishers with `required: true` count.
@@ -435,7 +399,8 @@ pub fn gate_required_failures(
     if !failed.is_empty() {
         anyhow::bail!(
             "{} required publisher(s) failed: {}. {} Inspect dist/run-<id>/report.json \
-             for details and use --rollback-only --from-run=<id> to retry rollback.",
+             for details; re-run the same release command to converge, or \
+             `anodizer tag rollback` to withdraw the release deliberately.",
             failed.len(),
             failed.join(", "),
             ran_context

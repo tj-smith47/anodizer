@@ -9,7 +9,7 @@
 //!   up to a sanity cap of 10 pages (1000 PRs). Distinguishes
 //!   auth-failure / repo-not-found from genuine empty results via
 //!   [`FindPrError`] so callers can surface actionable warns at
-//!   `--rollback-only` time.
+//!   `anodizer tag rollback` time.
 //! - [`close_pr_via_api`] — `PATCH /repos/{owner}/{repo}/pulls/{n}` with
 //!   `{"state": "closed"}`. Returns a [`CloseOutcome`] enum: `Closed`
 //!   on 2xx, `AlreadyClosed` on 404 / 410 / 422 (the PR was already
@@ -49,7 +49,7 @@ use anodizer_core::http::github_api_base;
 /// Mirrors the artifactory rollback bucketing in
 /// [`crate::artifactory::DeleteOutcome`] — `AlreadyClosed` is a
 /// **success bucket** because the desired end-state (PR not open) is
-/// already true. Re-running `--rollback-only` after a partial success
+/// already true. Re-running `anodizer tag rollback` after a partial success
 /// must not surface `AlreadyClosed` PRs as failures; that's how the
 /// operator confirms the rollback was complete.
 #[derive(Debug, PartialEq, Eq)]

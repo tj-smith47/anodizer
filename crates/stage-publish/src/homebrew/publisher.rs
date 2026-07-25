@@ -14,7 +14,7 @@
 //! clone into a `tempfile::tempdir()` and drop the clone at the end
 //! of the call. This publisher captures the re-clone parameters from
 //! the live config *before* `publish_to_homebrew` runs, then records
-//! them after a successful push so a later `--rollback-only` has
+//! them after a successful push so a later `anodizer tag rollback` has
 //! everything it needs without depending on the ephemeral tempdir.
 //!
 //! CREDENTIAL HANDLING: [`HomebrewTarget`] stores `token_env_var` —
@@ -280,18 +280,17 @@ fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::Ho
         .collect()
 }
 
-/// Build the open-PR reconcile targets for `crate_name`: its formula, plus
-/// its same-tap cask when one is configured and its skip gates don't trip.
-/// Formula and cask land in the same tap through *separate* PRs, so both
-/// must be enumerated — probing formula-only would report `Complete` while
-/// the cask PR was still missing. Called inside `crate_name`'s own version
-/// scope so the probed `version` matches what that crate would actually
-/// publish under independent-version workspaces.
-fn build_homebrew_crate_reconcile_targets(
+/// Build the open-PR reconcile target for `crate_name`. A formula and its
+/// same-tap cask co-publish through a SINGLE pull request, so this is one
+/// target whose title names both when a cask is in play — the same title
+/// `submit_homebrew_pr` opens. Called inside `crate_name`'s own version scope
+/// so the probed `version` matches what that crate would actually publish
+/// under independent-version workspaces.
+fn build_homebrew_crate_reconcile_target(
     ctx: &Context,
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
-) -> anyhow::Result<Option<Vec<crate::util::PrReconcileTarget>>> {
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
     let Some(hb_cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
         .and_then(|c| c.publish.as_ref())
         .and_then(|p| p.homebrew.as_ref())
@@ -317,29 +316,36 @@ fn build_homebrew_crate_reconcile_targets(
     let version = ctx.version();
 
     let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
-    let mut targets = vec![crate::util::PrReconcileTarget {
-        publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
-        upstream_owner: upstream_owner.clone(),
-        upstream_repo: upstream_repo.clone(),
-        package: crate::util::render_or_warn(ctx, log, "brew.name", formula_name_raw)?,
-        version: version.clone(),
-        token: token.clone(),
-    }];
+    let package = crate::util::render_or_warn(ctx, log, "brew.name", formula_name_raw)?;
 
-    if let Some(cask_cfg) = hb_cfg.cask.as_ref()
-        && !super::publish_cask::cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)?
-    {
-        let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
-        targets.push(crate::util::PrReconcileTarget {
-            publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
-            upstream_owner,
-            upstream_repo,
-            package: crate::util::render_or_warn(ctx, log, "brew.cask.name", cask_name_raw)?,
-            version,
-            token,
-        });
-    }
-    Ok(Some(targets))
+    // A cask whose gates trip never reaches the PR, so naming it in the
+    // expected title would strand this publisher at Absent forever.
+    let cask_name = match hb_cfg.cask.as_ref() {
+        Some(cask_cfg)
+            if !super::publish_cask::cask_skip_gates_trip(
+                ctx, hb_cfg, cask_cfg, crate_name, log,
+            )? =>
+        {
+            let raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
+            Some(crate::util::render_or_warn(
+                ctx,
+                log,
+                "brew.cask.name",
+                raw,
+            )?)
+        }
+        _ => None,
+    };
+
+    Ok(Some(crate::util::PrReconcileTarget {
+        publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
+        title: super::publish_formula::publish::pr_title(&package, cask_name.as_deref(), &version),
+        upstream_owner,
+        upstream_repo,
+        package,
+        version,
+        token,
+    }))
 }
 
 /// Build the open-PR reconcile target for one top-level `homebrew_casks:`
@@ -366,12 +372,15 @@ fn build_homebrew_top_cask_reconcile_target(
         &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
     let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
+    let package = crate::util::render_or_warn(ctx, log, "homebrew_casks.name", cask_name_raw)?;
+    let version = ctx.version();
     Ok(Some(crate::util::PrReconcileTarget {
         publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
+        title: super::publish_top::cask_pr_title(&package, &version),
         upstream_owner,
         upstream_repo,
-        package: crate::util::render_or_warn(ctx, log, "homebrew_casks.name", cask_name_raw)?,
-        version: ctx.version(),
+        package,
+        version,
         token: crate::util::resolve_repo_token(
             ctx,
             cask_cfg.repository.as_ref(),
@@ -518,10 +527,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| build_homebrew_crate_reconcile_targets(ctx, crate_name, &log),
+                |ctx| build_homebrew_crate_reconcile_target(ctx, crate_name, &log),
             )?;
             match scoped {
-                Some(mut t) => targets.append(&mut t),
+                Some(t) => targets.push(t),
                 None => return Ok(ReconcileState::Absent),
             }
         }
@@ -1452,8 +1461,11 @@ mod publisher_tests {
         assert!(matches!(state, anodizer_core::ReconcileState::Absent));
     }
 
+    /// Formula and same-tap cask co-publish through ONE pull request, so the
+    /// probe must expect the combined title. Naming only the formula would
+    /// miss the real PR and re-open a duplicate on every converged re-run.
     #[test]
-    fn homebrew_reconcile_targets_cover_formula_and_same_tap_cask() {
+    fn homebrew_reconcile_title_names_formula_and_same_tap_cask() {
         let mut c = homebrew_crate("demo");
         if let Some(h) = c.publish.as_mut().and_then(|p| p.homebrew.as_mut()) {
             h.name = Some("demo-formula".to_string());
@@ -1464,20 +1476,24 @@ mod publisher_tests {
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
         let log = ctx.logger("publish");
-        let targets = build_homebrew_crate_reconcile_targets(&ctx, "demo", &log)
+        let target = build_homebrew_crate_reconcile_target(&ctx, "demo", &log)
             .expect("target build ok")
-            .expect("targets resolved");
-        let packages: Vec<&str> = targets.iter().map(|t| t.package.as_str()).collect();
+            .expect("target resolved");
         assert_eq!(
-            packages,
-            vec!["demo-formula", "demo-cask"],
-            "formula and its same-tap cask open SEPARATE PRs — probing only the \
-             formula would report Complete while the cask PR was still missing"
+            target.title,
+            crate::homebrew::publish_formula::publish::pr_title(
+                "demo-formula",
+                Some("demo-cask"),
+                &ctx.version()
+            ),
+            "the probe's expected title must be the one the submitter opens"
         );
     }
 
+    /// A cask whose skip gates trip is never published, so naming it in the
+    /// expected title would strand this publisher at Absent forever.
     #[test]
-    fn homebrew_reconcile_targets_skip_cask_whose_gates_trip() {
+    fn homebrew_reconcile_title_omits_cask_whose_gates_trip() {
         let mut c = homebrew_crate("demo");
         if let Some(h) = c.publish.as_mut().and_then(|p| p.homebrew.as_mut()) {
             h.cask = Some(anodizer_core::config::HomebrewCaskConfig {
@@ -1488,15 +1504,17 @@ mod publisher_tests {
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
         let log = ctx.logger("publish");
-        let targets = build_homebrew_crate_reconcile_targets(&ctx, "demo", &log)
+        let target = build_homebrew_crate_reconcile_target(&ctx, "demo", &log)
             .expect("target build ok")
-            .expect("targets resolved");
-        let packages: Vec<&str> = targets.iter().map(|t| t.package.as_str()).collect();
+            .expect("target resolved");
+        assert!(
+            !target.title.contains("demo-cask"),
+            "a skipped cask must not appear in the expected title: {}",
+            target.title
+        );
         assert_eq!(
-            packages,
-            vec!["demo"],
-            "a skipped cask is never published, so demanding an open PR for it \
-             would strand the publisher at Absent forever"
+            target.title,
+            crate::homebrew::publish_formula::publish::pr_title("demo", None, &ctx.version())
         );
     }
 

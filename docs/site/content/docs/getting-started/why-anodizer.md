@@ -235,7 +235,7 @@ nightly:
 - uses: tj-smith47/anodizer-action@v1
   with:
     from-branch: my-feature-branch    # build anodizer from this branch
-    args: release --nightly --no-preflight
+    args: release --nightly --all --force
     apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
 ```
 

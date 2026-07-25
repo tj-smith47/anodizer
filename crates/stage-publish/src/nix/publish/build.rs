@@ -11,6 +11,12 @@ use super::super::generate::{SourceRootEntry, nix_system};
 use super::super::hashing::hex_sha256_to_nix_base32;
 use anodizer_core::elf::is_dynamically_linked;
 
+/// The pull-request title for a derivation bump. Shared with the reconcile
+/// probe so a converged re-run looks for the title this function produced.
+pub(crate) fn pr_title(name: &str, version: &str) -> String {
+    format!("Update {} to {}", name, version)
+}
+
 // ---------------------------------------------------------------------------
 // Artifact + archive helpers
 // ---------------------------------------------------------------------------
@@ -550,7 +556,7 @@ pub(super) fn finalize_publish(
             // "blocked queue" to recover from here.
             update_existing_pr: false,
         },
-        &format!("Update {} to {}", name, version),
+        &pr_title(name, version),
         &format!(
             "## Package\n- **Name**: {}\n- **Version**: {}\n\n{}",
             name,

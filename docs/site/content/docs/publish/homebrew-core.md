@@ -26,7 +26,7 @@ Most projects use a tap. Reach for `homebrew_cores` only once your tool is popul
 |-------|--------------------|----------|--------------|-------|
 | Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` |
 
-The bump is **fully reversible** — it opens a pull request, which a triggered rollback closes (`--rollback-only --from-run`). Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release.
+The bump is **fully reversible** — it opens a pull request, which `anodizer tag rollback`'s publisher-unwind step closes when you deliberately withdraw the release. Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release. A re-run of the same release also reconciles cleanly — it finds the already-open PR and skips rather than opening a duplicate.
 
 ## Quick start
 

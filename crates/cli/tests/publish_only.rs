@@ -246,7 +246,7 @@ fn tag_head(repo: &Path, version: &str) -> String {
 /// / PublishStage emit log lines), and does NOT exercise the build /
 /// archive / nfpm stages.
 ///
-/// Drives `anodize release --publish-only --dry-run --no-preflight`
+/// Drives `anodize release --publish-only --dry-run`
 /// against a pre-bootstrapped dist. Asserts on stdout markers that pin
 /// the pipeline composition end-to-end.
 #[test]
@@ -278,7 +278,6 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
             "release",
             "--publish-only",
             "--dry-run",
-            "--no-preflight",
             "--skip",
             "announce", // no announce config in the fixture
         ])
@@ -396,7 +395,6 @@ fn publish_only_does_not_overwrite_preserved_config_yaml() {
             "release",
             "--publish-only",
             "--dry-run",
-            "--no-preflight",
             "--skip",
             "announce",
         ])
@@ -458,7 +456,7 @@ fn publish_only_missing_context_json_errors_clearly() {
     fs::write(repo.join("dist/placeholder"), b"x").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--publish-only", "--dry-run", "--no-preflight"])
+        .args(["release", "--publish-only", "--dry-run"])
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo)
@@ -552,9 +550,6 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     // Drop EVERY token + sign env var that would let the preflight
     // pass. `env_clear` is too aggressive (kills PATH on Windows); the
     // explicit removes are surgical.
-    //
-    // Deliberately do NOT pass `--no-preflight`: it suppresses both
-    // preflight layers, defeating this test.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--publish-only"])
         .env_remove("COSIGN_KEY")
@@ -591,54 +586,29 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     );
 }
 
-/// `--no-preflight` must suppress the credential preflight (operator
-/// opt-out for the rare case where they want the mid-pipeline failure
-/// to surface instead). Without this, `--no-preflight` would only skip
-/// the publisher-state preflight, which is inconsistent
-/// operator-facing behavior.
+/// `--no-preflight` was REMOVED — the operator escape hatch it gated (the
+/// publisher-state blocker) no longer exists, so a consumer script still
+/// passing the flag must get a hard unknown-argument error rather than
+/// silently falling through to default behavior, which would look like
+/// the flag still worked.
 #[test]
-fn publish_only_no_preflight_suppresses_credential_check() {
-    if !tool_on_path("git") {
-        eprintln!("SKIP publish_only_no_preflight_suppresses_credential_check: git missing");
-        return;
-    }
-
+fn release_no_preflight_flag_is_rejected_as_unknown() {
     let tmp = TempDir::new().unwrap();
-    let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
-    configure_tag_template(repo);
-    let commit = head_commit(repo);
-    bootstrap_preserved_dist(repo, "0.1.0", &commit);
-    tag_head(repo, "0.1.0");
-
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--publish-only", "--no-preflight"])
-        .env_remove("COSIGN_KEY")
-        .env_remove("GPG_PRIVATE_KEY")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GH_TOKEN")
-        .env_remove("ANODIZER_GITHUB_TOKEN")
-        .current_dir(repo)
+        .args(["release", "--no-preflight"])
+        .current_dir(tmp.path())
         .output()
-        .expect("invoking anodize release --publish-only --no-preflight");
+        .unwrap();
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let merged = format!("{stdout}\n{stderr}");
-
-    // The preflight warn-line must fire (so the operator sees they
-    // dropped the safety net) and the run must proceed past the env
-    // preflight. Run will fail later when the actual sign / release
-    // stages try to use the missing creds — we only assert the bypass
-    // log line here.
     assert!(
-        merged.contains("preflight skipped via --no-preflight"),
-        "expected --no-preflight warn line; output was:\n{merged}"
+        !output.status.success(),
+        "release --no-preflight must be rejected now that the flag is gone",
     );
-    // And the run must NOT bail with the env-preflight failure.
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !merged.contains("environment failure(s)"),
-        "env preflight should be suppressed by --no-preflight; output was:\n{merged}"
+        stderr.contains("--no-preflight"),
+        "stderr must name the removed flag, got: {}",
+        stderr,
     );
 }
 
@@ -687,50 +657,6 @@ fn publish_only_runs_publisher_state_preflight_by_default() {
     );
 }
 
-/// `--no-preflight` suppresses the publisher-state preflight in
-/// `--publish-only` too — the single escape hatch covers both preflight
-/// layers.
-#[test]
-fn publish_only_no_preflight_suppresses_publisher_state_preflight() {
-    if !tool_on_path("git") {
-        eprintln!(
-            "SKIP publish_only_no_preflight_suppresses_publisher_state_preflight: git missing"
-        );
-        return;
-    }
-
-    let tmp = TempDir::new().unwrap();
-    let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
-    configure_tag_template(repo);
-    let commit = head_commit(repo);
-    bootstrap_preserved_dist(repo, "0.1.0", &commit);
-    tag_head(repo, "0.1.0");
-
-    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--publish-only", "--no-preflight", "--verbose"])
-        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
-        .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
-        .env_remove("COSIGN_KEY")
-        .env_remove("GPG_PRIVATE_KEY")
-        .current_dir(repo)
-        .output()
-        .expect("invoking anodize release --publish-only --no-preflight --verbose");
-
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let merged = format!("{stdout}\n{stderr}");
-
-    assert!(
-        !merged.contains("skipped one-way-door preflight"),
-        "--no-preflight must suppress the publisher-state preflight; output was:\n{merged}"
-    );
-    assert!(
-        !merged.contains("preflight found"),
-        "--no-preflight must suppress the publisher-state preflight; output was:\n{merged}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Test 3e: commit mismatch is a hard error
 // ---------------------------------------------------------------------------
@@ -756,7 +682,7 @@ fn publish_only_rejects_commit_mismatch() {
     tag_head(repo, "0.1.0");
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--publish-only", "--dry-run", "--no-preflight"])
+        .args(["release", "--publish-only", "--dry-run"])
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo)
@@ -914,7 +840,6 @@ Expire-Date: 0
         .args([
             "release",
             "--publish-only",
-            "--no-preflight",
             "--skip",
             "release,publish,blob,snapcraft-publish,announce",
         ])
@@ -1112,7 +1037,6 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
             "release",
             "--publish-only",
             "--dry-run",
-            "--no-preflight",
             "--skip",
             "announce",
         ])
@@ -1293,7 +1217,6 @@ workspaces:
             "ws-a",
             "--publish-only",
             "--dry-run",
-            "--no-preflight",
         ])
         .current_dir(repo)
         .output()

@@ -24,7 +24,7 @@ use anyhow::{Context as _, Result, bail};
 
 /// Outcome of [`publish_to_gemfury`]: one [`GemFuryTarget`] per artifact
 /// actually pushed. The caller drives rollback evidence off this list so
-/// `--rollback-only` can issue a real per-version DELETE against the Fury
+/// `anodizer tag rollback` can issue a real per-version DELETE against the Fury
 /// API. Skips (skip / dry-run / `if` falsy / idempotent-already-
 /// pushed) produce no target entry — rollback only undoes what THIS run did.
 #[derive(Debug, Clone, PartialEq, Eq)]

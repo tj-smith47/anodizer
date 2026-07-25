@@ -5,7 +5,9 @@ weight = 4
 template = "docs.html"
 +++
 
-Nightly builds create date-stamped versions and maintain a rolling `nightly` release on GitHub.
+Nightly builds publish an immutable, commit-stamped prerelease on every run —
+`vX.Y.Z-<shortcommit>-nightly`. Each one is its own permanent tag and GitHub
+release; there is no moving `nightly` tag to race or overwrite.
 
 ## Usage
 
@@ -20,15 +22,46 @@ anodizer release --nightly
   the current tag and appends the short commit — e.g. tag `v0.13.0` →
   `0.13.1-a1b2c3d-nightly` — so two same-day commits yield two distinct,
   commit-immutable nightly versions.
-- Creates or replaces the `nightly` tag and GitHub release
+- Creates a new tag and GitHub release per run, named for the rendered
+  version (`v0.13.1-a1b2c3d-nightly`). Nothing is replaced — a second run on
+  the same commit resolves to the same version and converges rather than
+  moving a shared tag.
 - All normal pipeline stages run (build, archive, checksum, release, publish)
 - Distinct from `--snapshot` — nightlies publish, snapshots don't
-- `--nightly` does **not** skip the env-preflight check. Preflight still runs
-  as the first step unless you pass `--no-preflight` (or use `--snapshot` /
-  `--dry-run` / `--split` / `--publish-only`, which skip it implicitly). The
-  dogfood nightly below pairs `--no-preflight` with the action's
-  `auto-install` so the toolchain is provisioned from `anodizer tools` rather
-  than gated by a second credential check at release time.
+- `--nightly` does **not** skip the environment preflight. It runs as the
+  first step unless the mode implies otherwise (`--snapshot`, `--dry-run`,
+  `--split`, `--publish-only`). Pair the action's `auto-install` with it so
+  the toolchain preflight checks for is the one `anodizer tools` provisioned.
+
+## Crate selection: pass `--all --force`
+
+A nightly should build the whole workspace every night. Without an explicit
+selection, `release` falls back to reading the tags that point at HEAD:
+
+| HEAD state | Selection | Result |
+|---|---|---|
+| untagged (the usual case) | empty → no filter | every crate builds |
+| carries a release tag | only crates whose `tag_template` matches | a subset builds |
+
+In a lockstep workspace (one shared `tag_template`) that subset is still every
+crate, so the fallback is harmless. In an **independent-version workspace** it
+is not: the day a release tag lands on master, the nightly narrows to that one
+crate — and with it the union of build targets, so any shard whose targets all
+belonged to the dropped crates fails with *no matching targets*.
+
+```yaml
+args: release --nightly --split --all --force
+```
+
+`--all` selects every crate; `--force` drops the has-unreleased-changes
+requirement, which a nightly by definition does not want to depend on. Pass
+the same pair on the merge leg — it validates shard contexts against its own
+selection, so the two must agree.
+
+Nightly-shaped tags are excluded from crate selection and from stable
+semver resolution automatically, so a nightly can never narrow a *later*
+release. That exclusion landed after v0.22.2; on earlier versions
+`--all --force` is what keeps a nightly deterministic.
 
 ## Config
 
@@ -135,12 +168,26 @@ jobs:
           # (cargo-zigbuild + zig, or `cross`) resolved from each build's
           # target and `cross:` strategy. No need to hand-list them.
           auto-install: true
-          args: release --nightly
+          args: release --nightly --all --force
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 anodizer dogfoods this on its own repo with a scheduled
-[`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/v0.13.0/.github/workflows/nightly.yml)
+[`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/nightly.yml)
 (`from-branch: master`, daily `0 4 * * *` cron plus on-demand
-`workflow_dispatch`), the same full scheduled form cfgd runs.
+`workflow_dispatch`), and cfgd runs the same shape against a pinned release.
+
+Two things that example carries which the minimal one above does not:
+
+- **Split/merge sharding.** One runner cannot serve a target matrix that
+  spans Apple frameworks and MSVC. Each host builds its `partial.by: os`
+  slice with `--split`, and a final leg fuses them with `--merge`. See
+  [Split / merge](@/docs/advanced/split-merge.md).
+- **A per-shard job timeout.** A nightly that builds from source pays for
+  compiling anodizer itself before it can run, on top of every target it
+  then builds. On a Windows runner that is roughly 18 minutes before the
+  first target starts and ~35 minutes per MSVC target. Size
+  `timeout-minutes` per shard against the slowest one — a job that exceeds
+  it is reported as *cancelled*, not *failed*, so an undersized timeout
+  looks like an infrastructure blip rather than a build that needs longer.

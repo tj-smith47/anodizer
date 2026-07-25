@@ -63,7 +63,7 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 | `skip_upload` | bool | `false` | Create release without uploading assets |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
-| `on_failure` | string | `rollback` | In-process failure policy: `rollback` or `hold`. See [Release resilience](../advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy). |
+| `on_failure` | string | `hold` | What a pipeline failure leaves behind. `hold` is the only accepted value — `rollback` is a hard config-validation error. See [Release resilience](../advanced/release-resilience.md#release-on-failure). |
 
 ## Full config reference
 
@@ -87,7 +87,7 @@ release:
   ids: []
   exclude: []                 # drop assets whose name matches a glob
   skip: false
-  on_failure: rollback        # rollback | hold (auto-degrades to hold past one-way doors)
+  on_failure: hold             # the only accepted value; also the default
 ```
 
 ## Excluding sidecars with `exclude`

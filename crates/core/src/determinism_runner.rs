@@ -85,11 +85,8 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///   side-effect-producing stage AND every non-requested produce-stage
 ///   (the harness's complement set). Doubling N is safe in any env
 ///   because of this skip list.
-/// - `--no-preflight` — always. The replica runs in a deliberately
+/// - `--no-env-preflight` — always. The replica runs in a deliberately
 ///   credential-less env; see [`build_subprocess_command`].
-/// - `--rollback none` — always. The hermetic harness has no published
-///   release to undo, so the child's default rollback (which would probe
-///   GitHub without a token) is disabled by construction.
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
@@ -178,22 +175,6 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     if snapshot {
         cmd.arg("--snapshot");
     }
-    // The harness is hermetic: it skips the release stage and runs
-    // credential-less, so there is never a published release to undo. The
-    // child's default `on_failure=rollback` would otherwise probe GitHub
-    // (`get_release_by_tag`) with no token on any stage failure and emit a
-    // confusing "set the GH_TOKEN environment variable" warning. Force the
-    // no-op rollback mode so a harness stage failure surfaces plainly.
-    cmd.arg("--rollback").arg("none");
-    // `--rollback none` only governs post-publish *publisher* rollback. The
-    // separate `release.on_failure` policy (rollback|hold) governs source-repo
-    // state — it would, on any stage failure, try to delete the run's tag and
-    // revert the version-bump commit. In this hermetic replica that is both
-    // wrong (the worktree is a throwaway with no push creds; nothing upstream
-    // was built) and noisy (the user sees a tag-rollback recovery message
-    // during a determinism check). Disable the policy so a stage failure
-    // surfaces plainly.
-    cmd.arg("--no-failure-policy");
     // The child's stderr is inherited into the harness's own stream, so
     // the operator's verbosity choice must extend to the child — a
     // `check determinism -q` whose children still print every section
@@ -219,7 +200,7 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     // reject exactly the environment the harness is designed to run in —
     // disable it for the child by construction. Real release entrypoints
     // are unaffected; preflight guards them as before.
-    cmd.arg("--no-preflight");
+    cmd.arg("--no-env-preflight");
     if let Some(list) = targets
         && !list.is_empty()
     {
@@ -536,7 +517,7 @@ mod tests {
         );
     }
 
-    /// The child release subprocess MUST carry `--no-preflight` in every
+    /// The child release subprocess MUST carry `--no-env-preflight` in every
     /// mode — snapshot children skip the env preflight via the snapshot
     /// gate anyway, but non-snapshot children (tag-push determinism runs,
     /// where the workflow passes `--no-snapshot` so artifacts carry the
@@ -559,20 +540,19 @@ mod tests {
             });
             let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
             assert!(
-                args.contains(&"--no-preflight"),
-                "child argv (snapshot={snapshot}) must always carry --no-preflight; got {args:?}"
+                args.contains(&"--no-env-preflight"),
+                "child argv (snapshot={snapshot}) must always carry --no-env-preflight; got {args:?}"
             );
         }
     }
 
-    /// The child release subprocess MUST disable rollback in every mode.
-    /// The harness is hermetic (release stage skipped, no credentials), so
-    /// there is never a published release to undo; the child's default
-    /// `on_failure=rollback` would otherwise probe GitHub without a token
-    /// on any stage failure and emit a confusing GH_TOKEN warning. Assert
-    /// `--rollback` is present and immediately followed by `none`.
+    /// The child argv must not carry a flag `anodizer release` no longer
+    /// accepts. Automatic rollback is gone, and with it `--rollback` and
+    /// `--no-failure-policy`: a harness that still passed either would die
+    /// on an unknown-flag clap error before building anything, turning
+    /// every determinism check into a parse failure.
     #[test]
-    fn subprocess_command_always_disables_rollback() {
+    fn subprocess_command_passes_no_removed_rollback_flags() {
         let env = HashMap::new();
         for snapshot in [true, false] {
             let cmd = build_subprocess_command(&ChildInvocation {
@@ -586,26 +566,13 @@ mod tests {
                 verbosity: crate::log::Verbosity::Normal,
             });
             let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
-            let pos = args
-                .iter()
-                .position(|a| *a == "--rollback")
-                .unwrap_or_else(|| {
-                    panic!("child argv (snapshot={snapshot}) must carry --rollback; got {args:?}")
-                });
-            assert_eq!(
-                args.get(pos + 1),
-                Some(&"none"),
-                "child argv (snapshot={snapshot}) must pass `--rollback none`; got {args:?}"
-            );
-            // `--rollback none` governs only publisher rollback; the hermetic
-            // replica must ALSO disable the source-repo on_failure policy so a
-            // stage failure never triggers (or mentions) a tag-delete + bump
-            // revert — including when snapshot=false (the CI determinism shards'
-            // real-version mode, where `applies()` would otherwise be true).
-            assert!(
-                args.contains(&"--no-failure-policy"),
-                "child argv (snapshot={snapshot}) must carry --no-failure-policy; got {args:?}"
-            );
+            for removed in ["--rollback", "--rollback-only", "--no-failure-policy"] {
+                assert!(
+                    !args.contains(&removed),
+                    "child argv (snapshot={snapshot}) must not carry the removed \
+                     {removed} flag; got {args:?}"
+                );
+            }
         }
     }
 

@@ -183,7 +183,7 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
           # …the same publish-secret env block the preflight gate validated…
 ```
 
-There is **no workflow-side rollback step**: `anodizer release` executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process — rolling back the tag and bump by default, auto-degrading to `hold` once a one-way-door publisher has landed.
+There is **no workflow-side rollback step**: a pipeline failure leaves the tag and everything published exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recovery is re-running the identical `release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) — or `anodizer tag rollback` for deliberate withdrawal.
 
 ### 5. `dispatch-oidc` → `publish-oidc.yml` — OIDC publishers on a hosted runner
 
@@ -291,7 +291,7 @@ The full precedence table, the `Cargo.toml`-ahead guard, and every `tag:` config
 | Secret presence | `preflight` | Catch a missing/mangled secret **before** a tag exists, not halfway through publishing |
 | Version decision | `tag` | One commit-driven bump + atomic push; downstream gates on `tagged` |
 | Reproducibility | `determinism-check` | Prove every byte is reproducible across hosts before any of it ships |
-| Publishing | `release` | Ship the **proven** bytes; in-process `on_failure` policy handles partial failure |
+| Publishing | `release` | Ship the **proven** bytes; a partial failure holds in place and recovers by re-running |
 | OIDC publishers (npm provenance, PyPI + crates.io Trusted Publishing) | `dispatch-oidc` → `publish-oidc.yml` | crates.io/PyPI reject `workflow_run`, so a standalone `workflow_dispatch` workflow runs them on an accepted trigger + github-hosted runner |
 
 For the lighter-weight shapes — single-crate tag-push, lockstep workspace, per-crate fan-out — see [Release Workflow Strategies](@/docs/ci/release-workflows.md), which presents a decision tree and a canonical YAML per shape.
@@ -304,4 +304,4 @@ For the lighter-weight shapes — single-crate tag-push, lockstep workspace, per
 - [Auto-Tagging](@/docs/advanced/auto-tagging.md) — the full version-bump model
 - [Determinism](@/docs/advanced/determinism.md) — the reproducibility harness
 - [Preflight](@/docs/general/preflight.md) — the pre-stage environment gate
-- [Release Resilience](@/docs/advanced/release-resilience.md) — the in-process `on_failure` policy
+- [Release Resilience](@/docs/advanced/release-resilience.md) — convergent re-run, `on_failure: hold`, and `tag rollback`

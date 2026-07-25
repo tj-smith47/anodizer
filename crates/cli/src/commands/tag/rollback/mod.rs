@@ -8,6 +8,12 @@
 //! `git revert`s the bump commit (default, history-preserving) or
 //! `git reset --hard`s past it (opt-in, history-rewriting).
 //!
+//! Between the published-state guard and the destructive git work sits
+//! the publisher unwind ([`unwind`]): every publisher the prior release
+//! run recorded gets its `rollback()` re-invoked, so a withdrawal closes
+//! the tap PRs and deletes the mirrored artifacts instead of leaving them
+//! pointing at a tag that no longer exists.
+//!
 //! Safety rails:
 //! - Tag name regex filter — only anodize-shaped tags are touched
 //!   (`vX.Y.Z[-pre][+build]` for lockstep, `<crate>-vX.Y.Z[...]` for
@@ -23,9 +29,10 @@ mod release_probe;
 mod run;
 mod tags;
 mod types;
+mod unwind;
 
 pub use run::run;
-pub use types::{Mode, RollbackOpts, RollbackRefusal, Scope};
+pub use types::{Mode, RollbackOpts, Scope};
 
 #[cfg(test)]
 mod tests;

@@ -65,7 +65,7 @@ This runs the full pipeline: build, archive, checksum, changelog, GitHub release
 
 > **Tap repos must already exist.** If you configure `homebrew_casks` (or a Scoop bucket, AUR repo, etc.), create the target repo — e.g. an empty `<owner>/homebrew-tap` — *before* your first release; anodizer writes into it but never creates it. The release token needs `contents:write` for the default direct push, plus `pull_request:write` only if the tap uses the PR workflow (`pull_request.enabled`).
 
-> **Preflight checks run before any publishing.** `--strict` promotes preflight warnings — an under-scoped token, or a feature you configured that would silently skip — into hard errors, so a misconfigured CI run fails at the top instead of half-publishing. `--strict-preflight` is a back-compat alias for `--strict`; both also block when a publisher's remote state can't be determined (`Unknown`).
+> **Preflight checks run before any publishing.** `--strict` promotes indeterminate preflight outcomes — a 5xx, a rate-limit, or another transport failure that leaves a credential/permission probe unable to reach a verdict — into hard errors, so a misconfigured CI run fails at the top instead of half-publishing on a transient blip. It does not affect publisher-state reporting: an already-published, in-moderation, or pending-PR version is reported and reconciled by the publisher itself, never blocked.
 
 ## What next?
 

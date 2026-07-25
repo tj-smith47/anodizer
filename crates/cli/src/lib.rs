@@ -29,6 +29,23 @@ static PREPARE_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     )
 });
 
+/// The migration every removed automatic-rollback flag on `release` errors
+/// with. Automatic rollback no longer exists, so a CI script still passing
+/// one of these needs to know which of the two replacements it wanted —
+/// stating that in the parse error is the only place the script's owner is
+/// guaranteed to read.
+const REMOVED_ROLLBACK_FLAG_MIGRATION: &str = "removed in favor of convergent re-run: re-running `anodizer release` with the identical \
+     arguments reconciles against what already published and skips it, so a failed release is \
+     recovered by re-running it. To withdraw a release deliberately, use `anodizer tag rollback`. \
+     Drop this flag from the invocation.";
+
+/// `value_parser` for the removed automatic-rollback flags. Always rejects,
+/// turning a stale flag into a parse error that carries the migration
+/// instead of clap's nearest-neighbour flag suggestion.
+fn removed_rollback_flag(_: &str) -> Result<String, String> {
+    Err(REMOVED_ROLLBACK_FLAG_MIGRATION.to_string())
+}
+
 #[derive(Parser)]
 #[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
@@ -67,7 +84,15 @@ pub struct Cli {
 // win; the enum is allocated once per invocation. Local allow only.
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
-    /// Run the full release pipeline
+    /// Run the full release pipeline. Re-running the identical command
+    /// converges on already-published state instead of double-publishing,
+    /// so a re-run is how a failed release is recovered.
+    ///
+    /// Every publisher reconciles against upstream before it acts and skips
+    /// itself when this exact version+content is already there. A publisher
+    /// reporting DIVERGED (the version is live upstream with different
+    /// bytes) is the one case a re-run cannot fix — bump the version. To
+    /// withdraw a release deliberately, use `anodizer tag rollback`.
     Release {
         #[arg(long = "crate", visible_alias = "id", action = clap::ArgAction::Append, help = "Release a specific crate (repeatable; --id is accepted as a GoReleaser-compat alias)")]
         crate_names: Vec<String>,
@@ -143,27 +168,14 @@ pub enum Commands {
         workspace: Option<String>,
         #[arg(
             long,
-            conflicts_with = "no_preflight",
             help = "Run pre-flight publisher-state check and exit (don't start the pipeline)"
         )]
         preflight: bool,
         #[arg(
-            long,
-            conflicts_with = "preflight",
-            help = "Skip the automatic pre-flight publisher-state check"
-        )]
-        no_preflight: bool,
-        #[arg(
             long = "preflight-secrets",
-            conflicts_with = "no_preflight",
             help = "Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline."
         )]
         preflight_secrets: bool,
-        #[arg(
-            long,
-            help = "Strict pre-flight: treat Unknown publisher state and indeterminate probe results (5xx / rate-limit / network failure / undeterminable permissions) as blockers. Implied by --strict; configurable per-project via preflight.strict"
-        )]
-        strict_preflight: bool,
         #[arg(long, help = "Set the release as a draft")]
         draft: bool,
         #[arg(long, help = "Path to a file containing custom release header text")]
@@ -193,12 +205,6 @@ pub enum Commands {
         )]
         no_gate_submitter: bool,
         #[arg(
-            long = "rollback",
-            value_name = "none|best-effort",
-            help = "Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise."
-        )]
-        rollback: Option<String>,
-        #[arg(
             long = "simulate-failure",
             value_name = "publisher",
             action = clap::ArgAction::Append,
@@ -206,25 +212,6 @@ pub enum Commands {
             help = "(TEST HARNESS) Force a named publisher to fail. Gated by ANODIZE_TEST_HARNESS=1."
         )]
         simulate_failure: Vec<String>,
-        #[arg(
-            long = "rollback-only",
-            requires = "from_run",
-            conflicts_with = "clean",
-            help = "Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>."
-        )]
-        rollback_only: bool,
-        #[arg(
-            long = "from-run",
-            value_name = "id",
-            requires = "rollback_only",
-            value_parser = parse_run_id,
-            help = "Prior run id whose state to load when running --rollback-only. \
-                    Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), \
-                    otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a \
-                    full re-roll. Must match the run_id format written by the release pipeline \
-                    (alphanumeric, dot, dash, underscore; no path separators)."
-        )]
-        from_run: Option<String>,
         #[arg(
             long = "show-skipped",
             help = "Show per-crate 'no <publisher> config block' skip lines at default verbosity \
@@ -269,20 +256,20 @@ pub enum Commands {
         merge: bool,
         #[arg(
             long = "publish-only",
-            conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "rollback_only", "clean"],
+            conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "clean"],
             help = "Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
         )]
         publish_only: bool,
         #[arg(
             long,
             alias = "prepare-only",
-            conflicts_with_all = ["publish_only", "announce_only", "rollback_only"],
+            conflicts_with_all = ["publish_only", "announce_only"],
             help = PREPARE_HELP.as_str()
         )]
         prepare: bool,
         #[arg(
             long = "announce-only",
-            conflicts_with_all = ["prepare", "publish_only", "snapshot", "rollback_only", "split", "merge", "clean"],
+            conflicts_with_all = ["prepare", "publish_only", "snapshot", "split", "merge", "clean"],
             help = "Re-fire announcers only. Loads `<dist>/run-<id>/report.json` written by a prior run, skips every pipeline stage except announce (which itself short-circuits on nightly), then runs after-hooks. Use this to retry a transient announcer failure (Slack 502, Discord 5xx) without re-creating the GitHub release or re-publishing to package managers. Fails fast when no `<dist>/run-<id>/report.json` is present."
         )]
         announce_only: bool,
@@ -302,11 +289,53 @@ pub enum Commands {
         )]
         no_post_publish_poll: bool,
         #[arg(
-            long = "no-failure-policy",
+            long = "no-env-preflight",
             hide = true,
-            help = "(HARNESS) Disable the release.on_failure rollback/hold policy. Set by the determinism harness, whose hermetic replica builds nothing upstream and must surface a stage failure plainly without touching tags or the source repo."
+            help = "(HARNESS) Skip the environment preflight (tools / secrets / key material). Set by the determinism harness, whose hermetic replica runs in a deliberately credential-less env that the config-derived preflight would correctly reject."
         )]
-        no_failure_policy: bool,
+        no_env_preflight: bool,
+        // The four automatic-rollback flags removed with the policy they
+        // drove. Declared (hidden) rather than simply deleted so a stale CI
+        // invocation gets the migration instead of clap's unknown-argument
+        // suggestion, which for `--rollback-only` proposed the unrelated
+        // `--prepare-only`. The value parser always rejects, so these never
+        // carry a value the pipeline could read.
+        #[arg(
+            long = "rollback",
+            value_name = "policy",
+            hide = true,
+            value_parser = removed_rollback_flag,
+            help = "(REMOVED) Automatic rollback policy."
+        )]
+        removed_rollback: Option<String>,
+        #[arg(
+            long = "rollback-only",
+            value_name = "removed",
+            num_args = 0..=1,
+            default_missing_value = "rollback-only",
+            hide = true,
+            value_parser = removed_rollback_flag,
+            help = "(REMOVED) Run only the rollback of a prior run."
+        )]
+        removed_rollback_only: Option<String>,
+        #[arg(
+            long = "from-run",
+            value_name = "run-id",
+            hide = true,
+            value_parser = removed_rollback_flag,
+            help = "(REMOVED) Prior run id to roll back."
+        )]
+        removed_from_run: Option<String>,
+        #[arg(
+            long = "no-failure-policy",
+            value_name = "removed",
+            num_args = 0..=1,
+            default_missing_value = "no-failure-policy",
+            hide = true,
+            value_parser = removed_rollback_flag,
+            help = "(REMOVED) Ignore release.on_failure for this run."
+        )]
+        removed_no_failure_policy: Option<String>,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {
@@ -414,6 +443,9 @@ pub enum Commands {
     /// all derived from the resolved config. Every failure is reported in
     /// one pass and the exit code is non-zero when anything is missing.
     /// The same checks run automatically at the start of `anodizer release`.
+    /// Also prints the per-publisher reconcile table (is the target version
+    /// already published?); only a required publisher's content divergence
+    /// exits non-zero — an already-complete or unreachable publisher does not.
     Preflight {
         #[arg(long, help = "Output the report as JSON")]
         json: bool,
@@ -859,8 +891,14 @@ pub enum ChangelogFormat {
 /// [`commands::tag::rollback`].
 #[derive(Subcommand)]
 pub enum TagSub {
-    /// Rollback anodize-managed tags at a SHA, then revert (or reset
-    /// past) the bump commit they point at.
+    /// Withdraw a release: unwind the publishers the run recorded, delete
+    /// the anodize-managed tags at a SHA, then revert (or reset past) the
+    /// bump commit they point at.
+    ///
+    /// The publisher unwind reads the run state the release left under
+    /// `dist/run-<tag>/`, so the tags being rolled back name the run — there
+    /// is no run id to pass. A tag with no recorded state is a tag-only
+    /// rollback.
     Rollback {
         #[arg(
             value_name = "sha",
@@ -894,7 +932,7 @@ pub enum TagSub {
         #[arg(
             long,
             value_name = "name",
-            help = "Branch name to push the revert commit to. Required when HEAD is detached and no local branch points at it (typical CI tag-push context, where GITHUB_REF_NAME is the tag — not the bump-commit branch). Pass --branch master (or whichever branch the bump commit was created on)."
+            help = "Branch name to push the revert commit to. Usually unnecessary: the branch is auto-resolved from the bump commit via `git branch -r --contains <sha>`, which covers the ordinary CI tag-push case (detached HEAD, GITHUB_REF_NAME set to the tag). Needed only when that resolution is ambiguous or empty — the bump commit is on two or more remote branches, or on none and HEAD cannot be resolved either. Both cases fail with an error naming this flag. Pass --branch master (or whichever branch the bump commit was created on)."
         )]
         branch: Option<String>,
     },
@@ -1018,20 +1056,20 @@ pub struct CheckDeterminismArgs {
     pub require_tools: bool,
 }
 
-/// Clap `value_parser` for `--from-run=<id>`.
+/// Clap `value_parser` for `promote --from-run=<id>`.
 ///
 /// `run_id` is operator-controlled and is joined directly into a
-/// filesystem path (`<dist>/run-<id>/{report,rollback}.json`) by the
-/// `--rollback-only` replay code. Without this validator,
-/// `--from-run=../../etc/passwd` would resolve to a traversed path on
-/// both read (`report.json`) and write (`rollback.json`) — operator
-/// data-loss potential.
+/// filesystem path (`<dist>/run-<id>/report.json`). Without this
+/// validator, `--from-run=../../etc/passwd` would resolve to a traversed
+/// path on read — and the same id shape names the write path
+/// (`rollback.json`) inside the publisher-unwind engine, so the rule is
+/// enforced once for both.
 ///
-/// Delegates to [`anodizer_stage_publish::rollback_only::validate_run_id`]
+/// Delegates to [`anodizer_stage_publish::rollback::validate_run_id`]
 /// so the rule has a single source of truth (the same validator runs at
 /// the `run_with_publishers` entry point as a defense-in-depth guard).
 fn parse_run_id(s: &str) -> Result<String, String> {
-    anodizer_stage_publish::rollback_only::validate_run_id(s)
+    anodizer_stage_publish::rollback::validate_run_id(s)
         .map(|()| s.to_string())
         .map_err(|err| format!("{:#}", err))
 }

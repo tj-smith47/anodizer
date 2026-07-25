@@ -1,7 +1,7 @@
 //! Per-publisher run evidence (the `evidence.json` shape).
 //!
 //! [`PublishEvidence`] captures what a publisher actually pushed plus
-//! the operator-public coordinates a later `--rollback-only --from-run`
+//! the operator-public coordinates a later `anodizer tag rollback`
 //! consumes. The [`extra`] slot used to be a free-form
 //! `serde_json::Value`; it is now a typed enum
 //! ([`PublishEvidenceExtra`]) so the type system structurally
@@ -17,6 +17,7 @@
 //! [`extra`]: PublishEvidence::extra
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// One entry in [`HomebrewExtra::homebrew_targets`] — the operator-public
@@ -310,7 +311,7 @@ pub struct SnapcraftTargetSnapshot {
     /// The Snap Store answered the upload with a manual-review hold: the
     /// binary was accepted but is NOT live in any channel until a human
     /// approves it. Recorded so the verify-release landing check and
-    /// `--rollback-only --from-run` consumers see the unresolved state
+    /// `anodizer tag rollback` consumers see the unresolved state
     /// instead of a silent "uploaded".
     #[serde(default)]
     pub held_for_review: bool,
@@ -340,7 +341,7 @@ pub struct GithubReleaseExtra {
 }
 
 /// Operator-public snapshot of a single NPM `package@version` publish.
-/// Stored in [`NpmExtra::npm_targets`] so a later `--rollback-only --from-run`
+/// Stored in [`NpmExtra::npm_targets`] so a later `anodizer tag rollback`
 /// has the exact coordinates required to attempt `npm unpublish` within
 /// the 72-hour window.
 ///
@@ -373,7 +374,7 @@ pub struct NpmExtra {
 
 /// Operator-public snapshot of a single GemFury push of one artifact file.
 /// Stored in [`GemFuryExtra::gemfury_targets`] so a later
-/// `--rollback-only --from-run` has the exact coordinates required to
+/// `anodizer tag rollback` has the exact coordinates required to
 /// issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`
 /// against the Fury delete API.
 ///
@@ -446,7 +447,7 @@ pub struct PypiExtra {
 /// Operator-public snapshot of a single SchemaStore registration PR — the
 /// fork branch anodizer pushed and the upstream it opened the PR against.
 /// Stored in [`SchemastoreExtra::schemastore_targets`] so a later
-/// `--rollback-only --from-run` can find and close the open PR.
+/// `anodizer tag rollback` can find and close the open PR.
 ///
 /// **CREDENTIAL CONTRACT**: no token field — the rollback token is
 /// resolved at rollback time from the env var named by `token_env_var`.
@@ -476,7 +477,7 @@ pub struct SchemastoreExtra {
 /// Operator-public snapshot of a single homebrew-core formula bump — the
 /// branch anodizer committed the rewritten formula to and the upstream the
 /// PR targets. Stored in [`HomebrewCoreExtra::homebrew_core_targets`] so a
-/// later `--rollback-only --from-run` can find and close the open PR.
+/// later `anodizer tag rollback` can find and close the open PR.
 ///
 /// **CREDENTIAL CONTRACT**: no token field — the rollback token is
 /// resolved at rollback time from the env var named by `token_env_var`.
@@ -572,6 +573,17 @@ pub struct PublishEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_ref: Option<String>,
     pub artifact_paths: Vec<PathBuf>,
+    /// Content-hash snapshot (artifact NAME → `sha256:<hex>`) taken from
+    /// each in-scope [`crate::artifact::Artifact`]'s `Checksum` metadata
+    /// at publish time. Used by the ledger fast-path: a later reconcile
+    /// consults this map to tell "rebuilt identical bytes" (safe to
+    /// short-circuit) apart from "rebuilt different bytes, same version"
+    /// (must fall through to the network probe). `#[serde(default)]` so
+    /// v1 `summary.json` files written before this field existed still
+    /// deserialize — a reader that hard-failed on a missing field would
+    /// silently degrade every reconcile to a network round-trip.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artifact_digests: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nondeterministic: Option<String>,
     /// Operator-public metadata for the publisher run.
@@ -633,6 +645,7 @@ impl PublishEvidence {
             publisher: publisher.into(),
             primary_ref: None,
             artifact_paths: Vec::new(),
+            artifact_digests: BTreeMap::new(),
             nondeterministic: None,
             extra: PublishEvidenceExtra::Empty,
         }
@@ -700,6 +713,31 @@ mod tests {
         // Untagged disjointness: a Cargo payload decodes to the Cargo
         // variant, not an earlier `*_targets` variant.
         assert!(matches!(back.extra, PublishEvidenceExtra::Cargo(_)));
+    }
+
+    #[test]
+    fn artifact_digests_defaults_empty_on_v1_json_missing_the_field() {
+        let v1 = r#"{
+            "schema_version": 1,
+            "publisher": "cargo",
+            "primary_ref": null,
+            "artifact_paths": [],
+            "nondeterministic": null,
+            "extra": null
+        }"#;
+        let e: PublishEvidence = serde_json::from_str(v1).expect("v1 summaries must still parse");
+        assert!(e.artifact_digests.is_empty());
+    }
+
+    #[test]
+    fn artifact_digests_roundtrips_through_json() {
+        let mut e = PublishEvidence::new("cargo");
+        e.artifact_digests
+            .insert("myapp-x86_64.tar.gz".into(), "sha256:abc123".into());
+        let s = serde_json::to_string(&e).expect("serialize");
+        assert!(s.contains("myapp-x86_64.tar.gz"), "{s}");
+        let back: PublishEvidence = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(e, back);
     }
 
     #[test]

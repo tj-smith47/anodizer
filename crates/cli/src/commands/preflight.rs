@@ -23,6 +23,7 @@ use std::time::Duration;
 use anodizer_core::context::Context;
 use anodizer_core::env_preflight::{self, EnvPreflightReport, EnvProbes, SourcedRequirement};
 use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_stage_publish::reconcile_report::{ReconcileReport, ReconcileRowJson};
 use anyhow::Result;
 
 /// Which pipeline shape the preflight guards.
@@ -746,7 +747,7 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         snapshot: true,
         ..Default::default()
     };
-    let (_config, ctx) =
+    let (_config, mut ctx) =
         super::helpers::init_merge_stage_ctx(opts.config_override.as_deref(), ctx_opts, &log)?;
 
     let scope = if opts.publish_only {
@@ -775,14 +776,37 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         );
     }
 
+    // Publisher state is a second, independent axis: the environment report
+    // answers "can this runner publish?", the reconcile table answers "is it
+    // already published?". Probing every configured publisher through the
+    // same `reconcile()` the dispatch loop calls is what keeps the canary and
+    // the release from drifting into two answers.
+    let publishers = anodizer_stage_publish::registry::configured_publishers(&ctx);
+    let reconcile = ReconcileReport::probe(&publishers, &mut ctx);
+    let blocking = reconcile.blocking().len();
+
     if opts.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&PreflightJson {
+                environment: &report,
+                reconcile: reconcile.to_json_rows(),
+            })?
+        );
     } else {
         for line in report.to_string().trim_end_matches('\n').lines() {
             log.status(line);
         }
         log_preflight_warnings(&report, &log);
+        reconcile.emit(&log);
     }
+
+    // Two independent gates, reported in the order an operator fixes them: a
+    // missing credential is a runner problem, a divergence is a version
+    // problem. Only a REQUIRED publisher's `Diverged` blocks on the publisher
+    // axis — `Complete` is the green light a resumed release wants, `Unknown`
+    // must never let an unreachable registry veto a release, and an optional
+    // publisher's divergence does not abort the release either.
     if !report.ok() {
         anyhow::bail!(
             "preflight: {} environment failure(s) across {} check(s)",
@@ -790,7 +814,23 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
             report.checks
         );
     }
+    if blocking > 0 {
+        anyhow::bail!(
+            "preflight: {blocking} required publisher(s) diverged — the version is already \
+             published with different content; bump the version"
+        );
+    }
     Ok(())
+}
+
+/// `--json` shape: the environment report's keys stay at the top level (so
+/// existing consumers keep reading the same fields) with the publisher
+/// reconcile table added alongside as a new key.
+#[derive(serde::Serialize)]
+struct PreflightJson<'a> {
+    #[serde(flatten)]
+    environment: &'a EnvPreflightReport,
+    reconcile: Vec<ReconcileRowJson>,
 }
 
 #[cfg(test)]

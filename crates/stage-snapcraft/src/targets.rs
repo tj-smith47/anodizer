@@ -3,8 +3,9 @@
 //! Carved out of `publish_stage.rs` to keep the upload-flow file focused on
 //! the `Stage` impl. The serde shape here is wire-stable: it is the value
 //! carried in `PublishEvidence::extra.snapcraft_targets` and consumed by
-//! `--rollback-only --from-run` to surface per-target channel-management
-//! pointers. Byte-shape changes here are breaking for replay consumers.
+//! `anodizer tag rollback`'s publisher unwind to surface per-target
+//! channel-management pointers. Byte-shape changes here are breaking for
+//! replay consumers.
 
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;

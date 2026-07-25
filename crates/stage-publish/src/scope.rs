@@ -26,19 +26,18 @@
 //! Lives in `stage-publish` (not `core`) because the label format is
 //! a stage-publish-internal detail: the `Publisher::rollback_scope_needed`
 //! trait method returns the label string, but every consumer of that
-//! string is inside `stage-publish` (rollback dispatch, preflight, the
-//! `rollback_only` replay path).
+//! string is inside `stage-publish` (rollback dispatch, preflight).
 
-/// Format a uniform "scope unavailable" warn line for the three
+/// Format a uniform "scope unavailable" warn line for the two
 /// call sites that consume `Publisher::rollback_scope_needed`
-/// (`rollback::run`, `rollback_only::run_with_publishers`,
+/// (`rollback::run_with_publishers`,
 /// `preflight::run_publisher_preflight_extension`). Centralizing the
-/// wording keeps those three messages byte-identical — when each
+/// wording keeps those messages byte-identical — when each
 /// site formatted its own string they drifted character-by-character.
 ///
 /// `prefix` identifies the calling subsystem (`"rollback"`,
-/// `"rollback-only"`, `"preflight"`); `publisher` and `label` are
-/// the publisher name and the raw scope label string.
+/// `"preflight"`); `publisher` and `label` are the publisher name and
+/// the raw scope label string.
 ///
 /// The output explicitly names "env scope" so the operator sees
 /// the remedy is `export <VAR>=...`, not some other class of
@@ -81,7 +80,7 @@ pub(crate) fn scope_available(label: &str) -> bool {
 }
 
 /// Env-injectable form of [`scope_available`]. Production call sites
-/// in `rollback.rs` / `rollback_only.rs` / `preflight.rs` thread the
+/// in `rollback.rs` / `preflight.rs` thread the
 /// active [`Context`]'s env source through here so a unit test can
 /// drive the available/unavailable branches without mutating the
 /// process env.
@@ -193,8 +192,8 @@ mod tests {
         // Regression guard: every call site sets its own prefix. The
         // helper must NOT lowercase / dash-normalize / otherwise
         // mangle it.
-        let r = warn_scope_unavailable_msg("rollback-only", "p", "X");
-        assert!(r.contains("during rollback-only —"), "got {r}");
+        let r = warn_scope_unavailable_msg("tag-rollback", "p", "X");
+        assert!(r.contains("during tag-rollback —"), "got {r}");
         let p = warn_scope_unavailable_msg("preflight", "p", "X");
         assert!(p.contains("during preflight —"), "got {p}");
     }

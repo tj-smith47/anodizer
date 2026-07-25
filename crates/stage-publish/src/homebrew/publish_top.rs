@@ -13,6 +13,14 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
+/// The pull-request title for a cask bump, for both top-level
+/// `homebrew_casks:` entries and a per-crate cask that opens its own PR.
+/// Shared with the reconcile probe so a converged re-run looks for the title
+/// this function produced.
+pub(crate) fn cask_pr_title(cask_name: &str, version: &str) -> String {
+    format!("Update {} cask to {}", cask_name, version)
+}
+
 /// Resolve the effective homepage for a top-level cask entry.
 ///
 /// Per-cask `homepage` wins; when unset, fall back to the project-level
@@ -710,7 +718,7 @@ pub fn publish_top_level_homebrew_casks(
                 branch_name: pr_branch,
                 update_existing_pr,
             },
-            &format!("Update {} cask to {}", cask_name, version),
+            &cask_pr_title(cask_name, &version),
             &format!(
                 "## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
                 cask_name,

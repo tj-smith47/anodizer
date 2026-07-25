@@ -524,10 +524,9 @@ pub(super) fn first_nonempty_line(stderr: &str) -> String {
 /// 1. Rollback scope availability — every publisher whose
 ///    [`Publisher::rollback_scope_needed`] returns `Some(label)` is checked
 ///    against the env var named in `label`. Missing scope becomes a
-///    warning by default and a blocker under `--strict`. If
-///    `--rollback=best-effort` was explicitly requested and any
-///    `required` publisher lacks rollback scope, this function returns
-///    `Err` so the CLI bails before any publish work runs.
+///    warning by default and a blocker under `--strict`; that scope backs
+///    `anodizer tag rollback`'s replay unwind (`execute_rollback_step`), not
+///    an automatic in-process rollback.
 /// 2. Publisher self-check — each publisher's [`Publisher::preflight`]
 ///    return value is folded into the report (`Warning` -> warnings,
 ///    `Blocker` -> blockers, `Err` -> blockers tagged as preflight error).
@@ -544,7 +543,6 @@ pub(super) fn run_publisher_preflight_extension(
     live_publisher_preflight: bool,
 ) -> Result<()> {
     let publishers = crate::registry::configured_publishers(ctx);
-    let mut required_missing_scope: Vec<String> = Vec::new();
 
     for p in &publishers {
         // Mirror the run path's skip set (`dispatch::dispatch`): a publisher
@@ -567,9 +565,6 @@ pub(super) fn run_publisher_preflight_extension(
             } else {
                 report.warnings.push(msg);
             }
-            if p.required() {
-                required_missing_scope.push(p.name().to_string());
-            }
         }
 
         // ---- publisher self-check ------------------------------------
@@ -590,21 +585,6 @@ pub(super) fn run_publisher_preflight_extension(
                     .push(format!("{}: preflight error: {}", p.name(), err));
             }
         }
-    }
-
-    // Hard error: `--rollback=best-effort` was explicitly requested but a
-    // required publisher lacks rollback scope. Bail before any side-effect
-    // stage runs so the operator can elevate the token (or accept losing
-    // rollback) before starting a release that cannot recover from failure.
-    if matches!(
-        ctx.options.rollback_mode,
-        Some(anodizer_core::context::RollbackMode::BestEffort)
-    ) && !required_missing_scope.is_empty()
-    {
-        anyhow::bail!(
-            "preflight: --rollback=best-effort was requested but the following required publishers lack rollback scope: {}",
-            required_missing_scope.join(", "),
-        );
     }
 
     Ok(())

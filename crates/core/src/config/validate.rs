@@ -170,6 +170,38 @@ pub fn validate_on_failure_root_only(config: &Config) -> Result<(), String> {
     ))
 }
 
+/// Validate that `release.on_failure` never selects the removed `rollback`
+/// policy, root-level or crate-level.
+///
+/// Automatic rollback (delete the run's release tag(s), revert the
+/// version-bump commit) was removed in favor of convergent reconcile:
+/// re-running `anodizer release` now converges on already-published state
+/// instead of needing to unwind it. `hold` is the only accepted policy.
+pub fn validate_on_failure_not_rollback(config: &Config) -> Result<(), String> {
+    let is_rollback = |r: &ReleaseConfig| r.on_failure == Some(OnFailureConfig::Rollback);
+    let root_is_rollback = config.release.as_ref().is_some_and(is_rollback);
+    let crate_is_rollback = config
+        .crates
+        .iter()
+        .chain(
+            config
+                .workspaces
+                .iter()
+                .flatten()
+                .flat_map(|ws| ws.crates.iter()),
+        )
+        .any(|c| c.release.as_ref().is_some_and(is_rollback));
+    if !root_is_rollback && !crate_is_rollback {
+        return Ok(());
+    }
+    Err(
+        "release.on_failure: rollback is no longer supported — automatic rollback was \
+         removed — re-running `anodizer release` converges; use `anodizer tag rollback` \
+         for deliberate withdrawal."
+            .to_string(),
+    )
+}
+
 /// Marker prefix for the axis-mismatch validation error class. Existing
 /// validators in this module return `Result<(), String>` rather than a
 /// typed enum, so we expose this constant (instead of a `ConfigError`

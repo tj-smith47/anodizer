@@ -40,7 +40,7 @@ pub(super) fn run(
 
     // Derive run_id from the same git_info the writer uses so the
     // reader/writer agree on the `<dist>/run-<id>/` path without
-    // operator input. `--from-run` is intentionally not plumbed here:
+    // operator input. There is deliberately no run-selecting flag:
     // announce-only's use case (re-fire after transient failure) is
     // always "the run I just finished," not "an arbitrary historical
     // run."

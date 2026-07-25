@@ -24,19 +24,6 @@ use super::*;
 // (attempted, exec_result) seam is testable in isolation.
 // ---------------------------------------------------------------------------
 
-/// Run the snapcraft upload loop and report
-/// `(attempted_any_upload, Result<()>)`.
-///
-/// `attempted_any_upload` becomes `true` the first time we materialize a
-/// non-dry-run upload (i.e. shell out to `snapcraft upload`). Callers
-/// use it to decide whether to record a `PublisherResult`:
-/// - `attempted = false` → nothing to report (BlobStage parity); the
-///   `Result<()>` is bubbled as a stage error.
-/// - `attempted = true`  → fold the `Result<()>` into a
-///   `Succeeded`/`Failed(_)` outcome.
-///
-/// `skip_decisions` is the pre-pass `publish.skip` flag per
-/// `(crate, snap_cfg)` tuple in iteration order — keeps this loop free
 /// Resolve the version a crate publishes under: its own release tag when one
 /// resolves, else the context's version.
 ///
@@ -51,6 +38,19 @@ pub(super) fn crate_version(ctx: &Context, krate: &CrateConfig) -> String {
         .unwrap_or_else(|| ctx.version())
 }
 
+/// Run the snapcraft upload loop and report
+/// `(attempted_any_upload, Result<()>)`.
+///
+/// `attempted_any_upload` becomes `true` at the first materialized
+/// non-dry-run upload (i.e. a shell-out to `snapcraft upload`). Callers
+/// use it to decide whether to record a `PublisherResult`:
+/// - `attempted = false` → nothing to report (BlobStage parity); the
+///   `Result<()>` is bubbled as a stage error.
+/// - `attempted = true`  → fold the `Result<()>` into a
+///   `Succeeded`/`Failed(_)` outcome.
+///
+/// `skip_decisions` is the pre-pass `publish.skip` flag per
+/// `(crate, snap_cfg)` tuple in iteration order — keeps this loop free
 /// of template-render side effects.
 pub(crate) fn run_uploads(
     ctx: &Context,
@@ -521,7 +521,7 @@ pub(crate) fn run_uploads(
                         // Say so at default visibility instead of the
                         // "uploaded" wording, and record the hold on the
                         // evidence snapshot so verify-release and
-                        // `--rollback-only --from-run` see the open state.
+                        // `anodizer tag rollback` see the open state.
                         log.warn(&format!(
                             "snap {snap_name} {version} HELD for Snap Store manual review — \
                              not live in any channel until review approves \

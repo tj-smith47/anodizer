@@ -40,6 +40,32 @@ fn classifies_per_crate_tags() {
     );
 }
 
+/// Writer/reader agreement. The unwind probes `run-<tag>/` for every tag
+/// `classify_tag` accepts, while the release wrote that dir under
+/// `derive_run_id`, which falls back to the short commit for any tag
+/// `validate_run_id` rejects. A tag accepted here but rejected there is a
+/// silent miss: the tag and its GitHub release get deleted with the
+/// publisher state left live.
+#[test]
+fn every_classified_tag_is_a_valid_run_id() {
+    for tag in [
+        "v1.2.3",
+        "v1.2.3-rc.1",
+        "v1.2.3+build.42",
+        "v1.2.3-rc.1+build.42",
+        "mycrate-v1.2.3",
+        "my_crate-v1.2.3-rc.1+sha.abc",
+    ] {
+        assert!(
+            classify_tag(tag).is_some(),
+            "fixture must be a tag the rollback claims: {tag}"
+        );
+        anodizer_stage_publish::rollback::validate_run_id(tag).unwrap_or_else(|e| {
+            panic!("{tag} is rolled back by tag but written under a different run id: {e}")
+        });
+    }
+}
+
 #[test]
 fn rejects_non_anodize_shaped_tags() {
     assert_eq!(classify_tag("foo-bar"), None);
@@ -1102,7 +1128,6 @@ fn write_summary(
         publishers_succeeded: 0,
         publishers_failed: 0,
         irreversibly_published,
-        failure_policy: None,
         verify_release: None,
         retry_backoff_secs: 0.0,
         retry_by_scope: vec![],
@@ -1125,6 +1150,74 @@ fn summary_result(
         status: status.to_string(),
         evidence: None,
     }
+}
+
+/// A schema-v1 `summary.json` still has to feed the burn guard. `RunSummary`
+/// is `deny_unknown_fields` and v1's `failure_policy` key is written ONLY
+/// when a run failed — exactly the summaries a rollback interrogates — so a
+/// strict read drops them as "unreadable" and the guard permits a rollback
+/// it should refuse. The fixture below is a verbatim v1 document whose
+/// burned publisher (snapcraft) has no network-probe backstop, so the
+/// summary is the only evidence there is.
+#[test]
+#[cfg(unix)]
+fn guard_refuses_on_a_v1_summary_carrying_failure_policy() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_github_origin_repo(tmp.path());
+    // 404 = "no release" = the gh probe alone would PERMIT.
+    let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+    let run_dir = tmp.path().join("dist").join("run-v1.0.0");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(
+        run_dir.join("summary.json"),
+        r#"{
+            "schema_version": 1,
+            "anodize_version": "0.21.0",
+            "tag": "v1.0.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "publishers_succeeded": 1,
+            "publishers_failed": 1,
+            "irreversibly_published": true,
+            "failure_policy": {
+                "configured": "rollback",
+                "action": "held",
+                "degraded": true,
+                "burned_publishers": ["snapcraft"],
+                "rollback_error": null
+            },
+            "results": [
+                {
+                    "name": "snapcraft",
+                    "group": "Submitter",
+                    "required": true,
+                    "status": "succeeded",
+                    "evidence": null
+                }
+            ],
+            "determinism_allowlist": { "compile_time": [], "runtime": [] }
+        }"#,
+    )
+    .unwrap();
+
+    let err = check_not_irreversibly_published(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &no_cargo_config(),
+        &probes_with_crates_io(&probe_untouched),
+        &quiet_log(),
+    )
+    .expect_err("a v1 summary recording an irreversible publish must block the rollback");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("one-way-door publisher(s) already accepted"),
+        "the v1 summary must be READ, not skipped as unreadable: {msg}"
+    );
+    assert!(
+        msg.contains("v1.0.0"),
+        "the refusal must name the tag: {msg}"
+    );
 }
 
 #[test]
@@ -2489,5 +2582,253 @@ fn run_force_bypasses_crates_io_probe() {
     assert!(
         !tags.contains(&"v1.0.0".to_string()),
         "tag must be deleted under --force"
+    );
+}
+
+// -----------------------------------------------------------------
+// Publisher unwind: a deliberate withdrawal re-invokes each recorded
+// publisher's rollback before the tags (and their GitHub releases)
+// are destroyed. Wired end-to-end through `run_with_gh` so deleting
+// the call site fails a test rather than silently shipping a
+// tag-only rollback.
+// -----------------------------------------------------------------
+
+/// Seed a run dir with a `report.json` naming one Succeeded Manager
+/// publisher. The name matches nothing in the current registry, so the
+/// engine records `RollbackFailed(publisher not found ...)` — the
+/// documented diagnostic, and unambiguous proof the engine ran.
+fn write_run_report(repo: &Path, rel: &str, publisher: &str) {
+    let dir = repo.join("dist").join(rel);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("report.json"),
+        format!(
+            r#"{{
+  "results": [
+    {{
+      "name": "{publisher}",
+      "group": "Manager",
+      "required": true,
+      "outcome": "Succeeded",
+      "evidence": {{
+        "schema_version": 1,
+        "publisher": "{publisher}",
+        "primary_ref": null,
+        "artifact_paths": [],
+        "nondeterministic": null,
+        "extra": {{}}
+      }}
+    }}
+  ],
+  "submitter_gated": false,
+  "announce_gated": false
+}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+#[serial(cwd)]
+#[cfg(unix)]
+fn run_unwinds_recorded_publishers_before_deleting_tags() {
+    // A clean run summary clears the published-state guard with no
+    // network (a summarized tag never reaches the gh release probe, and
+    // the config publishes to no immutable registry), so what this pins
+    // is the step after it: the recorded publisher state is withdrawn,
+    // and the tag is deleted.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join(".anodizer.yaml"),
+        "crates:\n  - name: mycrate\n    path: .\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    init_github_origin_repo(dir);
+    write_summary(
+        dir,
+        "run-v1.0.0",
+        "v1.0.0",
+        false,
+        vec![summary_result(
+            "homebrew",
+            anodizer_core::publish_report::PublisherGroup::Manager,
+            "succeeded",
+        )],
+    );
+    write_run_report(dir, "run-v1.0.0", "orphan-mgr");
+
+    let stub_dir = tempfile::tempdir().unwrap();
+    let gh = write_gh_stub(stub_dir.path(), r#"echo '{"id": 1, "draft": true}'"#);
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+    // Both steps share one logger, so its line stream is where the ORDER is
+    // observable. Asserting only that both effects happened would still pass
+    // if `delete_tags` ran first — the fixture publisher never reads the
+    // GitHub release, so end-state alone cannot distinguish the two orders.
+    let (log, capture) = StageLogger::with_capture("tag-rollback", Verbosity::Normal);
+    run_with_logger(opts_for(dir, None), &gh, log).expect("rollback must complete");
+
+    let state = std::fs::read_to_string(dir.join("dist/run-v1.0.0/rollback.json"))
+        .expect("the unwind must persist its verdict to rollback.json");
+    assert!(
+        state.contains("RollbackFailed") && state.contains("not found in current registry"),
+        "the recorded publisher must have been dispatched, got:\n{state}"
+    );
+    let tags = git::get_tags_at_head_in(dir).unwrap();
+    assert!(
+        !tags.contains(&"v1.0.0".to_string()),
+        "the tag must still be deleted after the unwind; got {tags:?}"
+    );
+
+    let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    let unwind_at = lines
+        .iter()
+        .position(|m| m.contains("unwinding publishers recorded for v1.0.0"))
+        .unwrap_or_else(|| panic!("the unwind must announce itself; got {lines:#?}"));
+    let delete_at = lines
+        .iter()
+        .position(|m| m.contains("deleted local tag v1.0.0"))
+        .unwrap_or_else(|| panic!("the tag delete must announce itself; got {lines:#?}"));
+    assert!(
+        unwind_at < delete_at,
+        "the publisher unwind must run BEFORE the tag delete — deleting first destroys the \
+         GitHub release the github-release publisher's own rollback reads. got {lines:#?}"
+    );
+}
+
+/// A refusal must be reached before anything is withdrawn. The
+/// intervening-commit check is a pure `git log` read, so an ordering that
+/// lets the publisher unwind run first would yank crates, close tap PRs and
+/// delete blobs and only then decline to finish the rollback.
+#[test]
+#[serial(cwd)]
+#[cfg(unix)]
+fn run_refuses_intervening_commits_before_withdrawing_anything() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join(".anodizer.yaml"),
+        "crates:\n  - name: mycrate\n    path: .\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    let bump_sha = init_bump_repo(dir, 1);
+    run_git(
+        dir,
+        &["remote", "add", "origin", "https://github.com/o/r.git"],
+    );
+    write_summary(
+        dir,
+        "run-v1.0.0",
+        "v1.0.0",
+        false,
+        vec![summary_result(
+            "homebrew",
+            anodizer_core::publish_report::PublisherGroup::Manager,
+            "succeeded",
+        )],
+    );
+    write_run_report(dir, "run-v1.0.0", "orphan-mgr");
+
+    let stub_dir = tempfile::tempdir().unwrap();
+    let gh = write_gh_stub(stub_dir.path(), r#"echo '{"id": 1, "draft": true}'"#);
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+    let err = run_with_gh(opts_for(dir, Some(bump_sha.clone())), &gh)
+        .expect_err("a non-bump commit atop the target must refuse the rollback");
+    assert!(
+        err.to_string().contains("cannot rollback"),
+        "the refusal must be the intervening-commit one, got: {err:#}"
+    );
+    assert!(
+        !dir.join("dist/run-v1.0.0/rollback.json").exists(),
+        "a refused rollback must withdraw nothing — no rollback.json may be written"
+    );
+    let tags = git::get_tags_at_sha_in(dir, &bump_sha).unwrap();
+    assert!(
+        tags.contains(&"v1.0.0".to_string()),
+        "the tag must survive a refusal; got {tags:?}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+#[cfg(unix)]
+fn run_skips_the_unwind_when_the_guard_refuses() {
+    // Ordering, stated as a falsifiable assertion: the guard runs FIRST.
+    // The same fixture as above, except the summary records a burned
+    // one-way door. Nothing may be withdrawn — a burned version's
+    // published state is exactly what the refusal protects.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join(".anodizer.yaml"),
+        "crates:\n  - name: mycrate\n    path: .\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    init_github_origin_repo(dir);
+    write_summary(
+        dir,
+        "run-v1.0.0",
+        "v1.0.0",
+        true,
+        vec![summary_result(
+            "cargo",
+            anodizer_core::publish_report::PublisherGroup::Submitter,
+            "succeeded",
+        )],
+    );
+    write_run_report(dir, "run-v1.0.0", "orphan-mgr");
+
+    let stub_dir = tempfile::tempdir().unwrap();
+    let gh = write_gh_stub(stub_dir.path(), r#"echo '{"id": 1, "draft": true}'"#);
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+    let err = run_with_gh(opts_for(dir, None), &gh).expect_err("a burned version must refuse");
+    assert!(err.to_string().contains("refusing to roll back"), "{err:#}");
+    assert!(
+        !dir.join("dist/run-v1.0.0/rollback.json").exists(),
+        "a refused rollback must withdraw nothing"
+    );
+    let tags = git::get_tags_at_head_in(dir).unwrap();
+    assert!(
+        tags.contains(&"v1.0.0".to_string()),
+        "the tag must survive a refusal; got {tags:?}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+#[cfg(unix)]
+fn run_dry_run_previews_the_unwind_without_withdrawing() {
+    // `--dry-run` must reach the unwind (so the operator sees what would
+    // be withdrawn) and mutate nothing: no rollback.json, tag intact.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join(".anodizer.yaml"),
+        "crates:\n  - name: mycrate\n    path: .\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    init_github_origin_repo(dir);
+    write_summary(dir, "run-v1.0.0", "v1.0.0", false, vec![]);
+    write_run_report(dir, "run-v1.0.0", "orphan-mgr");
+
+    let stub_dir = tempfile::tempdir().unwrap();
+    let gh = write_gh_stub(stub_dir.path(), r#"echo '{"id": 1, "draft": true}'"#);
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+    let mut opts = opts_for(dir, None);
+    opts.dry_run = true;
+    run_with_gh(opts, &gh).expect("dry-run rollback must succeed");
+
+    assert!(
+        !dir.join("dist/run-v1.0.0/rollback.json").exists(),
+        "dry-run must not withdraw anything"
+    );
+    let tags = git::get_tags_at_head_in(dir).unwrap();
+    assert!(
+        tags.contains(&"v1.0.0".to_string()),
+        "dry-run must leave the tag in place; got {tags:?}"
     );
 }

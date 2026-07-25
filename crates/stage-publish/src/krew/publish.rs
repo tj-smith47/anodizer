@@ -6,6 +6,13 @@ use crate::util;
 
 use super::*;
 
+/// The pull-request title for a plugin bump. Shared with the reconcile probe
+/// so a converged re-run looks for the title this function produced — note
+/// the `v` prefix on the version, which a bare-version probe would miss.
+pub(crate) fn pr_title(crate_name: &str, version: &str) -> String {
+    format!("Add/update {} plugin to v{}", crate_name, version)
+}
+
 pub fn publish_to_krew(
     ctx: &mut Context,
     crate_name: &str,
@@ -258,7 +265,7 @@ pub fn publish_to_krew(
                 branch_name: &branch_name,
                 update_existing_pr,
             },
-            &format!("Add/update {} plugin to v{}", crate_name, version),
+            &pr_title(crate_name, &version),
             &format!(
                 "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\n{}",
                 crate_name,
@@ -290,7 +297,7 @@ pub fn publish_to_krew(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
-            &format!("Add/update {} plugin to v{}", crate_name, version),
+            &pr_title(crate_name, &version),
             &format!(
                 "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\n{}",
                 crate_name,

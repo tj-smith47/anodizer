@@ -1,8 +1,8 @@
 mod announce_only;
 mod context_setup;
 mod crate_select;
-mod failure_policy;
 mod milestones;
+mod on_error;
 mod pipeline_run;
 mod publish_only;
 mod run;
@@ -17,7 +17,7 @@ pub use split::{load_split_contexts_into, run_merge};
 use super::helpers;
 use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig};
-use anodizer_core::context::{Context, ContextOptions, RollbackMode};
+use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::git;
 use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -106,9 +106,12 @@ pub struct ReleaseOpts {
     /// `--preflight`: run the pre-flight publisher-state check and exit
     /// (don't continue into the rest of the release pipeline).
     pub preflight: bool,
-    /// `--no-preflight`: skip the automatic pre-flight check that normally
-    /// runs as the first step of `release`.
-    pub no_preflight: bool,
+    /// `--no-env-preflight` (hidden, harness-only): skip the environment
+    /// preflight (tools / secrets / key material) that normally runs as the
+    /// first step of `release`. Set by the determinism harness, whose
+    /// hermetic replica runs in a deliberately credential-less env that the
+    /// config-derived preflight would correctly reject.
+    pub no_env_preflight: bool,
     /// `--preflight-secrets`: a check-only mode that validates the
     /// runner-agnostic publish secrets / credentials (env vars and
     /// env-borne key material) across the full release surface WITHOUT
@@ -117,13 +120,6 @@ pub struct ReleaseOpts {
     /// carry the same injected secrets but different host-local tools.
     /// Short-circuits before the publisher-state probe and mode dispatch.
     pub preflight_secrets: bool,
-    /// `--strict-preflight`: treat `PublisherState::Unknown` results and
-    /// indeterminate probe outcomes (5xx / rate-limit / network failure /
-    /// undeterminable permissions) as blockers too. Useful in CI where any
-    /// uncertainty should fail-fast. The global `--strict` and the config
-    /// `preflight.strict: true` imply the same behavior
-    /// ([`Context::preflight_is_strict`]).
-    pub strict_preflight: bool,
     /// `--no-post-publish-poll`: skip the post-publish polling that
     /// otherwise waits on chocolatey moderation / winget PR validation
     /// after the publish step's HTTP 2xx. Plumbed into
@@ -139,24 +135,12 @@ pub struct ReleaseOpts {
     /// `ContextOptions::gate_submitter` as `Some(false)`. Default
     /// (`None`) means gate-on.
     pub no_gate_submitter: bool,
-    /// `--rollback=<none|best-effort>`: post-publish rollback policy
-    /// override. Validated against the {none, best-effort} set in
-    /// `run()` and stored as `ContextOptions::rollback_mode`.
-    pub rollback: Option<String>,
     /// `--simulate-failure=<publisher>` (repeatable): names of
     /// publishers whose `run()` should be replaced with a synthetic
     /// failure in `stage-publish::dispatch`. Only honored when
     /// `ANODIZE_TEST_HARNESS=1` is set; otherwise rejected at the
     /// translation site so production releases cannot trip it.
     pub simulate_failure: Vec<String>,
-    /// `--rollback-only`: skip publish; re-attempt rollback from a
-    /// prior run report. The replay logic lands in a follow-up; `run()`
-    /// bails with a clear "not yet implemented" error in this revision
-    /// so the flag is discoverable via `--help`.
-    pub rollback_only: bool,
-    /// `--from-run=<id>`: prior run id whose `report.json` to load
-    /// when running with `--rollback-only`.
-    pub from_run: Option<String>,
     /// `--show-skipped`: surface the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. Plumbed into
     /// `ContextOptions::show_skipped`; defaults to false (those no-op skips
@@ -182,15 +166,6 @@ pub struct ReleaseOpts {
     /// `false` (fail-closed): a non-release version reaching a one-way-door
     /// index is almost always an accident.
     pub allow_snapshot_publish: bool,
-    /// `--no-failure-policy` (hidden, harness-only): disable the
-    /// `release.on_failure` rollback/hold policy entirely. The determinism
-    /// harness's hermetic replica runs in a throwaway worktree with no
-    /// credentials, skips the `release` and `publish` stages, and must never
-    /// touch the real tag or source repo — so on a stage failure it must
-    /// surface the build error plainly, not fire (or even mention) a tag-delete
-    /// plus bump-revert rollback. `--rollback=<mode>` is a separate axis
-    /// (post-publish *publisher* rollback) that does not gate this policy.
-    pub no_failure_policy: bool,
 }
 
 #[cfg(test)]

@@ -255,7 +255,7 @@ impl anodizer_core::Publisher for McpPublisher {
         // mid-publish failure on the POST surfaces as Err and aborts
         // before evidence assembly — the rollback contract is therefore
         // "if there's a target in evidence, the version exists on the
-        // registry," which is what `--rollback-only` relies on.
+        // registry," which is what `anodizer tag rollback` relies on.
         let target = super::publish_to_mcp(ctx, &log)?;
         let mut evidence = anodizer_core::PublishEvidence::new("mcp");
         if let Some(t) = target {
@@ -598,7 +598,7 @@ mod publisher_tests {
         // Regression guard for the v0 phantom-evidence bug: under --dry-run
         // the publish path short-circuits without POSTing, so Publisher::run
         // must produce evidence with no `mcp_targets` key (otherwise a later
-        // --rollback-only would PATCH a version that was never published).
+        // anodizer tag rollback would PATCH a version that was never published).
         let _g = warn_once_lock();
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",

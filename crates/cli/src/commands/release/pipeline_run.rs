@@ -1,29 +1,5 @@
 use super::*;
 
-/// `--rollback-only` short-circuits the pipeline: load the prior run's
-/// `report.json`, re-attempt rollback for every Succeeded / RollbackFailed
-/// entry, persist the result to `rollback.json`, and return. No build /
-/// publish / announce stages run in this mode.
-///
-/// The rollback-only branch bypasses `Pipeline::run` entirely, so it must
-/// invoke `emit_summary` itself for `--summary-json=<path>` to land on disk.
-/// The call wraps both the rollback dispatch result and the early-error
-/// return so the summary fires regardless of how `rollback_only` resolved.
-pub(crate) fn run_rollback_only(ctx: &mut Context) -> Result<()> {
-    let outcome = (|| -> Result<()> {
-        let run_id = ctx
-            .options
-            .from_run
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
-        let updated_report = anodizer_stage_publish::rollback_only::run(ctx, &run_id)?;
-        ctx.set_publish_report(updated_report);
-        Ok(())
-    })();
-    anodizer_stage_announce::emit_summary(ctx);
-    outcome
-}
-
 /// Run before-hooks once env AND git vars are populated. Respects
 /// `--skip=before`. Skipped in
 /// `--merge` / `--split` / `--publish-only` modes — CI already validates
@@ -45,7 +21,7 @@ pub(crate) fn run_release_env_preflight(
     opts: &ReleaseOpts,
     log: &StageLogger,
 ) -> Result<()> {
-    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
+    if !opts.no_env_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
         let scope = if opts.announce_only {
             crate::commands::preflight::PreflightScope::AnnounceOnly
         } else if opts.publish_only {
@@ -57,16 +33,11 @@ pub(crate) fn run_release_env_preflight(
         if !report.ok() {
             anyhow::bail!(
                 "preflight: {} environment failure(s) across {} check(s); \
-                 fix the issues above or re-run with --no-preflight to override",
+                 fix the issues above before re-running",
                 report.failures.len(),
                 report.checks
             );
         }
-    } else if opts.no_preflight {
-        log.warn(
-            "preflight skipped via --no-preflight; missing tools / secrets / key material \
-             will surface mid-pipeline (no idempotent recovery)",
-        );
     }
     Ok(())
 }
@@ -285,7 +256,6 @@ pub(crate) fn run_publisher_preflight(
         return Ok(false);
     }
     let should_run_preflight = should_run_preflight_auto(
-        opts.no_preflight,
         opts.snapshot,
         opts.dry_run,
         opts.split,
@@ -299,35 +269,7 @@ pub(crate) fn run_publisher_preflight(
     if report.entries.is_empty() {
         log.verbose("skipped one-way-door preflight — no one-way-door publishers configured");
     } else {
-        // Route the report through the stage logger (same channel as every
-        // other status string in this function) instead of a raw `print!` so
-        // verbosity / quiet flags / future redirection apply uniformly. The
-        // Display impl is multi-line; splitting line-by-line preserves the
-        // single-line cadence used by surrounding `log.status` calls.
-        for line in report.to_string().trim_end_matches('\n').lines() {
-            log.status(line);
-        }
-    }
-    // Effective preflight strictness: the global `--strict` implies it, the
-    // explicit `--strict-preflight` is kept for anyone who already plumbed it
-    // through their CI, and the config-level `preflight.strict` turns it on
-    // per-project. Beyond promoting Unknown publisher-state entries below, the
-    // same predicate promotes indeterminate probe outcomes to blockers inside
-    // `run_preflight` (via each publisher's probe mapping).
-    let strict_preflight = ctx.preflight_is_strict();
-    if report.has_blockers(strict_preflight) {
-        let blockers = report.blockers(strict_preflight);
-        let labels: Vec<String> = blockers
-            .iter()
-            .map(|b| format!("{} ({})", b.publisher, b.state.label()))
-            .collect();
-        anyhow::bail!(
-            "preflight: {} publisher(s) blocked the release: {}. \
-             Resolve upstream (await moderation / merge or close the PR / bump version) \
-             or re-run with --no-preflight to override.",
-            blockers.len(),
-            labels.join(", ")
-        );
+        report.emit(log);
     }
     // Resilience-extension blockers (rollback-scope checks +
     // `Publisher::preflight()` returns) live in their own channel; bail when

@@ -82,8 +82,11 @@ pub struct Config {
     /// Hooks run after the release pipeline completes.
     pub after: Option<HooksConfig>,
     /// Hooks run when the release pipeline fails at ANY stage (build,
-    /// sign, publish, ...), after the failure policy (rollback / hold)
-    /// has executed, so `{{ .RolledBack }}` reflects the taken path.
+    /// sign, publish, ...). The pipeline holds on failure: published state
+    /// is left exactly where the failed run put it, so `{{ .RolledBack }}`
+    /// is always `false`. Recover by re-running the identical command
+    /// (publishers reconcile against what already shipped and skip it), or
+    /// withdraw the release deliberately with `anodizer tag rollback`.
     ///
     /// Notification / cleanup hooks: a hook's own failure is logged as a
     /// warning and never masks the pipeline error. The failure context is

@@ -55,13 +55,6 @@ pub struct ContextOptions {
     pub project_root: Option<PathBuf>,
     /// Strict mode: configured features that would silently skip become errors.
     pub strict: bool,
-    /// `--strict-preflight`: preflight-scoped strictness. Promotes
-    /// indeterminate publisher-state / probe outcomes (Unknown state, 5xx /
-    /// rate-limit / network failure / undeterminable permissions) to hard
-    /// blockers without widening the global `--strict` semantics. Effective
-    /// preflight strictness ([`Context::preflight_is_strict`]) ORs this with
-    /// `strict` and the config-level `preflight.strict`.
-    pub strict_preflight: bool,
     /// `--resume-release`: opt-in to continue into a release left over from
     /// a prior failed attempt. Bypasses the leftover-assets pre-check that
     /// bails when an existing release already has assets and
@@ -87,11 +80,6 @@ pub struct ContextOptions {
     /// `stage-publish::dispatch::DispatchOptions::gate_submitter` for
     /// the gating mechanics.
     pub gate_submitter: Option<bool>,
-    /// `--rollback=<none|best-effort>`: post-publish rollback policy.
-    /// `None` means "resolve from preflight state at dispatch time"
-    /// (best-effort when preflight ran clean, none otherwise with a
-    /// warn). Consumed by the rollback-dispatch task.
-    pub rollback_mode: Option<RollbackMode>,
     /// `--simulate-failure=<publisher>` (repeatable, hidden, env-gated
     /// behind `ANODIZE_TEST_HARNESS=1`): names of publishers whose
     /// `run()` should be skipped and a synthetic `Failed("simulated
@@ -100,12 +88,6 @@ pub struct ContextOptions {
     /// paths deterministically without monkey-patching production
     /// publisher code.
     pub simulate_failure_publishers: Vec<String>,
-    /// `--rollback-only`: skip publish; re-attempt rollback from a
-    /// prior run report. Requires `from_run` to identify which prior
-    /// run's `report.json` to load. The actual replay logic lands in
-    /// a follow-up task; this field is plumbed so the flag is visible
-    /// in `--help` today.
-    pub rollback_only: bool,
     /// `--show-skipped`: surface the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. In workspace mode every
     /// PR-based publisher (homebrew / nix / scoop / aur / winget / krew /
@@ -115,10 +97,6 @@ pub struct ContextOptions {
     /// real output. Setting this flag forces them back to status — the
     /// diagnostic escape hatch for "why didn't publisher X run for crate Y?".
     pub show_skipped: bool,
-    /// `--from-run=<id>`: prior run id whose `report.json` to load
-    /// when running in `--rollback-only` mode. clap enforces the
-    /// `requires = "rollback_only"` relationship at parse time.
-    pub from_run: Option<String>,
     /// `--allow-nondeterministic <name>=<reason>` (repeatable):
     /// runtime non-determinism opt-outs for specific artifacts. The
     /// determinism stage suppresses its non-determinism error for
@@ -230,16 +208,12 @@ impl Default for ContextOptions {
             preflight_secrets: false,
             project_root: None,
             strict: false,
-            strict_preflight: false,
             resume_release: false,
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
             gate_submitter: None,
-            rollback_mode: None,
             simulate_failure_publishers: Vec::new(),
-            rollback_only: false,
             show_skipped: false,
-            from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
             allow_ai_failure: false,

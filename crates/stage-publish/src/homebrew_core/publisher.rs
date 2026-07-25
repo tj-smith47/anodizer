@@ -10,8 +10,8 @@
 //!   the PR(s) this run opened; a `direct_commit` bump is warn-only.
 //!
 //! Evidence: one [`HomebrewCoreTargetSnapshot`] per bumped formula — the
-//! upstream, head owner, branch, and PR URL — so `--rollback-only
-//! --from-run` can find and close the open PR.
+//! upstream, head owner, branch, and PR URL — so `anodizer tag rollback`
+//! can find and close the open PR.
 
 use anodizer_core::config::HomebrewCoreConfig;
 use anodizer_core::context::Context;
@@ -772,8 +772,15 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
             // An unresolvable token still probes: the GitHub search API serves
             // public repos unauthenticated, and homebrew-core is public.
             let token = resolve_token(ctx, cfg).ok().flatten().map(|t| t.token);
+            // `resolve_commit_message` is templatable via
+            // `commit_msg_template`, so re-deriving the default here would
+            // silently miss any project that overrides it.
+            let Ok(title) = resolve_commit_message(ctx, cfg, &formula, &version) else {
+                return Ok(ReconcileState::Absent);
+            };
             targets.push(crate::util::PrReconcileTarget {
                 publisher: HomebrewCorePublisher::PUBLISHER_NAME.into(),
+                title,
                 upstream_owner,
                 upstream_repo,
                 package: formula,

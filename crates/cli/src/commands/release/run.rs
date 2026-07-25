@@ -42,9 +42,9 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // run didn't include any release tags).
     //
     // Excluded modes: --snapshot / --nightly / --dry-run build without a real
-    // tag; --publish-only / --announce-only / --rollback-only consume a prior
-    // dist tree; --split / --merge drive a multi-host flow. All of those modes
-    // use "empty selected_crates = all crates" and must not be short-circuited.
+    // tag; --publish-only / --announce-only consume a prior dist tree;
+    // --split / --merge drive a multi-host flow. All of those modes use
+    // "empty selected_crates = all crates" and must not be short-circuited.
     if selected_sorted.is_empty()
         && opts.crate_names.is_empty()
         && !opts.all
@@ -53,7 +53,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         && !opts.dry_run
         && !opts.publish_only
         && !opts.announce_only
-        && !opts.rollback_only
         && !opts.split
         && !opts.merge
         // `--preflight-secrets` is a PRE-tag gate: by design it runs before
@@ -78,7 +77,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     let skip_stages = compute_skip_stages(opts.skip.clone(), &workspace_skip, opts.snapshot);
 
     let release_notes_path = read_release_notes_template(&opts)?;
-    let rollback_mode = parse_rollback_mode(opts.rollback.as_deref())?;
     let simulate_failure_publishers = resolve_simulate_failure(&mut opts.simulate_failure)?;
     let runtime_nondeterministic_allowlist =
         parse_allow_nondeterministic(&opts.allow_nondeterministic)?;
@@ -105,7 +103,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             &opts,
             skip_stages,
             selected_sorted,
-            rollback_mode,
             simulate_failure_publishers,
             runtime_nondeterministic_allowlist,
             project_root,
@@ -139,16 +136,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         // correctly either way (a missing var would short-circuit the
         // truthy arm even when prepare mode is requested).
         ctx.template_vars_mut().set_bool("IsPrepare", opts.prepare);
-
-        // --rollback-only consumes a prior run's recorded state and never
-        // builds; short-circuit before the env / git / hooks setup work
-        // below (which it does not need). Returns from inside the setup
-        // group — the guard drops on the early return, balancing the
-        // section — so rollback's own output is not nested under later
-        // setup steps it skips.
-        if ctx.options.rollback_only {
-            return run_rollback_only(&mut ctx);
-        }
 
         // Dist-state enforcement (`--clean` removal / non-empty hard error)
         // emits its user-facing `would clean` note here so it sits inside
@@ -235,17 +222,22 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Every mode below routes its outcome through the in-process failure
-    // policy (`release.on_failure`): on a pipeline failure the binary
-    // itself decides rollback vs hold instead of leaving a summary for a
-    // workflow-side `if:` chain to act on.
+    // A pipeline failure leaves every tag, commit, and published artifact
+    // exactly where it landed: recovery is re-running this same command
+    // (publishers reconcile and skip what already landed), and deliberate
+    // withdrawal is `anodizer tag rollback`. The only thing a failure fires
+    // is the operator's root `on_error:` hooks.
     let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
-    failure_policy::finish(&ctx, &opts, &log, result)
+    if let Err(err) = result {
+        on_error::fire_release_on_error(&ctx, &err, &log);
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Run the selected release mode (publish-only / announce-only / split /
 /// merge / full pipeline). Split out of [`run`] so the caller can route
-/// every mode's failure through [`failure_policy::finish`] uniformly,
+/// every mode's failure through the root `on_error:` hooks uniformly,
 /// while the zero-mutation preflight gates stay outside that boundary.
 pub(crate) fn dispatch_release_modes(
     ctx: &mut Context,

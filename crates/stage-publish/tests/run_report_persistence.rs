@@ -1,19 +1,19 @@
 //! Integration: end-of-PublishStage writes `<dist>/run-<id>/report.json`,
-//! and `rollback_only::run` reads it back without a "report not found"
+//! and `rollback::run` reads it back without a "report not found"
 //! error.
 //!
 //! Closes the writer/reader gap surfaced by the 2026-05-15 release-
 //! resilience audit (finding C1): before B4, no production code wrote
-//! `report.json`, so `--rollback-only --from-run=<id>` was structurally
+//! `report.json`, so `anodizer tag rollback` was structurally
 //! unreachable. This test pins the round-trip via the production
 //! writer (`write_report_to_run_dir`, doc-hidden + pub for the same
 //! test-injection reason as `run_with_publishers`) and the production
-//! reader (`rollback_only::run`).
+//! reader (`rollback::run`).
 
 use anodizer_core::context::Context;
 use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
-use anodizer_stage_publish::{PublishStage, rollback_only, write_report_to_run_dir};
+use anodizer_stage_publish::{PublishStage, rollback, write_report_to_run_dir};
 
 /// Minimal in-test Publisher with a no-op rollback. Mirrors
 /// `tests/sibling_isolation.rs` (which avoids the crate-internal
@@ -41,13 +41,13 @@ impl Publisher for SuccessPublisher {
     }
     fn rollback(&self, _ctx: &mut Context, _ev: &PublishEvidence) -> anyhow::Result<()> {
         // No-op rollback; this test asserts the read-back path, not
-        // the dispatch logic (covered by rollback_only unit tests).
+        // the dispatch logic (covered by rollback.rs unit tests).
         Ok(())
     }
 }
 
 #[test]
-fn publish_stage_writes_report_and_rollback_only_can_read_it() {
+fn publish_stage_writes_report_and_rollback_run_can_read_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut ctx = TestContextBuilder::new()
         .tag("v0.0.0-test")
@@ -105,21 +105,21 @@ fn publish_stage_writes_report_and_rollback_only_can_read_it() {
         );
     }
 
-    // Reader: rollback_only::run reads the same path and must not
+    // Reader: rollback::run reads the same path and must not
     // error with "failed to read prior report". The synthetic
     // publishers aren't wired into the config-driven registry (which
-    // is what `rollback_only::run` consults), so each entry flips to
+    // is what `rollback::run` consults), so each entry flips to
     // `RollbackFailed("publisher not found in current registry")` —
     // that's a faithful reflection of production behavior when an
-    // operator runs `--rollback-only` against a run that targeted
+    // operator runs `anodizer tag rollback` against a run that targeted
     // publishers since removed from the config.
     //
     // What matters for THIS test (the writer/reader contract): the
     // read succeeds, the shape round-trips, and the count is
     // preserved. The dispatch outcomes themselves are covered by
-    // unit tests in `crates/stage-publish/src/rollback_only.rs`.
-    let updated = rollback_only::run(&mut ctx, "v0.0.0-test")
-        .expect("rollback_only must read the persisted report.json");
+    // unit tests in `crates/stage-publish/src/rollback.rs`.
+    let updated = rollback::run(&mut ctx, "v0.0.0-test")
+        .expect("rollback::run must read the persisted report.json");
     assert_eq!(updated.results.len(), 2);
     let mut updated_names: Vec<&str> = updated.results.iter().map(|r| r.name.as_str()).collect();
     updated_names.sort();
@@ -128,12 +128,12 @@ fn publish_stage_writes_report_and_rollback_only_can_read_it() {
         // Either RolledBack (if a matching publisher were in the
         // registry) or RollbackFailed (registry mismatch — our case).
         // The assertion below pins "not Succeeded" to confirm
-        // rollback_only actually walked the entries; an unchanged
+        // rollback::run actually walked the entries; an unchanged
         // `Succeeded` would mean the dispatcher didn't see them at
         // all, which would be a real bug.
         assert!(
             !matches!(r.outcome, PublisherOutcome::Succeeded),
-            "rollback_only must flip {} away from Succeeded, got {:?}",
+            "rollback::run must flip {} away from Succeeded, got {:?}",
             r.name,
             r.outcome,
         );

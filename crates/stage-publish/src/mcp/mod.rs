@@ -76,7 +76,7 @@ static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 /// succeeds; `None` when the skip-gate fires (missing name, truthy
 /// `mcp.skip`, or `--dry-run`). The wrapper's `Publisher::run` records the
 /// returned target in `evidence.extra` only when `Some`, so a later
-/// `--rollback-only` cannot fire a PATCH against a server-version that
+/// `anodizer tag rollback` cannot fire a PATCH against a server-version that
 /// was never published.
 pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Option<McpTarget>> {
     // In per-crate iteration (workspace publish-only), `selected_crates`

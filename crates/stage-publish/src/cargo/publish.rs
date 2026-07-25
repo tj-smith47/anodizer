@@ -211,9 +211,9 @@ pub fn publish_to_cargo(
     // - success, or failure with NOTHING published → revoke + restore the base
     //   env source now; no rollback yank will run.
     // - failure with crates already live (non-empty `record`, the same signal
-    //   `programmatic_rollback_on_failure` keys on) → LEAVE the overlay and the
-    //   marker in place so `rollback()` can yank with the token and revoke it
-    //   afterward.
+    //   `rollback()` decodes via `decode_cargo_yank_targets`) → LEAVE the
+    //   overlay and the marker in place so `rollback()` can yank with the
+    //   token and revoke it afterward.
     // A `?` between mint and this decision would leak the token past its
     // release; there is none — the loop's error is captured in `result`.
     if minted.is_some() {
@@ -470,7 +470,8 @@ pub(crate) fn publish_to_cargo_with_guard(
     // start when any crate in the publish set has a workspace-internal
     // (non-dev) dependency that is neither in the set nor already on
     // crates.io. The publish-simulation preflight runs the same guard earlier
-    // for a louder/earlier abort, but it is gated behind `--no-preflight`;
+    // for a louder/earlier abort, but that check-only mode is opt-in
+    // (`--preflight`), not run automatically before every real publish;
     // re-running it here means no real-publish path (publish_to_cargo /
     // --publish-only) can bypass it. Cheap: at most one sparse-index GET per
     // out-of-set dep, and a no-op for the common lockstep case where every

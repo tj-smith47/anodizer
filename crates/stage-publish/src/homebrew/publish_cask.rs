@@ -246,7 +246,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
             branch_name: pr_branch,
             update_existing_pr,
         },
-        &format!("Update {} cask to {}", cask_result.cask_name, version),
+        &super::publish_top::cask_pr_title(&cask_result.cask_name, &version),
         &format!(
             "## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
             cask_result.cask_name,

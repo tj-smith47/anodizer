@@ -51,11 +51,21 @@ pub fn crate_template_overrides(name: &str, tag: &str) -> Result<Vec<(&'static s
     ])
 }
 
-/// Resolve a crate's own latest matching tag from git, monorepo prefix
-/// stripped. Returns `None` when no tag matches; callers treat that as a
-/// fail-loud error for an emission-enabled crate (never a silent fall-back to
-/// the first crate's vars). For single-crate / lockstep this resolves to the
-/// same tag the global context already carries, so behavior is unchanged.
+/// Resolve the tag a crate publishes under for the release currently scoped
+/// on `ctx`, monorepo prefix stripped. Returns `None` when no tag matches;
+/// callers treat that as a fail-loud error for an emission-enabled crate
+/// (never a silent fall-back to the first crate's vars).
+///
+/// Resolution order:
+///
+/// 1. The crate's `tag_template` rendered against the context's CURRENT
+///    version, when a tag by that name exists. This is the tag being
+///    released, which is not always the newest one: re-publishing an older
+///    tag (the `workflow_dispatch` recovery flow) scopes `ctx` to that older
+///    version while newer tags exist in the repo.
+/// 2. Otherwise the latest tag matching the template — the independent-version
+///    case, where the crate's own version legitimately differs from the
+///    context's.
 ///
 /// Honors `--project-root` so tag discovery targets the release repo rather
 /// than the process cwd.
@@ -66,6 +76,9 @@ pub fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Strin
         .project_root
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    if let Some(tag) = tag_for_current_version(ctx, crate_cfg, &repo, monorepo_prefix) {
+        return Some(tag);
+    }
     let tag = crate::git::find_latest_tag_matching_with_prefix_in(
         &repo,
         crate_cfg.resolved_tag_template(),
@@ -80,6 +93,33 @@ pub fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Strin
         None => tag,
     };
     Some(stripped)
+}
+
+/// The crate's `tag_template` rendered against the context's current version,
+/// returned only when such a tag actually exists in `repo`.
+///
+/// A template that renders to a literal (no `Version` placeholder) is
+/// rejected: it would match on every release and pin the crate to one tag.
+fn tag_for_current_version(
+    ctx: &Context,
+    crate_cfg: &CrateConfig,
+    repo: &std::path::Path,
+    monorepo_prefix: Option<&str>,
+) -> Option<String> {
+    let template = crate_cfg.resolved_tag_template();
+    let rendered = ctx.render_template(template).ok()?;
+    if rendered == template {
+        return None;
+    }
+    let candidate = match monorepo_prefix {
+        Some(prefix) => format!("{prefix}{rendered}"),
+        None => rendered.clone(),
+    };
+    let exists = crate::git::list_tags_with_prefix(repo, &candidate)
+        .ok()?
+        .iter()
+        .any(|t| t == &candidate);
+    exists.then_some(rendered)
 }
 
 /// Diagnostic for a crate whose `tag_template` matched no tag. The message

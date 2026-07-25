@@ -517,6 +517,12 @@ pub(crate) fn resolve_upstream_coords(
 pub(crate) struct PrReconcileTarget {
     /// Publisher name, used only to label the probe's log lines and errors.
     pub publisher: String,
+    /// The EXACT pull-request title this publisher's submitter would open
+    /// for `package` at `version`. Source it by calling the submitter's own
+    /// title-building code rather than re-deriving the format here: a probe
+    /// that re-derives what the submitter already knows drifts silently, and
+    /// a drifted probe reports `Complete` for a PR that was never opened.
+    pub title: String,
     pub upstream_owner: String,
     pub upstream_repo: String,
     pub package: String,
@@ -547,6 +553,7 @@ pub(crate) fn reconcile_open_prs(
     for t in targets {
         let query = OpenPrQuery {
             publisher: &t.publisher,
+            expect_title: Some(&t.title),
             upstream_owner: &t.upstream_owner,
             upstream_repo: &t.upstream_repo,
             package: &t.package,

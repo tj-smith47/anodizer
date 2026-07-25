@@ -5623,190 +5623,8 @@ crates:
 
 // ---- Release-resilience CLI flag runtime behaviour ----
 
-/// `--rollback-only --from-run X` short-circuits the pipeline and replays
-/// rollback against the prior run's `report.json`. When no such report
-/// exists on disk the command surfaces a clear error referencing the
-/// missing path (no other stages run).
-#[test]
-fn release_rollback_only_bails_when_prior_report_missing() {
-    let tmp = TempDir::new().unwrap();
-    create_test_project(tmp.path());
-    init_git_repo(tmp.path());
-    create_config(
-        tmp.path(),
-        r#"
-project_name: test-project
-crates:
-  - name: test-project
-    path: "."
-    tag_template: "v{{ .Version }}"
-"#,
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--rollback-only", "--from-run", "abc123"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "release --rollback-only with no prior report must exit non-zero"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to read prior report") && stderr.contains("run-abc123"),
-        "stderr should reference the missing prior report path, got: {}",
-        stderr
-    );
-}
-
-/// `--rollback-only --from-run X` reads `<dist>/run-<id>/report.json`,
-/// invokes Publisher rollback for every Succeeded / RollbackFailed entry,
-/// and writes the updated state to `<dist>/run-<id>/rollback.json`.
-/// Submitter entries are not in the registry under this minimal config,
-/// so the test fixture uses a publisher name that maps to nothing; the
-/// outcome flips to `RollbackFailed("publisher not found...")` which is
-/// the documented diagnostic when the registry no longer carries the
-/// publisher recorded in the prior report.
-#[test]
-fn release_rollback_only_invokes_replay_from_disk() {
-    let tmp = TempDir::new().unwrap();
-    create_test_project(tmp.path());
-    init_git_repo(tmp.path());
-    create_config(
-        tmp.path(),
-        r#"
-project_name: test-project
-crates:
-  - name: test-project
-    path: "."
-    tag_template: "v{{ .Version }}"
-"#,
-    );
-
-    // Seed dist/run-fixt/report.json with a Succeeded Manager entry
-    // whose name does not match any publisher in this minimal config.
-    // Real publisher dispatch is not needed — only that the replay
-    // path runs end-to-end and writes rollback.json.
-    let run_dir = tmp.path().join("dist").join("run-fixt");
-    fs::create_dir_all(&run_dir).unwrap();
-    let report_json = r#"{
-  "results": [
-    {
-      "name": "orphan-mgr",
-      "group": "Manager",
-      "required": true,
-      "outcome": "Succeeded",
-      "evidence": {
-        "schema_version": 1,
-        "publisher": "orphan-mgr",
-        "primary_ref": null,
-        "artifact_paths": [],
-        "nondeterministic": null,
-        "extra": {}
-      }
-    }
-  ],
-  "submitter_gated": false,
-  "announce_gated": false
-}"#;
-    fs::write(run_dir.join("report.json"), report_json).unwrap();
-
-    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--rollback-only", "--from-run", "fixt"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "release --rollback-only must succeed even when a recorded publisher is missing from the current registry (it surfaces as RollbackFailed in rollback.json). stdout:\n{}\nstderr:\n{}",
-        stdout,
-        stderr,
-    );
-
-    let rollback_path = run_dir.join("rollback.json");
-    assert!(
-        rollback_path.exists(),
-        "rollback.json must be written to {}",
-        rollback_path.display(),
-    );
-    let rollback_text = fs::read_to_string(&rollback_path).unwrap();
-    assert!(
-        rollback_text.contains("RollbackFailed")
-            && rollback_text.contains("not found in current registry"),
-        "rollback.json must carry diagnostic for missing publisher, got:\n{}",
-        rollback_text,
-    );
-}
-
-/// `--from-run=<id>` joins into a filesystem path; clap's value_parser
-/// must reject path-traversal at the binary surface (not just in
-/// in-process try_parse_from tests). Validates the whole-binary
-/// happy/sad path so a regression in the value_parser wiring (e.g. a
-/// future refactor that drops it) shows up here.
-#[test]
-fn release_from_run_rejects_path_traversal_at_binary_surface() {
-    let tmp = TempDir::new().unwrap();
-    create_test_project(tmp.path());
-    init_git_repo(tmp.path());
-    create_config(
-        tmp.path(),
-        r#"
-project_name: test-project
-crates:
-  - name: test-project
-    path: "."
-    tag_template: "v{{ .Version }}"
-"#,
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args([
-            "release",
-            "--rollback-only",
-            "--from-run",
-            "../../etc/passwd",
-        ])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "release --from-run=../../etc/passwd must exit non-zero"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--from-run") || stderr.contains("invalid"),
-        "stderr should explain the rejection, got: {}",
-        stderr
-    );
-    // Critically: the traversed path must NOT have been touched. The
-    // poisoned destination `<dist>/run-../../etc/passwd/` resolves
-    // (via Path::join) up out of the tempdir, so we cannot positively
-    // assert "no file written" without scanning the real FS — but we
-    // CAN assert the local <dist>/ stays free of any run-<id> dir
-    // because the parser bailed before any stage ran. No `if exists()`
-    // guard: dist/ not existing AND dist/ existing-with-no-run-* are
-    // both passing states, and a future regression that lets parsing
-    // succeed and `dist/run-../../etc/passwd` get mkdir'd before the
-    // stage fails must trip this assertion loudly.
-    let dist = tmp.path().join("dist");
-    let has_traversal_leak = dist.exists()
-        && std::fs::read_dir(&dist)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|e| e.file_name().to_string_lossy().starts_with("run-"));
-    assert!(
-        !has_traversal_leak,
-        "no run-* directory should leak into dist/ when parsing fails"
-    );
-}
-
-/// `promote --from-run=<id>` joins into a filesystem path exactly like
-/// `release --from-run`, so its clap `value_parser` must reject
+/// `promote --from-run=<id>` joins into a filesystem path, so its clap
+/// `value_parser` must reject
 /// path-traversal at the binary surface too. Guards against a regression
 /// where the promote arg lacked the `parse_run_id` guard the release arg
 /// already carried.
@@ -5852,43 +5670,6 @@ crates:
     assert!(
         stderr.contains("invalid value") && stderr.contains("invalid characters"),
         "stderr must be the value_parser rejection, not a downstream error, got: {}",
-        stderr
-    );
-}
-
-/// Invalid `--rollback` values are caught at the translation site before any
-/// pipeline work runs.
-#[test]
-fn release_rejects_invalid_rollback_value() {
-    let tmp = TempDir::new().unwrap();
-    create_test_project(tmp.path());
-    init_git_repo(tmp.path());
-    create_config(
-        tmp.path(),
-        r#"
-project_name: test-project
-crates:
-  - name: test-project
-    path: "."
-    tag_template: "v{{ .Version }}"
-"#,
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--rollback", "wat"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "release --rollback=wat must exit non-zero"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid --rollback value")
-            && stderr.contains("none")
-            && stderr.contains("best-effort"),
-        "stderr should explain valid set, got: {}",
         stderr
     );
 }
@@ -5949,8 +5730,8 @@ crates:
 /// failed: {names}. ..."` — so this test asserts both `"required
 /// publisher"` and `"cargo"` appear in stderr without pinning which
 /// layer fired. It also confirms `report.json` was persisted *before*
-/// the gate fired so operators can replay rollback via
-/// `--rollback-only --from-run=<id>`.
+/// the gate fired so `anodizer tag rollback` has publisher state to
+/// unwind.
 #[test]
 fn release_required_publisher_failure_gates_exit_code() {
     let tmp = TempDir::new().unwrap();
@@ -5976,7 +5757,11 @@ crates:
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            "--no-preflight",
+            // The publish gate, not the credential floor, is what this test
+            // pins: without the bypass the run stops at env preflight
+            // (`cargo` needs CARGO_REGISTRY_TOKEN or the OIDC pair, and the
+            // fixture deliberately unsets both).
+            "--no-env-preflight",
             "--simulate-failure",
             "cargo",
             "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",
@@ -5999,7 +5784,7 @@ crates:
         "stderr must carry the gate bail message; got: {stderr}"
     );
     // Sanity: report.json was written before the gate fired, so
-    // `--rollback-only --from-run=v0.1.0` has something to replay.
+    // `anodizer tag rollback` has something to unwind.
     // `init_git_repo` tags the initial commit `v0.1.0`, which becomes
     // the run-id via `derive_run_id` in `crates/stage-publish/src/lib.rs`.
     let report = tmp
@@ -6048,7 +5833,6 @@ crates:
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            "--no-preflight",
             "--simulate-failure",
             "upstream-aur",
             "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",

@@ -7,6 +7,7 @@ use super::tags::{
     scope_includes,
 };
 use super::types::{Mode, RollbackOpts};
+use super::unwind;
 use super::{first_line, short};
 use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -22,11 +23,25 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
 /// stub script so no global PATH mutation is needed (same seam
 /// convention as `core::git::gh_api_get_with_binary`).
 pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
-    let cwd = std::env::current_dir()?;
     let log = StageLogger::new(
         "tag-rollback",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
+    run_with_logger(opts, gh_binary, log)
+}
+
+/// Logger-taking sibling of [`run_with_gh`]. The command's own step order is
+/// only observable through the line stream this one logger emits (the guard's
+/// refusals, the publisher unwind, the tag deletes all share it), so tests
+/// hand in a capture-attached logger to assert that order rather than
+/// inferring it from end-state alone — which cannot tell "unwound, then
+/// deleted" from "deleted, then unwound".
+pub(super) fn run_with_logger(
+    opts: RollbackOpts,
+    gh_binary: &std::path::Path,
+    log: StageLogger,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
 
     let raw_target = opts.sha.as_deref().unwrap_or("HEAD");
     let target_sha = git::rev_parse_in(&cwd, raw_target)?;
@@ -77,9 +92,23 @@ pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Re
     // them to the attempt being rolled back, or --force overrode the guard).
     // Only these get their release deleted; an unattributed tag's release is
     // preserved (it may be a human's draft or a prior reversible release).
-    let attributed: std::collections::HashSet<String> = if opts.force {
+    let (attributed, repo_config): (std::collections::HashSet<String>, Option<_>) = if opts.force {
         log.warn("skipped the published-state guard — --force");
-        deletable.iter().cloned().collect()
+        // The config still resolves the dist dir the publisher unwind reads.
+        // Under --force an unloadable config downgrades to a warning (the
+        // operator has already overridden the evidence checks) rather than
+        // the refusal the guarded path below raises.
+        let config = match crate::pipeline::load_repo_config(&cwd) {
+            Ok(config) => Some(config),
+            Err(e) => {
+                log.warn(&format!(
+                    "could not load the anodizer config ({e:#}); skipping the publisher \
+                     unwind — published state from a prior run will be left in place"
+                ));
+                None
+            }
+        };
+        (deletable.iter().cloned().collect(), config)
     } else {
         // Fail-closed config load: the config drives the dist-dir resolution
         // for run summaries and the tag→crate mapping for the crates.io index
@@ -172,11 +201,12 @@ pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Re
             &probes,
             &log,
         )?;
-        deletable
+        let attributed = deletable
             .iter()
             .filter(|t| !unsummarized.contains(t))
             .cloned()
-            .collect()
+            .collect();
+        (attributed, Some(repo_config))
     };
 
     // Safety check (--mode=revert only). Non-bump commits on top of
@@ -186,6 +216,10 @@ pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Re
     // `"Revert "<...>"` prefix would silently absorb GitHub's
     // "Revert this PR" button output (e.g. an unrelated feature
     // revert) and disable the safety net.
+    //
+    // It is a pure `git log` read, so it belongs with the guard above —
+    // ahead of every mutation. Running it after the publisher unwind would
+    // yank crates, close tap PRs and delete blobs and only THEN refuse.
     if opts.mode == Mode::Revert {
         let intervening = git::commits_with_subjects_in(&cwd, &target_sha)?;
         let mut suspicious: Vec<(String, String)> = Vec::new();
@@ -209,6 +243,20 @@ pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Re
             msg.push_str("resolve manually, or use --mode=reset to force.");
             bail!("{msg}");
         }
+    }
+
+    // Publisher unwind, bracketed by the constraints that fix its position.
+    // It runs AFTER every read-only refusal (the burn guard, the
+    // intervening-commit check) because nothing may be withdrawn before the
+    // command has committed to proceeding, and BEFORE `delete_tags` (and the
+    // local revert that precedes it) because the withdrawal needs the world
+    // the release left behind: `delete_tags` deletes the tag's GitHub
+    // release, which the github-release publisher's own rollback reads to
+    // find its assets. Running the remote withdrawal ahead of the local
+    // revert also keeps a hard failure here from rewriting history first —
+    // the same "leave the retry clean" ordering the git steps below use.
+    if let Some(ref repo_config) = repo_config {
+        unwind::unwind_published_state(&cwd, repo_config, &deletable, &opts, &log)?;
     }
 
     // Local mutation runs FIRST so a failed revert / reset leaves the

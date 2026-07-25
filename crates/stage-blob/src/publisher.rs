@@ -63,7 +63,7 @@ pub(crate) type BlobTarget = anodizer_core::publish_evidence::BlobTargetSnapshot
 /// Render the operator-readable `<provider>://<bucket>/<key>` URL for a
 /// [`BlobTarget`]. Used by the publisher to populate
 /// [`anodizer_core::PublishEvidence`]`.artifact_paths` so the text
-/// `--rollback-only` summary keeps rendering the same shape that
+/// `anodizer tag rollback` summary keeps rendering the same shape that
 /// shipped before the structured-target capture landed.
 ///
 /// Free function rather than an inherent impl because [`BlobTarget`]
@@ -96,7 +96,7 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
 ///
 /// Evidence records ONLY files that actually landed in the store (via
 /// `BlobStage::run_with_evidence`). The prior pre-upload capture would
-/// have given an operator running `--rollback-only` a checklist of paths
+/// have given an operator running `anodizer tag rollback` a checklist of paths
 /// that never existed when a mid-stream upload failed; the post-upload
 /// snapshot is the safer end state — fewer rollback items, no phantom
 /// targets.
@@ -131,7 +131,7 @@ impl Default for BlobPublisher {
 
 /// The warn message [`BlobPublisher::rollback`] emits for one recorded
 /// object key when structured `blob_targets` evidence is absent
-/// (`--rollback-only` against a run written before the structured-target
+/// (`anodizer tag rollback` against a run written before the structured-target
 /// capture landed). Exposed as a helper so tests can pin the wording
 /// without intercepting stderr.
 ///
@@ -183,7 +183,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         let mut evidence = anodizer_core::PublishEvidence::new("blob");
         // The `artifact_paths` slot keeps the operator-readable
         // `<provider>://<bucket>/<key>` form for the text-only
-        // `--rollback-only` summary; the structured copy in
+        // `anodizer tag rollback` summary; the structured copy in
         // `extra.blob_targets` is the authoritative source for the
         // DELETE call.
         if let Some(first) = uploaded.first() {
@@ -316,8 +316,8 @@ fn rollback_via_object_store(
 
     // One tokio runtime for the whole rollback call. `block_on` here is
     // safe because `Publisher::rollback` is invoked synchronously from
-    // `stage_publish::run_rollback_if_needed` (which itself runs on the
-    // synchronous pipeline thread — no enclosing tokio runtime).
+    // `stage_publish::rollback::execute_rollback_step` (which itself runs
+    // on the synchronous CLI thread — no enclosing tokio runtime).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

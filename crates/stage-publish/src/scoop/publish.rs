@@ -1,5 +1,11 @@
 use super::*;
 
+/// The pull-request title for a manifest bump. Shared with the reconcile
+/// probe so a converged re-run looks for the title this function produced.
+pub(crate) fn pr_title(manifest_name: &str, version: &str) -> String {
+    format!("Update {} manifest to {}", manifest_name, version)
+}
+
 // ---------------------------------------------------------------------------
 // publish_to_scoop
 // ---------------------------------------------------------------------------
@@ -196,7 +202,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
             // recover from here.
             update_existing_pr: false,
         },
-        &format!("Update {} manifest to {}", manifest_name, version),
+        &pr_title(manifest_name, &version),
         &format!(
             "## Manifest\n- **Name**: {}\n- **Version**: {}\n\n{}",
             manifest_name,

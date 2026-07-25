@@ -43,15 +43,15 @@ impl Context {
         self.options.strict
     }
 
-    /// Effective preflight strictness: the global `--strict`, the scoped
-    /// `--strict-preflight`, or the config-level `preflight.strict` — any one
-    /// turns it on. Under strict preflight, indeterminate probe outcomes
-    /// (Unknown publisher state, 5xx / rate-limit / network failure /
-    /// undeterminable permissions) become hard blockers instead of warnings.
-    /// Definitive failures keep their required→blocker / optional→warning
-    /// severity either way.
+    /// Effective preflight strictness: the global `--strict` or the
+    /// config-level `preflight.strict` — either one turns it on. Under
+    /// strict preflight, indeterminate probe outcomes (Unknown publisher
+    /// state, 5xx / rate-limit / network failure / undeterminable
+    /// permissions) become hard blockers instead of warnings. Definitive
+    /// failures keep their required→blocker / optional→warning severity
+    /// either way.
     pub fn preflight_is_strict(&self) -> bool {
-        self.options.strict || self.options.strict_preflight || self.config.preflight.strict
+        self.options.strict || self.config.preflight.strict
     }
 
     /// Toggle the runtime strict-render flag (see the `render_strict` field).

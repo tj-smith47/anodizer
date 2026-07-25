@@ -238,7 +238,7 @@ fn cloudsmith_target_extra_carries_no_secret_material() {
 }
 
 // B13 — rollback against evidence whose targets all lack a slug
-// (older `--rollback-only --from-run` replays, or step-3 responses
+// (older `anodizer tag rollback` replays, or step-3 responses
 // that omitted the slug field) returns Ok and never tries to issue
 // a DELETE against the Cloudsmith API. The `CLOUDSMITH_API_KEY` is
 // also absent here to make doubly sure no network call fires.

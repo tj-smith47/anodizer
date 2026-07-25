@@ -264,11 +264,11 @@ These variables are bound **only** inside a publisher's `on_error` and
 | `Publisher` | `ANODIZER_PUBLISHER` | Name of the failing / reverted publisher |
 | `Error` | `ANODIZER_ERROR` | This publisher's own error message; empty on a clean revert |
 | `RollbackFailed` | `ANODIZER_ROLLBACK_FAILED` | `true` when the revert itself failed (`on_rollback`) |
-| `Reason` | `ANODIZER_ROLLBACK_REASON` | The run-wide required sibling failure(s) that triggered the rollback — distinct from `Error` (this publisher's own revert error), which is empty on a publisher reverted without ever failing (`on_rollback`) |
+| `RolledBack` | `ANODIZER_ROLLED_BACK` | Always `false` (`on_error`) — a release run never withdraws anything on its own |
+| `Reason` | `ANODIZER_ROLLBACK_REASON` | Always empty (`on_rollback`) — the unwind replays state a prior process persisted, so the trigger cause is not available to it |
 
-`Error` and `Reason` carry untrusted git/API text — read them from
-`$ANODIZER_ERROR` / `$ANODIZER_ROLLBACK_REASON` with `--raw` rather than
-splicing them into `cmd`. See
+`Error` carries untrusted git/API text — read it from `$ANODIZER_ERROR` with
+`--raw` rather than splicing it into `cmd`. See
 [Release resilience](../advanced/release-resilience.md#on-rollback-hooks) for the
 full hook reference.
 

@@ -58,9 +58,12 @@ impl PreflightCheck {
 ///
 /// Consumed by two surfaces with one contract:
 /// * the publish dispatch loop — `Complete` skips `run()`
-///   (`SkipReason::AlreadyPublished`), `Diverged` aborts for a required
-///   publisher (bump the version) and records a tolerated failure for an
-///   optional one, `Absent`/`Unknown` fall through to `run()`;
+///   (`SkipReason::AlreadyPublished`), `Diverged` records a `Failed` result
+///   (for a required publisher that closes the Submitter gate and the run
+///   exits nonzero — bump the version; for an optional one it is a tolerated
+///   failure), and `Absent`/`Unknown` fall through to `run()`. A divergence
+///   never short-circuits the loop: dispatch continues to the remaining
+///   publishers unless `--fail-fast` was passed;
 /// * `anodizer preflight` — prints the per-publisher reconcile table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileState {
@@ -83,8 +86,10 @@ pub enum ReconcileState {
     /// The version exists upstream but the LOCAL artifact bytes differ from
     /// what landed. The one true blocker at any time: the operator must bump
     /// the version. Honors [`Publisher::required`] at the dispatch arm — a
-    /// required publisher's divergence aborts, an optional one's records a
-    /// gate-neutral tolerated failure.
+    /// required publisher's divergence fails the run via the Submitter gate
+    /// (the result is recorded as `Failed` and the run exits nonzero) while
+    /// dispatch continues unless `--fail-fast`; an optional publisher's
+    /// divergence records a gate-neutral tolerated failure.
     Diverged {
         /// What diverged (hash mismatch details, comparison evidence).
         detail: String,
@@ -181,9 +186,9 @@ pub trait Publisher: Send + Sync {
 
     /// Opt-in OAuth / token scope rollback would require, if any.
     ///
-    /// Default is `None`. Used by the CLI to explain why a `--rollback`
-    /// invocation cannot recover a given publisher without elevating the
-    /// release token's permissions.
+    /// Default is `None`. Used by `anodizer tag rollback` to explain why
+    /// it cannot withdraw a given publisher without elevating the release
+    /// token's permissions.
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         None
     }
@@ -242,26 +247,6 @@ pub trait Publisher: Send + Sync {
     /// nightly clobber is either disruptive (homebrew taps, scoop buckets,
     /// AUR, krew-index, nix overlays) or outright forbidden by registry policy.
     fn skips_on_nightly(&self) -> bool;
-
-    /// Whether a *failed* run of this publisher still has a real,
-    /// programmatic rollback to perform against `evidence`.
-    ///
-    /// Default `false`: a publisher's failure leaves nothing to undo (or
-    /// only an informational, human-driven unwind). The orchestration
-    /// rolls back **succeeded** Assets/Manager publishers; a failed
-    /// Submitter is normally inert.
-    ///
-    /// The cargo publisher is the exception. A multi-crate `cargo publish`
-    /// can succeed on crate A, go live on crates.io, then fail on crate B
-    /// — leaving A published under a *failed* Submitter row. cargo records
-    /// the succeeded crates in `evidence` and overrides this to `true`
-    /// when that set is non-empty, so the rollback path yanks A even
-    /// though the publisher's overall outcome is `Failed`. Returning
-    /// `false` for an empty record keeps a clean failure (nothing went
-    /// live) from arming the rollback machinery for no reason.
-    fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
-        false
-    }
 
     /// When `true`, this publisher's successful work is left in place even
     /// when a rollback is triggered — it is never passed to `rollback()`.
@@ -377,13 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn programmatic_rollback_on_failure_defaults_false() {
-        let p = MinimalPublisher;
-        let evidence = PublishEvidence::new("minimal");
-        assert!(!p.programmatic_rollback_on_failure(&evidence));
-    }
-
-    #[test]
     fn retain_on_rollback_defaults_false() {
         assert!(!MinimalPublisher.retain_on_rollback());
     }
@@ -456,9 +434,6 @@ mod tests {
         fn rollback_scope_needed(&self) -> Option<&'static str> {
             Some("delete_repo")
         }
-        fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
-            true
-        }
         fn retain_on_rollback(&self) -> bool {
             true
         }
@@ -477,9 +452,7 @@ mod tests {
     #[test]
     fn override_publisher_exposes_rollback_scope_and_flags() {
         let p = OverridingPublisher;
-        let evidence = PublishEvidence::new("overriding");
         assert_eq!(p.rollback_scope_needed(), Some("delete_repo"));
-        assert!(p.programmatic_rollback_on_failure(&evidence));
         assert!(p.retain_on_rollback());
         assert!(p.required());
         assert!(p.skips_on_nightly());

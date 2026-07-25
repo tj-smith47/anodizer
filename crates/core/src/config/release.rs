@@ -163,18 +163,20 @@ pub struct ReleaseConfig {
     /// place rather than attempting to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
     /// In-process failure policy: what `anodizer release` does after a
-    /// release-pipeline failure. `rollback` (default) deletes the run's
-    /// release tag(s) and reverts the version-bump commit so the same
-    /// version can be re-cut; `hold` leaves everything in place for
-    /// forensics and manual recovery (`release --rollback-only
-    /// --from-run=<id>`). `rollback` automatically degrades to `hold`
-    /// the moment any one-way-door (Submitter) publisher has landed:
-    /// the version is burned at a registry that never accepts it twice,
-    /// so destructive rollback is refused and fix-forward is the only
-    /// path. Root-level policy — in workspace configs (lockstep or
-    /// per-crate) the top-level `release.on_failure` governs the whole
-    /// run; setting it in a crate-level `release:` block is rejected at
-    /// config load (`validate_on_failure_root_only`).
+    /// release-pipeline failure. `hold` is the only accepted value, and it
+    /// describes what the pipeline now does unconditionally — leave
+    /// everything in place for forensics. Recovery is a re-run (publishers
+    /// reconcile and self-skip, so an identical command converges on
+    /// already-published state) or, for deliberate withdrawal,
+    /// `anodizer tag rollback`. `rollback` is rejected at config load
+    /// (`validate_on_failure_not_rollback`) — automatic rollback was
+    /// removed. Because the value drives no branch, nothing reads this
+    /// field at runtime; it exists so a config carrying the removed policy
+    /// fails loudly instead of being silently downgraded. Root-level policy
+    /// — in workspace configs (lockstep or per-crate) the top-level
+    /// `release.on_failure` governs the whole run; setting it in a
+    /// crate-level `release:` block is rejected at config load
+    /// (`validate_on_failure_root_only`).
     pub on_failure: Option<OnFailureConfig>,
 }
 
@@ -248,12 +250,6 @@ impl ReleaseConfig {
         self.use_existing_draft.unwrap_or(false)
     }
 
-    /// Resolve `on_failure`, falling back to
-    /// [`OnFailureConfig::Rollback`].
-    pub fn resolved_on_failure(&self) -> OnFailureConfig {
-        self.on_failure.unwrap_or_default()
-    }
-
     /// Resolve the upload pace (minimum inter-upload-start interval) from the
     /// config, applying [`Self::DEFAULT_UPLOAD_PACE`] when unset. A configured
     /// `"0s"` resolves to `Duration::ZERO`, which the upload loop treats as
@@ -275,13 +271,17 @@ impl ReleaseConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OnFailureConfig {
-    /// Roll back reversible state (delete the run's release tags, revert
-    /// the version-bump commit) so the version can be re-cut. Degrades to
-    /// `Hold` when any one-way-door publisher already landed.
-    #[default]
+    /// Removed: automatic rollback (delete the run's release tags, revert
+    /// the version-bump commit). Rejected at config load
+    /// (`validate_on_failure_not_rollback`) — re-running `anodizer release`
+    /// converges on already-published state, and `anodizer tag rollback`
+    /// handles deliberate withdrawal. Kept as a parseable variant so the
+    /// validator can name it explicitly in the migration error rather than
+    /// failing an opaque deserialize.
     Rollback,
     /// Leave everything in place for forensics; exit nonzero with a
-    /// pointer at `release --rollback-only --from-run=<id>`.
+    /// pointer at `anodizer tag rollback`.
+    #[default]
     Hold,
 }
 
@@ -732,13 +732,20 @@ mod tests {
 
     #[test]
     fn on_failure_config_display_and_default() {
-        assert_eq!(OnFailureConfig::default(), OnFailureConfig::Rollback);
+        // `Hold` is the only surviving behavior; `Rollback` still parses
+        // (so config validation can name it in the migration error) but
+        // is no longer the default and is rejected at load time.
+        assert_eq!(OnFailureConfig::default(), OnFailureConfig::Hold);
         assert_eq!(OnFailureConfig::Rollback.to_string(), "rollback");
         assert_eq!(OnFailureConfig::Hold.to_string(), "hold");
         // The lowercase serde form round-trips.
         assert_eq!(
             serde_yaml_ng::from_str::<OnFailureConfig>("hold").unwrap(),
             OnFailureConfig::Hold
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<OnFailureConfig>("rollback").unwrap(),
+            OnFailureConfig::Rollback
         );
     }
 }

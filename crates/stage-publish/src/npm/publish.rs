@@ -63,7 +63,7 @@ pub use super::staging::{
 };
 
 /// Outcome of [`publish_to_npm`] for one published package: the coordinates
-/// recorded in evidence so a later `--rollback-only --from-run` can attempt
+/// recorded in evidence so a later `anodizer tag rollback` can attempt
 /// `npm unpublish`. `None` is returned for every skip path (skip /
 /// dry-run / no-binaries / `if:` falsy) so rollback never targets a package
 /// the run did not push.

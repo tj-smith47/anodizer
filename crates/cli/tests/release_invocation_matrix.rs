@@ -327,7 +327,7 @@ fn release_announce_only_bails_without_prior_report() {
 }
 
 /// Clap-level: `--announce-only` cannot be combined with `--prepare`,
-/// `--publish-only`, `--snapshot`, `--rollback-only`, `--split`,
+/// `--publish-only`, `--snapshot`, `--split`,
 /// `--merge`. Pin two representative combinations (the rest share the
 /// same `conflicts_with_all` list).
 #[test]
