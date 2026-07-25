@@ -106,21 +106,6 @@ pub struct ContextOptions {
     /// a follow-up task; this field is plumbed so the flag is visible
     /// in `--help` today.
     pub rollback_only: bool,
-    /// `--allow-rerun`: force `PublishStage::run` to proceed even
-    /// when a prior `report.json` exists for the current `run_id`.
-    /// The default (false) refuses re-runs to prevent PR-based
-    /// publishers (homebrew / scoop / nix / krew / MCP) from
-    /// duplicating their pull requests against the same tag.
-    ///
-    /// Operators recovering from a partial failure should prefer
-    /// `--rollback-only --from-run=<id>` (which has its own
-    /// idempotency guard via `dist/run-<id>/rollback.json`). The
-    /// rerun flag is an escape hatch for advanced cases where the
-    /// operator has manually verified no duplicate-publish risk
-    /// exists.
-    ///
-    /// Audit ref: 2026-05-15 release-resilience-review finding I4.
-    pub allow_rerun: bool,
     /// `--show-skipped`: surface the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. In workspace mode every
     /// PR-based publisher (homebrew / nix / scoop / aur / winget / krew /
@@ -253,7 +238,6 @@ impl Default for ContextOptions {
             rollback_mode: None,
             simulate_failure_publishers: Vec::new(),
             rollback_only: false,
-            allow_rerun: false,
             show_skipped: false,
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),

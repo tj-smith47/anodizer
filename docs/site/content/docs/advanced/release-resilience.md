@@ -610,24 +610,30 @@ the cloudsmith upload.
 ### Recovery flow
 
 When a release fails partway, anodizer persists the end-of-pipeline
-state to `dist/run-<id>/report.json`. The next `release` invocation
-against the same tag will refuse to re-publish, citing that file:
+state to `dist/run-<id>/report.json`. Re-running `release` against the
+same tag is **safe by construction**: before dispatching, every publisher
+reconciles its own upstream state and skips itself when this exact
+version is already landed there.
 
 ```bash
 # Failed release leaves report.json on disk:
 $ ls dist/run-v0.2.1/
 report.json
 
-# Retrying with the same tag is refused — duplicate-PR risk:
+# Retrying with the same tag converges — landed publishers skip themselves:
 $ anodizer release
-Error: publish refusing to run: a prior report.json exists at
-  dist/run-v0.2.1/report.json (run_id=v0.2.1). To recover from a partial
-  failure, run `anodizer release --rollback-only --from-run=v0.2.1` first
-  (this reverts reversible publishers and is idempotent). Pass --allow-rerun
-  to force re-publish anyway — WARNING: PR-based publishers (homebrew,
-  scoop, nix, krew, MCP) will open DUPLICATE pull requests against the
-  same tag.
+• publish: cargo: skipped — already published (crates.io has 0.2.1)
+• publish: homebrew: skipped — already published (open PR homebrew-tap#41)
+• publish: gemfury: publishing anodizer 0.2.1
 ```
+
+Reconciliation fails *toward* publishing: a publisher only skips on a
+full positive match of name **and** version upstream. An unreachable
+registry, an ambiguous response, or a partial match all dispatch the
+publish attempt rather than assume success. The one hard stop is a
+version already published upstream with **different content** — that
+records a publisher failure telling you to bump the version, because no
+amount of re-running can overwrite an immutable release.
 
 The recommended recovery is to unwind reversible publishers (Assets +
 Manager groups) first, then fix whatever broke and re-cut the release
@@ -757,26 +763,11 @@ artifact errors unless `overwrite: true`), blob (byte-identical object already
 present → skip), and announce (per-version sent-marker so each channel posts
 at most once).
 
-PR-based publishers that open a pull request (homebrew, scoop, nix, krew) are
-the remaining exception — re-running them can open a second PR against the
-same tag, so they have no runtime duplicate guard.
-
-Only use `--allow-rerun` when:
-
-1. The recovery flow above has completed (or you've confirmed by hand
-   that nothing got published on the failed run).
-2. No PR-opening publisher (homebrew, scoop, nix, krew) is configured —
-   re-running them can DUPLICATE the PR with no safeguard. (MCP is a
-   registry POST, not a PR, and is idempotent — re-running skips an
-   already-published version.)
-3. You understand that an idempotent publisher will SKIP (not re-publish)
-   any version it already landed on the failed run, while the PR-opening
-   publishers above remain the only duplicate-publish risk.
-
-```bash
-# Escape hatch — duplicate-publish risk, see warnings above:
-anodizer release --allow-rerun
-```
+PR-based publishers that open a pull request (homebrew, scoop, nix, krew,
+homebrew-core, winget) converge through the same reconcile pass: each looks
+for an already-open PR titled for this package and version at the upstream
+index repo and skips when it finds one, so a re-run cannot stack duplicate
+pull requests against the same tag.
 
 ## CLI surface summary
 
@@ -788,7 +779,6 @@ anodizer release \
   --strict \
   --rollback-only \
   --from-run=<id> \
-  --allow-rerun                  # DANGEROUS — see "Recovery flow" above
   --summary-json=<path>
 ```
 
@@ -800,7 +790,6 @@ anodizer release \
 | `--strict` | Config + preflight strictness (unchanged from prior versions). | off |
 | `--rollback-only` | Reads a prior run report and re-attempts rollback only. No new publishing. | n/a |
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
-| `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
 | `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | `<dist>/run-<id>/summary.json` on real releases; unset (no write) for `--snapshot` / `--dry-run` |
 
 ## `anodizer notify`

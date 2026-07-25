@@ -324,7 +324,6 @@ fn base_release_opts() -> ReleaseOpts {
         simulate_failure: vec![],
         rollback_only: false,
         from_run: None,
-        allow_rerun: false,
         show_skipped: false,
         allow_nondeterministic: vec![],
         summary_json: None,

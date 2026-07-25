@@ -157,12 +157,6 @@ pub struct ReleaseOpts {
     /// `--from-run=<id>`: prior run id whose `report.json` to load
     /// when running with `--rollback-only`.
     pub from_run: Option<String>,
-    /// `--allow-rerun`: force `PublishStage::run` to proceed even when
-    /// a prior `dist/run-<id>/report.json` exists. Plumbed into
-    /// `ContextOptions::allow_rerun`. See the audit reference in
-    /// `crates/stage-publish/src/lib.rs::PublishStage::run` for the
-    /// duplicate-publish-risk rationale.
-    pub allow_rerun: bool,
     /// `--show-skipped`: surface the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. Plumbed into
     /// `ContextOptions::show_skipped`; defaults to false (those no-op skips

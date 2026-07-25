@@ -429,7 +429,6 @@ pub(crate) fn build_context_options(
         rollback_mode,
         simulate_failure_publishers,
         rollback_only: opts.rollback_only,
-        allow_rerun: opts.allow_rerun,
         show_skipped: opts.show_skipped,
         from_run: opts.from_run.clone(),
         runtime_nondeterministic_allowlist,

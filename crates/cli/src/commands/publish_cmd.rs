@@ -24,7 +24,6 @@ pub struct PublishOpts {
     /// publishes).
     pub merge: bool,
     /// Force re-publish even when a prior `dist/run-<id>/report.json` exists.
-    pub allow_rerun: bool,
     /// Surface per-crate "no `<publisher>` config block" skip lines at default
     /// verbosity (`--show-skipped`); otherwise they route to debug.
     pub show_skipped: bool,
@@ -50,7 +49,6 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         debug: opts.debug,
         token: opts.token,
         merge: opts.merge,
-        allow_rerun: opts.allow_rerun,
         show_skipped: opts.show_skipped,
         skip_stages: opts.skip,
         publisher_allowlist: opts.publishers,
@@ -116,7 +114,6 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
-            allow_rerun: false,
             show_skipped: false,
             skip: vec![],
             publishers: vec![],
@@ -150,7 +147,6 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
-            allow_rerun: false,
             show_skipped: false,
             skip: vec![],
             publishers: vec![],
@@ -173,7 +169,6 @@ crates:
             debug: false,
             quiet: true,
             merge: true,
-            allow_rerun: false,
             show_skipped: false,
             skip: vec![],
             publishers: vec![],
@@ -196,7 +191,6 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
-            allow_rerun: false,
             show_skipped: false,
             skip: vec![],
             publishers: vec![],
@@ -205,7 +199,6 @@ crates:
         assert!(opts.quiet);
         assert_eq!(opts.token.as_deref(), Some("tok"));
         assert!(!opts.merge);
-        assert!(!opts.allow_rerun);
     }
 
     #[test]
@@ -219,7 +212,6 @@ crates:
             debug: false,
             quiet: true,
             merge: true,
-            allow_rerun: false,
             show_skipped: false,
             skip: vec![],
             publishers: vec![],

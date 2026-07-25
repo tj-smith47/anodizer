@@ -77,12 +77,35 @@ Neither is being deprecated. Prefer `continue` for the resume-after-failure use 
 
 ## Idempotency of `--publish-only` retries
 
-When `release --publish-only` re-runs against a `dist/` that already has a `<dist>/run-<id>/report.json`, anodizer refuses by default. Recovery options:
+`release --publish-only` is safe to re-run against a `dist/` that already
+has a `<dist>/run-<id>/report.json`. Publishers converge: each one
+reconciles against its own upstream before dispatching and skips itself
+when this exact version is already landed there.
 
-1. **Recommended** — `anodizer release --rollback-only --from-run=<id>` to revert the prior partial publish, then re-run `--publish-only`. The rollback runner consults the per-publisher status in `report.json` and only reverts the publishers that previously succeeded.
-2. **Escape hatch** — `anodizer release --publish-only --allow-rerun`. **This bypasses the duplicate-publish guard entirely.** Per-publisher state is NOT carried forward: every PR-based publisher (homebrew, scoop, nix, krew, MCP) will open a DUPLICATE pull request against the same tag. Only use this when the prior `report.json` is known stale (e.g. local testing).
+```bash
+$ anodizer release --publish-only
+• publish: cargo: skipped — already published (crates.io has 0.2.1)
+• publish: homebrew: skipped — already published (open PR homebrew-tap#41)
+• publish: gemfury: publishing anodizer 0.2.1
+```
 
-The contract: `report.json` exists for replay (the `--rollback-only` flow) and for human triage. It does NOT skip already-succeeded publishers on re-run — anodizer treats `--publish-only` as "publish everything from this dist," and the rerun guard is the seam where the operator decides whether to revert-and-retry or force-through.
+Reconciliation fails toward publishing — a publisher skips only on a full
+positive match of package name **and** version upstream, so an unreachable
+registry or an ambiguous response still attempts the publish rather than
+assuming it succeeded.
+
+Two things this does NOT replace:
+
+1. **Rollback.** `anodizer release --rollback-only --from-run=<id>` still
+   exists to *revert* a partial publish. Re-running converges forward; it
+   never undoes anything.
+2. **Content drift.** If a version is already published upstream with
+   different content, that publisher records a failure telling you to bump
+   the version. Immutable releases cannot be overwritten by re-running.
+
+The contract for `report.json`: it exists for replay (the `--rollback-only`
+flow) and for human triage. Skip decisions come from the live upstream
+state, not from the report.
 
 ## See also
 

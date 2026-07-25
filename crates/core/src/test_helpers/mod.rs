@@ -548,7 +548,6 @@ impl TestContextBuilder {
             rollback_mode: None,
             simulate_failure_publishers: Vec::new(),
             rollback_only: false,
-            allow_rerun: false,
             show_skipped: self.show_skipped,
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),

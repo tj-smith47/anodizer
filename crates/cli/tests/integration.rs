@@ -6313,33 +6313,28 @@ fn test_release_skip_announce_still_writes_summary_json() {
     );
 }
 
-/// E2E: `--allow-rerun` and `--rollback-only` are mutually exclusive
-/// at the clap layer (B6 review I-2). The combination must be
-/// rejected at parse time with a clear conflicts error, NOT silently
-/// no-op'd. We don't need a real release pipeline for this test —
-/// clap rejects the args before any pipeline code runs.
+/// E2E: `--allow-rerun` was REMOVED — re-running the publish pipeline now
+/// converges (done publishers reconcile to already-published and skip), so
+/// the escape hatch has no meaning. A consumer script still passing the flag
+/// must get a hard unknown-argument error rather than silently falling
+/// through to default behavior, which would look like the flag still worked.
 #[test]
-fn test_release_allow_rerun_conflicts_with_rollback_only() {
+fn test_release_allow_rerun_flag_is_rejected_as_unknown() {
     let tmp = TempDir::new().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args([
-            "release",
-            "--rollback-only",
-            "--from-run=v0.0.0-test",
-            "--allow-rerun",
-        ])
+        .args(["release", "--allow-rerun"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
 
     assert!(
         !output.status.success(),
-        "release --rollback-only --allow-rerun must be rejected by clap",
+        "release --allow-rerun must be rejected now that the flag is gone",
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--allow-rerun") && stderr.contains("--rollback-only"),
-        "stderr must name both conflicting flags, got: {}",
+        stderr.contains("--allow-rerun"),
+        "stderr must name the removed flag, got: {}",
         stderr,
     );
 }
