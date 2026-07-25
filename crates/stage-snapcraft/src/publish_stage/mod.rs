@@ -197,6 +197,12 @@ impl Stage for SnapcraftPublishStage {
         // release every architecture's revision.
         let planned = collect_snapcraft_targets(ctx);
 
+        // Attribute the upload loop's backoff to the snapcraft-publish scope.
+        // Without an active scope a Snap Store that stalls every attempt spends
+        // the whole ladder under "(unattributed)" in the retry summary, leaving
+        // an hours-long dead-air window with no row naming the culprit.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
+
         let SnapUploadOutcome {
             attempted,
             skipped_already_published,

@@ -100,6 +100,14 @@ impl Stage for super::DockerStage {
 
         validate_docker_v2_id_uniqueness(&crates)?;
 
+        // Attribute this stage's build/push and manifest backoff to the docker
+        // scope. Without an active scope the retry summary files a flaky
+        // registry's wait under "(unattributed)", so the operator sees the
+        // total but cannot tell which remote burned it. The parallel build
+        // workers spawned below all read the same constant scope value for the
+        // stage's duration, so no task-local is needed.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
+
         if !dry_run && crates.iter().any(|c| c.dockers_v2.is_some()) {
             run_buildx_probes(self, &log);
         }

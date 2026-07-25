@@ -197,6 +197,11 @@ impl Stage for BinarySignStage {
         // Validate binary_signs IDs — same check SignStage does.
         validate_sign_config_ids(&ctx.config.binary_signs, "binary-sign", "binary_signs")?;
         let binary_sign_configs = ctx.config.binary_signs.clone();
+        // Attribute cosign's transient-failure backoff to the binary-sign
+        // scope. Without an active scope a flaky Fulcio/Rekor endpoint's wait
+        // lands in the retry summary's "(unattributed)" bucket, so the operator
+        // sees the total but not which stage stalled.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
         process_sign_configs(
             &binary_sign_configs,
             ctx,
@@ -220,6 +225,12 @@ impl Stage for SignStage {
         // Validate sign config IDs (uniqueness + reserved-label collision).
         validate_sign_config_ids(&ctx.config.signs, "sign", "signs")?;
         validate_sign_config_ids(&ctx.config.binary_signs, "binary-sign", "binary_signs")?;
+
+        // Attribute cosign's transient-failure backoff to the sign scope.
+        // Without an active scope a flaky Fulcio/Rekor endpoint's wait lands in
+        // the retry summary's "(unattributed)" bucket, so the operator sees the
+        // total but not which stage stalled.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
@@ -319,6 +330,12 @@ impl Stage for DockerSignStage {
             log.status(&ctx.deselected_reason("docker-sign"));
             return Ok(());
         }
+
+        // Attribute cosign's transient-failure backoff to the docker-sign
+        // scope. Without an active scope a flaky registry or Rekor endpoint's
+        // wait lands in the retry summary's "(unattributed)" bucket, so the
+        // operator sees the total but not which stage stalled.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 
         // ----------------------------------------------------------------
         // Docker image signing via `docker_signs` config
