@@ -60,12 +60,23 @@ Anodizer always writes two JSON files to the dist directory:
 
 ### Uploading metadata files
 
-To include `metadata.json` and `artifacts.json` as release assets:
+To attach `metadata.json` to the release:
 
 ```yaml
 release:
   include_meta: true
 ```
+
+`include_meta` attaches **only** `metadata.json`. `artifacts.json` is the dist
+directory's local manifest — anodizer reads it back for `release --continue`,
+`merge`, and the determinism harness — and is never uploaded as a release
+asset. It records absolute dist paths and internal artifact bookkeeping that
+carry no meaning outside the machine that produced them.
+
+The same rule holds everywhere `include_meta` / `meta` appears: the
+[blob](/docs/publish/blob-storage/), [Artifactory](/docs/publish/artifactory/),
+and [generic upload](/docs/publish/upload/) publishers each ship
+`metadata.json` alone.
 
 ## Full example
 

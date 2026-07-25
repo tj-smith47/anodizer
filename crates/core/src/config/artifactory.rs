@@ -75,7 +75,8 @@ pub struct ArtifactoryConfig {
     pub checksum: Option<bool>,
     /// Include signatures in uploaded artifacts.
     pub signature: Option<bool>,
-    /// Include metadata artifacts in uploaded artifacts.
+    /// Include `dist/metadata.json` in uploaded artifacts. The sibling
+    /// `dist/artifacts.json` manifest is never uploaded.
     pub meta: Option<bool>,
     /// Use custom artifact naming instead of default.
     pub custom_artifact_name: Option<bool>,

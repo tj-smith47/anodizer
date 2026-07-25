@@ -38,7 +38,8 @@ pub struct PublisherConfig {
     pub checksum: Option<bool>,
     /// Include signatures in published artifacts.
     pub signature: Option<bool>,
-    /// Include metadata artifacts in published artifacts.
+    /// Include `dist/metadata.json` in published artifacts. The sibling
+    /// `dist/artifacts.json` manifest is never published.
     pub meta: Option<bool>,
     /// Extra files to include in publishing (glob patterns with optional name override).
     pub extra_files: Option<Vec<ExtraFileSpec>>,

@@ -358,14 +358,13 @@ fn resolve_release_name(
 ///    optional `name_template` honored).
 /// 4. `release.templated_extra_files` are rendered into the dist dir and
 ///    appended with their `dst` name as the custom_name.
-/// 5. `include_meta: true` appends `metadata.json` (only the Metadata
-///    kind, not anodizer's
-///    private `artifacts.json` manifest).
+/// 5. `include_meta: true` appends `metadata.json` (only the Metadata kind,
+///    never anodizer's local `artifacts.json` dist manifest).
 // One private helper for the release-entry assembly; the ids/exclude/meta/
 // dry-run knobs are each a distinct filter the single caller threads through,
 // and a params struct would only relocate the same fields.
 #[allow(clippy::too_many_arguments)]
-fn assemble_artifact_entries(
+pub(crate) fn assemble_artifact_entries(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     crate_cfg: &anodizer_core::config::CrateConfig,
@@ -463,6 +462,10 @@ fn assemble_artifact_entries(
         }
     }
 
+    // Exactly one file: `artifacts.json` is the dist directory's local
+    // manifest, recording absolute dist paths and internal artifact
+    // bookkeeping that carry no meaning off the producing machine, so it is
+    // never a release asset.
     if include_meta {
         let dist_dir = &ctx.config.dist;
         let meta_name = anodizer_core::dist::METADATA_JSON;

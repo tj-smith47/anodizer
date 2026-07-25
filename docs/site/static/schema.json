@@ -1559,7 +1559,7 @@
           ]
         },
         "meta": {
-          "description": "Include metadata artifacts in uploaded artifacts.",
+          "description": "Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded.",
           "default": null,
           "type": [
             "boolean",
@@ -2647,7 +2647,7 @@
           ]
         },
         "include_meta": {
-          "description": "Also upload metadata.json and artifacts.json.",
+          "description": "Also upload `dist/metadata.json`. The sibling `dist/artifacts.json` manifest is never uploaded — it stays local to the dist directory.",
           "default": null,
           "type": [
             "boolean",
@@ -12789,7 +12789,7 @@
           ]
         },
         "meta": {
-          "description": "Include metadata artifacts in published artifacts.",
+          "description": "Include `dist/metadata.json` in published artifacts. The sibling `dist/artifacts.json` manifest is never published.",
           "default": null,
           "type": [
             "boolean",
@@ -13353,7 +13353,7 @@
           }
         },
         "include_meta": {
-          "description": "Upload metadata.json and artifacts.json as release assets.",
+          "description": "Upload `dist/metadata.json` as a release asset. The sibling `dist/artifacts.json` manifest is never uploaded — it stays local to the dist directory.",
           "default": null,
           "type": [
             "boolean",
@@ -16276,7 +16276,7 @@
           ]
         },
         "meta": {
-          "description": "Include metadata artifacts in uploaded artifacts.",
+          "description": "Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded.",
           "default": null,
           "type": [
             "boolean",

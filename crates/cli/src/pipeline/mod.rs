@@ -213,8 +213,9 @@ impl Pipeline {
             flush_skipped(log, &mut pending_skips, show_skipped);
 
             // Write metadata.json + artifacts.json before the release stage
-            // so that include_meta can attach them to the GitHub release.
-            // run_post_pipeline overwrites these with the final version later.
+            // so that include_meta can attach metadata.json to the GitHub
+            // release; run_post_pipeline overwrites both with the final
+            // version later.
             if name == "release"
                 && let Err(e) = write_pre_release_metadata(ctx)
             {
@@ -348,7 +349,8 @@ fn flush_skipped(log: &StageLogger, pending: &mut Vec<(&str, bool)>, show: bool)
 }
 
 /// Write preliminary metadata.json and artifacts.json before the release
-/// stage so that `include_meta: true` can attach them to the GitHub release.
+/// stage so that `include_meta: true` can attach metadata.json to the GitHub
+/// release (artifacts.json stays local to dist).
 /// `run_post_pipeline` overwrites these with the final version afterward.
 fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
     let dist = &ctx.config.dist;

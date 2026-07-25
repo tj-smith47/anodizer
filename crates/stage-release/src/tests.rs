@@ -2752,6 +2752,80 @@ fn test_dry_run_with_header_from_file() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
+// ---- include_meta: the uploadable meta set is exactly metadata.json ----
+//
+// `include_meta: true` ships one file. `dist/artifacts.json` records
+// absolute dist paths and internal artifact bookkeeping that mean nothing
+// off the producing machine, so it stays local — v0.1.1 was the last
+// release that attached it. Nothing else asserted the emitted asset set,
+// which is why that change reached consumers unannounced; this pins it in
+// both directions.
+
+#[test]
+fn test_include_meta_uploads_metadata_json_but_never_artifacts_json() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join(anodizer_core::dist::METADATA_JSON), r#"{"a":1}"#).unwrap();
+    std::fs::write(dist.join(anodizer_core::dist::ARTIFACTS_JSON), "[]").unwrap();
+
+    let crate_cfg = CrateConfig {
+        name: "testcrate".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v1.0.0".to_string()),
+        release: Some(ReleaseConfig {
+            include_meta: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let release_cfg = crate_cfg.release.clone().unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .dist(dist)
+        .crates(vec![crate_cfg.clone()])
+        .build();
+
+    let entries = super::run::assemble_artifact_entries(
+        &mut ctx,
+        tlog(),
+        &crate_cfg,
+        &release_cfg,
+        None,
+        None,
+        true,
+        true,
+    )
+    .expect("assemble entries");
+
+    let names: Vec<String> = entries
+        .iter()
+        .map(|(p, custom)| {
+            custom.clone().unwrap_or_else(|| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+        })
+        .collect();
+
+    assert!(
+        names
+            .iter()
+            .any(|n| n == anodizer_core::dist::METADATA_JSON),
+        "include_meta=true must upload metadata.json, got {names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|n| n == anodizer_core::dist::ARTIFACTS_JSON),
+        "artifacts.json is the local dist manifest and must never be \
+         uploaded as a release asset, got {names:?}"
+    );
+}
+
 #[test]
 fn test_include_meta_collects_dist_files() {
     // Create a temp dist directory with metadata files

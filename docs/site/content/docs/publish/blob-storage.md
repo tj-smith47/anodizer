@@ -59,7 +59,7 @@ blobs:
     ids: []                                    # optional; filter by artifact IDs
     exclude: []                                # optional; drop artifacts whose name matches a glob
     disable: false                             # optional; bool or template string
-    include_meta: false                        # optional; also upload metadata.json/artifacts.json
+    include_meta: false                        # optional; also upload metadata.json
     extra_files: []                            # optional; additional files to upload
     extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
@@ -153,7 +153,7 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 | `kms_key` | string | | AWS KMS key ARN for server-side encryption (S3 only). |
 | `ids` | list | all | Filter to artifacts with these IDs. |
 | `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ end }}"`). |
-| `include_meta` | bool | `false` | Also upload `metadata.json` and `artifacts.json`. |
+| `include_meta` | bool | `false` | Also upload `metadata.json`. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `extra_files` | list | | Additional files to upload. Supports glob patterns and optional name templates. |
 | `extra_files_only` | bool | `false` | Upload only `extra_files`; skip all artifact uploads. |
 

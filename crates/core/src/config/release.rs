@@ -92,7 +92,9 @@ pub struct ReleaseConfig {
     pub target_commitish: Option<String>,
     /// GitHub Discussion category name for the release.
     pub discussion_category_name: Option<String>,
-    /// Upload metadata.json and artifacts.json as release assets.
+    /// Upload `dist/metadata.json` as a release asset. The sibling
+    /// `dist/artifacts.json` manifest is never uploaded — it stays local to
+    /// the dist directory.
     pub include_meta: Option<bool>,
     /// Reuse an existing draft release instead of creating a new one.
     pub use_existing_draft: Option<bool>,
@@ -239,7 +241,7 @@ impl ReleaseConfig {
     }
 
     /// Resolve `include_meta`, falling back to `false` (don't upload
-    /// metadata.json / artifacts.json as release assets by default).
+    /// metadata.json as a release asset by default).
     pub fn resolved_include_meta(&self) -> bool {
         self.include_meta.unwrap_or(false)
     }

@@ -40,7 +40,7 @@ uploads:
     custom_headers: {}                 # optional; extra HTTP headers (template-rendered)
     checksum: false                    # optional; also upload checksum files
     signature: false                   # optional; also upload signature files
-    meta: false                        # optional; also upload metadata.json + artifacts.json
+    meta: false                        # optional; also upload metadata.json
     custom_artifact_name: false        # optional; do not append artifact name to target URL
     extra_files: []                    # optional; additional files to upload
     extra_files_only: false            # optional; skip artifact uploads
@@ -103,7 +103,7 @@ Where `{NAME}` is the uppercased `name` field.
 | `custom_headers` | map | none | Extra HTTP headers (template-rendered) |
 | `checksum` | bool | `false` | Include checksum files |
 | `signature` | bool | `false` | Include signature files |
-| `meta` | bool | `false` | Include metadata.json and artifacts.json |
+| `meta` | bool | `false` | Include `metadata.json` (never `dist/artifacts.json`) |
 | `custom_artifact_name` | bool | `false` | Use artifact name as-is (don't append to target URL) |
 | `extra_files` | list | none | Additional files to upload |
 | `extra_files_only` | bool | `false` | Only upload extra files |

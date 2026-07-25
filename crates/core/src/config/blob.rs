@@ -77,7 +77,8 @@ pub struct BlobConfig {
         default
     )]
     pub skip: Option<StringOrBool>,
-    /// Also upload metadata.json and artifacts.json.
+    /// Also upload `dist/metadata.json`. The sibling `dist/artifacts.json`
+    /// manifest is never uploaded — it stays local to the dist directory.
     pub include_meta: Option<bool>,
     /// Pre-existing files to upload (supports glob patterns).
     pub extra_files: Option<Vec<ExtraFileSpec>>,

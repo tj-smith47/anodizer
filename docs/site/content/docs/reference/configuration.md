@@ -149,7 +149,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`. |
-| `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
+| `meta` | bool | — | Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
@@ -712,7 +712,7 @@ Top-level `preflight:` block.
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
-| `meta` | bool | — | Include metadata artifacts in published artifacts. |
+| `meta` | bool | — | Include `dist/metadata.json` in published artifacts. The sibling `dist/artifacts.json` manifest is never published. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
@@ -768,7 +768,7 @@ Publishes the project's prebuilt binaries as native Python wheels — one `py3-n
 | `gitlab` | ScmRepoConfig | — | GitLab repository to release to (owner and name). |
 | `header` | ContentSource | — | Text prepended to the release body (inline string, from_file, or from_url). |
 | `ids` | list of string | — | Artifact IDs filter for uploads. Release-wide artifacts (checksums, source archive, extra files, metadata) always upload regardless of the filter, and derived artifacts (signatures, certificates, SBOMs) inherit the verdict of the artifact they derive from — a signature uploads iff the artifact it signs uploads. |
-| `include_meta` | bool | — | Upload metadata.json and artifacts.json as release assets. |
+| `include_meta` | bool | — | Upload `dist/metadata.json` as a release asset. The sibling `dist/artifacts.json` manifest is never uploaded — it stays local to the dist directory. |
 | `make_latest` | object | — | Mark release as latest: true, false, or "auto" (latest non-prerelease). |
 | `mode` | string | — | Release mode: "keep-existing", "append", "prepend", or "replace". |
 | `name_template` | string | — | Release title template (supports templates). |
@@ -941,7 +941,7 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate. |
-| `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
+| `meta` | bool | — | Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
 | `name` | string | — | Human-readable name for this upload config. |
