@@ -176,6 +176,107 @@ impl anodizer_core::Publisher for NpmPublisher {
         out
     }
 
+    /// Registry-presence reconcile: `Complete` only when EVERY package this
+    /// run would publish (postinstall name, or optional-deps per-platform
+    /// packages plus the metapackage unless `skip_metapackage`) already shows
+    /// `GET {registry}/{pkg}/{version}` = 200. npm versions are immutable, so
+    /// presence is completion per package; anything unenumerable (no built
+    /// binaries yet, template/config errors) stays `Absent` so `run()` keeps
+    /// surfacing the failure loudly, and a probe transport error is `Unknown`
+    /// rather than a false "not published".
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        let cfgs = active_npm_configs(ctx);
+        if cfgs.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let log = ctx.logger("publish");
+        let crate_name = ctx
+            .config
+            .primary_crate_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+        let version = ctx.version();
+        let mut published = 0usize;
+        for cfg in &cfgs {
+            let Ok(registry) = crate::npm::manifest::resolve_registry(ctx, cfg) else {
+                return Ok(ReconcileState::Absent);
+            };
+            let names: Vec<String> = match cfg.mode {
+                anodizer_core::config::NpmMode::Postinstall => {
+                    vec![crate::npm::manifest::resolve_name(cfg, &crate_name).to_string()]
+                }
+                anodizer_core::config::NpmMode::OptionalDeps => {
+                    let skip_meta = match cfg.skip_metapackage.as_ref() {
+                        Some(s) => match s.try_evaluates_to_true(|t| ctx.render_template(t)) {
+                            Ok(b) => b,
+                            Err(_) => return Ok(ReconcileState::Absent),
+                        },
+                        None => false,
+                    };
+                    let has_binaries = !ctx
+                        .artifacts
+                        .by_kind(anodizer_core::artifact::ArtifactKind::UploadableBinary)
+                        .is_empty()
+                        || !ctx
+                            .artifacts
+                            .by_kind(anodizer_core::artifact::ArtifactKind::Binary)
+                            .is_empty();
+                    if !has_binaries {
+                        return Ok(ReconcileState::Absent);
+                    }
+                    let Ok(layout) = super::optional_deps::generate_layout(
+                        ctx,
+                        cfg,
+                        &crate_name,
+                        &version,
+                        None,
+                        &log,
+                    ) else {
+                        return Ok(ReconcileState::Absent);
+                    };
+                    let mut names: Vec<String> =
+                        layout.platforms.into_iter().map(|p| p.name).collect();
+                    if !skip_meta {
+                        names.push(
+                            super::optional_deps::resolve_metapackage(cfg, &crate_name).to_string(),
+                        );
+                    }
+                    names
+                }
+            };
+            if names.is_empty() {
+                return Ok(ReconcileState::Absent);
+            }
+            for name in &names {
+                let url = format!(
+                    "{registry}/{}/{version}",
+                    super::publish::encode_package_path(name)
+                );
+                match crate::publisher_preflight::probe_version_landing(
+                    &url,
+                    "reconcile: npm version",
+                    &policy,
+                    &log,
+                ) {
+                    Ok(true) => published += 1,
+                    Ok(false) => return Ok(ReconcileState::Absent),
+                    Err(e) => {
+                        return Ok(ReconcileState::Unknown {
+                            reason: format!(
+                                "npm registry probe failed for {name}@{version}: {e:#}"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(ReconcileState::Complete {
+            note: format!("all {published} planned npm package(s) already published at {version}"),
+        })
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let entries = ctx.config.npms.clone().unwrap_or_default();

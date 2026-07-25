@@ -728,6 +728,93 @@ impl anodizer_core::Publisher for PypiPublisher {
         out
     }
 
+    /// Index-inventory reconcile: `Complete` only when EVERY wheel this run
+    /// would build is already a released file of `<project>@<version>` on the
+    /// target index — filename-exact, so a partially-uploaded version (some
+    /// wheels landed, the run died) stays `Absent` and `run()` keeps owning
+    /// convergence (`skip_existing` folds the landed files, the missing ones
+    /// upload). An sdist entry is never `Complete`: its filename is maturin's
+    /// to mint and cannot be derived without building. Anything unenumerable
+    /// stays `Absent`; an unreachable index is `Unknown`.
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        let cfgs = active_pypi_configs(ctx);
+        if cfgs.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let log = ctx.logger("publish");
+        let mut verified = 0usize;
+        for cfg in &cfgs {
+            if cfg.sdist {
+                return Ok(ReconcileState::Absent);
+            }
+            let name = resolve_name(ctx, cfg);
+            let normalized = normalize_project_name(&name);
+            let Ok(version) = semver_to_pep440(&ctx.version()) else {
+                return Ok(ReconcileState::Absent);
+            };
+            let Ok(repository) = resolve_repository(ctx, cfg) else {
+                return Ok(ReconcileState::Absent);
+            };
+            let binaries = select_binaries(ctx, cfg);
+            if binaries.is_empty() {
+                return Ok(ReconcileState::Absent);
+            }
+            let mut expected: Vec<String> = Vec::new();
+            for (art, universal) in &binaries {
+                let target = art.target.as_deref().unwrap_or_default();
+                if target.is_empty() {
+                    return Ok(ReconcileState::Absent);
+                }
+                let Ok(bytes) = std::fs::read(&art.path) else {
+                    return Ok(ReconcileState::Absent);
+                };
+                let Ok(traits) = inspect_binary(&bytes, *universal) else {
+                    return Ok(ReconcileState::Absent);
+                };
+                let tag = match cfg
+                    .platform_tag_overrides
+                    .as_ref()
+                    .and_then(|m| m.get(target))
+                {
+                    Some(over) => over.clone(),
+                    None => match platform_tag(target, &traits) {
+                        Ok(t) => t,
+                        Err(_) => return Ok(ReconcileState::Absent),
+                    },
+                };
+                expected.push(super::wheel::wheel_filename(&name, &version, &tag));
+            }
+            let body = match super::preflight::released_files_body(
+                &repository,
+                &normalized,
+                &version,
+                &policy,
+                &log,
+            ) {
+                Ok(Some(b)) => b,
+                Ok(None) => return Ok(ReconcileState::Absent),
+                Err(e) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: format!(
+                            "pypi index probe failed for {normalized}=={version}: {e:#}"
+                        ),
+                    });
+                }
+            };
+            for filename in &expected {
+                if !super::preflight::body_lists_file(&body, filename) {
+                    return Ok(ReconcileState::Absent);
+                }
+            }
+            verified += expected.len();
+        }
+        Ok(ReconcileState::Complete {
+            note: format!("all {verified} planned wheel(s) already on the index"),
+        })
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         // Accumulate every file that lands BEFORE a mid-loop failure so the

@@ -146,6 +146,55 @@ fn simple_index_lists_version_checked(
     }
 }
 
+/// Fetch the released-file inventory page for `<normalized_name>@<version>`:
+/// `Ok(None)` = the version is positively absent (404), `Ok(Some(body))` =
+/// the index responded 200 with a page naming this version's released files
+/// (the version-precise JSON API for the public PyPI hosts, the PEP 503
+/// simple page otherwise — [`version_probe`] picks, so this can never
+/// disagree with the publisher's own duplicate-version detection), `Err` =
+/// the index could not be consulted.
+pub(crate) fn released_files_body(
+    repository: &str,
+    normalized_name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<Option<String>> {
+    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
+    let Some((url, _)) = version_probe(repository, normalized_name, version) else {
+        bail!(
+            "pypi: could not derive an index-probe URL for repository {repository:?} \
+             (project '{normalized_name}' at {version})"
+        );
+    };
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
+        .context("build HTTP client for pypi released-files probe")?;
+    match retry_http_blocking(
+        RetryLog::new("reconcile: pypi released-files probe", log),
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&url).send(),
+        |status, body| format!("{status}: {body}"),
+    ) {
+        Ok((_, body)) => Ok(Some(body)),
+        Err(err) if http_status(&err) == 404 => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// True when an index page body ([`released_files_body`]'s JSON API or simple
+/// page) names exactly `filename` — tokens reduce to their bare filename
+/// (path + `#sha256=…` fragment stripped) and must EQUAL the probe, so
+/// `foo-1.2.30-…whl` never satisfies a `foo-1.2.3-…whl` probe.
+pub(crate) fn body_lists_file(body: &str, filename: &str) -> bool {
+    body.split(|c: char| c == '"' || c == '\'' || c == '<' || c == '>' || c.is_whitespace())
+        .map(|token| {
+            let token = token.rsplit('/').next().unwrap_or(token);
+            token.split('#').next().unwrap_or(token)
+        })
+        .any(|token| token == filename)
+}
+
 /// True when a simple-index page body lists a distribution file whose parsed
 /// name (PEP 503 normalized) and version EXACTLY equal the probe's.
 ///

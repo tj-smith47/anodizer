@@ -269,15 +269,23 @@ pub(crate) struct WheelSpec {
     pub classifiers: Vec<String>,
 }
 
+/// PEP 427 wheel filename: `{escaped}-{version}-py3-none-{tag}.whl`. Free
+/// function so the filename a publish WILL produce can be derived without
+/// assembling a full [`WheelSpec`] (the reconcile index comparison needs only
+/// name + version + tag).
+pub(crate) fn wheel_filename(name: &str, version: &str, platform_tag: &str) -> String {
+    format!(
+        "{}-{}-py3-none-{}.whl",
+        escape_distribution_name(name),
+        version,
+        platform_tag
+    )
+}
+
 impl WheelSpec {
     /// PEP 427 wheel filename: `{escaped}-{version}-py3-none-{tag}.whl`.
     pub(crate) fn filename(&self) -> String {
-        format!(
-            "{}-{}-py3-none-{}.whl",
-            escape_distribution_name(&self.name),
-            self.version,
-            self.platform_tag
-        )
+        wheel_filename(&self.name, &self.version, &self.platform_tag)
     }
 
     /// `<escaped>-<version>` prefix shared by the `.data` and `.dist-info`
