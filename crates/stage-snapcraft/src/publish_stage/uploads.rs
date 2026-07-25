@@ -37,6 +37,20 @@ use super::*;
 ///
 /// `skip_decisions` is the pre-pass `publish.skip` flag per
 /// `(crate, snap_cfg)` tuple in iteration order — keeps this loop free
+/// Resolve the version a crate publishes under: its own release tag when one
+/// resolves, else the context's version.
+///
+/// Falls back rather than failing because the upload loop already tolerates a
+/// crate whose tag is absent (its snap simply carries the context version, the
+/// pre-per-crate behavior); a hard error here would abort a release for a
+/// tag-resolution question the loop never needed to ask.
+pub(super) fn crate_version(ctx: &Context, krate: &CrateConfig) -> String {
+    anodizer_core::crate_scope::resolve_crate_tag(ctx, krate)
+        .and_then(|tag| anodizer_core::git::parse_semver_tag(&tag).ok())
+        .map(|semver| semver.version_string())
+        .unwrap_or_else(|| ctx.version())
+}
+
 /// of template-render side effects.
 pub(crate) fn run_uploads(
     ctx: &Context,
@@ -60,7 +74,6 @@ pub(crate) fn run_uploads(
     // that arch. A dual-arch snap therefore records two revisions so a later
     // `promote --from-run` can release every architecture.
     let mut recorded: Vec<SnapcraftTarget> = Vec::new();
-    let version = ctx.version();
     let project_name = ctx.config.project_name.clone();
     // IIFE captures `attempted_upload` by mutable reference so the
     // `?`-early-exit on per-target failure preserves the "anything
@@ -68,6 +81,15 @@ pub(crate) fn run_uploads(
     let result: Result<()> = (|| -> Result<()> {
         let mut decision_idx = 0usize;
         for krate in crates {
+            // Every Store probe and the uploaded snap itself must name THIS
+            // crate's own version: in per-crate independent-version mode the
+            // global context version belongs to a different crate's tag, so a
+            // shared value would probe a version this snap never publishes and
+            // upload under it. Mirrors the crate scoping the snapcraft
+            // validation path already applies. Lockstep and single-crate
+            // resolve to the same string the context carries.
+            let version = crate_version(ctx, krate);
+            let version = version.as_str();
             let Some(snap_configs) = krate.snapcrafts.as_ref() else {
                 continue;
             };
@@ -205,13 +227,8 @@ pub(crate) fn run_uploads(
                         &crate::targets::crate_primary_binary(krate),
                     );
                     let probe_channels = effective_channels.clone().unwrap_or_default();
-                    match revision_missing_channels(
-                        &snap_name,
-                        &version,
-                        arch,
-                        &probe_channels,
-                        log,
-                    ) {
+                    match revision_missing_channels(&snap_name, version, arch, &probe_channels, log)
+                    {
                         None => {}
                         Some((revision, missing)) if missing.is_empty() => {
                             log.status(&format!(
@@ -411,7 +428,7 @@ pub(crate) fn run_uploads(
                                 // a revision whose Version column equals the
                                 // version being published names case 1.
                                 if let Some(revision) =
-                                    find_colliding_revision(&snap_name, &version, arch, log)
+                                    find_colliding_revision(&snap_name, version, arch, log)
                                 {
                                     let promote_channels =
                                         effective_channels.clone().unwrap_or_default();
@@ -487,7 +504,7 @@ pub(crate) fn run_uploads(
                     // probe cannot run).
                     let revision = promoted_revision
                         .take()
-                        .or_else(|| resolve_recorded_revision(&snap_name, &version, arch, log));
+                        .or_else(|| resolve_recorded_revision(&snap_name, version, arch, log));
                     push_recorded(
                         &mut recorded,
                         planned,

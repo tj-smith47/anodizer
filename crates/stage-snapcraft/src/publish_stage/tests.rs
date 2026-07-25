@@ -2504,3 +2504,91 @@ fn rendered_channel_rejected_even_though_raw_template_is_not_literally_restricte
              confinement and the offending channel, got: {msg}"
     );
 }
+
+#[test]
+fn crate_version_falls_back_to_context_version_without_a_crate_tag() {
+    // A tagless repo resolves no crate tag, so the fallback arm runs — it must
+    // yield the context version rather than an empty string, which would make
+    // every Store probe ask about `snap@`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path();
+    anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["init", "-q", "-b", "master"]).current_dir(repo);
+            cmd
+        },
+        "git",
+    );
+    let config = anodizer_core::config::Config {
+        project_name: "demo".to_string(),
+        crates: vec![snap_crate("demo", None, None)],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        anodizer_core::context::ContextOptions {
+            project_root: Some(repo.to_path_buf()),
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    let krate = ctx.config.crates[0].clone();
+    assert_eq!(super::uploads::crate_version(&ctx, &krate), "1.2.3");
+}
+
+#[test]
+fn crate_version_prefers_the_crate_s_own_tag_over_the_context_version() {
+    // Per-crate independent-version mode: `operator-v0.4.0` is the crate's own
+    // tag while the context carries the first crate's version. Probing and
+    // uploading under the context version would name a version this snap never
+    // publishes.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path();
+    for args in [
+        vec!["init", "-q", "-b", "master"],
+        vec!["config", "user.email", "t@e.st"],
+        vec!["config", "user.name", "t"],
+    ] {
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(&args).current_dir(repo);
+                cmd
+            },
+            "git",
+        );
+    }
+    std::fs::write(repo.join("f"), "x").expect("write");
+    for args in [
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "c"],
+        vec!["tag", "operator-v0.4.0"],
+    ] {
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(&args).current_dir(repo);
+                cmd
+            },
+            "git",
+        );
+    }
+
+    let mut krate = snap_crate("operator", None, None);
+    krate.tag_template = Some("operator-v{{ .Version }}".to_string());
+    let config = anodizer_core::config::Config {
+        project_name: "demo".to_string(),
+        crates: vec![krate.clone()],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        anodizer_core::context::ContextOptions {
+            project_root: Some(repo.to_path_buf()),
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "9.9.9");
+    assert_eq!(super::uploads::crate_version(&ctx, &krate), "0.4.0");
+}
