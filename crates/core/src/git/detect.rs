@@ -7,9 +7,33 @@ use super::status::{is_git_dirty_in, is_git_repo_in};
 use super::tags::get_first_commit_in;
 use crate::redact::redact_url_credentials;
 
+/// How the tag carried by a [`GitInfo`] was arrived at.
+///
+/// The two are not interchangeable to a gate that reasons about *which*
+/// version a run targets: an inferred tag is a guess about intent that the
+/// repository's own history can contradict, while a declared one is the
+/// operator stating the target outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagSource {
+    /// Discovered by scanning the repository for the newest ref matching the
+    /// crate's tag template — or the synthetic `v0.0.0` stand-in when the
+    /// repository has no matching tag at all.
+    #[default]
+    Inferred,
+    /// Supplied verbatim by the operator through the current-tag override
+    /// chain (`ANODIZER_CURRENT_TAG`, the `GORELEASER_CURRENT_TAG` compat
+    /// alias, or a tag-push `GITHUB_REF_NAME`).
+    Declared,
+}
+
 #[derive(Debug, Clone)]
 pub struct GitInfo {
     pub tag: String,
+    /// Whether [`Self::tag`] was declared by the operator or inferred from the
+    /// repository. Defaults to [`TagSource::Inferred`]; the tag-resolution
+    /// layer promotes it to [`TagSource::Declared`] when an override supplied
+    /// the name.
+    pub tag_source: TagSource,
     pub commit: String,
     pub short_commit: String,
     pub branch: String,
@@ -63,6 +87,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
         // accepting this in snapshot/dry-run mode.
         return Ok(GitInfo {
             tag: tag.to_string(),
+            tag_source: TagSource::default(),
             commit: String::new(),
             short_commit: String::new(),
             branch: String::new(),
@@ -188,6 +213,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
     let first_commit = get_first_commit_in(cwd).ok();
     Ok(GitInfo {
         tag: tag.to_string(),
+        tag_source: TagSource::default(),
         commit,
         short_commit,
         branch,

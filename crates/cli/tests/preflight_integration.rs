@@ -11,12 +11,17 @@
 //!
 //! Skips cleanly on hosts without git (fixture bootstrap needs it), same
 //! convention as `publish_only.rs`.
+//!
+//! The reconcile-sweep block at the bottom drives the same binary against a
+//! LOCAL package feed, so the whole "does this version's publisher state gate
+//! the run?" decision — position resolution, sweep skip, probe, exit code —
+//! is asserted end to end without touching a real registry.
 
 use std::process::Command;
 use tempfile::TempDir;
 
 mod common;
-use common::{bootstrap_minimal_cargo_repo, tool_on_path};
+use common::{bootstrap_minimal_cargo_repo, run_git, tool_on_path};
 
 const FIXTURE_CRATE_NAME: &str = "anodizer-preflight-fixture";
 
@@ -372,4 +377,232 @@ fn preflight_publishers_uploads_keeps_signs_surface() {
         combined.contains("stage:sign"),
         "the signs slice must contribute its requirements under --publishers uploads:\n{combined}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile sweep: position resolution → probe-or-skip → exit code
+// ---------------------------------------------------------------------------
+
+const RECONCILE_CRATE_NAME: &str = "anodizer-reconcile-fixture";
+const RECONCILE_TAG: &str = "v0.1.0";
+const RECONCILE_VERSION: &str = "0.1.0";
+
+/// A fixture whose ONLY publisher is chocolatey, pointed at a local OData feed
+/// and marked `required: true` so its verdict reaches the exit gate. `api_key`
+/// is inline so the run demands no publisher secret from the environment and
+/// the only thing that can drive a non-zero exit is the reconcile verdict.
+fn write_reconcile_fixture_config(dir: &std::path::Path, feed: &str) {
+    let yaml = format!(
+        r#"project_name: {RECONCILE_CRATE_NAME}
+crates:
+  - name: {RECONCILE_CRATE_NAME}
+    path: .
+    tag_template: "v{{{{ .Version }}}}"
+    publish:
+      chocolatey:
+        required: true
+        api_key: fixture-key
+        source_repo: "{feed}"
+"#
+    );
+    std::fs::write(dir.join(".anodizer.yaml"), yaml).unwrap();
+}
+
+/// An OData row for [`RECONCILE_VERSION`] in the REJECTED moderation state —
+/// the one feed shape chocolatey's `reconcile()` maps to `diverged`, and
+/// therefore the one that must reach the exit gate when the sweep applies.
+fn rejected_feed_response() -> String {
+    let body = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<entry>
+  <id>http://example.com/api/v2/Packages(Id='{RECONCILE_CRATE_NAME}',Version='{RECONCILE_VERSION}')</id>
+  <m:properties>
+    <d:PackageHash>deadbeef==</d:PackageHash>
+    <d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>
+    <d:PackageStatus>Rejected</d:PackageStatus>
+    <d:IsApproved>false</d:IsApproved>
+  </m:properties>
+</entry>"#
+    );
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// Bootstrap a repo whose tag `v0.1.0` sits `commits_after` commits behind
+/// HEAD, with the reconcile fixture config pointed at a local feed that answers
+/// every request with a REJECTED row. Returns the temp dir and the feed's
+/// request counter.
+fn reconcile_fixture(
+    commits_after: usize,
+) -> (TempDir, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
+    // Two canned rows rather than one: a single spare keeps a retry from
+    // falling through to the drain phase's 503, which would read as "absent"
+    // and quietly turn a divergence assertion into a false pass.
+    let (addr, calls) =
+        anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with(|_| {
+            vec![rejected_feed_response(), rejected_feed_response()]
+        });
+    write_reconcile_fixture_config(tmp.path(), &format!("http://{addr}"));
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "-m", "reconcile fixture config"],
+    );
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    for i in 0..commits_after {
+        run_git(
+            tmp.path(),
+            &["commit", "-q", "--allow-empty", "-m", &format!("after-{i}")],
+        );
+    }
+    (tmp, calls)
+}
+
+/// Run the reconcile fixture's preflight, returning `(output, reconcile rows)`.
+fn run_reconcile_preflight(
+    dir: &std::path::Path,
+    env: &[(&str, &str)],
+) -> (std::process::Output, Vec<serde_json::Value>) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
+    cmd.current_dir(dir)
+        .args(["preflight", "--json", "--publish-only"])
+        .arg("--publishers=chocolatey");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("spawn anodizer preflight");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let json_start = stdout
+        .find('{')
+        .unwrap_or_else(|| panic!("no JSON object in stdout: {stdout}"));
+    let report: serde_json::Value =
+        serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report");
+    let rows = report["reconcile"]
+        .as_array()
+        .expect("reconcile array")
+        .clone();
+    (out, rows)
+}
+
+/// End-to-end, HEAD ADVANCED PAST the tag: the resolved version is the last
+/// released one, so the sweep must not run at all. The observable proof is
+/// threefold — the feed is never contacted, the table reports the whole-sweep
+/// skip marker instead of a publisher row, and the command exits ZERO even
+/// though that publisher is required and its feed row is a rejection.
+#[test]
+fn reconcile_sweep_skipped_end_to_end_when_head_advanced_past_the_tag() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, calls) = reconcile_fixture(1);
+    let (out, rows) = run_reconcile_preflight(tmp.path(), &[]);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        out.status.success(),
+        "a skipped sweep must not gate the exit code; output:\n{combined}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a skipped sweep must not probe the registry at all"
+    );
+    assert_eq!(rows.len(), 1, "expected one marker row, got: {rows:?}");
+    assert_eq!(rows[0]["publisher"], "*");
+    assert_eq!(rows[0]["state"], "skipped");
+    assert_eq!(rows[0]["blocking"], false);
+    assert!(
+        rows[0]["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains(RECONCILE_TAG) && d.contains("advanced past it")),
+        "the marker must name the version and why it was skipped: {rows:?}"
+    );
+}
+
+/// End-to-end, HEAD EXACTLY AT the tag: the resolved version IS the version
+/// this run would publish, so the sweep runs, the required publisher's
+/// `diverged` verdict reaches the gate, and the command exits NON-ZERO with
+/// the divergence bail — not the environment bail.
+#[test]
+fn reconcile_sweep_probes_end_to_end_and_diverged_exits_nonzero_at_the_tag() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, calls) = reconcile_fixture(0);
+    let (out, rows) = run_reconcile_preflight(tmp.path(), &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        !out.status.success(),
+        "a required publisher's divergence must exit non-zero; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("required publisher(s) diverged"),
+        "the divergence bail must be what failed the run, not the environment gate: {stderr}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the sweep must probe the feed exactly once"
+    );
+    assert_eq!(rows.len(), 1, "expected one publisher row, got: {rows:?}");
+    assert_eq!(rows[0]["publisher"], "chocolatey");
+    assert_eq!(rows[0]["state"], "diverged");
+    assert_eq!(rows[0]["blocking"], true);
+}
+
+/// End-to-end backfill canary: HEAD is a commit past `v0.1.0`, but
+/// `ANODIZER_CURRENT_TAG` DECLARES `v0.1.0` as the version this run targets.
+/// The staleness inference applies only to a tag anodizer picked itself, so the
+/// sweep must run and the required divergence must still gate — the same tree
+/// that skips in the inferred case.
+#[test]
+fn reconcile_sweep_probes_end_to_end_for_an_explicitly_declared_tag() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, calls) = reconcile_fixture(1);
+    let (out, rows) =
+        run_reconcile_preflight(tmp.path(), &[("ANODIZER_CURRENT_TAG", RECONCILE_TAG)]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        !out.status.success(),
+        "a declared tag must be probed and its divergence must gate; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("required publisher(s) diverged"),
+        "the divergence bail must be what failed the run: {stderr}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a declared tag must be probed even from a tree that has moved past it"
+    );
+    assert_eq!(rows.len(), 1, "expected one publisher row, got: {rows:?}");
+    assert_eq!(rows[0]["publisher"], "chocolatey");
+    assert_eq!(rows[0]["state"], "diverged");
 }

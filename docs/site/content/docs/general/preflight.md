@@ -92,8 +92,10 @@ $ anodizer preflight --skip=docker,blob # same stage names as release --skip
 It reports on two independent axes: whether this runner **can** publish
 (the environment report above) and whether the target version is **already**
 published (the reconcile table below). The table calls the same
-`reconcile()` each publisher runs at dispatch time, so the canary and the
-release cannot answer differently:
+`reconcile()` each publisher runs at dispatch time — over the same
+`--publishers` / `--skip` selection the publish loop applies, so a
+deselected publisher is never probed and never gates the exit code — and so
+the canary and the release cannot answer differently:
 
 ```text
 • Reconcile state
@@ -109,6 +111,42 @@ release cannot answer differently:
 | `complete` | This exact version **and content** is already upstream (live, in moderation, or an open PR); the publisher skips | no |
 | `diverged` | The version is upstream but the local artifact bytes differ | **yes, if the publisher is required** |
 | `unknown` | The probe was inconclusive (network error, unparseable feed) | no |
+
+#### When the table is skipped
+
+The question "is THIS version already upstream with THESE bytes?" only means
+something while the resolved version is the version this run would publish.
+Run `preflight` **between** two releases — the pre-tag CI canary, or a local
+check on a branch with commits since the last tag — and the resolved tag is
+the *last released* one, so every probe would describe a version nobody is
+about to publish. anodizer locates that tag relative to `HEAD` and skips the
+whole sweep in that case — a purely local git query, no network:
+
+```text
+• Reconcile state
+•   skipped — v0.22.2 is already released and HEAD has advanced past it; this tree will cut a new version
+```
+
+| Tag for the resolved version | Behaviour |
+|---|---|
+| declared by an override, at **any** position | probe — the operator named the target version |
+| does not exist | probe — a fresh version, nothing can be upstream yet |
+| exists, points **at HEAD** | probe — the resume / backfill / `--publish-only` case, where a required `diverged` must still gate |
+| exists, **behind** HEAD | skip — HEAD has advanced past it; a higher version will be cut |
+| exists, **off HEAD's history** (older checkout, divergent branch) | skip — this tree will not publish that version |
+
+The skip is an inference about a tag anodizer picked for you, so it never
+applies to one you named. When `ANODIZER_CURRENT_TAG` (or its
+`GORELEASER_CURRENT_TAG` alias, or a tag-push `GITHUB_REF_NAME`) declares the
+target version, the sweep **always** runs regardless of where that tag sits
+relative to `HEAD` — a backfill canary is run from a tree checked out well
+past the version it is publishing, and its whole purpose is to probe that
+version:
+
+```bash
+# Probes v0.20.0 even though HEAD is three releases ahead of it.
+$ ANODIZER_CURRENT_TAG=v0.20.0 anodizer preflight --publish-only
+```
 
 `complete` is deliberately not an error: it is the green light a resumed
 release wants. `unknown` is deliberately not an error either — an
@@ -147,6 +185,23 @@ publisher with `publisher`, `state`, `detail`, and `blocking`:
   "reconcile": [
     { "publisher": "cargo", "state": "complete", "detail": "1.2.3 live with matching cksum", "blocking": false },
     { "publisher": "npm", "state": "absent", "blocking": false }
+  ]
+}
+```
+
+A **skipped** sweep projects to one marker row rather than to `[]`, so
+"this question did not apply" can never be read as "no publisher is
+configured". Its `publisher` is the whole-set wildcard `*`:
+
+```json
+{
+  "reconcile": [
+    {
+      "publisher": "*",
+      "state": "skipped",
+      "detail": "v0.22.2 is already released and HEAD has advanced past it; this tree will cut a new version",
+      "blocking": false
+    }
   ]
 }
 ```

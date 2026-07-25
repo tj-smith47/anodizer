@@ -279,6 +279,25 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     v
 }
 
+/// The publishers this invocation will actually touch: [`configured_publishers`]
+/// minus everything the operator deselected.
+///
+/// [`Context::publisher_deselected`] folds BOTH selectors — `--skip` (the
+/// unified denylist) and `--publishers` (the allowlist) — so this one predicate
+/// decides membership, exactly as the publish dispatch loop decides it.
+///
+/// [`configured_publishers`] answers a different question ("which publishers
+/// does the CONFIG declare?"). Any surface that instead asks "which publishers
+/// does THIS run touch?" must read this list: a network probe of a deselected
+/// publisher reports on a registry the run will never write to, and its
+/// verdict can only produce false gates.
+pub fn selected_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
+    configured_publishers(ctx)
+        .into_iter()
+        .filter(|p| !ctx.publisher_deselected(p.name()))
+        .collect()
+}
+
 /// Publishers that own a dedicated pipeline stage (so they are NOT dispatched
 /// for upload via [`configured_publishers`]) but DO own reversible remote
 /// state a teardown must undo.
@@ -817,6 +836,61 @@ mod tests {
         assert!(
             publishers.is_empty(),
             "registry should stay empty when no crate opts into a publisher"
+        );
+    }
+
+    /// A context configuring exactly two publishers — `cargo` (per-crate) and
+    /// `uploads` (top-level) — so one selector can keep one and drop the other.
+    fn cargo_and_uploads_ctx(allowlist: Vec<String>, skip: Vec<String>) -> Context {
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg])
+            .publisher_allowlist(allowlist)
+            .skip_stages(skip)
+            .build();
+        ctx.config.uploads = Some(vec![anodizer_core::config::UploadConfig {
+            name: Some("mirror".to_string()),
+            target: "https://uploads.example/{{ .ArtifactName }}".to_string(),
+            ..Default::default()
+        }]);
+        ctx
+    }
+
+    /// The selection chokepoint: `--publishers` (allowlist) and `--skip`
+    /// (denylist) both narrow the configured set, through the same predicate
+    /// the publish loop consults. A surface that probes the WIDE set reports on
+    /// registries the run will never write to.
+    #[test]
+    fn selected_publishers_drops_deselected_publishers() {
+        let names = |ctx: &Context| -> Vec<String> {
+            selected_publishers(ctx)
+                .iter()
+                .map(|p| p.name().to_string())
+                .collect()
+        };
+
+        let allowlisted = cargo_and_uploads_ctx(vec!["uploads".to_string()], Vec::new());
+        assert_eq!(
+            names(&allowlisted),
+            ["uploads"],
+            "--publishers uploads must drop cargo"
+        );
+
+        let skipped = cargo_and_uploads_ctx(Vec::new(), vec!["cargo".to_string()]);
+        assert_eq!(names(&skipped), ["uploads"], "--skip cargo must drop cargo");
+
+        let unfiltered = cargo_and_uploads_ctx(Vec::new(), Vec::new());
+        assert_eq!(
+            names(&unfiltered),
+            ["cargo", "uploads"],
+            "no selector must narrow nothing"
         );
     }
 

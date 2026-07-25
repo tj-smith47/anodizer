@@ -170,6 +170,7 @@ fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
     };
     GitInfo {
         tag,
+        tag_source: crate::git::TagSource::default(),
         commit: "abc123def456abc123def456abc123def456abc1".to_string(),
         short_commit: "abc123d".to_string(),
         branch: "main".to_string(),

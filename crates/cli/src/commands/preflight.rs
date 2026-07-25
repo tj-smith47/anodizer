@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::env_preflight::{self, EnvPreflightReport, EnvProbes, SourcedRequirement};
+use anodizer_core::git::{TagPosition, TagSource};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_stage_publish::reconcile_report::{ReconcileReport, ReconcileRowJson};
 use anyhow::Result;
@@ -722,6 +723,91 @@ pub struct PreflightOpts {
     pub debug: bool,
 }
 
+/// Whether the reconcile sweep is a question about the version this tree
+/// would release.
+#[derive(Debug, PartialEq, Eq)]
+enum ReconcileSweep {
+    /// The resolved version is the one this run would publish, so every
+    /// publisher's verdict is actionable — including a required `Diverged`,
+    /// which must still gate.
+    Applies,
+    /// The resolved version is already released and HEAD has moved past it.
+    Stale { reason: String },
+}
+
+/// Decide whether the reconcile sweep applies to the tree being inspected.
+///
+/// The table answers "is THIS version already upstream with THESE bytes?",
+/// which is only meaningful while the resolved version is the version this run
+/// would publish. Between two releases it is not: the context resolves the
+/// latest existing tag, so on any tree with commits after its last release
+/// every probe reports on the PREVIOUS version — the `Diverged` rows are true
+/// and irrelevant (the tree moved on, a higher version will be cut) and the
+/// `absent — will publish` rows describe a version nobody will publish.
+/// Skipping the whole sweep trades a purely local git query for one network
+/// probe per publisher, and is what keeps a required `Diverged` on the last
+/// release from hard-failing the run that cuts the next one.
+///
+/// The tag name comes from `git_info.tag` — the exact ref the context resolved
+/// (latest matching tag, `ANODIZER_CURRENT_TAG` override, or the synthetic
+/// `v0.0.0` for a tagless repo) and the very string the `Tag` template var is
+/// derived from. It is correct across config modes for the same reason it is
+/// what git resolved in the first place: lockstep configs resolve one shared
+/// `v{{ Version }}` ref, per-crate configs resolve the first selected crate's
+/// `{name}-v{{ Version }}` ref, and monorepo mode strips its prefix only on
+/// the way into the `Tag` VAR, never in `git_info.tag`.
+///
+/// The staleness inference is only sound for an INFERRED tag. A
+/// [`TagSource::Declared`] tag is the operator naming the version this run
+/// targets — a backfill canary run from a tree checked out ahead of the tag it
+/// is publishing is exactly that shape — so the position of that tag relative
+/// to `HEAD` says nothing about whether it is the version being published, and
+/// the sweep always applies.
+///
+/// A git failure yields [`ReconcileSweep::Applies`]: an unanswerable position
+/// question must not silently disable the divergence gate.
+fn reconcile_sweep(ctx: &Context, log: &StageLogger) -> ReconcileSweep {
+    let Some(git_info) = ctx.git_info.as_ref() else {
+        return ReconcileSweep::Applies;
+    };
+    if git_info.tag_source == TagSource::Declared {
+        return ReconcileSweep::Applies;
+    }
+    let tag = git_info.tag.as_str();
+    let root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+    match anodizer_core::git::tag_position_in(&root, tag) {
+        // A tag that does not exist is the version about to be cut; a tag AT
+        // HEAD is the genuine resume / backfill / `--publish-only` case, where
+        // a required `Diverged` is exactly the signal the operator needs.
+        Ok(TagPosition::Missing) | Ok(TagPosition::AtHead) => ReconcileSweep::Applies,
+        Ok(TagPosition::AncestorOfHead) => ReconcileSweep::Stale {
+            reason: format!(
+                "{tag} is already released and HEAD has advanced past it; \
+                 this tree will cut a new version"
+            ),
+        },
+        // A tag off HEAD's history (an older checkout, a divergent branch) is
+        // just as unpublishable from here, but claiming HEAD advanced past it
+        // would be false.
+        Ok(TagPosition::UnrelatedToHead) => ReconcileSweep::Stale {
+            reason: format!(
+                "{tag} is already released and HEAD is not on its history; \
+                 this tree will not publish that version"
+            ),
+        },
+        Err(e) => {
+            log.verbose(&format!(
+                "could not locate tag {tag} relative to HEAD, probing anyway: {e:#}"
+            ));
+            ReconcileSweep::Applies
+        }
+    }
+}
+
 /// Standalone `anodizer preflight`: load the config, derive the full
 /// requirement set, probe the environment, and exit non-zero when anything
 /// is missing. Same engine the release pipeline runs before any stage.
@@ -778,11 +864,13 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
 
     // Publisher state is a second, independent axis: the environment report
     // answers "can this runner publish?", the reconcile table answers "is it
-    // already published?". Probing every configured publisher through the
-    // same `reconcile()` the dispatch loop calls is what keeps the canary and
-    // the release from drifting into two answers.
-    let publishers = anodizer_stage_publish::registry::configured_publishers(&ctx);
-    let reconcile = ReconcileReport::probe(&publishers, &mut ctx);
+    // already published?". Probing each SELECTED publisher through the same
+    // `reconcile()` the dispatch loop calls is what keeps the canary and the
+    // release from drifting into two answers.
+    let reconcile = match reconcile_sweep(&ctx, &log) {
+        ReconcileSweep::Stale { reason } => ReconcileReport::skipped(reason),
+        ReconcileSweep::Applies => ReconcileReport::probe(&mut ctx),
+    };
     let blocking = reconcile.blocking().len();
 
     if opts.json {
@@ -2118,5 +2206,138 @@ builds:
                 gated.stage
             );
         }
+    }
+
+    /// A repo whose history is `1 + commits_after` commits with `tag` on the
+    /// FIRST one. `commits_after == 0` leaves the tag at HEAD. Returns `None`
+    /// when git is unusable on this host.
+    fn repo_with_tag(tag: &str, commits_after: usize) -> Option<tempfile::TempDir> {
+        use anodizer_core::test_helpers::{git_test_ok, git_test_output};
+        let tmp = tempfile::tempdir().ok()?;
+        let dir = tmp.path();
+        if !git_test_output(dir, &["init", "-q"]).status.success() {
+            return None;
+        }
+        git_test_ok(dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        git_test_ok(dir, &["tag", tag]);
+        for i in 0..commits_after {
+            git_test_ok(
+                dir,
+                &["commit", "-q", "--allow-empty", "-m", &format!("after-{i}")],
+            );
+        }
+        Some(tmp)
+    }
+
+    fn sweep_for(tag: &str, repo: &std::path::Path) -> ReconcileSweep {
+        sweep_for_source(tag, repo, TagSource::Inferred)
+    }
+
+    fn sweep_for_source(tag: &str, repo: &std::path::Path, source: TagSource) -> ReconcileSweep {
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .tag(tag)
+            .tag_source(source)
+            .project_root(repo.to_path_buf())
+            .build();
+        reconcile_sweep(&ctx, anodizer_core::test_helpers::test_logger())
+    }
+
+    /// Between two releases the resolved tag is the LAST released one, so
+    /// every publisher probe describes a version nobody is about to publish.
+    /// The sweep must not run at all — and the report that replaces it must
+    /// clear the exit gate, since a required `Diverged` on the previous
+    /// version is true and irrelevant to the version this tree will cut.
+    #[test]
+    fn reconcile_sweep_skips_a_released_tag_head_has_advanced_past() {
+        let Some(repo) = repo_with_tag("v0.22.2", 1) else {
+            eprintln!("skipping: git unusable on this host");
+            return;
+        };
+        let sweep = sweep_for("v0.22.2", repo.path());
+        let ReconcileSweep::Stale { reason } = sweep else {
+            panic!("expected the sweep to be skipped, got {sweep:?}");
+        };
+        assert!(
+            reason.contains("v0.22.2") && reason.contains("advanced past it"),
+            "the skip must name the version and the reason: {reason}"
+        );
+        // The exit gate reads `blocking().len()`; a skipped sweep contributes
+        // nothing to it, so the command exits 0 on the publisher axis.
+        assert!(ReconcileReport::skipped(reason).blocking().is_empty());
+    }
+
+    /// The resume / backfill case: HEAD sits exactly on the tag, so the
+    /// version resolved IS the version this run would publish and the sweep
+    /// must run rather than be skipped as stale.
+    #[test]
+    fn reconcile_sweep_applies_when_head_is_at_the_tag() {
+        let Some(repo) = repo_with_tag("v0.22.2", 0) else {
+            eprintln!("skipping: git unusable on this host");
+            return;
+        };
+        assert_eq!(sweep_for("v0.22.2", repo.path()), ReconcileSweep::Applies);
+    }
+
+    /// An operator-declared tag names the version this run targets, so its
+    /// position relative to HEAD carries no information about staleness. A
+    /// backfill canary — `ANODIZER_CURRENT_TAG` set to an already-released
+    /// version, run from a tree many commits ahead of it — is exactly the tree
+    /// shape the staleness inference skips, and exactly the run whose whole
+    /// purpose is to probe that version.
+    #[test]
+    fn reconcile_sweep_applies_to_a_declared_tag_head_has_advanced_past() {
+        let Some(repo) = repo_with_tag("v0.20.0", 3) else {
+            eprintln!("skipping: git unusable on this host");
+            return;
+        };
+        assert!(
+            matches!(
+                sweep_for("v0.20.0", repo.path()),
+                ReconcileSweep::Stale { .. }
+            ),
+            "the same tree must read as stale when the tag was INFERRED"
+        );
+        assert_eq!(
+            sweep_for_source("v0.20.0", repo.path(), TagSource::Declared),
+            ReconcileSweep::Applies,
+            "a declared tag must never be inferred stale"
+        );
+    }
+
+    /// A released tag that HEAD is not on the history of — an older checkout,
+    /// a divergent branch — is just as unpublishable from here, so the sweep
+    /// is skipped; the reason must not claim HEAD advanced past it.
+    #[test]
+    fn reconcile_sweep_skips_a_tag_off_heads_history_without_claiming_advancement() {
+        let Some(repo) = repo_with_tag("v0.22.2", 1) else {
+            eprintln!("skipping: git unusable on this host");
+            return;
+        };
+        anodizer_core::test_helpers::git_test_ok(repo.path(), &["tag", "v0.23.0"]);
+        anodizer_core::test_helpers::git_test_ok(repo.path(), &["reset", "--hard", "-q", "HEAD~1"]);
+
+        let sweep = sweep_for("v0.23.0", repo.path());
+        let ReconcileSweep::Stale { reason } = sweep else {
+            panic!("expected the sweep to be skipped, got {sweep:?}");
+        };
+        assert!(
+            reason.contains("HEAD is not on its history"),
+            "the reason must describe the real position: {reason}"
+        );
+        assert!(
+            !reason.contains("advanced past"),
+            "must not claim HEAD advanced past a tag it is behind: {reason}"
+        );
+    }
+
+    /// A tag that does not exist yet is the ordinary fresh-version case: the
+    /// probe runs, and every publisher answers `absent — will publish`.
+    #[test]
+    fn reconcile_sweep_applies_when_the_tag_does_not_exist() {
+        let Some(repo) = repo_with_tag("v0.22.2", 1) else {
+            eprintln!("skipping: git unusable on this host");
+            return;
+        };
+        assert_eq!(sweep_for("v0.23.0", repo.path()), ReconcileSweep::Applies);
     }
 }

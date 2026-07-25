@@ -101,6 +101,17 @@ pub fn resolve_git_context(
             .tag_template
             .clone()
             .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", crate_cfg.name));
+        // An override is the operator NAMING the version this run targets;
+        // everything else is an inference from what the repository happens to
+        // hold. Gates that ask "is the resolved version the one being
+        // published?" answer differently for the two, so the distinction
+        // travels on the resolved `GitInfo` instead of being re-derived from
+        // the environment at each such gate.
+        let tag_source = if tag_override.is_some() {
+            git::TagSource::Declared
+        } else {
+            git::TagSource::Inferred
+        };
         let tag = if let Some(ref override_tag) = tag_override {
             log.verbose(&format!(
                 "using ANODIZER_CURRENT_TAG override '{}'",
@@ -178,6 +189,7 @@ pub fn resolve_git_context(
 
         match git::detect_git_info(&tag, ctx.skip_validate()) {
             Ok(mut git_info) => {
+                git_info.tag_source = tag_source;
                 // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
                 // a dirty-tree check. The standalone `changelog` preview skips
                 // it too — a local inspection must not require a clean tree.
@@ -260,6 +272,7 @@ pub fn resolve_git_context(
                     ));
                     ctx.git_info = Some(git::GitInfo {
                         tag: tag.clone(),
+                        tag_source,
                         commit: "none".to_string(),
                         short_commit: "none".to_string(),
                         branch: "none".to_string(),

@@ -2144,6 +2144,173 @@ fn tag_points_at_head_in_true_for_head_tag_false_otherwise() {
         !tag_points_at_head_in(tmp.path(), "at-head").unwrap(),
         "a tag on an earlier commit must report false"
     );
+    assert!(
+        tag_points_at_head_in(tmp.path(), "no-such-tag").is_err(),
+        "a tag that does not resolve must error, not read as 'points elsewhere'"
+    );
+}
+
+/// The four positions a tag can hold relative to HEAD. They drive opposite
+/// decisions in a release gate, so a caller must be able to tell them apart —
+/// `Missing` (the version about to be cut) from `AtHead` (a resume of that
+/// exact version) from `AncestorOfHead` (a version already released and moved
+/// past) from `UnrelatedToHead` (an older or divergent checkout).
+#[test]
+fn tag_position_in_distinguishes_missing_at_head_ancestor_and_unrelated() {
+    use super::tags::{TagPosition, tag_position_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "released"]);
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "current"]);
+
+    assert_eq!(
+        tag_position_in(tmp.path(), "never-cut").unwrap(),
+        TagPosition::Missing
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "current").unwrap(),
+        TagPosition::AtHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "released").unwrap(),
+        TagPosition::AncestorOfHead
+    );
+
+    // Rewind HEAD behind both tags: `current` is now ahead of HEAD, so it is
+    // neither at HEAD nor an ancestor of it.
+    tags_run_git(tmp.path(), &["reset", "--hard", "-q", "HEAD~1"]);
+    assert_eq!(
+        tag_position_in(tmp.path(), "current").unwrap(),
+        TagPosition::UnrelatedToHead
+    );
+}
+
+/// Real releases cut ANNOTATED tags, whose ref names a tag OBJECT rather than
+/// the commit. The `^{}` deref is what keeps the comparison against `HEAD`
+/// honest — without it an annotated tag at HEAD would compare unequal and read
+/// as `UnrelatedToHead`, skipping a sweep that must run.
+#[test]
+fn tag_position_in_derefs_annotated_tags() {
+    use super::tags::{TagPosition, tag_position_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "-a", "-m", "released", "ann-released"]);
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "-a", "-m", "current", "ann-current"]);
+
+    // The tag ref resolves to a tag object, not the commit — the premise that
+    // makes the deref load-bearing rather than incidental.
+    let tag_obj =
+        anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "ann-current"]);
+    let head = anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(
+        tag_obj, head,
+        "an annotated tag ref must name a tag object, else this fixture proves nothing"
+    );
+
+    assert_eq!(
+        tag_position_in(tmp.path(), "ann-current").unwrap(),
+        TagPosition::AtHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "ann-released").unwrap(),
+        TagPosition::AncestorOfHead
+    );
+}
+
+/// Monorepo / per-crate configs resolve crate-prefixed tags (`core-v0.3.2`)
+/// and slash-prefixed ones (`subproject1/v1.2.3`); both are ordinary ref names
+/// to `git rev-parse`, so position resolution must not be special-cased to the
+/// bare `vX.Y.Z` family.
+#[test]
+fn tag_position_in_handles_crate_prefixed_and_slashed_tags() {
+    use super::tags::{TagPosition, tag_position_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "core-v0.3.2"]);
+    tags_run_git(tmp.path(), &["tag", "subproject1/v1.2.3"]);
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "cli-v0.4.0"]);
+
+    assert_eq!(
+        tag_position_in(tmp.path(), "cli-v0.4.0").unwrap(),
+        TagPosition::AtHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "core-v0.3.2").unwrap(),
+        TagPosition::AncestorOfHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "subproject1/v1.2.3").unwrap(),
+        TagPosition::AncestorOfHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "core-v9.9.9").unwrap(),
+        TagPosition::Missing
+    );
+}
+
+/// A detached HEAD — how CI checks out a tag — is still a resolvable commit,
+/// so every position stays answerable there. The checked-out release tag reads
+/// `AtHead` even though no branch points at it.
+#[test]
+fn tag_position_in_answers_on_a_detached_head() {
+    use super::tags::{TagPosition, tag_position_in};
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    tags_run_git(tmp.path(), &["tag", "v0.1.0"]);
+    std::fs::write(tmp.path().join("b"), "x").unwrap();
+    tags_run_git(tmp.path(), &["add", "."]);
+    tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    tags_run_git(tmp.path(), &["tag", "v0.2.0"]);
+
+    tags_run_git(tmp.path(), &["checkout", "-q", "--detach", "v0.1.0"]);
+    assert_eq!(
+        anodizer_core::test_helpers::git_test_stdout(
+            tmp.path(),
+            &["rev-parse", "--abbrev-ref", "HEAD"]
+        ),
+        "HEAD",
+        "fixture must actually be detached"
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "v0.1.0").unwrap(),
+        TagPosition::AtHead
+    );
+    assert_eq!(
+        tag_position_in(tmp.path(), "v0.2.0").unwrap(),
+        TagPosition::UnrelatedToHead
+    );
+}
+
+/// `git merge-base --is-ancestor` exits 1 for the negative ANSWER and >=2 when
+/// it could not answer at all. A tag naming a non-commit object drives the
+/// latter, which must surface as an error rather than impersonate a position.
+#[test]
+fn tag_position_in_errors_when_the_reachability_query_fails() {
+    use super::tags::tag_position_in;
+    let tmp = tempfile::tempdir().unwrap();
+    tags_init_commit_repo(tmp.path());
+    // A tag on the TREE object: it resolves (so the deref succeeds) but is not
+    // a commit, so the reachability query fails outright instead of answering.
+    let tree =
+        anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "HEAD^{tree}"]);
+    tags_run_git(tmp.path(), &["tag", "tree-tag", &tree]);
+
+    let err = tag_position_in(tmp.path(), "tree-tag")
+        .expect_err("a failed reachability query must not read as a position");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("merge-base --is-ancestor") && msg.contains("not a commit"),
+        "the error must carry git's own diagnosis: {msg}"
+    );
 }
 
 #[test]

@@ -101,7 +101,7 @@ fn only_diverged_blocks() {
         unknown("aur", "timeout connecting to AUR"),
         diverged("chocolatey", "sha256 mismatch against the published nupkg"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
 
     let blocking: Vec<&str> = report
         .blocking()
@@ -120,7 +120,7 @@ fn optional_divergence_is_reported_but_does_not_block() {
         diverged_with_required("gemfury", "sha mismatch", false),
         absent("npm"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
 
     assert_eq!(report.diverged().len(), 1, "still reported as diverged");
     assert!(
@@ -133,7 +133,7 @@ fn optional_divergence_is_reported_but_does_not_block() {
 #[test]
 fn required_divergence_blocks() {
     let publishers = vec![diverged_with_required("cargo", "sha mismatch", true)];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     assert_eq!(report.blocking().len(), 1);
     assert!(report.to_json_rows()[0].blocking);
 }
@@ -145,7 +145,7 @@ fn every_publisher_reaches_the_table() {
         absent("npm"),
         unknown("aur", "x"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     assert_eq!(report.rows.len(), 3);
     assert!(report.diverged().is_empty());
 }
@@ -162,7 +162,7 @@ fn probe_error_becomes_unknown_and_does_not_abort_the_sweep() {
         }),
         absent("npm"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(report.rows.len(), 2);
@@ -186,7 +186,7 @@ fn only_complete_earns_the_success_marker() {
         diverged("choco", "mismatch"),
         unknown("aur", "timeout"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     let kinds: Vec<RowKind> = report.entry_rows().into_iter().map(|(k, _)| k).collect();
     assert_eq!(
         kinds,
@@ -197,7 +197,7 @@ fn only_complete_earns_the_success_marker() {
 #[test]
 fn entry_rows_align_summaries_to_the_widest_publisher() {
     let publishers = vec![absent("npm"), absent("chocolatey")];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     let texts: Vec<String> = report.entry_rows().into_iter().map(|(_, t)| t).collect();
 
     let offsets: Vec<usize> = texts
@@ -228,7 +228,7 @@ fn row_text_carries_the_state_payload() {
         diverged("choco", "sha256 mismatch"),
         unknown("aur", "timeout connecting to AUR"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     let rendered = report
         .entry_rows()
         .iter()
@@ -256,7 +256,7 @@ fn json_rows_mark_only_diverged_as_blocking() {
         diverged("choco", "mismatch"),
         unknown("aur", "timeout"),
     ];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     let rows = report.to_json_rows();
 
     let tags: Vec<&str> = rows.iter().map(|r| r.state).collect();
@@ -273,10 +273,76 @@ fn json_rows_mark_only_diverged_as_blocking() {
     assert_eq!(rows[2].detail.as_deref(), Some("mismatch"));
 }
 
+/// `--publishers` (allowlist) and `--skip` (denylist) scope the sweep exactly
+/// as they scope the publish loop. A deselected publisher is a registry this
+/// run will never write to, so its verdict must neither appear in the table
+/// nor gate the exit code — a required `Diverged` there is the shape that
+/// hard-failed a pre-tag `preflight --publishers blob,uploads`.
+#[test]
+fn probe_excludes_deselected_publishers() {
+    for (label, ctx) in [
+        (
+            "--publishers uploads",
+            TestContextBuilder::new()
+                .publisher_allowlist(vec!["uploads".to_string()])
+                .build(),
+        ),
+        (
+            "--skip cargo",
+            TestContextBuilder::new()
+                .skip_stages(vec!["cargo".to_string()])
+                .build(),
+        ),
+    ] {
+        let mut ctx = ctx;
+        let publishers = vec![
+            diverged_with_required("cargo", "0.22.2 published with different content", true),
+            absent("uploads"),
+        ];
+        let report = ReconcileReport::probe_selected(&publishers, &mut ctx);
+
+        let probed: Vec<&str> = report.rows.iter().map(|r| r.publisher.as_str()).collect();
+        assert_eq!(probed, vec!["uploads"], "{label} must leave cargo unprobed");
+        assert!(
+            report.blocking().is_empty(),
+            "{label}: a deselected publisher's divergence must not gate the exit code"
+        );
+    }
+}
+
+/// A sweep that did not apply is a third answer, distinct from both "every
+/// publisher is clean" and "nothing is configured". It carries its reason to
+/// the operator, blocks nothing, and projects to a marker row so a `--json`
+/// consumer cannot read it as an empty table.
+#[test]
+fn a_skipped_sweep_reports_its_reason_and_blocks_nothing() {
+    let report = ReconcileReport::skipped("v0.22.2 is already released");
+
+    assert!(report.rows.is_empty());
+    assert!(report.blocking().is_empty());
+
+    let rendered: Vec<String> = report.entry_rows().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(
+        rendered,
+        vec!["  skipped — v0.22.2 is already released"],
+        "the marker must survive every rendering path, not just `emit`"
+    );
+
+    let rows = report.to_json_rows();
+    assert_eq!(rows.len(), 1, "a skipped sweep must not project to []");
+    assert_eq!(rows[0].publisher, WHOLE_SWEEP);
+    assert_eq!(rows[0].state, "skipped");
+    assert_eq!(
+        rows[0].detail.as_deref(),
+        Some("v0.22.2 is already released")
+    );
+    assert!(!rows[0].blocking);
+}
+
 #[test]
 fn json_rows_serialize_without_the_absent_detail_key() {
     let publishers = vec![absent("npm")];
-    let report = ReconcileReport::probe(&publishers, &mut ctx());
+    let report = ReconcileReport::probe_selected(&publishers, &mut ctx());
     let json = serde_json::to_string(&report.to_json_rows()).expect("serialize");
     assert!(
         !json.contains("detail"),

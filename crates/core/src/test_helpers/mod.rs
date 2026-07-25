@@ -136,6 +136,7 @@ impl Drop for CwdGuard {
 pub struct TestContextBuilder {
     project_name: String,
     tag: String,
+    tag_source: crate::git::TagSource,
     commit: String,
     short_commit: String,
     branch: String,
@@ -181,6 +182,7 @@ impl Default for TestContextBuilder {
         Self {
             project_name: "test-project".to_string(),
             tag: "v1.2.3".to_string(),
+            tag_source: crate::git::TagSource::Inferred,
             commit: "abc123def456abc123def456abc123def456abc1".to_string(),
             short_commit: "abc123d".to_string(),
             branch: "main".to_string(),
@@ -248,6 +250,14 @@ impl TestContextBuilder {
         if let Ok(sv) = crate::git::parse_semver_tag(tag) {
             self.semver = sv;
         }
+        self
+    }
+
+    /// Set how the tag was arrived at. Defaults to
+    /// [`crate::git::TagSource::Inferred`] — the latest-matching-tag scan —
+    /// so only tests that exercise the operator-override path need this.
+    pub fn tag_source(mut self, source: crate::git::TagSource) -> Self {
+        self.tag_source = source;
         self
     }
 
@@ -562,6 +572,7 @@ impl TestContextBuilder {
 
         ctx.git_info = Some(GitInfo {
             tag: self.tag,
+            tag_source: self.tag_source,
             commit: self.commit,
             short_commit: self.short_commit,
             branch: self.branch,
@@ -934,6 +945,7 @@ pub fn init_git_repo_with_commits(dir: &Path, commits: &[&str]) {
 pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
     GitInfo {
         tag: "v1.2.3".to_string(),
+        tag_source: crate::git::TagSource::default(),
         commit: "abc123def456abc123def456abc123def456abc1".to_string(),
         short_commit: "abc123d".to_string(),
         branch: "main".to_string(),
