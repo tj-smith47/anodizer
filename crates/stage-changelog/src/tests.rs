@@ -3531,6 +3531,211 @@ fn test_lockstep_resolves_prev_tag_once_not_full_history() {
     );
 }
 
+/// Fresh repository for the multi-track fixtures below: several release tracks
+/// (`v*`, `core-v*`) share one history, the shape a workspace with independent
+/// per-crate cadences produces.
+fn multitrack_repo() -> tempfile::TempDir {
+    let tmp = tempfile::TempDir::new().unwrap();
+    anodizer_core::test_helpers::git_test_ok(tmp.path(), &["init", "-q"]);
+    std::fs::create_dir_all(tmp.path().join("crates/core")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("crates/sibling")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("dist")).unwrap();
+    tmp
+}
+
+fn git_in(repo: &std::path::Path, args: &[&str]) {
+    anodizer_core::test_helpers::git_test_ok(repo, args);
+}
+
+fn commit_in(repo: &std::path::Path, path: &str, body: &str, msg: &str) {
+    std::fs::write(repo.join(path), body).unwrap();
+    git_in(repo, &["add", "."]);
+    git_in(repo, &["commit", "-q", "-m", msg]);
+}
+
+fn track_crate(name: &str, path: &str, tag_template: &str) -> anodizer_core::config::CrateConfig {
+    anodizer_core::config::CrateConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        tag_template: Some(tag_template.to_string()),
+        ..Default::default()
+    }
+}
+
+fn smartsemver_git() -> anodizer_core::config::GitConfig {
+    anodizer_core::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    }
+}
+
+/// Lay down the multi-track history the previous-tag probe has to navigate:
+/// a sibling track's tag sits between the two release tags of the track under
+/// test, and the crate's own commits sit on either side of it.
+fn seed_intervening_sibling_history(repo: &std::path::Path, first: &str, sibling: &str, cut: &str) {
+    commit_in(repo, "crates/core/lib.rs", "v0", "feat: ancient work");
+    git_in(repo, &["tag", first]);
+    commit_in(repo, "crates/core/lib.rs", "v1", "feat: first change");
+    commit_in(
+        repo,
+        "crates/sibling/lib.rs",
+        "s1",
+        "chore: sibling track work",
+    );
+    git_in(repo, &["tag", sibling]);
+    commit_in(repo, "crates/core/lib.rs", "v2", "fix: second change");
+    git_in(repo, &["tag", cut]);
+}
+
+#[test]
+#[serial]
+fn test_prev_tag_skips_sibling_track_tag_on_the_same_commit() {
+    // The cfgd shape: the root track's release (`v0.2.0`) and a sibling
+    // track's (`core-v0.2.0`) are cut from ONE commit. An unscoped look-back
+    // picks `core-v0.2.0`, whose range spans zero commits — the empty
+    // `## Changelog` symptom.
+    let tmp = multitrack_repo();
+    let repo = tmp.path();
+
+    commit_in(repo, "crates/core/lib.rs", "v0", "feat: ancient work");
+    git_in(repo, &["tag", "core-v0.1.0"]);
+    git_in(repo, &["tag", "v0.1.0"]);
+    commit_in(repo, "crates/core/lib.rs", "v1", "feat: first change");
+    commit_in(repo, "crates/core/lib.rs", "v2", "fix: second change");
+    git_in(repo, &["tag", "core-v0.2.0"]);
+    git_in(repo, &["tag", "v0.2.0"]);
+
+    let crate_cfg = track_crate("cfgd", "crates/core", "v{{ .Version }}");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("cfgd")
+        .dist(repo.join("dist"))
+        .tag("v0.2.0")
+        .crates(vec![crate_cfg.clone()])
+        .build();
+    ctx.config.git = Some(smartsemver_git());
+
+    let _cwd = CwdGuard::new(repo).unwrap();
+    let prev = crate::run::resolve_prev_tag(&ctx, &crate_cfg, None, Some("v0.2.0")).unwrap();
+
+    assert_eq!(
+        prev.as_deref(),
+        Some("v0.1.0"),
+        "previous-tag discovery must stay inside the crate's own tag family"
+    );
+}
+
+#[test]
+#[serial]
+fn test_prev_tag_skips_intervening_sibling_tag_on_default_sort() {
+    // The ancestry-walking `git describe` path needs the same family scope:
+    // without `--match`, `git describe --abbrev=0 v0.2.0^` answers with the
+    // sibling track's `core-v0.9.0` and silently drops `feat: first change`.
+    let tmp = multitrack_repo();
+    let repo = tmp.path();
+    seed_intervening_sibling_history(repo, "v0.1.0", "core-v0.9.0", "v0.2.0");
+
+    let crate_cfg = track_crate("cfgd", "crates/core", "v{{ .Version }}");
+    let ctx = TestContextBuilder::new()
+        .project_name("cfgd")
+        .dist(repo.join("dist"))
+        .tag("v0.2.0")
+        .crates(vec![crate_cfg.clone()])
+        .build();
+
+    let _cwd = CwdGuard::new(repo).unwrap();
+    let prev = crate::run::resolve_prev_tag(&ctx, &crate_cfg, None, Some("v0.2.0")).unwrap();
+
+    assert_eq!(
+        prev.as_deref(),
+        Some("v0.1.0"),
+        "the default (describe) path must scope to the crate's tag family too"
+    );
+}
+
+#[test]
+#[serial]
+fn test_prev_tag_bare_version_template_is_still_family_scoped() {
+    // `tag_template: "{{ Version }}"` extracts an EMPTY prefix. Fed to a
+    // prefix filter it matches every tag in the repository, so the family scope
+    // has to express "bare version" as its own shape — on both dispatch paths.
+    for tag_sort in [None, Some("smartsemver")] {
+        let tmp = multitrack_repo();
+        let repo = tmp.path();
+        seed_intervening_sibling_history(repo, "0.1.0", "core-v0.9.0", "0.2.0");
+
+        let crate_cfg = track_crate("cfgd", "crates/core", "{{ Version }}");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("cfgd")
+            .dist(repo.join("dist"))
+            .tag("0.2.0")
+            .crates(vec![crate_cfg.clone()])
+            .build();
+        if tag_sort.is_some() {
+            ctx.config.git = Some(smartsemver_git());
+        }
+
+        let _cwd = CwdGuard::new(repo).unwrap();
+        let prev = crate::run::resolve_prev_tag(&ctx, &crate_cfg, None, Some("0.2.0")).unwrap();
+
+        assert_eq!(
+            prev.as_deref(),
+            Some("0.1.0"),
+            "bare-version family must not match core-v0.9.0 (tag_sort={tag_sort:?})"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_multitrack_changelog_body_is_not_empty() {
+    // The symptom itself: the rendered body, not just the tag selection. A
+    // sibling tag at the cut commit collapsed the range and shipped release
+    // notes with zero entries.
+    use anodizer_core::config::ChangelogConfig;
+
+    let tmp = multitrack_repo();
+    let repo = tmp.path();
+
+    commit_in(repo, "crates/core/lib.rs", "v0", "feat: ancient work");
+    git_in(repo, &["tag", "core-v0.1.0"]);
+    git_in(repo, &["tag", "v0.1.0"]);
+    commit_in(repo, "crates/core/lib.rs", "v1", "feat: first change");
+    commit_in(repo, "crates/core/lib.rs", "v2", "fix: second change");
+    git_in(repo, &["tag", "core-v0.2.0"]);
+    git_in(repo, &["tag", "v0.2.0"]);
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("cfgd")
+        .dist(repo.join("dist"))
+        .tag("v0.2.0")
+        .crates(vec![track_crate("cfgd", "crates/core", "v{{ .Version }}")])
+        .build();
+    ctx.config.git = Some(smartsemver_git());
+    ctx.config.changelog = Some(ChangelogConfig {
+        use_source: Some("git".to_string()),
+        ..Default::default()
+    });
+
+    let _cwd = CwdGuard::new(repo).unwrap();
+    ChangelogStage.run(&mut ctx).unwrap();
+
+    let body = ctx
+        .stage_outputs
+        .changelogs
+        .get("cfgd")
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        body.contains("first change") && body.contains("second change"),
+        "both v0.1.0..v0.2.0 commits must render, got: {body}"
+    );
+    assert!(
+        !body.contains("ancient work"),
+        "pre-v0.1.0 history must stay out of the range, got: {body}"
+    );
+}
+
 #[test]
 fn test_changelog_stage_unsupported_source_bails() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};

@@ -651,6 +651,82 @@ fn test_smartsemver_empty_ignore_prefix_is_skipped() {
     );
 }
 
+/// A candidate tag resolving to the SAME commit as the tag being released can
+/// never be a range start — `v0.3.0..v0.2.0` spans zero commits no matter how
+/// the two names sort. Name inequality alone lets it through, so the
+/// smartsemver path compares resolved commits and walks on to `v0.1.0`.
+#[test]
+#[serial]
+fn test_smartsemver_skips_candidate_on_the_current_tags_commit() {
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &["v0.1.0"]);
+
+    let run = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+    std::fs::write(dir.join("CHANGE"), "work").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-m", "feat: work"]);
+    // Both tags land on this second commit: a stray higher tag co-located with
+    // the release being cut.
+    run(&["tag", "v0.2.0"]);
+    run(&["tag", "v0.3.0"]);
+
+    let _cwd = CwdGuard::new(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    };
+    let result = find_previous_tag_with_prefix("v0.2.0", Some(&gc), None, None).unwrap();
+    assert_eq!(
+        result,
+        Some("v0.1.0".to_string()),
+        "a tag on the current tag's own commit must not become the range start"
+    );
+}
+
+/// The other direction of the co-located rule: when EVERY candidate sits on
+/// the current tag's commit, the highest is still the answer. A release cut
+/// from an already-tagged commit has no new commits, and answering `None`
+/// would widen the range from "empty" to "the entire history".
+#[test]
+#[serial]
+fn test_smartsemver_keeps_co_located_tag_when_no_other_candidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+    let _cwd = CwdGuard::new(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    };
+    let result = find_previous_tag_with_prefix("v3.0.0", Some(&gc), None, None).unwrap();
+    assert_eq!(
+        result,
+        Some("v2.0.0".to_string()),
+        "an all-co-located candidate set must still yield the tightest bound"
+    );
+}
+
 #[test]
 #[serial]
 fn test_get_all_semver_tags_no_config_unchanged() {

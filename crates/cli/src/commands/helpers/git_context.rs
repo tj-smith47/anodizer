@@ -226,25 +226,19 @@ pub fn resolve_git_context(
                     ));
                     git_info.previous_tag = Some(prev_override);
                 } else {
-                    // Derive the tag-prefix filter from the current crate's
-                    // tag_template (e.g. `v` for cfgd, `csi-v` for cfgd-csi)
-                    // so monorepo-style workspaces don't bleed prior tags
-                    // across crates. Without this, `git describe --tags`
-                    // returns the most recent tag of ANY crate — e.g.
-                    // `cfgd: csi-v0.3.4 -> 0.3.5` ends up in the nix/
-                    // homebrew commit message because csi was the most
-                    // recently tagged sibling. Falls back to the global
-                    // monorepo prefix when the template has no extractable
-                    // prefix.
-                    let crate_prefix = git::extract_tag_prefix(&crate_tag_template);
-                    let prefix = crate_prefix
-                        .as_deref()
-                        .or_else(|| config.monorepo_tag_prefix());
-                    git_info.previous_tag = git::find_previous_tag_with_prefix(
+                    // Scope the look-back to the current crate's tag family
+                    // (e.g. `v` for cfgd, `csi-v` for cfgd-csi) so
+                    // monorepo-style workspaces don't bleed prior tags across
+                    // crates. Without this, `git describe --tags` returns the
+                    // most recent tag of ANY crate — e.g. `cfgd: csi-v0.3.4 ->
+                    // 0.3.5` ends up in the nix/homebrew commit message because
+                    // csi was the most recently tagged sibling.
+                    git_info.previous_tag = git::find_previous_tag_in_family(
                         &tag,
+                        &crate_tag_template,
                         config.git.as_ref(),
                         Some(ctx.template_vars()),
-                        prefix,
+                        config.monorepo_tag_prefix(),
                     )
                     .ok()
                     .flatten();

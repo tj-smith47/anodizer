@@ -60,6 +60,22 @@ fn resolve_scope(
     )
 }
 
+/// Render the resolved commit range for humans: the bounds actually walked
+/// plus the tag family the lower bound was searched in.
+///
+/// The range is the one datum that distinguishes "this release genuinely has no
+/// notable changes" from "the lower bound resolved to the wrong track's tag and
+/// spans zero commits", so both the verbose trace and the empty-changelog
+/// warning quote it.
+fn describe_range(prev: Option<&str>, to: Option<&str>, family: Option<&str>) -> String {
+    let from = prev.unwrap_or("<root>");
+    let to = to.unwrap_or("HEAD");
+    match family {
+        Some(f) => format!("range {from}..{to} (family '{f}')"),
+        None => format!("range {from}..{to}"),
+    }
+}
+
 /// Run the per-crate fetch → filter → sort → group → render pipeline
 /// and return the rendered Markdown for that crate.
 pub(crate) fn render_crate_changelog(
@@ -81,6 +97,8 @@ pub(crate) fn render_crate_changelog(
     // the auto-discovered tag as the range start.
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();
     let current_tag = ctx.template_vars().get("Tag").cloned();
+    let tag_family =
+        anodizer_core::git::tag_family_glob(crate_cfg.resolved_tag_template(), monorepo_prefix);
     let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref())?;
 
     // Source the aggregate's crate dirs + monorepo dir from `.anodizer.yaml` —
@@ -142,6 +160,14 @@ pub(crate) fn render_crate_changelog(
     // the commit walk at `<to>` instead of HEAD. `None` keeps the pending
     // window running to HEAD. Cloned before the `&mut ctx` borrow below.
     let changelog_to = ctx.options.changelog_to.clone();
+    log.verbose(&format!(
+        "crate '{crate_name}': {}",
+        describe_range(
+            prev_tag.as_deref(),
+            changelog_to.as_deref(),
+            tag_family.as_deref()
+        )
+    ));
     let (all_commit_infos, logins_str) = fetch_crate_commits(
         ctx,
         log,
@@ -197,17 +223,20 @@ pub(crate) fn render_crate_changelog(
     // genuinely change-free release, instead of discovering a blank release.
     if crate::render::group_tree_commit_count(&grouped) == 0 {
         log.warn(&format!(
-            "changelog for '{crate_name}' is EMPTY: {}. The release body will \
-             carry no notes — loosen `changelog.filters`/`paths`/`groups`, or \
-             confirm this release has no notable changes.",
+            "changelog for '{crate_name}' is EMPTY: {} in {}. The release body \
+             will carry no notes — check that the range bounds are the ones you \
+             expect, loosen `changelog.filters`/`paths`/`groups`, or confirm \
+             this release has no notable changes.",
             if all_commit_infos.is_empty() {
-                "no commits in the range touched the configured paths".to_string()
+                "no commits touched the configured paths".to_string()
             } else {
-                format!(
-                    "all {} commit(s) in range were filtered out",
-                    all_commit_infos.len()
-                )
-            }
+                format!("all {} commit(s) were filtered out", all_commit_infos.len())
+            },
+            describe_range(
+                prev_tag.as_deref(),
+                changelog_to.as_deref(),
+                tag_family.as_deref()
+            ),
         ));
     }
 

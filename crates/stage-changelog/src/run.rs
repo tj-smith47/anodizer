@@ -389,8 +389,14 @@ pub(crate) fn resolve_prev_tag(
         // tag immediately preceding `current`, so look it back through ancestry
         // rather than collapsing to full history.
         Some(ref t) if !from_is_explicit && current_tag == Some(t.as_str()) && !t.is_empty() => {
-            let prev = anodizer_core::git::find_previous_tag_with_prefix(
+            // Scope the look-back to the SAME family the latest-tag probe above
+            // matched. An unscoped search in a multi-track workspace returns
+            // whatever tag is nearest across every track — including a sibling
+            // track's tag cut from this very commit, which yields a range
+            // spanning zero commits and an empty changelog.
+            let prev = anodizer_core::git::find_previous_tag_in_family(
                 t,
+                crate_cfg.resolved_tag_template(),
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,

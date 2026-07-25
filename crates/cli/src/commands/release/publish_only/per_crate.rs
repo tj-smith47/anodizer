@@ -406,15 +406,12 @@ pub(super) fn apply_per_crate_tag(
     };
     ctx.template_vars_mut().set("Tag", &tag);
 
-    let crate_prefix = anodizer_core::git::extract_tag_prefix(&tag_template);
-    let prefix = crate_prefix
-        .as_deref()
-        .or_else(|| config.monorepo_tag_prefix());
-    match anodizer_core::git::find_previous_tag_with_prefix(
+    match anodizer_core::git::find_previous_tag_in_family(
         &tag,
+        &tag_template,
         config.git.as_ref(),
         Some(ctx.template_vars()),
-        prefix,
+        config.monorepo_tag_prefix(),
     ) {
         Ok(Some(prev)) => ctx.template_vars_mut().set("PreviousTag", &prev),
         Ok(None) => {

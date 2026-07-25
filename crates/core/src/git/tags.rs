@@ -156,17 +156,105 @@ pub fn has_version_placeholder(template: &str) -> bool {
     VERSION_PLACEHOLDERS.iter().any(|p| template.contains(p))
 }
 
+/// Borrowed form of [`extract_tag_prefix`]: the slice of `template` preceding
+/// the first recognised version placeholder.
+fn tag_prefix_slice(template: &str) -> Option<&str> {
+    VERSION_PLACEHOLDERS
+        .iter()
+        .find_map(|ph| template.find(ph).map(|idx| &template[..idx]))
+}
+
 /// Extract the prefix portion of a tag template by locating the version placeholder.
 ///
 /// Returns the substring before the first recognised placeholder, or `None` if no
 /// placeholder is found.
+///
+/// A template that starts with the placeholder (`{{ Version }}`) yields
+/// `Some("")` — a prefix that scopes nothing. Callers scoping a tag *family*
+/// must route through [`find_previous_tag_in_family`] rather than feeding that
+/// empty string to a prefix filter.
 pub fn extract_tag_prefix(template: &str) -> Option<String> {
-    for ph in VERSION_PLACEHOLDERS {
-        if let Some(idx) = template.find(ph) {
-            return Some(template[..idx].to_string());
+    tag_prefix_slice(template).map(str::to_string)
+}
+
+/// The set of tags one `tag_template` mints, as a filter both the git-side
+/// (`--match=<glob>`) and the Rust-side (list + parse) previous-tag paths can
+/// apply.
+///
+/// A literal prefix covers every ordinary template (`v`, `core-v`,
+/// `subproject1/`). It cannot express the bare `{{ Version }}` family: its
+/// extracted prefix is the empty string, which matches every tag in the
+/// repository — including a sibling track's `core-v0.6.0` — and so would
+/// silently un-scope the search it was meant to narrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagFamilyScope<'a> {
+    /// Tags starting with a literal prefix.
+    Prefix(&'a str),
+    /// Tags that are a bare version (`0.6.0`), minted by a template whose
+    /// version placeholder sits at position zero.
+    BareVersion,
+}
+
+impl TagFamilyScope<'_> {
+    /// The glob for `git describe --match=<glob>`.
+    fn describe_glob(&self) -> String {
+        match self {
+            Self::Prefix(p) => format!("{p}*"),
+            Self::BareVersion => "[0-9]*".to_string(),
         }
     }
-    None
+
+    /// Whether `tag` belongs to this family.
+    fn contains(&self, tag: &str) -> bool {
+        match self {
+            Self::Prefix(p) => tag.starts_with(p),
+            Self::BareVersion => tag.starts_with(|c: char| c.is_ascii_digit()),
+        }
+    }
+
+    /// The tag with this family's prefix removed, ready for SemVer parsing.
+    fn strip<'t>(&self, tag: &'t str) -> &'t str {
+        match self {
+            Self::Prefix(p) => strip_monorepo_prefix(tag, p),
+            Self::BareVersion => tag,
+        }
+    }
+}
+
+/// The glob describing the tag family `tag_template` mints — literally the
+/// filter [`find_previous_tag_in_family`] applies, so a diagnostic quoting it
+/// cannot drift from the search that was actually performed. `None` when
+/// nothing scopes the search.
+///
+/// # Examples
+/// ```
+/// # use anodizer_core::git::tag_family_glob;
+/// assert_eq!(tag_family_glob("v{{ .Version }}", None).as_deref(), Some("v*"));
+/// assert_eq!(tag_family_glob("{{ Version }}", None).as_deref(), Some("[0-9]*"));
+/// assert_eq!(tag_family_glob("nightly", None), None);
+/// ```
+pub fn tag_family_glob(tag_template: &str, monorepo_prefix: Option<&str>) -> Option<String> {
+    tag_family_scope(tag_template, monorepo_prefix).map(|s| s.describe_glob())
+}
+
+/// Resolve the family a crate's `tag_template` mints, falling back to the
+/// monorepo namespace when the template carries no usable scope of its own.
+fn tag_family_scope<'a>(
+    tag_template: &'a str,
+    monorepo_prefix: Option<&'a str>,
+) -> Option<TagFamilyScope<'a>> {
+    match tag_prefix_slice(tag_template) {
+        Some(p) if !p.is_empty() => Some(TagFamilyScope::Prefix(p)),
+        // A bare `{{ Version }}` under a monorepo namespace still lives inside
+        // that namespace (`subproject1/0.6.0`), so the namespace is the family.
+        Some(_) => match monorepo_prefix.filter(|p| !p.is_empty()) {
+            Some(p) => Some(TagFamilyScope::Prefix(p)),
+            None => Some(TagFamilyScope::BareVersion),
+        },
+        None => monorepo_prefix
+            .filter(|p| !p.is_empty())
+            .map(TagFamilyScope::Prefix),
+    }
 }
 
 /// The tag-family prefix used for a crate: the prefix extracted from its
@@ -211,9 +299,9 @@ enum IgnoreMatchTarget {
 }
 
 /// Parse `tags_output` lines into `(SemVer, tag)` pairs, applying the shared
-/// monorepo-prefix membership filter, the `ignore_tags` glob filter, the
+/// family membership filter, the `ignore_tags` glob filter, the
 /// `ignore_tag_prefixes` starts-with filter, and SemVer parsing (stripping the
-/// monorepo prefix before parsing). Unsorted — the caller picks ascending vs
+/// family prefix before parsing). Unsorted — the caller picks ascending vs
 /// descending and may layer additional per-site filters (regex match,
 /// current-tag exclusion, prerelease skip).
 ///
@@ -223,29 +311,23 @@ enum IgnoreMatchTarget {
 /// tag (`false`) — preserving each call site's historical behavior.
 fn semver_pairs_filtered(
     tags_output: &str,
-    monorepo_prefix: Option<&str>,
+    scope: Option<TagFamilyScope<'_>>,
     ignore_tag_globs: &[glob::Pattern],
     rendered_ignore_prefixes: &[String],
     ignore_target: IgnoreMatchTarget,
     skip_empty_ignore_prefix: bool,
 ) -> Vec<(SemVer, String)> {
+    let strip = |t: &str| -> String { scope.map(|s| s.strip(t)).unwrap_or(t).to_string() };
     let ignore_view = |t: &str| -> String {
         match ignore_target {
-            IgnoreMatchTarget::Stripped => monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t)
-                .to_string(),
+            IgnoreMatchTarget::Stripped => strip(t),
             IgnoreMatchTarget::Full => t.to_string(),
         }
     };
     tags_output
         .lines()
         .filter(|t| !is_nightly_tag(t))
-        .filter(|t| {
-            monorepo_prefix
-                .map(|pfx| t.starts_with(pfx))
-                .unwrap_or(true)
-        })
+        .filter(|t| scope.map(|s| s.contains(t)).unwrap_or(true))
         .filter(|t| {
             let view = ignore_view(t);
             !ignore_tag_globs.iter().any(|g| g.matches(&view))
@@ -256,14 +338,7 @@ fn semver_pairs_filtered(
                 (!skip_empty_ignore_prefix || !p.is_empty()) && view.starts_with(p.as_str())
             })
         })
-        .filter_map(|t| {
-            let tag_for_parse = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            parse_semver_tag(tag_for_parse)
-                .ok()
-                .map(|v| (v, t.to_string()))
-        })
+        .filter_map(|t| parse_semver_tag(&strip(t)).ok().map(|v| (v, t.to_string())))
         .collect()
 }
 
@@ -403,7 +478,7 @@ pub fn find_latest_tag_matching_with_prefix_in(
     // preserving this site's historical behavior.
     let mut matching: Vec<(SemVer, String)> = semver_pairs_filtered(
         &tags_output,
-        monorepo_prefix,
+        monorepo_prefix.map(TagFamilyScope::Prefix),
         &ignore_tag_globs,
         &rendered_ignore_prefixes,
         IgnoreMatchTarget::Stripped,
@@ -770,15 +845,76 @@ pub fn find_previous_tag_with_prefix_in(
     template_vars: Option<&TemplateVars>,
     monorepo_prefix: Option<&str>,
 ) -> Result<Option<String>> {
+    find_previous_tag_scoped_in(
+        cwd,
+        current_tag,
+        git_config,
+        template_vars,
+        monorepo_prefix.map(TagFamilyScope::Prefix),
+    )
+}
+
+/// Find the tag preceding `current_tag` **inside the tag family that
+/// `tag_template` mints**.
+///
+/// This is the previous-tag counterpart of
+/// [`find_latest_tag_matching_with_prefix`]: both probes must scope to the same
+/// family or the range they bound is not a range at all. In a multi-track
+/// workspace (`v`, `core-v`, `operator-v`, … all in one repository) an unscoped
+/// search returns the nearest tag of ANY track — including a sibling tag on the
+/// very commit being released, which collapses the range to nothing and ships
+/// an empty changelog.
+///
+/// `monorepo_prefix` is the fallback family for templates with no version
+/// placeholder, and the namespace for a bare `{{ Version }}` template.
+pub fn find_previous_tag_in_family(
+    current_tag: &str,
+    tag_template: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
+) -> Result<Option<String>> {
+    find_previous_tag_in_family_in(
+        &std::env::current_dir()?,
+        current_tag,
+        tag_template,
+        git_config,
+        template_vars,
+        monorepo_prefix,
+    )
+}
+
+/// Path-taking sibling of [`find_previous_tag_in_family`].
+pub fn find_previous_tag_in_family_in(
+    cwd: &Path,
+    current_tag: &str,
+    tag_template: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
+) -> Result<Option<String>> {
+    find_previous_tag_scoped_in(
+        cwd,
+        current_tag,
+        git_config,
+        template_vars,
+        tag_family_scope(tag_template, monorepo_prefix),
+    )
+}
+
+/// Shared implementation behind both previous-tag entry points: dispatches to
+/// the `smartsemver` list path or the ancestry-walking `git describe` path,
+/// with `scope` narrowing the candidate set in either.
+fn find_previous_tag_scoped_in(
+    cwd: &Path,
+    current_tag: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    scope: Option<TagFamilyScope<'_>>,
+) -> Result<Option<String>> {
     let tag_sort = git_config.and_then(|gc| gc.tag_sort.as_deref());
     if tag_sort == Some("smartsemver") {
-        return smartsemver_previous_tag_in(
-            cwd,
-            current_tag,
-            git_config,
-            template_vars,
-            monorepo_prefix,
-        );
+        return smartsemver_previous_tag_in(cwd, current_tag, git_config, template_vars, scope);
     }
 
     let parent_ref = format!("{}^", current_tag);
@@ -801,13 +937,12 @@ pub fn find_previous_tag_with_prefix_in(
     // so this path filters the same shapes the list-based paths do.
     exclude_args.extend(nightly_exclude_describe_args());
 
-    // When monorepo_prefix is set, constrain git describe to only consider
-    // tags matching this prefix. Without this, git describe would return
-    // the nearest reachable tag from ANY subproject.
+    // Constrain git describe to the tag family. Without this, git describe
+    // returns the nearest reachable tag from ANY track or subproject.
     let match_arg;
     let mut args: Vec<&str> = vec!["describe", "--tags", "--abbrev=0"];
-    if let Some(prefix) = monorepo_prefix {
-        match_arg = format!("--match={}*", prefix);
+    if let Some(scope) = scope {
+        match_arg = format!("--match={}", scope.describe_glob());
         args.push(&match_arg);
     }
     for ea in &exclude_args {
@@ -829,6 +964,14 @@ pub fn find_previous_tag_with_prefix_in(
 /// `current_tag` is removed regardless of how the SemVer comparison would
 /// rank it so callers always get the *previous* tag, not the input one.
 ///
+/// A candidate resolving to the SAME commit as `current_tag` is demoted below
+/// every other candidate: the flat tag list has no ancestry to lean on, so a
+/// co-located tag (a sibling track's release cut from the same commit, or a
+/// re-tag) would otherwise outrank a genuine predecessor and bound a range
+/// spanning zero commits. It is still returned when no other candidate
+/// survives — that release truly has no new commits, and answering `None`
+/// there would widen the range to the whole history.
+///
 /// **Topology note:** Unlike the legacy `git describe --abbrev=0 <tag>^` path
 /// (which walks commit ancestry), this path picks the SemVer-second-highest
 /// tag from the flat tag list. In repos with branch-and-merge history the two
@@ -838,7 +981,7 @@ fn smartsemver_previous_tag_in(
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
-    monorepo_prefix: Option<&str>,
+    scope: Option<TagFamilyScope<'_>>,
 ) -> Result<Option<String>> {
     let tags_output = git_output_in(cwd, &["tag", "--list"])?;
     if tags_output.is_empty() {
@@ -857,22 +1000,20 @@ fn smartsemver_previous_tag_in(
     // from the candidate list so `v0.2.0` points its changelog at `v0.1.0`
     // rather than `v0.2.0-beta.3`.
     let skip_prereleases = {
-        let tag_for_signal = monorepo_prefix
-            .map(|pfx| strip_monorepo_prefix(current_tag, pfx))
-            .unwrap_or(current_tag);
+        let tag_for_signal = scope.map(|s| s.strip(current_tag)).unwrap_or(current_tag);
         parse_semver_tag(tag_for_signal)
             .map(|sv| !sv.is_prerelease())
             .unwrap_or(false)
     };
 
-    // Shared monorepo-prefix + ignore-glob + ignore-prefix + SemVer-parse
-    // pipeline. Matches ignores against the FULL tag (legacy `git describe
-    // --exclude` parity) and skips empty ignore prefixes. The current-tag
-    // exclusion and prerelease skip are conjunctive, so layering them on the
-    // helper output leaves the final candidate set unchanged.
+    // Shared family + ignore-glob + ignore-prefix + SemVer-parse pipeline.
+    // Matches ignores against the FULL tag (legacy `git describe --exclude`
+    // parity) and skips empty ignore prefixes. The current-tag exclusion and
+    // prerelease skip are conjunctive, so layering them on the helper output
+    // leaves the final candidate set unchanged.
     let mut candidates: Vec<(SemVer, String)> = semver_pairs_filtered(
         &tags_output,
-        monorepo_prefix,
+        scope,
         &ignore_tag_globs,
         &rendered_ignore_prefixes,
         IgnoreMatchTarget::Full,
@@ -884,7 +1025,34 @@ fn smartsemver_previous_tag_in(
     .collect();
 
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(candidates.into_iter().next().map(|(_, tag)| tag))
+
+    // Name inequality is not enough: a tag pointing at the SAME commit as
+    // `current_tag` bounds a zero-commit range whatever it is called, so it
+    // must never shadow a genuine predecessor further down the list. It is
+    // still the right answer when nothing else is left — a release cut from an
+    // already-tagged commit really has no new commits, and widening to `None`
+    // there would dump the entire history into the release notes. Resolving
+    // lazily keeps the common case at one extra `git rev-parse`: the highest
+    // candidate is almost always on an older commit.
+    let current_commit = tag_commit_in(cwd, current_tag);
+    let mut co_located: Option<String> = None;
+    for (_, tag) in candidates {
+        if current_commit.is_some() && tag_commit_in(cwd, &tag) == current_commit {
+            co_located.get_or_insert(tag);
+            continue;
+        }
+        return Ok(Some(tag));
+    }
+    Ok(co_located)
+}
+
+/// The commit a tag resolves to (annotated tags dereferenced), or `None` when
+/// the name does not resolve — a tag deleted between the `--list` and this
+/// lookup is an ordinary answer, not a failure.
+fn tag_commit_in(cwd: &Path, tag: &str) -> Option<String> {
+    rev_parse_verify_in(cwd, &format!("{tag}^{{commit}}"))
+        .ok()
+        .flatten()
 }
 
 /// Return the SHA of the very first commit in the repository.
