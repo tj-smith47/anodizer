@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-25
+
+### Features
+
+* e17cadaef502 delete --allow-rerun and the end-of-pipeline rerun guard ([@tj-smith47](https://github.com/tj-smith47))
+* 1e14cd6cbd79 add convergent reconcile primitive to publisher dispatch ([@tj-smith47](https://github.com/tj-smith47))
+* 68f165e63a1a reconcile npm and pypi against the registry before publishing ([@tj-smith47](https://github.com/tj-smith47))
+* ade869d262b6 reconcile open PRs for every PR-mode manager publisher ([@tj-smith47](https://github.com/tj-smith47))
+* db32ec03ce0f converge partial releases on re-run instead of rolling them back ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 1b4223345f40 never ship a bare or phantom-heading empty changelog on the git/SCM path ([@tj-smith47](https://github.com/tj-smith47))
+* d8eb387e33c8 scope the reconcile probe and stop gating on an already-released version ([@tj-smith47](https://github.com/tj-smith47))
+* 01bbcabae4a9 exempt anodizer's own binstall writes from the clean-tree guard ([@tj-smith47](https://github.com/tj-smith47))
+* af5b4fcef540 record reconcile divergence in the report instead of bubbling Err ([@tj-smith47](https://github.com/tj-smith47))
+* dde0a6abf26a build flip_one octocrab client inside its tokio runtime ([@tj-smith47](https://github.com/tj-smith47))
+* 1a145b0298b6 never let stranded nightly tags drive stable selection or tag resolution ([@tj-smith47](https://github.com/tj-smith47))
+* f2cab118e93a resolve each crate's own version when uploading snaps ([@tj-smith47](https://github.com/tj-smith47))
+* 58bd0731c170 split run.rs god-file into run/ submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 8bdd6b2701df split run.rs god-file into run/ submodules ([@tj-smith47](https://github.com/tj-smith47))
+* ff2387f321cf restore verbatim ROLLBACK_PARALLELISM comment from Wave-4 split ([@tj-smith47](https://github.com/tj-smith47))
+* 20dbfaa7eef7 split artifactory.rs into artifactory/ dir ([@tj-smith47](https://github.com/tj-smith47))
+* fd223598efca split scoop.rs into scoop/ dir ([@tj-smith47](https://github.com/tj-smith47))
+* ef949e6e2c21 split process.rs god-file into process/ submodules ([@tj-smith47](https://github.com/tj-smith47))
+* 2cac8861d91a extract lib.rs god-file into submodules ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.22.2] - 2026-07-20
 
 ### Bug Fixes
@@ -719,7 +747,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.22.1
 [0.20.0]: https://github.com/tj-smith47/anodizer/compare/v0.19.0...v0.20.0
