@@ -1950,6 +1950,59 @@ fn retry_deadline_defaults_to_the_built_in_budget_when_config_omits_retry() {
 }
 
 #[test]
+fn retry_deadline_is_one_value_for_a_whole_publisher_invocation() {
+    // The gap this pins: `retry_deadline` used to mint `now + budget` on every
+    // call, so a publisher resolving it at three seams got three budgets and a
+    // wedged registry could burn `retry.max_elapsed` once per seam. Inside a
+    // `PublisherRetryScope` the deadline is a READ of one anchor, so every seam
+    // sees the same instant no matter how much time passed between them.
+    let mut config = Config::default();
+    config.retry = Some(crate::config::RetryConfig {
+        max_elapsed: Some(crate::config::HumanDuration(
+            std::time::Duration::from_secs(15 * 60),
+        )),
+        ..Default::default()
+    });
+    let ctx = Context::new(config, ContextOptions::default());
+
+    let scope = crate::retry::PublisherRetryScope::enter("cargo");
+    let auth_seam = ctx.retry_deadline().expect("configured budget resolves");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let publish_seam = ctx.retry_deadline().expect("configured budget resolves");
+    let cleanup_seam = {
+        // Even a helper that enters its own scope cannot widen the budget.
+        let _nested = crate::retry::PublisherRetryScope::enter("cargo: cleanup");
+        ctx.retry_deadline().expect("configured budget resolves")
+    };
+    assert_eq!(auth_seam, publish_seam, "two seams, one budget");
+    assert_eq!(auth_seam, cleanup_seam, "a nested scope must not re-anchor");
+
+    // A distinct later invocation (the rollback pass) anchors afresh.
+    drop(scope);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let _rollback = crate::retry::PublisherRetryScope::enter("cargo");
+    let rollback_seam = ctx.retry_deadline().expect("configured budget resolves");
+    assert!(
+        rollback_seam > auth_seam,
+        "a later invocation must get its own budget"
+    );
+}
+
+#[test]
+fn retry_deadline_is_unbounded_when_the_configured_budget_cannot_be_represented() {
+    // An `Instant` overflow used to panic (`Instant + Duration`). A ceiling
+    // that cannot be represented is no ceiling, and `None` is how the retry
+    // engines spell unbounded.
+    let mut config = Config::default();
+    config.retry = Some(crate::config::RetryConfig {
+        max_elapsed: Some(crate::config::HumanDuration(std::time::Duration::MAX)),
+        ..Default::default()
+    });
+    let ctx = Context::new(config, ContextOptions::default());
+    assert_eq!(ctx.retry_deadline(), None);
+}
+
+#[test]
 #[serial_test::serial]
 fn populate_runtime_vars_sets_rustc_version() {
     let config = Config::default();

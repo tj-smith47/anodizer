@@ -1461,6 +1461,7 @@ fn is_already_published_at_retries_5xx_then_succeeds() {
         "foo",
         "1.2.3",
         &fast_retry_policy(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("retries 5xx then parses");
@@ -1469,6 +1470,77 @@ fn is_already_published_at_retries_5xx_then_succeeds() {
         calls.load(Ordering::SeqCst),
         2,
         "one 503 retry then success"
+    );
+}
+
+/// The crates.io index probe is on the convergent re-run path — both
+/// `reconcile()` and the publish loop's already-published guard reach it — so
+/// a wedged index must stop at the invocation's wall-clock budget instead of
+/// stalling the very mechanism that lets a partially-failed release converge.
+#[test]
+fn is_already_published_at_stops_on_an_already_elapsed_deadline() {
+    use std::sync::atomic::Ordering;
+
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+        10
+    ]);
+    // Ten attempts a second apart would take ~9s if the ladder ran to its end;
+    // the sub-second wall time below is what proves the deadline stopped it.
+    let slow_policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 10,
+        base_delay: std::time::Duration::from_secs(1),
+        max_delay: std::time::Duration::from_secs(1),
+    };
+    let url = format!("http://{addr}/3/f/foo");
+    let start = std::time::Instant::now();
+    let err = is_already_published_at(
+        &url,
+        "foo",
+        "1.2.3",
+        &slow_policy,
+        Some(std::time::Instant::now()),
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect_err("a wedged index must surface an error");
+    assert!(format!("{err:#}").contains("503"), "{err:#}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a spent budget must stop the ladder after the first attempt"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "the ladder must not have slept its way through the attempts"
+    );
+}
+
+/// The control: `None` still means unbounded, so bounding the probe did not
+/// silently shorten the attempt ladder for callers with no invocation budget.
+#[test]
+fn is_already_published_at_runs_the_full_ladder_without_a_deadline() {
+    use std::sync::atomic::Ordering;
+
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+        3
+    ]);
+    let url = format!("http://{addr}/3/f/foo");
+    assert!(
+        is_already_published_at(
+            &url,
+            "foo",
+            "1.2.3",
+            &fast_retry_policy(),
+            None,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "no deadline → run the full attempt ladder"
     );
 }
 
@@ -1487,6 +1559,7 @@ fn is_already_published_at_404_maps_to_ok_none() {
         "foo",
         "1.2.3",
         &fast_retry_policy(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("404 is Ok(None)");
@@ -1515,6 +1588,7 @@ fn is_already_published_at_redacts_bearer_in_error_body() {
         "foo",
         "1.2.3",
         &fast_retry_policy(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect_err("401 must fast-fail");
@@ -1551,6 +1625,7 @@ fn skip_on_version_exists_no_cksum_comparison() {
         "myapp",
         "1.2.3",
         &fast_retry_policy(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("index check succeeds");

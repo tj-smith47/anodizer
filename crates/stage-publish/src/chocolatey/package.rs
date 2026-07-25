@@ -7,7 +7,7 @@
 
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result};
 
 /// Content types XML — required by the OPC (Open Packaging Conventions) spec.
@@ -159,16 +159,18 @@ pub(crate) enum FeedHashResult {
 /// pushes go to `push.chocolatey.org`. Map push URLs to the query feed so
 /// the hash lookup works for either form.
 ///
-/// The GET routes through [`retry_http_blocking`] so transient 5xx / 429 /
-/// network failures retry per the user's top-level `retry:` policy. Any
+/// The GET routes through [`retry_http_blocking_deadline`] so transient 5xx /
+/// 429 / network failures retry per the user's top-level `retry:` policy and
+/// stop once `deadline` — the invocation's wall-clock budget — is spent. Any
 /// non-recoverable failure (4xx, retry-exhaustion) maps to
-/// [`FeedHashResult::Absent`] — same conservative "couldn't reach the
-/// feed, fall through to push" behaviour as before.
+/// [`FeedHashResult::Absent`] — the conservative "couldn't reach the feed,
+/// fall through to push" behaviour.
 pub(crate) fn package_feed_hash(
     push_source: &str,
     name: &str,
     version: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> FeedHashResult {
     let query_base = if push_source.contains("push.chocolatey.org") {
@@ -193,9 +195,10 @@ pub(crate) fn package_feed_hash(
         Err(_) => return FeedHashResult::Absent,
     };
 
-    let body = match retry_http_blocking(
+    let body = match retry_http_blocking_deadline(
         RetryLog::new("chocolatey: feed hash lookup", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&url).send(),
         |status, body| {
@@ -764,6 +767,7 @@ mod tests {
             "foo",
             "1.0.0",
             &fast_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         );
         match result {

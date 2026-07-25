@@ -191,6 +191,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             return Ok(ReconcileState::Absent);
         }
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let deadline = ctx.retry_deadline();
         let log = ctx.logger("publish");
         let crate_name = ctx
             .config
@@ -258,6 +259,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                     &url,
                     "reconcile: npm version",
                     &policy,
+                    deadline,
                     &log,
                 ) {
                     Ok(true) => published += 1,
@@ -512,6 +514,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                     &format!("Bearer {token}"),
                     "preflight: npm whoami",
                     &policy,
+                    ctx.retry_deadline(),
                     &ctx.logger("preflight"),
                     &[],
                 ) {
@@ -615,6 +618,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                     &url,
                     "preflight: npm version",
                     &policy,
+                    ctx.retry_deadline(),
                     &ctx.logger("preflight"),
                 ) {
                     acc = merge(

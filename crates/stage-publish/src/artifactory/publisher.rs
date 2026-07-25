@@ -282,6 +282,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
                 &auth,
                 "preflight: artifactory",
                 &policy,
+                ctx.retry_deadline(),
                 &ctx.logger("preflight"),
             );
             acc = merge(

@@ -225,6 +225,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // opted-in displacement push still happens.
         let log = ctx.logger("publish");
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let deadline = ctx.retry_deadline();
         let selected = ctx.options.selected_crates.clone();
         // (crate name, pkg name, feed source, republish opt-in) per active entry.
         let entries: Vec<(
@@ -273,7 +274,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| Ok(ctx.version()),
             )?;
-            match package_feed_hash(source, pkg_name, &version, &policy, &log) {
+            match package_feed_hash(source, pkg_name, &version, &policy, deadline, &log) {
                 FeedHashResult::Present {
                     status,
                     is_approved,
@@ -499,6 +500,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                     feed,
                     &api_key,
                     &policy,
+                    ctx.retry_deadline(),
                     fail,
                     ctx.preflight_is_strict(),
                     &ctx.logger("preflight"),
@@ -561,17 +563,19 @@ enum ChocoKeyProbe {
 /// the whole release. An AMBIGUOUS (indeterminate) read warns by default,
 /// since a reachable-but-cloudy feed is not proof the key is bad; under strict
 /// preflight (`strict`) it is promoted to a blocker (fail-closed).
+#[allow(clippy::too_many_arguments)]
 fn choco_key_check(
     push_url: &str,
     feed: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     fail: crate::publisher_preflight::FailSeverity,
     strict: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
-    match probe_choco_key(push_url, api_key, policy, log) {
+    match probe_choco_key(push_url, api_key, policy, deadline, log) {
         ChocoKeyProbe::Valid => PreflightCheck::Pass,
         ChocoKeyProbe::Rejected => fail.apply(format!(
             "chocolatey API key rejected by {feed} (HTTP 401/403); the push will fail. \
@@ -605,17 +609,19 @@ fn probe_choco_key(
     push_url: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> ChocoKeyProbe {
-    use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking};
+    use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking_deadline};
     let client = match anodizer_core::http::blocking_client(CHOCO_PROBE_TIMEOUT) {
         Ok(c) => c,
         Err(e) => return ChocoKeyProbe::Unreachable(format!("could not build HTTP client: {e}")),
     };
     let key = api_key.to_string();
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         anodizer_core::retry::RetryLog::new("preflight: chocolatey api key", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client

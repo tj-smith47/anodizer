@@ -18,7 +18,8 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{
-    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync_deadline,
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking_deadline,
+    retry_sync_deadline,
 };
 use anyhow::{Context as _, Result, bail};
 
@@ -273,6 +274,7 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     version: &str,
     push_token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     env: &E,
 ) -> Result<bool> {
@@ -285,9 +287,10 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     );
     log.verbose(&format!("probing GET {}", url));
     let scope = format!("gemfury probe for {}@{}", package, version);
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(&scope, log),
         policy,
+        deadline,
         SuccessClass::AllowRedirects,
         |_| client.get(&url).basic_auth(push_token, Some("")).send(),
         |status, body| {
@@ -379,7 +382,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     // case).
     let fury_pkg = fury_package_name(art_name, version);
     if version_already_published(
-        client, account, &fury_pkg, version, push_token, policy, log, env,
+        client, account, &fury_pkg, version, push_token, policy, deadline, log, env,
     )? {
         log.status(&format!(
             "skipped '{}@{}' — already on gemfury account '{}' (idempotent)",
@@ -767,6 +770,7 @@ pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(
     version: &str,
     api_token: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     env: &E,
 ) -> Result<()> {
@@ -779,9 +783,10 @@ pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(
     );
     log.verbose(&format!("DELETE {}", url));
     let scope = format!("gemfury delete for {}@{}", package, version);
-    retry_http_blocking(
+    retry_http_blocking_deadline(
         RetryLog::new(&scope, log),
         policy,
+        deadline,
         SuccessClass::AllowRedirects,
         |_| client.delete(&url).basic_auth(api_token, Some("")).send(),
         |status, body| {

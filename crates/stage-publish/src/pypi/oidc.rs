@@ -78,9 +78,8 @@ pub(crate) fn mint_token_url(repository: &str) -> Option<String> {
 /// absent, the index is not a Trusted-Publishing host, or either hop fails.
 ///
 /// `deadline` is the publish sequence's wall-clock retry budget, resolved once
-/// by the caller and shared by both hops (and by the uploads that follow):
-/// `Context::retry_deadline` re-anchors at `now` on every call, so minting one
-/// per hop would hand a wedged endpoint `retry.max_elapsed` twice over.
+/// by the caller and shared by both hops (and by the uploads that follow), so a
+/// wedged endpoint cannot spend `retry.max_elapsed` once per hop.
 pub(crate) fn mint_trusted_publishing_token(
     ctx: &Context,
     repository: &str,

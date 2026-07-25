@@ -367,6 +367,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                     fail,
                     ctx.preflight_is_strict(),
                     &policy,
+                    ctx.retry_deadline(),
                     &ctx.logger("preflight"),
                 ),
             );

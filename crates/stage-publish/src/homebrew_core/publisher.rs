@@ -762,6 +762,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
             return Ok(ReconcileState::Absent);
         }
         let log = ctx.logger("publish");
+        let deadline = ctx.retry_deadline();
         let version = ctx.version();
         let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
         for cfg in &cfgs {
@@ -791,6 +792,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         Ok(crate::util::reconcile_open_prs(
             &targets,
             &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+            deadline,
             &log,
         ))
     }

@@ -10,8 +10,10 @@ use super::*;
 /// Returns the numeric release ID (Gitea uses integer IDs).
 ///
 /// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
-/// 10s × 5m cap) — every HTTP call routes through [`retry_http_async`] so
-/// 5xx / 429 / network-error responses retry with exponential backoff.
+/// 10s × 5m cap) and `ctx.deadline` the invocation's wall-clock budget — every
+/// HTTP call routes through [`retry_http_async_deadline`] so 5xx / 429 /
+/// network-error responses retry with exponential backoff and stop once the
+/// budget is spent.
 pub(crate) async fn gitea_create_release(
     ctx: &GiteaCtx<'_>,
     spec: &GiteaReleaseSpec<'_>,
@@ -22,7 +24,7 @@ pub(crate) async fn gitea_create_release(
         owner,
         repo,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let GiteaReleaseSpec {
@@ -71,8 +73,7 @@ pub(crate) async fn gitea_create_release(
     }
 
     // Try to find an existing release by listing all releases and matching tag.
-    let existing =
-        find_release_by_tag(client, api, &enc_owner, &enc_repo, tag, policy, log).await?;
+    let existing = find_release_by_tag(ctx, tag).await?;
 
     if let Some((release_id, existing_body)) = existing {
         // Release exists — update it with mode-based body composition.
@@ -91,9 +92,10 @@ pub(crate) async fn gitea_create_release(
             "prerelease": prerelease,
         });
 
-        retry_http_async(
+        retry_http_async_deadline(
             RetryLog::new("gitea: PATCH update release", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| client.patch(&update_url).json(&payload).send(),
             |status, body| {
@@ -118,9 +120,10 @@ pub(crate) async fn gitea_create_release(
             "prerelease": prerelease,
         });
 
-        let resp = retry_http_async(
+        let resp = retry_http_async_deadline(
             RetryLog::new("gitea: POST create release", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
             |status, body| {
@@ -152,16 +155,28 @@ pub(crate) async fn gitea_create_release(
 /// an intentional improvement: the listing paginates rather than truncating;
 /// and only checks the first page of results.
 ///
+/// Coordinates, retry policy and wall-clock budget all come from `ctx`; the
+/// percent-encoded owner/repo path segments are derived here rather than
+/// passed in, so there is one encoding site per call sequence.
+///
 /// Returns `Some((release_id, body))` if found, `None` otherwise.
 pub(crate) async fn find_release_by_tag(
-    client: &Client,
-    api: &str,
-    enc_owner: &str,
-    enc_repo: &str,
+    ctx: &GiteaCtx<'_>,
     tag: &str,
-    policy: &RetryPolicy,
-    log: &anodizer_core::log::StageLogger,
 ) -> Result<Option<(u64, Option<String>)>> {
+    let GiteaCtx {
+        client,
+        api_url,
+        owner,
+        repo,
+        policy,
+        deadline,
+        log,
+    } = *ctx;
+    let api = api_url.trim_end_matches('/');
+    let enc_owner = encode_segment(owner);
+    let enc_repo = encode_segment(repo);
+
     const MAX_PAGES: u32 = 10;
     const PAGE_SIZE: u32 = 50;
 
@@ -171,9 +186,10 @@ pub(crate) async fn find_release_by_tag(
             api, enc_owner, enc_repo, page, PAGE_SIZE
         );
 
-        let resp = retry_http_async(
+        let resp = retry_http_async_deadline(
             RetryLog::new(&format!("gitea: GET releases page {page}"), log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| client.get(&url).send(),
             |status, body| {

@@ -269,6 +269,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // that flow's idempotency independently.
         let log = ctx.logger("publish");
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let deadline = ctx.retry_deadline();
         let selected = ctx.options.selected_crates.clone();
         let crate_names: Vec<String> = ctx
             .config
@@ -343,7 +344,9 @@ impl anodizer_core::Publisher for KrewPublisher {
                 None => return Ok(ReconcileState::Absent),
             }
         }
-        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
+        Ok(crate::util::reconcile_open_prs(
+            &targets, &policy, deadline, &log,
+        ))
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

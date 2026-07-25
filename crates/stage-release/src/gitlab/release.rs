@@ -26,7 +26,7 @@ pub(crate) async fn gitlab_create_release(
         api_url,
         project_id,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let GitlabReleaseSpec {
@@ -70,9 +70,10 @@ pub(crate) async fn gitlab_create_release(
     // Concretely: try the GET; if it 4xx-fast-fails with 403/404, fall
     // through to the create-POST. Anything else propagates.
     let get_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
-    let get_outcome = retry_http_async(
+    let get_outcome = retry_http_async_deadline(
         RetryLog::new("gitlab: GET release by tag", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&get_url).send(),
         |status, body| {
@@ -100,9 +101,10 @@ pub(crate) async fn gitlab_create_release(
                 "description": final_body,
             });
 
-            retry_http_async(
+            retry_http_async_deadline(
                 RetryLog::new("gitlab: PUT update release", log),
                 policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| client.put(&update_url).json(&payload).send(),
                 |status, body| {
@@ -164,9 +166,10 @@ pub(crate) async fn gitlab_create_release(
             "tag_name": tag,
         });
 
-        retry_http_async(
+        retry_http_async_deadline(
             RetryLog::new("gitlab: POST create release", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
             |status, body| {

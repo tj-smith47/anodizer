@@ -1050,6 +1050,7 @@ fn package_feed_hash_absent_when_responder_returns_404() {
         "mytool",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert_eq!(got, FeedHashResult::Absent);
@@ -1072,6 +1073,7 @@ fn package_feed_hash_absent_when_body_lacks_version_marker() {
         "mytool",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert_eq!(got, FeedHashResult::Absent);
@@ -1101,6 +1103,7 @@ fn package_feed_hash_present_with_hash_and_algorithm() {
         "mytool",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     match got {
@@ -1141,6 +1144,7 @@ fn package_feed_hash_present_no_hash() {
         "mytool",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert_eq!(got, FeedHashResult::PresentNoHash);

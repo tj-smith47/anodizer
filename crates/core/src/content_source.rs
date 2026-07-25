@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result};
 use crate::config::ContentSource;
 use crate::context::Context;
 use crate::log::StageLogger;
-use crate::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use crate::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Total per-request deadline. `reqwest::blocking::ClientBuilder` does
@@ -92,15 +92,17 @@ pub fn resolve(
                 .build()
                 .context("build blocking HTTP client for ContentSource::FromUrl")?;
 
-            // `retry_http_blocking` handles 5xx → retry, 4xx → fast-fail, and
-            // transport errors via the shared `is_retriable` classifier.
-            // Body-cap and label-formatting are applied on the returned
+            // `retry_http_blocking_deadline` handles 5xx → retry, 4xx →
+            // fast-fail, and transport errors via the shared `is_retriable`
+            // classifier, and stops once the invocation's wall-clock budget is
+            // spent. Body-cap and label-formatting are applied on the returned
             // body string.
             let label = format!("{kind} from_url {rendered_url}");
             let rendered_url_for_err = rendered_url.clone();
-            let (_status, body) = retry_http_blocking(
+            let (_status, body) = retry_http_blocking_deadline(
                 RetryLog::new(&label, log),
                 &POLICY,
+                ctx.retry_deadline(),
                 SuccessClass::Strict,
                 |_attempt| {
                     let mut req = client.get(&rendered_url);

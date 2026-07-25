@@ -9,7 +9,9 @@
 //! is the honest post-publish verdict.
 
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking};
+use anodizer_core::retry::{
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking_deadline,
+};
 use anyhow::{Context as _, Result};
 
 /// Public Snap Store info API base.
@@ -28,6 +30,7 @@ pub fn snap_version_in_channel_map(
     version: &str,
     channel: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     // Test-harness base override, mirroring the cargo landing probe's env
@@ -38,26 +41,29 @@ pub fn snap_version_in_channel_map(
         Ok(b) if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") => b,
         _ => SNAP_INFO_BASE.to_string(),
     };
-    snap_version_in_channel_map_at(&base, snap, version, channel, policy, log)
+    snap_version_in_channel_map_at(&base, snap, version, channel, policy, deadline, log)
 }
 
 /// [`snap_version_in_channel_map`] against an explicit API base (unit tests
 /// point this at a scripted responder).
+#[allow(clippy::too_many_arguments)]
 fn snap_version_in_channel_map_at(
     base: &str,
     snap: &str,
     version: &str,
     channel: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     let url = format!("{}/v2/snaps/info/{snap}", base.trim_end_matches('/'));
     let client = anodizer_core::http::blocking_client(PROBE_TIMEOUT)
         .context("build HTTP client for snap store probe")?;
     let label = format!("verify-release: query snap store info for '{snap}'");
-    match retry_http_blocking(
+    match retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         // The Snap-Device-Series header is mandatory on this endpoint; 16 is
         // the only series the store has ever defined.

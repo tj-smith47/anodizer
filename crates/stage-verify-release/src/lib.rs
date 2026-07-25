@@ -323,19 +323,26 @@ impl Stage for VerifyReleaseStage {
         let mut landing_probed = 0usize;
         if cfg.landing_checks_enabled() {
             let policy = ctx.retry_policy();
+            // One budget for the whole landing sweep, so a wedged registry
+            // cannot spend `retry.max_elapsed` once per probed crate.
+            let deadline = ctx.retry_deadline();
             let cargo_probe = |name: &str, version: &str| {
-                anodizer_stage_publish::cargo::published_on_crates_io(name, version, &policy, &log)
+                anodizer_stage_publish::cargo::published_on_crates_io(
+                    name, version, &policy, deadline, &log,
+                )
             };
             let npm_probe = |registry: &str, package: &str, version: &str| {
                 anodizer_stage_publish::npm::version_visible_on_registry(
-                    registry, package, version, &policy, &log,
+                    registry, package, version, &policy, deadline, &log,
                 )
             };
             let blob_probe = |t: &anodizer_core::publish_evidence::BlobTargetSnapshot| {
                 anodizer_stage_blob::blob_object_exists(ctx, t)
             };
             let snap_probe = |snap: &str, version: &str, channel: Option<&str>| {
-                snap_store::snap_version_in_channel_map(snap, version, channel, &policy, &log)
+                snap_store::snap_version_in_channel_map(
+                    snap, version, channel, &policy, deadline, &log,
+                )
             };
             let probes = LandingProbes {
                 cargo_index: &cargo_probe,

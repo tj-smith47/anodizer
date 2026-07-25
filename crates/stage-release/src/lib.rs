@@ -107,18 +107,20 @@ pub(crate) fn classify_asset_conflict(
 ///
 /// # Layering note
 ///
-/// As of P1.4, gitlab/gitea publishers themselves call `retry_http_async`
+/// The gitlab/gitea publishers themselves call `retry_http_async_deadline`
 /// internally with the user's `Config.retry` policy. Wrapping those
 /// already-retrying calls in `retry_upload` (here) produces nested-retry
 /// behavior: the inner helper exhausts its policy first, then this outer
-/// loop retries up to its own 10 attempts. The total worst-case latency
-/// grows accordingly. This is intentional — the per-publisher inner
-/// policy gives the user a configurable surface that didn't exist before,
-/// and the outer loop stays as the safety net.
+/// loop retries up to its own 10 attempts. This is intentional — the
+/// per-publisher inner policy gives the user a configurable surface, and the
+/// outer loop stays as the safety net — but the two ladders MULTIPLY, so
+/// `deadline` (the invocation's wall-clock budget, the same value the inner
+/// calls thread) bounds the product. Without it a wedged forge would spend
+/// the inner ladder ten times over.
 ///
 /// # Classifier alignment with the inner helpers
 ///
-/// The inner `retry_http_async` already classifies via [`is_retriable`]
+/// The inner `retry_http_async_deadline` already classifies via [`is_retriable`]
 /// (5xx / 429 / network-substring → retry, 4xx → fast-fail). The outer
 /// loop here MUST honor the same classification: blindly retrying every
 /// `Err` would amplify a 4xx fast-fail by 10×, defeating the inner's
@@ -127,6 +129,7 @@ pub(crate) fn classify_asset_conflict(
 /// the intended retry envelope.
 pub(crate) async fn retry_upload<F, Fut>(
     operation_name: &str,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
     mut f: F,
 ) -> Result<()>
@@ -134,11 +137,12 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_async};
+    use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_async_deadline};
     use std::ops::ControlFlow;
-    retry_async(
+    retry_async_deadline(
         RetryLog::new(operation_name, log),
         &RetryPolicy::UPLOAD,
+        deadline,
         |_attempt| {
             let fut = f();
             async move {

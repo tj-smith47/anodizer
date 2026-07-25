@@ -140,11 +140,15 @@ pub(super) fn run_with_logger(
         // seconds-to-minutes, not burn a full ~25-minute backoff budget per
         // crate first.
         let probe_policy = anodizer_core::retry::RetryPolicy::GUARD_PROBE;
+        // No wall-clock deadline: there is no release Context here to resolve a
+        // budget from, and GUARD_PROBE's own 3-attempt / 30s-cap ladder already
+        // bounds each probe to roughly a minute.
         let index_probe = |name: &str, version: &str| {
             anodizer_stage_publish::cargo::published_on_crates_io(
                 name,
                 version,
                 &probe_policy,
+                None,
                 &log,
             )
         };
@@ -154,6 +158,7 @@ pub(super) fn run_with_logger(
                 package,
                 version,
                 &probe_policy,
+                None,
                 &log,
             )
         };
@@ -163,6 +168,7 @@ pub(super) fn run_with_logger(
                 project,
                 version,
                 &probe_policy,
+                None,
                 &log,
             )
         };

@@ -47,6 +47,7 @@ pub fn version_visible_on_registry(
     package: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> anyhow::Result<bool> {
     let url = format!(
@@ -55,7 +56,13 @@ pub fn version_visible_on_registry(
         publish::encode_package_path(package),
         version,
     );
-    crate::publisher_preflight::probe_version_landing(&url, "npm landing probe", policy, log)
+    crate::publisher_preflight::probe_version_landing(
+        &url,
+        "npm landing probe",
+        policy,
+        deadline,
+        log,
+    )
 }
 
 /// Context-free entry crate name for the top-level `npms:` block: the primary
@@ -166,6 +173,7 @@ mod version_visible_tests {
                 "@scope/app",
                 "1.2.3",
                 &policy(),
+                None,
                 &logger(),
             )
             .unwrap()
@@ -268,6 +276,7 @@ mod version_visible_tests {
                 "app",
                 "9.9.9",
                 &policy(),
+                None,
                 &logger(),
             )
             .unwrap()

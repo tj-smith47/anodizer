@@ -2169,6 +2169,7 @@ fn pypi_version_live_reports_true_on_simple_index_hit() {
             "my-tool",
             "1.2.3",
             &probe_policy(),
+            None,
             &probe_logger(),
         )
         .expect("reachable index resolves")
@@ -2195,6 +2196,7 @@ fn pypi_version_live_normalizes_prerelease_to_pep440() {
             "my-tool",
             "1.2.3-rc.1",
             &probe_policy(),
+            None,
             &probe_logger(),
         )
         .expect("reachable index resolves")
@@ -2218,6 +2220,7 @@ fn pypi_version_live_reports_false_when_absent_from_simple_index() {
             "my-tool",
             "1.2.3",
             &probe_policy(),
+            None,
             &probe_logger(),
         )
         .expect("reachable index resolves")
@@ -2235,6 +2238,7 @@ fn pypi_version_live_fails_closed_when_unreachable() {
         "my-tool",
         "1.2.3",
         &probe_policy(),
+        None,
         &probe_logger(),
     );
     assert!(

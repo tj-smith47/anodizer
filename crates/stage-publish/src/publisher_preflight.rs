@@ -32,7 +32,9 @@ use anodizer_core::context::Context;
 use anodizer_core::http::blocking_client;
 use anodizer_core::redact::redact_bearer_tokens;
 
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking};
+use anodizer_core::retry::{
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking_deadline,
+};
 
 /// Per-probe HTTP timeout. Generous enough to tolerate a cold TLS handshake to
 /// crates.io / npm / the GitHub API, short enough that a wedged endpoint cannot
@@ -81,11 +83,13 @@ pub(crate) enum TokenAuth {
 /// cookie-only or out-of-scope route with a distinct message, while an unknown
 /// token gets `authentication failed`. Callers with no such registry semantics
 /// pass `&[]` and keep the plain 401/403 ⇒ Invalid contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn probe_token_auth(
     url: &str,
     authorization: &str,
     label: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
     authenticated_denials: &[&str],
 ) -> TokenAuth {
@@ -94,9 +98,10 @@ pub(crate) fn probe_token_auth(
         Err(e) => return TokenAuth::Indeterminate(format!("could not build HTTP client: {e}")),
     };
     let auth = authorization.to_string();
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client
@@ -137,15 +142,17 @@ pub(crate) fn probe_version_published(
     url: &str,
     label: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> bool {
     let client = match blocking_client(PROBE_TIMEOUT) {
         Ok(c) => c,
         Err(_) => return false,
     };
-    retry_http_blocking(
+    retry_http_blocking_deadline(
         RetryLog::new(label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(url).send(),
         |status, body| format!("{status}: {}", redact_bearer_tokens(body)),
@@ -170,13 +177,15 @@ pub(crate) fn probe_version_landing(
     url: &str,
     label: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> anyhow::Result<bool> {
     use anyhow::Context as _;
     let client = blocking_client(PROBE_TIMEOUT).context("build HTTP client for landing probe")?;
-    match retry_http_blocking(
+    match retry_http_blocking_deadline(
         RetryLog::new(label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(url).send(),
         |status, body| format!("{status}: {}", redact_bearer_tokens(body)),
@@ -285,6 +294,7 @@ pub(crate) enum EndpointStatus {
 /// outcome into an [`EndpointStatus`]. `client` is supplied by the caller so an
 /// mTLS / custom-CA publisher probes through the same client its publish path
 /// uses; `url` is passed in full so a unit test can point at a local responder.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn classify_http_endpoint(
     client: &reqwest::blocking::Client,
     method: ProbeMethod,
@@ -292,11 +302,13 @@ pub(crate) fn classify_http_endpoint(
     auth: &ProbeAuth,
     label: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> EndpointStatus {
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(label, log),
         policy,
+        deadline,
         // A base-URL HEAD/GET may legitimately 301/302 to a canonical path;
         // a redirect proves reachability, not an auth failure.
         SuccessClass::AllowRedirects,
@@ -354,9 +366,10 @@ pub(crate) fn probe_http_endpoint(
     fail: FailSeverity,
     strict: bool,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
-    match classify_http_endpoint(client, method, url, auth, label, policy, log) {
+    match classify_http_endpoint(client, method, url, auth, label, policy, deadline, log) {
         EndpointStatus::Reachable => PreflightCheck::Pass,
         EndpointStatus::AuthRejected => fail.apply(format!(
             "{label}: endpoint {url} rejected the configured credentials (HTTP 401/403); \
@@ -411,23 +424,37 @@ pub(crate) fn reachability_outcome(
     }
 }
 
+/// One GitHub repo push-probe: the coordinates, the credential, and the
+/// retry budget (attempt ladder plus the invocation's wall-clock deadline)
+/// the probe must stay inside.
+///
+/// Bundled rather than passed loose because both the base-resolving
+/// [`github_repo_check`] and the `url`-taking [`github_repo_check_at`] need
+/// the identical set, and every field is read by the outcome messages.
+#[derive(Clone, Copy)]
+pub(crate) struct GithubRepoProbe<'a> {
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub token: Option<&'a str>,
+    pub policy: &'a RetryPolicy,
+    pub deadline: Option<std::time::Instant>,
+    /// Strict preflight promotes every indeterminate outcome to a blocker.
+    pub strict: bool,
+}
+
 /// Probe `GET {api_base}/repos/{owner}/{repo}` to prove the target
 /// index/fork repo exists and `token` can push to it, resolving the base
 /// through [`anodizer_core::http::github_api_base`] — the same resolver the
 /// publish path's PR/branch lookups use, so one override redirects the whole
 /// run. See [`github_repo_check_at`] for the outcome mapping.
 pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
-    owner: &str,
-    repo: &str,
-    token: Option<&str>,
-    policy: &RetryPolicy,
-    strict: bool,
+    probe: &GithubRepoProbe<'_>,
     env: &E,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
     let base = anodizer_core::http::github_api_base(env);
-    let url = format!("{base}/repos/{owner}/{repo}");
-    github_repo_check_at(&url, owner, repo, token, policy, strict, log)
+    let url = format!("{base}/repos/{}/{}", probe.owner, probe.repo);
+    github_repo_check_at(&url, probe, log)
 }
 
 /// `url`-taking core of [`github_repo_check`] so a unit test can drive the
@@ -451,19 +478,24 @@ pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
 /// it is this caller's definitive optional-surface severity.
 pub(crate) fn github_repo_check_at(
     url: &str,
-    owner: &str,
-    repo: &str,
-    token: Option<&str>,
-    policy: &RetryPolicy,
-    strict: bool,
+    probe: &GithubRepoProbe<'_>,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
+    let GithubRepoProbe {
+        owner,
+        repo,
+        token,
+        policy,
+        deadline,
+        strict,
+    } = *probe;
     anodizer_core::git::github_repo_push_check(
         url,
         owner,
         repo,
         token,
         policy,
+        deadline,
         anodizer_core::git::RepoAccessOutcomes {
             // A tap/index the token cannot push to only degrades this one
             // publisher, so warn rather than block the whole release.
@@ -515,11 +547,14 @@ pub(crate) fn github_repo_config_check(
     }
     let token = crate::util::resolve_repo_token(ctx, repo, Some(preferred_env));
     github_repo_check(
-        &owner,
-        &name,
-        token.as_deref(),
-        policy,
-        ctx.preflight_is_strict(),
+        &GithubRepoProbe {
+            owner: &owner,
+            repo: &name,
+            token: token.as_deref(),
+            policy,
+            deadline: ctx.retry_deadline(),
+            strict: ctx.preflight_is_strict(),
+        },
         ctx.env_source(),
         &ctx.logger("preflight"),
     )
@@ -659,6 +694,7 @@ mod tests {
                 "Bearer t",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &[],
             ),
@@ -678,6 +714,7 @@ mod tests {
                 "Bearer bad",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &[],
             ),
@@ -697,6 +734,7 @@ mod tests {
                 "raw-token",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &[],
             ),
@@ -720,6 +758,7 @@ mod tests {
                 "raw-token",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &["this action can only be performed on the crates.io website"],
             ),
@@ -743,6 +782,7 @@ mod tests {
                 "raw-token",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &["this action can only be performed on the crates.io website"],
             ),
@@ -763,6 +803,7 @@ mod tests {
                 "Bearer t",
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
                 &[],
             ),
@@ -780,6 +821,7 @@ mod tests {
             &url,
             "test",
             &fast_retry(),
+            None,
             anodizer_core::test_helpers::test_logger()
         ));
     }
@@ -794,6 +836,7 @@ mod tests {
             &url,
             "test",
             &fast_retry(),
+            None,
             anodizer_core::test_helpers::test_logger()
         ));
     }
@@ -807,11 +850,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Pass
@@ -830,11 +876,14 @@ mod tests {
             .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
         assert!(matches!(
             github_repo_check(
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 &env,
                 anodizer_core::test_helpers::test_logger(),
             ),
@@ -855,11 +904,14 @@ mod tests {
         let url = format!("http://{addr}/repos/o/r");
         match github_repo_check_at(
             &url,
-            "o",
-            "r",
-            Some("tok"),
-            &fast_retry(),
-            false,
+            &GithubRepoProbe {
+                owner: "o",
+                repo: "r",
+                token: Some("tok"),
+                policy: &fast_retry(),
+                deadline: None,
+                strict: false,
+            },
             anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Warning(m) => assert!(m.contains("cannot push"), "{m}"),
@@ -876,11 +928,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                None,
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: None,
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -895,11 +950,14 @@ mod tests {
         let url = format!("http://{addr}/repos/o/missing");
         match github_repo_check_at(
             &url,
-            "o",
-            "missing",
-            Some("tok"),
-            &fast_retry(),
-            false,
+            &GithubRepoProbe {
+                owner: "o",
+                repo: "missing",
+                token: Some("tok"),
+                policy: &fast_retry(),
+                deadline: None,
+                strict: false,
+            },
             anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
@@ -916,11 +974,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Blocker(_)
@@ -948,12 +1009,15 @@ mod tests {
             matches!(
                 github_repo_check_at(
                     &url,
-                    "o",
-                    "r",
-                    Some("tok"),
-                    &fast_retry(),
-                    false,
-                    anodizer_core::test_helpers::test_logger()
+                    &GithubRepoProbe {
+                        owner: "o",
+                        repo: "r",
+                        token: Some("tok"),
+                        policy: &fast_retry(),
+                        deadline: None,
+                        strict: false,
+                    },
+                    anodizer_core::test_helpers::test_logger(),
                 ),
                 PreflightCheck::Warning(_)
             ),
@@ -970,11 +1034,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -990,11 +1057,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -1033,11 +1103,14 @@ mod tests {
         assert!(matches!(
             github_repo_check_at(
                 &url,
-                "o",
-                "r",
-                Some("tok"),
-                &fast_retry(),
-                false,
+                &GithubRepoProbe {
+                    owner: "o",
+                    repo: "r",
+                    token: Some("tok"),
+                    policy: &fast_retry(),
+                    deadline: None,
+                    strict: false,
+                },
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -1058,6 +1131,7 @@ mod tests {
                 &ProbeAuth::Token("t".into()),
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::Reachable
@@ -1082,6 +1156,7 @@ mod tests {
                 },
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::AuthRejected
@@ -1103,6 +1178,7 @@ mod tests {
                 &ProbeAuth::None,
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::NotFound
@@ -1124,6 +1200,7 @@ mod tests {
                 &ProbeAuth::None,
                 "test",
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             EndpointStatus::Unreachable(_)
@@ -1146,6 +1223,7 @@ mod tests {
             FailSeverity::Blocker,
             false,
             &fast_retry(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
@@ -1170,6 +1248,7 @@ mod tests {
                 FailSeverity::Warning,
                 false,
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -1249,6 +1328,7 @@ mod tests {
                 FailSeverity::Warning,
                 strict,
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             );
             match (want_blocker, out) {
@@ -1278,6 +1358,7 @@ mod tests {
                 FailSeverity::Warning,
                 true,
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Warning(_)
@@ -1302,6 +1383,7 @@ mod tests {
                 FailSeverity::Warning,
                 false,
                 &fast_retry(),
+                None,
                 anodizer_core::test_helpers::test_logger(),
             ),
             PreflightCheck::Pass

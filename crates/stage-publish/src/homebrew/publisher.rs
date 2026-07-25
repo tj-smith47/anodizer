@@ -483,6 +483,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         }
         let log = ctx.logger("publish");
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let deadline = ctx.retry_deadline();
         let selected = &ctx.options.selected_crates;
         let crate_names: Vec<String> = ctx
             .config
@@ -540,7 +541,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 None => return Ok(ReconcileState::Absent),
             }
         }
-        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
+        Ok(crate::util::reconcile_open_prs(
+            &targets, &policy, deadline, &log,
+        ))
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

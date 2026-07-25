@@ -2,7 +2,7 @@ use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result, anyhow, bail};
 
 /// Serialized shape of a recorded DockerHub PATCH. One entry per
@@ -60,9 +60,10 @@ fn dockerhub_api_base<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
 /// Resolve the full description content from either a local file or a URL.
 /// `from_file` takes precedence over `from_url` when both are set.
 ///
-/// The `from_url` branch routes through [`retry_http_blocking`] so transient
-/// 5xx / 429 / network failures retry per the user's top-level `retry:`
-/// policy; 4xx fast-fails so a typo'd URL surfaces immediately.
+/// The `from_url` branch routes through [`retry_http_blocking_deadline`] so
+/// transient 5xx / 429 / network failures retry per the user's top-level
+/// `retry:` policy and stop once the invocation's wall-clock budget is spent;
+/// 4xx fast-fails so a typo'd URL surfaces immediately.
 ///
 /// Both `from_file.path` and `from_url.url` are template-rendered through
 /// `ctx` before use so configs like
@@ -95,9 +96,10 @@ pub fn resolve_full_description(
         })?;
         let headers = from_url.headers.clone();
         let label = format!("dockerhub: fetch full_description from {}", url);
-        let (_, body) = retry_http_blocking(
+        let (_, body) = retry_http_blocking_deadline(
             RetryLog::new(&label, log),
             policy,
+            ctx.retry_deadline(),
             SuccessClass::Strict,
             |_| {
                 let mut req = client.get(&url);
@@ -217,6 +219,10 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every entry's full_description fetch, login, and PATCH.
     let policy = ctx.retry_policy();
+    // One wall-clock budget for the whole dockerhub publish: the login, every
+    // pre-PATCH snapshot GET and every PATCH share it, so a wedged API cannot
+    // spend `retry.max_elapsed` once per request.
+    let deadline = ctx.retry_deadline();
 
     let api_base = dockerhub_api_base(ctx.env_source());
 
@@ -393,9 +399,10 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 "password": password,
             });
 
-            let (_, login_body_text) = retry_http_blocking(
+            let (_, login_body_text) = retry_http_blocking_deadline(
                 RetryLog::new("dockerhub: authenticate", log),
                 &policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| {
                     client
@@ -443,9 +450,10 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             // cannot read it we cannot honor rollback, and proceeding
             // would silently degrade the rollback contract.
             let snapshot_label = format!("dockerhub: GET snapshot for {}", image);
-            let (_, snapshot_body) = retry_http_blocking(
+            let (_, snapshot_body) = retry_http_blocking_deadline(
                 RetryLog::new(&snapshot_label, log),
                 &policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| client.get(&repo_url).bearer_auth(token).send(),
                 |status, body| {
@@ -510,9 +518,10 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             }
 
             let label = format!("dockerhub: PATCH {}", image);
-            retry_http_blocking(
+            retry_http_blocking_deadline(
                 RetryLog::new(&label, log),
                 &policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| {
                     client
@@ -563,6 +572,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
     client: &reqwest::blocking::Client,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     target: &DockerhubTarget,
     env: &E,
     log: &StageLogger,
@@ -597,9 +607,10 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
         "password": password,
     });
     let login_url = format!("{}/v2/users/login/", dockerhub_api_base(env));
-    let (_, login_body_text) = retry_http_blocking(
+    let (_, login_body_text) = retry_http_blocking_deadline(
         RetryLog::new("dockerhub: rollback authenticate", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.post(&login_url).json(&login_body).send(),
         |status, body| {
@@ -616,9 +627,10 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
         .ok_or_else(|| anyhow!("dockerhub: no token in rollback login response"))?;
 
     let label = format!("dockerhub: rollback PATCH {}", target.target);
-    retry_http_blocking(
+    retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| {
             client
@@ -805,12 +817,13 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             }
         };
         let policy = ctx.retry_policy();
+        let deadline = ctx.retry_deadline();
         let env = ctx.env_source();
 
         let mut restored = 0usize;
         let mut failed = 0usize;
         for t in &targets {
-            match restore_dockerhub_target_with_env(&client, &policy, t, env, &log) {
+            match restore_dockerhub_target_with_env(&client, &policy, deadline, t, env, &log) {
                 Ok(()) => {
                     restored += 1;
                     log.status(&format!(
@@ -926,6 +939,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                     fail,
                     ctx.preflight_is_strict(),
                     &policy,
+                    ctx.retry_deadline(),
                     &ctx.logger("preflight"),
                 ),
             );
@@ -2530,6 +2544,7 @@ mod live_http_tests {
         restore_dockerhub_target_with_env(
             &client,
             &policy,
+            None,
             &target,
             &env,
             anodizer_core::test_helpers::test_logger(),
@@ -2585,6 +2600,7 @@ mod live_http_tests {
         let err = restore_dockerhub_target_with_env(
             &client,
             &policy,
+            None,
             &target,
             &env,
             anodizer_core::test_helpers::test_logger(),
@@ -3006,6 +3022,7 @@ mod publisher_tests {
         restore_dockerhub_target_with_env(
             &client,
             &policy,
+            None,
             &t,
             &env,
             anodizer_core::test_helpers::test_logger(),
@@ -3043,6 +3060,7 @@ mod publisher_tests {
         let err = restore_dockerhub_target_with_env(
             &client,
             &policy,
+            None,
             &t,
             &env,
             anodizer_core::test_helpers::test_logger(),

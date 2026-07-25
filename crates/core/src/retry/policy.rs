@@ -270,6 +270,81 @@ impl Drop for RetryScope {
     }
 }
 
+thread_local! {
+    /// Wall-clock anchor of the publisher invocation in progress on THIS
+    /// thread, installed by [`PublisherRetryScope`] and read by
+    /// [`crate::Context::retry_deadline`], which adds the configured
+    /// `retry.max_elapsed` to it.
+    ///
+    /// Thread-local, unlike the process-global [`CURRENT_SCOPE`] next to it,
+    /// and the difference is deliberate. Backoff attribution has to be global
+    /// because the sleeps it counts happen in worker threads a publisher fans
+    /// out to. The budget anchor has the opposite constraint: it is read only
+    /// through `&Context`, which a publisher receives as `&mut` on the
+    /// dispatching thread and never shares, so the anchor is read on exactly
+    /// the thread that installed it. Keeping it per-thread makes the guard's
+    /// save/restore genuinely LIFO — a process-global cell could be entered by
+    /// two threads at once and have the outer guard's drop strand the inner
+    /// one's anchor, wedging every later deadline into the already-elapsed past.
+    static CURRENT_BUDGET_ANCHOR: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The wall-clock anchor of the enclosing [`PublisherRetryScope`], or `None`
+/// outside one (a stage-level caller, or a unit test calling a publisher
+/// helper directly).
+pub fn current_budget_anchor() -> Option<std::time::Instant> {
+    CURRENT_BUDGET_ANCHOR.with(std::cell::Cell::get)
+}
+
+/// RAII scope for ONE [`crate::Publisher`] invocation: it installs the backoff
+/// attribution label (a [`RetryScope`]) and anchors the wall-clock retry budget
+/// that [`crate::Context::retry_deadline`] reports for the whole invocation.
+///
+/// Install exactly one at every seam that calls into a publisher —
+/// `run`, `reconcile`, `rollback`, `preflight`. The budget belongs to the
+/// invocation, not to the call that happens to ask for it: a publisher that
+/// resolves the deadline at three seams (an auth exchange, the publish request,
+/// a cleanup) gets one budget covering all three, so a wedged registry cannot
+/// spend `retry.max_elapsed` once per seam.
+///
+/// Entering while a budget is already open INHERITS it rather than replacing
+/// it, so nothing reachable from inside a publisher — including a nested guard
+/// of this same type — can widen the invocation's budget. A later, genuinely
+/// distinct invocation (the rollback pass after `run` returned) enters its own
+/// guard once the previous one has dropped, and correctly gets a fresh budget.
+#[must_use = "the budget only applies while the guard is alive"]
+pub struct PublisherRetryScope {
+    _label: RetryScope,
+    prev_anchor: Option<std::time::Instant>,
+}
+
+impl PublisherRetryScope {
+    /// Enter the retry scope for a publisher invocation labelled `name`,
+    /// anchoring its wall-clock budget at now (or inheriting the enclosing
+    /// one, if this call is already inside a publisher invocation).
+    pub fn enter(name: impl Into<String>) -> Self {
+        let label = RetryScope::enter(name);
+        let prev_anchor = CURRENT_BUDGET_ANCHOR.with(|cell| {
+            let prev = cell.get();
+            if prev.is_none() {
+                cell.set(Some(std::time::Instant::now()));
+            }
+            prev
+        });
+        PublisherRetryScope {
+            _label: label,
+            prev_anchor,
+        }
+    }
+}
+
+impl Drop for PublisherRetryScope {
+    fn drop(&mut self) {
+        CURRENT_BUDGET_ANCHOR.with(|cell| cell.set(self.prev_anchor));
+    }
+}
+
 /// Record a backoff sleep of `d` against this run's total and the active scope.
 /// Callers that sleep for retry should prefer [`sleep_backoff_blocking`] /
 /// [`sleep_backoff_async`] (which record and sleep together); use this directly

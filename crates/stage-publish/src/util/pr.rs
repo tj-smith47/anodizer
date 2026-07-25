@@ -541,6 +541,7 @@ pub(crate) struct PrReconcileTarget {
 pub(crate) fn reconcile_open_prs(
     targets: &[PrReconcileTarget],
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> anodizer_core::ReconcileState {
     use crate::preflight::{OpenPrLookup, OpenPrQuery, query_open_version_pr};
@@ -559,7 +560,7 @@ pub(crate) fn reconcile_open_prs(
             package: &t.package,
             version: &t.version,
         };
-        match query_open_version_pr(&query, t.token.as_deref(), policy, log) {
+        match query_open_version_pr(&query, t.token.as_deref(), policy, deadline, log) {
             Ok(OpenPrLookup::Found(url)) => {
                 notes.push(format!("open PR for {} {}: {url}", t.package, t.version));
             }

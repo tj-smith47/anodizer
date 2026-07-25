@@ -82,7 +82,7 @@ pub(super) fn run_cargo_publish_simulation(
     }
 
     let policy = RetryPolicy::PREFLIGHT;
-    let checker = factory.cargo(policy);
+    let checker = factory.cargo(policy, ctx.retry_deadline());
     let index_query = |krate: &str, version: &str| checker.check(krate, version, log);
 
     run_cargo_publish_simulation_with(ctx, log, report, &index_query, dry_run_runner);
@@ -571,7 +571,11 @@ pub(super) fn run_publisher_preflight_extension(
         if !live_publisher_preflight {
             continue;
         }
-        match p.preflight(ctx) {
+        let checked = {
+            let _scope = anodizer_core::retry::PublisherRetryScope::enter(p.name());
+            p.preflight(ctx)
+        };
+        match checked {
             Ok(anodizer_core::PreflightCheck::Pass) => {}
             Ok(anodizer_core::PreflightCheck::Warning(msg)) => {
                 report.warnings.push(format!("{}: {}", p.name(), msg));

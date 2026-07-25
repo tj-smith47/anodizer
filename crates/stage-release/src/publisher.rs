@@ -393,6 +393,7 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
                 &repo,
                 &token,
                 &policy,
+                ctx.retry_deadline(),
                 ctx.config.github_urls.as_ref(),
                 ctx.preflight_is_strict(),
                 ctx.env_source(),
@@ -414,6 +415,7 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
     strict: bool,
     env: &E,
@@ -421,7 +423,7 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
 ) -> anodizer_core::PreflightCheck {
     let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
     let url = format!("{base}/repos/{owner}/{repo}");
-    repo_push_check_at(&url, owner, repo, token, policy, strict, log)
+    repo_push_check_at(&url, owner, repo, token, policy, deadline, strict, log)
 }
 
 /// `url`-taking core of [`repo_push_check`] so a unit test can drive the
@@ -441,12 +443,14 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
 ///   strict preflight)
 /// * 5xx / transport failure / unexpected status ⇒ Warning (Blocker under
 ///   strict preflight)
+#[allow(clippy::too_many_arguments)]
 fn repo_push_check_at(
     url: &str,
     owner: &str,
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     strict: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
@@ -457,6 +461,7 @@ fn repo_push_check_at(
         repo,
         Some(token),
         policy,
+        deadline,
         anodizer_core::git::RepoAccessOutcomes {
             push_denied: PreflightCheck::Blocker(format!(
                 "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
@@ -954,6 +959,7 @@ mod publisher_tests {
                 "widget",
                 "tok",
                 &one_attempt_policy(),
+                None,
                 false,
                 tlog()
             ),
@@ -973,6 +979,7 @@ mod publisher_tests {
             "widget",
             "tok",
             &one_attempt_policy(),
+            None,
             false,
             tlog(),
         ) {
@@ -997,6 +1004,7 @@ mod publisher_tests {
                 "widget",
                 "tok",
                 &one_attempt_policy(),
+                None,
                 None,
                 false,
                 &env,
@@ -1029,6 +1037,7 @@ mod publisher_tests {
                 "widget",
                 "tok",
                 &one_attempt_policy(),
+                None,
                 Some(&urls),
                 false,
                 &anodizer_core::MapEnvSource::new(),
@@ -1055,6 +1064,7 @@ mod publisher_tests {
             "widget",
             "bad",
             &one_attempt_policy(),
+            None,
             false,
             tlog(),
         ) {
@@ -1091,6 +1101,7 @@ mod publisher_tests {
             "widget",
             "tok",
             &one_attempt_policy(),
+            None,
             false,
             tlog(),
         ) {
@@ -1113,6 +1124,7 @@ mod publisher_tests {
             "widget",
             "tok",
             &one_attempt_policy(),
+            None,
             false,
             tlog(),
         ) {

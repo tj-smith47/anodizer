@@ -89,7 +89,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
         owner,
         repo,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
@@ -102,9 +102,10 @@ pub(crate) async fn gitea_delete_asset_by_name(
         api, enc_owner, enc_repo, release_id
     );
 
-    let resp = retry_http_async(
+    let resp = retry_http_async_deadline(
         RetryLog::new("gitea: GET release assets", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&list_url).send(),
         |status, body| {
@@ -132,9 +133,10 @@ pub(crate) async fn gitea_delete_asset_by_name(
                 api, enc_owner, enc_repo, release_id, asset_id
             );
 
-            retry_http_async(
+            retry_http_async_deadline(
                 RetryLog::new("gitea: DELETE asset", log),
                 policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| client.delete(&delete_url).send(),
                 |status, body| {
@@ -173,7 +175,7 @@ pub(crate) async fn gitea_find_asset_size(
         owner,
         repo,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let api = api_url.trim_end_matches('/');
@@ -185,9 +187,10 @@ pub(crate) async fn gitea_find_asset_size(
         api, enc_owner, enc_repo, release_id
     );
 
-    let resp = retry_http_async(
+    let resp = retry_http_async_deadline(
         RetryLog::new("gitea: GET release assets (size probe)", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&list_url).send(),
         |status, body| {
@@ -298,7 +301,7 @@ impl crate::forge::ForgeAssetClient for GiteaAssetClient {
             file_name,
         };
         let api_ctx = self.api_ctx();
-        crate::retry_upload(&op_name, &self.log, || {
+        crate::retry_upload(&op_name, self.deadline, &self.log, || {
             gitea_upload_asset(&api_ctx, self.release_id, &asset)
         })
         .await

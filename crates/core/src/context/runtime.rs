@@ -60,16 +60,26 @@ impl Context {
         self.config.retry.unwrap_or_default().to_policy()
     }
 
-    /// Resolve the retry wall-clock budget into an absolute deadline anchored at
-    /// the moment of this call. Always `Some`: `retry.max_elapsed` when the user
-    /// sets it, otherwise [`crate::retry::DEFAULT_MAX_ELAPSED`] (15 min) — so a
-    /// publisher that threads this into [`crate::retry::retry_sync_deadline`] /
+    /// The absolute wall-clock deadline the current publisher invocation's
+    /// retry ladders must not sleep past: the invocation's anchor plus
+    /// `retry.max_elapsed` (or [`crate::retry::DEFAULT_MAX_ELAPSED`], 15 min,
+    /// when unset) — so a publisher that threads this into
+    /// [`crate::retry::retry_sync_deadline`] /
     /// [`crate::retry::retry_async_deadline`] is bounded by default and the
-    /// operator can raise or lower the ceiling with one config field. The
-    /// `Option` return lets it feed those engines verbatim (their `None` means
-    /// unbounded, reserved for callers with no context). Computed once at the
-    /// start of a publish sequence so a long transient storm exits cleanly
-    /// (resumable) instead of being SIGKILLed mid-write by the outer job timeout.
+    /// operator can raise or lower the ceiling with one config field.
+    ///
+    /// This is a READ, not a mint. The anchor belongs to the enclosing
+    /// [`crate::retry::PublisherRetryScope`], installed once per publisher
+    /// invocation at the dispatch seam, so every seam inside one invocation —
+    /// an auth exchange, the publish request, a cleanup — observes the SAME
+    /// deadline and a wedged remote cannot spend the budget once per seam. A
+    /// caller outside any such scope (a stage-level retry ladder) anchors at
+    /// the moment of the call.
+    ///
+    /// Always `Some`, except when the configured budget is so large that the
+    /// deadline is not representable — an unrepresentable ceiling is no
+    /// ceiling, and `None` is how the engines spell unbounded. That `None` is
+    /// also what a caller with no [`Context`] at all passes them.
     pub fn retry_deadline(&self) -> Option<std::time::Instant> {
         let budget = self
             .config
@@ -77,7 +87,9 @@ impl Context {
             .unwrap_or_default()
             .max_elapsed_duration()
             .unwrap_or(crate::retry::DEFAULT_MAX_ELAPSED);
-        Some(std::time::Instant::now() + budget)
+        crate::retry::current_budget_anchor()
+            .unwrap_or_else(std::time::Instant::now)
+            .checked_add(budget)
     }
 
     /// Create a [`StageLogger`] for the given stage name, pre-attached to

@@ -557,6 +557,7 @@ fn version_already_published_returns_false_on_404() {
         "1.2.3",
         "fake-push-token",
         &policy,
+        None,
         &log,
         &env,
     );
@@ -600,6 +601,7 @@ fn version_already_published_bails_on_non_404() {
         "1.2.3",
         "fake-push-token",
         &policy,
+        None,
         &log,
         &env,
     );
@@ -642,6 +644,7 @@ fn version_already_published_bails_on_transport_failure() {
         "1.2.3",
         "fake-push-token",
         &policy,
+        None,
         &log,
         &env,
     );

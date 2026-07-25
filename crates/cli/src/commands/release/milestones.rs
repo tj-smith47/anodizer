@@ -1,7 +1,7 @@
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async_deadline};
 use anodizer_core::scm::ScmTokenType;
 use anyhow::{Context as _, Result};
 
@@ -113,6 +113,10 @@ pub(super) fn close_milestones(
     // 429 / network failures retry per the user's config (defaults: 10
     // attempts × 10s base × 5m cap).
     let policy = ctx.retry_policy();
+    // One budget for the whole milestone sweep, shared by every provider's
+    // list + close calls: a wedged forge API must not spend
+    // `retry.max_elapsed` once per milestone.
+    let deadline = ctx.retry_deadline();
 
     for milestone_cfg in milestones {
         let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? else {
@@ -159,6 +163,7 @@ pub(super) fn close_milestones(
                     &repo_name,
                     &milestone_name,
                     &policy,
+                    deadline,
                     log,
                     &api_base,
                 )
@@ -171,6 +176,7 @@ pub(super) fn close_milestones(
                 &milestone_name,
                 api_url.as_deref(),
                 &policy,
+                deadline,
                 log,
             ),
             ScmTokenType::Gitea => close_milestone_gitea(
@@ -181,6 +187,7 @@ pub(super) fn close_milestones(
                 &milestone_name,
                 api_url.as_deref(),
                 &policy,
+                deadline,
                 log,
             ),
         };
@@ -286,6 +293,7 @@ fn close_milestone_github(
     repo: &str,
     milestone_name: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
     api_base: &str,
 ) -> Result<MilestoneCloseOutcome> {
@@ -298,7 +306,8 @@ fn close_milestone_github(
 
         // List milestones with pagination to find the one with the matching title.
         // GitHub returns at most 100 per page. Each page request routes through
-        // retry_http_async so transient 5xx / 429 / network failures retry.
+        // retry_http_async_deadline so transient 5xx / 429 / network failures
+        // retry and stop once the run's wall-clock budget is spent.
         let mut page = 1u32;
         let mut milestone_number: Option<u64> = None;
 
@@ -307,9 +316,10 @@ fn close_milestone_github(
                 "{}/repos/{}/{}/milestones?state=open&per_page=100&page={}",
                 api_base, owner, repo, page
             );
-            let resp = retry_http_async(
+            let resp = retry_http_async_deadline(
                 anodizer_core::retry::RetryLog::new("milestone: list milestones", log),
                 policy,
+                deadline,
                 SuccessClass::Strict,
                 |_| {
                     client
@@ -358,9 +368,10 @@ fn close_milestone_github(
             "{}/repos/{}/{}/milestones/{}",
             api_base, owner, repo, milestone_number
         );
-        retry_http_async(
+        retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: close milestone", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -413,6 +424,7 @@ fn close_milestone_gitlab(
     milestone_name: &str,
     api_url: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
@@ -433,9 +445,10 @@ fn close_milestone_gitlab(
             encoded_path,
             url_encode(milestone_name)
         );
-        let resp = retry_http_async(
+        let resp = retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: GitLab list milestones", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -473,9 +486,10 @@ fn close_milestone_gitlab(
             "{}/projects/{}/milestones/{}",
             base, encoded_path, milestone_id
         );
-        retry_http_async(
+        retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: GitLab close milestone", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -502,6 +516,7 @@ fn close_milestone_gitea(
     milestone_name: &str,
     api_url: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
@@ -521,9 +536,10 @@ fn close_milestone_gitea(
             repo,
             url_encode(milestone_name)
         );
-        let resp = retry_http_async(
+        let resp = retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: Gitea list milestones", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -570,9 +586,10 @@ fn close_milestone_gitea(
         // deleted between list and close" race signal, so we catch it from
         // the retry helper's Break path and map to NotFound. Other 4xx
         // remain hard errors (the helper Breaks them).
-        match retry_http_async(
+        match retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: Gitea close milestone", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| {
                 client
@@ -991,6 +1008,7 @@ mod tests {
             "v1.0.0",
             Some(&api_url),
             &policy,
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect("retry past 503 then close");
@@ -1338,6 +1356,7 @@ mod tests {
             "r",
             "v1.0.0",
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
             "https://api.github.com",
         )
@@ -1379,6 +1398,7 @@ mod tests {
             "r",
             "v1.0.0",
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
             &api_base,
         )
@@ -1402,6 +1422,7 @@ mod tests {
             "v1.0.0",
             None,
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect_err("empty token must bail");
@@ -1423,6 +1444,7 @@ mod tests {
             "v1.0.0",
             None,
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect_err("empty token must bail");
@@ -1453,6 +1475,7 @@ mod tests {
             "v9.9.9",
             Some(&api_url),
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect("absent milestone is not an error");
@@ -1483,6 +1506,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect("list + close must succeed");
@@ -1514,6 +1538,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect("a 404 on the close PATCH must map to NotFound, not Err");
@@ -1544,6 +1569,7 @@ mod tests {
             "v2.0.0",
             Some(&api_url),
             &default_policy(),
+            None,
             anodizer_core::test_helpers::test_logger(),
         )
         .expect_err("a 403 on the close PATCH must propagate as an error");

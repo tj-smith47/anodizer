@@ -17,7 +17,8 @@ use super::*;
 /// is retried per the `replace_existing_artifacts` setting.
 ///
 /// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
-/// 10s × 5m cap) — every HTTP call routes through [`retry_http_async`].
+/// 10s × 5m cap), bounded by the invocation's wall-clock budget `ctx.deadline`
+/// — every HTTP call routes through [`retry_http_async_deadline`].
 ///
 /// `pkg` selects the upload backend: `Some` routes through the Generic
 /// Package Registry (PUT), `None` falls back to Project Markdown Uploads
@@ -121,9 +122,10 @@ pub(crate) async fn gitlab_upload_asset(
         }
 
         // Retry the POST after deleting the conflicting link.
-        retry_http_async(
+        retry_http_async_deadline(
             RetryLog::new("gitlab: POST create release link (retry after delete)", log),
             policy,
+            deadline,
             SuccessClass::Strict,
             |_| client.post(&links_api).json(&payload).send(),
             |status, body| {
@@ -161,7 +163,7 @@ fn gitlab_links_api(api_url: &str, project_id: &str, tag: &str) -> String {
 /// Look up the release link named `file_name` on the release for `tag`.
 ///
 /// Returns `(link_id, url)` when a link with that exact name exists. The
-/// list GET goes through `retry_http_async` so a transient 5xx doesn't
+/// list GET goes through `retry_http_async_deadline` so a transient 5xx doesn't
 /// mis-report an existing link as absent.
 pub(crate) async fn gitlab_find_asset_link(
     ctx: &GitlabCtx<'_>,
@@ -173,13 +175,14 @@ pub(crate) async fn gitlab_find_asset_link(
         api_url,
         project_id,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let links_api = gitlab_links_api(api_url, project_id, tag);
-    let resp = retry_http_async(
+    let resp = retry_http_async_deadline(
         RetryLog::new("gitlab: GET existing release links", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&links_api).send(),
         |status, body| {
@@ -224,13 +227,14 @@ pub(crate) async fn gitlab_delete_asset_link(
         api_url,
         project_id,
         policy,
-        deadline: _,
+        deadline,
         log,
     } = *ctx;
     let delete_url = format!("{}/{}", gitlab_links_api(api_url, project_id, tag), link_id);
-    retry_http_async(
+    retry_http_async_deadline(
         RetryLog::new("gitlab: DELETE existing release link", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.delete(&delete_url).send(),
         |status, body| {
@@ -559,7 +563,7 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
                 version,
             });
         let api_ctx = self.api_ctx();
-        crate::retry_upload(&op_name, &self.log, || {
+        crate::retry_upload(&op_name, self.deadline, &self.log, || {
             gitlab_upload_asset(
                 &api_ctx,
                 &self.tag,

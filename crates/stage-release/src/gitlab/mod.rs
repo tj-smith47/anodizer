@@ -11,9 +11,7 @@
 use std::path::Path;
 
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{
-    RetryLog, RetryPolicy, SuccessClass, retry_http_async, retry_http_async_deadline,
-};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_async_deadline};
 use anodizer_core::url::percent_encode_path_segment;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result, bail};

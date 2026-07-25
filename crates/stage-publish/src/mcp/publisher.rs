@@ -692,6 +692,68 @@ mod publisher_tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// The rollback PATCH is bounded by the same wall-clock budget as the
+    /// publish it undoes: a wedged registry stops the sweep after one attempt
+    /// rather than sleeping through the whole ladder per target.
+    #[test]
+    fn mcp_rollback_stops_on_a_spent_wall_clock_budget() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+            10
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = rollback_ctx("io.github.user/weather", &registry);
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 10,
+            delay: HumanDuration(Duration::from_secs(1)),
+            max_delay: HumanDuration(Duration::from_secs(1)),
+            max_elapsed: Some(HumanDuration(Duration::ZERO)),
+        });
+        let evidence = evidence_for("io.github.user/weather", "1.0.0", &registry);
+
+        let p = McpPublisher::new();
+        let start = std::time::Instant::now();
+        // A per-target PATCH failure is warned, not propagated (a sibling
+        // publisher's rollback must still run), so the attempt count is the
+        // observable — not the return value.
+        let _ = p.rollback(&mut ctx, &evidence);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a spent budget must stop the PATCH ladder after the first attempt"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "the ladder must not have slept its way through the attempts"
+        );
+    }
+
+    /// The control: an ample budget leaves the PATCH attempt ladder intact.
+    #[test]
+    fn mcp_rollback_runs_the_full_ladder_under_an_ample_wall_clock_budget() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+            3
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = rollback_ctx("io.github.user/weather", &registry);
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 3,
+            delay: HumanDuration(Duration::from_millis(1)),
+            max_delay: HumanDuration(Duration::from_millis(2)),
+            max_elapsed: Some(HumanDuration(Duration::from_secs(600))),
+        });
+        let evidence = evidence_for("io.github.user/weather", "1.0.0", &registry);
+
+        let p = McpPublisher::new();
+        let _ = p.rollback(&mut ctx, &evidence);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "an unspent budget must not shorten the attempt ladder"
+        );
+    }
+
     #[test]
     fn mcp_rollback_degrades_to_warn_on_501() {
         // retry_http_blocking retries 5xx, so we need enough 501s to exhaust

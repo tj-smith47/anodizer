@@ -654,7 +654,7 @@ pub(super) fn handle_feed_state(
     policy: &anodizer_core::retry::RetryPolicy,
     log: &StageLogger,
 ) -> Result<Option<bool>> {
-    match package_feed_hash(source, pkg_name, version, policy, log) {
+    match package_feed_hash(source, pkg_name, version, policy, ctx.retry_deadline(), log) {
         FeedHashResult::Present {
             hash,
             algorithm,

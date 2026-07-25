@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 
 use crate::PreflightCheck;
 use crate::log::StageLogger;
-use crate::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync};
+use crate::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync_deadline};
 
 /// Timeout for a single `GET /repos/{owner}/{repo}` preflight probe request.
 /// Shared by every probe caller so the release and publish preflights place
@@ -150,6 +150,7 @@ pub fn github_repo_push_check(
     repo: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     outcomes: RepoAccessOutcomes,
     strict: bool,
     log: &StageLogger,
@@ -166,7 +167,7 @@ pub fn github_repo_push_check(
         }
     };
     probe_to_push_check(
-        github_repo_probe(&client, url, token, policy, log),
+        github_repo_probe(&client, url, token, policy, deadline, log),
         owner,
         repo,
         outcomes,
@@ -239,7 +240,8 @@ pub fn probe_to_push_check(
 /// Run the `GET /repos/{owner}/{repo}` request under the shallow probe policy,
 /// reading response headers (not just the status) so a secondary-rate-limit 403
 /// is separable from an auth 403. 5xx and retriable transport errors retry
-/// within `policy`; everything else resolves on the first response.
+/// within `policy` and stop once `deadline` — the invocation's wall-clock
+/// budget — is spent; everything else resolves on the first response.
 ///
 /// `token` is optional: a `Some(non-empty)` value adds the `Authorization`
 /// bearer header (an empty string is treated as no token — the unauthenticated
@@ -250,11 +252,12 @@ pub fn github_repo_probe(
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> RepoProbe {
     let rlog = RetryLog::new("github repo probe", log);
     let token = token.map(str::to_string);
-    let outcome = retry_sync(rlog, policy, |_attempt| {
+    let outcome = retry_sync_deadline(rlog, policy, deadline, |_attempt| {
         let mut b = client
             .get(url)
             .header("Accept", "application/vnd.github+json")

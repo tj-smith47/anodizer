@@ -89,6 +89,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         }
     };
     let policy = ctx.retry_policy();
+    let deadline = ctx.retry_deadline();
     // Snapshot the injected env source once so the API-base resolution in
     // `delete_version` reads the same source as the rest of the stage without
     // re-borrowing `ctx` inside the loop (which also mutably borrows it via
@@ -135,6 +136,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
             &t.version,
             &token,
             &policy,
+            deadline,
             &log,
             env.as_ref(),
         ) {
@@ -362,6 +364,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
                 },
                 "preflight: gemfury",
                 &policy,
+                ctx.retry_deadline(),
                 &ctx.logger("preflight"),
             );
             acc = merge(

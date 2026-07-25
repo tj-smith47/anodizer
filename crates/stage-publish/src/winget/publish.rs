@@ -333,6 +333,7 @@ fn open_pr_for_target(
         false,
     )
     .ok();
+    let deadline = ctx.retry_deadline();
     crate::preflight::query_open_version_pr(
         &crate::preflight::OpenPrQuery {
             publisher: "winget",
@@ -344,6 +345,7 @@ fn open_pr_for_target(
         },
         token.as_deref(),
         policy,
+        deadline,
         log,
     )
 }

@@ -389,10 +389,8 @@ pub(crate) fn publish_to_pypi(
         _ => return Ok(()),
     };
     let policy = ctx.retry_policy();
-    // One wall-clock budget for the whole pypi sequence — the OIDC mint and
-    // every file upload share it. `retry_deadline()` re-anchors at `now` on
-    // every call, so resolving it per step would hand a wedged endpoint a fresh
-    // `retry.max_elapsed` at each one.
+    // Resolved once and threaded, so every step reads one value even where the
+    // helper has no `Context` to ask.
     let deadline = ctx.retry_deadline();
 
     for (idx, cfg) in entries.iter().enumerate() {
@@ -751,6 +749,7 @@ impl anodizer_core::Publisher for PypiPublisher {
             return Ok(ReconcileState::Absent);
         }
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let deadline = ctx.retry_deadline();
         let log = ctx.logger("publish");
         let mut verified = 0usize;
         for cfg in &cfgs {
@@ -799,6 +798,7 @@ impl anodizer_core::Publisher for PypiPublisher {
                 &normalized,
                 &version,
                 &policy,
+                deadline,
                 &log,
             ) {
                 Ok(Some(b)) => b,
@@ -957,6 +957,7 @@ impl anodizer_core::Publisher for PypiPublisher {
                     &url,
                     "preflight: pypi version probe",
                     &policy,
+                    ctx.retry_deadline(),
                     &ctx.logger("preflight"),
                 )
                 .then_some(url),

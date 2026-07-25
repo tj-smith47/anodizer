@@ -839,9 +839,20 @@ async fn find_release_paginates_to_second_page() {
     let client = test_client();
     let policy = fast_policy(2);
     let api_url = format!("http://{addr}");
-    let found = find_release_by_tag(&client, &api_url, "o", "r", "v9.9.9", &policy, tlog())
-        .await
-        .expect("listing should succeed");
+    let found = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect("listing should succeed");
     assert_eq!(
         found,
         Some((4242, Some("found me".to_string()))),
@@ -878,9 +889,20 @@ async fn find_release_short_page_stops_and_returns_none() {
     let client = test_client();
     let policy = fast_policy(2);
     let api_url = format!("http://{addr}");
-    let found = find_release_by_tag(&client, &api_url, "o", "r", "v2.0.0", &policy, tlog())
-        .await
-        .expect("listing should succeed");
+    let found = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v2.0.0",
+    )
+    .await
+    .expect("listing should succeed");
     assert_eq!(found, None, "tag absent on a short page => None");
 
     let entries = log.lock().unwrap();
@@ -909,9 +931,20 @@ async fn find_release_missing_id_errors() {
     let client = test_client();
     let policy = fast_policy(1);
     let api_url = format!("http://{addr}");
-    let err = find_release_by_tag(&client, &api_url, "o", "r", "v1.0.0", &policy, tlog())
-        .await
-        .expect_err("matched-but-id-less release must error");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v1.0.0",
+    )
+    .await
+    .expect_err("matched-but-id-less release must error");
     assert!(
         format!("{err:#}").contains("release missing 'id' field"),
         "got: {err:#}"

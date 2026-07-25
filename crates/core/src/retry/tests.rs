@@ -1644,3 +1644,106 @@ async fn retry_http_async_transport_error_retries_then_fails() {
         "label must surface in error chain; got: {chain}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PublisherRetryScope — one budget anchor per publisher invocation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn budget_anchor_is_absent_outside_any_publisher_scope() {
+    assert_eq!(
+        current_budget_anchor(),
+        None,
+        "a stage-level caller has no invocation anchor and must anchor at its own call"
+    );
+}
+
+#[test]
+fn publisher_scope_anchor_is_stable_for_the_whole_invocation() {
+    let scope = PublisherRetryScope::enter("test-anchor-stable");
+    let first = current_budget_anchor().expect("entering a publisher scope anchors the budget");
+    std::thread::sleep(Duration::from_millis(20));
+    let second = current_budget_anchor().expect("anchor stays installed");
+    assert_eq!(
+        first, second,
+        "the anchor must not advance between seams of one invocation"
+    );
+    drop(scope);
+    assert_eq!(
+        current_budget_anchor(),
+        None,
+        "the guard uninstalls on drop"
+    );
+}
+
+#[test]
+fn nested_publisher_scope_inherits_rather_than_widening_the_budget() {
+    // The hole this closes: a publisher helper that mints its own budget
+    // hands a wedged remote `retry.max_elapsed` a second time. Nothing
+    // reachable from inside an invocation — not even a fresh guard of this
+    // same type — may re-anchor.
+    let _outer = PublisherRetryScope::enter("test-anchor-outer");
+    let outer_anchor = current_budget_anchor().expect("outer anchors");
+    std::thread::sleep(Duration::from_millis(20));
+    {
+        let _inner = PublisherRetryScope::enter("test-anchor-inner");
+        assert_eq!(
+            current_budget_anchor(),
+            Some(outer_anchor),
+            "a nested scope must inherit the invocation's anchor, never mint a new one"
+        );
+    }
+    assert_eq!(
+        current_budget_anchor(),
+        Some(outer_anchor),
+        "dropping the nested scope must leave the invocation's anchor intact"
+    );
+}
+
+#[test]
+fn a_distinct_later_invocation_gets_its_own_anchor() {
+    // Rollback runs after `run` returned: a genuinely separate invocation,
+    // which must get a fresh budget rather than inherit a spent one.
+    let first = {
+        let _publish = PublisherRetryScope::enter("test-anchor-publish");
+        current_budget_anchor().expect("publish anchors")
+    };
+    std::thread::sleep(Duration::from_millis(20));
+    let second = {
+        let _rollback = PublisherRetryScope::enter("test-anchor-rollback");
+        current_budget_anchor().expect("rollback anchors")
+    };
+    assert!(
+        second > first,
+        "a later invocation must anchor at its own start, got {second:?} <= {first:?}"
+    );
+}
+
+#[test]
+fn publisher_scope_anchor_does_not_leak_across_threads() {
+    // Two invocations racing (dispatch is serial in production, but the test
+    // runner is not) must not strand each other's anchor: a stranded anchor
+    // would sit in the past forever and collapse every later retry ladder to
+    // a single attempt.
+    let outer = PublisherRetryScope::enter("test-anchor-thread-a");
+    let anchor = current_budget_anchor().expect("this thread anchors");
+    let other = std::thread::spawn(|| {
+        assert_eq!(
+            current_budget_anchor(),
+            None,
+            "another thread must not observe this invocation's anchor"
+        );
+        let _guard = PublisherRetryScope::enter("test-anchor-thread-b");
+        current_budget_anchor().expect("the other thread anchors independently")
+    })
+    .join()
+    .expect("thread panicked");
+    assert_ne!(other, anchor, "each thread anchors its own invocation");
+    assert_eq!(
+        current_budget_anchor(),
+        Some(anchor),
+        "another thread's guard must not disturb this one"
+    );
+    drop(outer);
+    assert_eq!(current_budget_anchor(), None);
+}

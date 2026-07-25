@@ -87,6 +87,7 @@ pub fn pypi_version_live(
     project_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     let normalized = normalize_project_name(project_name);
@@ -105,12 +106,13 @@ pub fn pypi_version_live(
         );
     };
     if expect_filename {
-        simple_index_lists_version_checked(&url, &normalized, &pep440, policy, log)
+        simple_index_lists_version_checked(&url, &normalized, &pep440, policy, deadline, log)
     } else {
         crate::publisher_preflight::probe_version_landing(
             &url,
             "rollback: pypi version probe",
             policy,
+            deadline,
             log,
         )
     }
@@ -128,14 +130,16 @@ fn simple_index_lists_version_checked(
     normalized_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
-    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
+    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking_deadline};
     let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("build HTTP client for pypi simple-index probe")?;
-    match retry_http_blocking(
+    match retry_http_blocking_deadline(
         RetryLog::new("rollback: pypi simple-index probe", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(url).send(),
         |status, body| format!("{status}: {body}"),
@@ -158,9 +162,10 @@ pub(crate) fn released_files_body(
     normalized_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Option<String>> {
-    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking};
+    use anodizer_core::retry::{RetryLog, SuccessClass, http_status, retry_http_blocking_deadline};
     let Some((url, _)) = version_probe(repository, normalized_name, version) else {
         bail!(
             "pypi: could not derive an index-probe URL for repository {repository:?} \
@@ -169,9 +174,10 @@ pub(crate) fn released_files_body(
     };
     let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("build HTTP client for pypi released-files probe")?;
-    match retry_http_blocking(
+    match retry_http_blocking_deadline(
         RetryLog::new("reconcile: pypi released-files probe", log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&url).send(),
         |status, body| format!("{status}: {body}"),

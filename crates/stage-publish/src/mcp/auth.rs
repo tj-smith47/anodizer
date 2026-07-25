@@ -847,4 +847,222 @@ mod tests {
         assert!(err.contains("bad runner token"), "{err}");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
     }
+
+    // -- wall-clock budget: every seam, both directions ----------------------
+
+    /// A ladder long enough that reaching its end would take ~9s, so a test
+    /// finishing in milliseconds proves the DEADLINE stopped it, not the
+    /// attempt count.
+    fn slow_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 10,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(1),
+        }
+    }
+
+    /// Three attempts at millisecond spacing — the unbounded control.
+    fn three_attempt_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        }
+    }
+
+    fn server_errors(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|_| http_response("503 Service Unavailable", r#"{"error":"wedged"}"#))
+            .collect()
+    }
+
+    #[test]
+    fn auth_none_stops_on_an_already_elapsed_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(10));
+        let p = NoneAuthProvider {
+            registry_url: format!("http://{addr}"),
+            token: String::new(),
+            policy: slow_policy(),
+            deadline: Some(Instant::now()),
+        };
+        let start = Instant::now();
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
+        assert!(err.contains("HTTP 503"), "{err}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a spent budget must stop the ladder after the first attempt"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "the ladder must not have slept its way through the attempts"
+        );
+    }
+
+    #[test]
+    fn auth_none_runs_the_full_ladder_without_a_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(3));
+        let p = NoneAuthProvider {
+            registry_url: format!("http://{addr}"),
+            token: String::new(),
+            policy: three_attempt_policy(),
+            deadline: None,
+        };
+        assert!(p.get_token(&log()).is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "no deadline → run the full attempt ladder"
+        );
+    }
+
+    #[test]
+    fn auth_github_at_stops_on_an_already_elapsed_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(10));
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}"),
+            "ghp_config_token",
+            &slow_policy(),
+            Some(Instant::now()),
+            empty_env(),
+        );
+        let start = Instant::now();
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
+        assert!(err.contains("HTTP 503"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn auth_github_at_runs_the_full_ladder_without_a_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(3));
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}"),
+            "ghp_config_token",
+            &three_attempt_policy(),
+            None,
+            empty_env(),
+        );
+        assert!(p.get_token(&log()).is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "no deadline → run the full attempt ladder"
+        );
+    }
+
+    #[test]
+    fn auth_github_oidc_exchange_stops_on_an_already_elapsed_deadline() {
+        // Hop 1 (the Actions id-token GET) succeeds on its first attempt, so
+        // an already-spent budget only shows up on hop 2's ladder: one
+        // exchange attempt, then stop.
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            let mut r = vec![http_response("200 OK", r#"{"value":"actions-oidc-jwt"}"#)];
+            r.extend(server_errors(10));
+            r
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &slow_policy(),
+            Some(Instant::now()),
+            env,
+        );
+        let start = Instant::now();
+        let err = format!("{:#}", p.get_token(&log()).unwrap_err());
+        assert!(
+            err.contains("github-oidc") && err.contains("HTTP 503"),
+            "{err}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one id-token GET plus exactly one exchange attempt"
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn auth_github_oidc_exchange_runs_the_full_ladder_without_a_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            let mut r = vec![http_response("200 OK", r#"{"value":"actions-oidc-jwt"}"#)];
+            r.extend(server_errors(3));
+            r
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &three_attempt_policy(),
+            None,
+            env,
+        );
+        assert!(p.get_token(&log()).is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "one id-token GET plus the full three-attempt exchange ladder"
+        );
+    }
+
+    #[test]
+    fn auth_github_oidc_id_token_fetch_stops_on_an_already_elapsed_deadline() {
+        // Hop 1 shares `crate::actions_oidc::request_id_token` with cargo and
+        // pypi; a wedged runner endpoint must not spend the budget here either.
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(10));
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &slow_policy(),
+            Some(Instant::now()),
+            env,
+        );
+        let start = Instant::now();
+        assert!(p.get_token(&log()).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn auth_github_oidc_id_token_fetch_runs_the_full_ladder_without_a_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| server_errors(3));
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &three_attempt_policy(),
+            None,
+            env,
+        );
+        assert!(p.get_token(&log()).is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "no deadline → run the full attempt ladder"
+        );
+    }
 }

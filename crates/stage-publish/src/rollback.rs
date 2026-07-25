@@ -467,7 +467,13 @@ pub(crate) fn execute_rollback_step(
     // pull, the manual-intervention signal.
     let was_failure = matches!(current, PublisherOutcome::Failed(_));
     log.status(&format!("invoking rollback for '{name}'"));
-    match publisher.rollback(ctx, evidence) {
+    // A rollback is its own publisher invocation — the publish budget belonged
+    // to a call that already returned — so it anchors its own.
+    let rollback_result = {
+        let _scope = anodizer_core::retry::PublisherRetryScope::enter(name);
+        publisher.rollback(ctx, evidence)
+    };
+    match rollback_result {
         Ok(()) => {
             let outcome = if was_failure {
                 current.clone()

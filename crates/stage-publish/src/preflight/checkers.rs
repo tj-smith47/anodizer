@@ -2,7 +2,7 @@ use anodizer_core::context::Context;
 use anodizer_core::http::blocking_client;
 use anodizer_core::log::StageLogger;
 use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::Result;
 use std::time::Duration;
 
@@ -26,11 +26,12 @@ pub trait PreflightChecker: Send + Sync {
 
 pub struct CargoCratesIo {
     policy: RetryPolicy,
+    deadline: Option<std::time::Instant>,
 }
 
 impl CargoCratesIo {
-    pub fn new(policy: RetryPolicy) -> Self {
-        Self { policy }
+    pub fn new(policy: RetryPolicy, deadline: Option<std::time::Instant>) -> Self {
+        Self { policy, deadline }
     }
 }
 
@@ -41,7 +42,7 @@ impl PreflightChecker for CargoCratesIo {
 
     fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
         let url = crate::cargo::sparse_index_url(package);
-        match query_crates_io(&url, package, version, &self.policy, log) {
+        match query_crates_io(&url, package, version, &self.policy, self.deadline, log) {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
@@ -58,13 +59,15 @@ pub(super) fn query_crates_io(
     crate_name: &str,
     version: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     let client = blocking_client(Duration::from_secs(10))?;
     let label = format!("preflight: crates.io index for '{}'", crate_name);
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(url).send(),
         |status, body| {
@@ -112,11 +115,16 @@ pub(super) fn query_crates_io(
 pub struct Chocolatey {
     source: String,
     policy: RetryPolicy,
+    deadline: Option<std::time::Instant>,
 }
 
 impl Chocolatey {
-    pub fn new(source: String, policy: RetryPolicy) -> Self {
-        Self { source, policy }
+    pub fn new(source: String, policy: RetryPolicy, deadline: Option<std::time::Instant>) -> Self {
+        Self {
+            source,
+            policy,
+            deadline,
+        }
     }
 }
 
@@ -128,7 +136,14 @@ impl PreflightChecker for Chocolatey {
     fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
         use crate::chocolatey::package::{FeedHashResult, classify_moderation, package_feed_hash};
 
-        match package_feed_hash(&self.source, package, version, &self.policy, log) {
+        match package_feed_hash(
+            &self.source,
+            package,
+            version,
+            &self.policy,
+            self.deadline,
+            log,
+        ) {
             FeedHashResult::Present {
                 status,
                 is_approved,
@@ -164,11 +179,20 @@ pub struct Winget {
     /// GitHub personal-access token (or `ANODIZER_GITHUB_TOKEN`).
     token: Option<String>,
     policy: RetryPolicy,
+    deadline: Option<std::time::Instant>,
 }
 
 impl Winget {
-    pub fn new(token: Option<String>, policy: RetryPolicy) -> Self {
-        Self { token, policy }
+    pub fn new(
+        token: Option<String>,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Self {
+        Self {
+            token,
+            policy,
+            deadline,
+        }
     }
 }
 
@@ -194,6 +218,7 @@ impl PreflightChecker for Winget {
             },
             self.token.as_deref(),
             &self.policy,
+            self.deadline,
             log,
         ) {
             Ok(OpenPrLookup::Found(url)) => PublisherState::PRPending(url),
@@ -254,6 +279,7 @@ pub(crate) fn query_open_version_pr(
     query: &OpenPrQuery<'_>,
     token: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<OpenPrLookup> {
     let q = format!(
@@ -275,6 +301,7 @@ pub(crate) fn query_open_version_pr(
         &url,
         token,
         policy,
+        deadline,
         log,
     )
 }
@@ -283,12 +310,14 @@ pub(crate) fn query_open_version_pr(
 /// site for the HTTP+parse plumbing — exposed so tests can substitute a local
 /// mock-server URL while still exercising the retry / parse pipeline
 /// end-to-end.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn query_open_version_pr_at(
     publisher: &str,
     expect_title: Option<&str>,
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<OpenPrLookup> {
     let token_clone = token.map(str::to_string);
@@ -296,9 +325,10 @@ pub(super) fn query_open_version_pr_at(
     let label = format!("preflight: {publisher} PR search ({url})");
 
     let client = blocking_client(Duration::from_secs(15))?;
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         move |_| {
             let mut b = client
@@ -381,11 +411,12 @@ pub(super) fn query_open_version_pr_at(
 
 pub struct Aur {
     policy: RetryPolicy,
+    deadline: Option<std::time::Instant>,
 }
 
 impl Aur {
-    pub fn new(policy: RetryPolicy) -> Self {
-        Self { policy }
+    pub fn new(policy: RetryPolicy, deadline: Option<std::time::Instant>) -> Self {
+        Self { policy, deadline }
     }
 }
 
@@ -395,7 +426,7 @@ impl PreflightChecker for Aur {
     }
 
     fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState {
-        match query_aur_rpc(package, version, &self.policy, log) {
+        match query_aur_rpc(package, version, &self.policy, self.deadline, log) {
             // AUR allows the same version to be re-pushed (it's a git push to
             // the AUR repo), so the row's existence is informational rather
             // than a blocker. Surface as Unknown with a reason so the report
@@ -423,10 +454,11 @@ pub(super) fn query_aur_rpc(
     package: &str,
     version: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     let url = format!("https://aur.archlinux.org/rpc/v5/info?arg[]={}", package);
-    query_aur_rpc_at(&url, version, policy, log)
+    query_aur_rpc_at(&url, version, policy, deadline, log)
 }
 
 /// Variant of [`query_aur_rpc`] that takes a pre-built URL. Sole call site
@@ -437,14 +469,16 @@ pub(super) fn query_aur_rpc_at(
     url: &str,
     version: &str,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     let client = blocking_client(Duration::from_secs(10))?;
     let label = format!("preflight: AUR RPC ({})", url);
     let url_clone = url.to_string();
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         move |_| client.get(&url_clone).send(),
         |status, body| format!("preflight: AUR RPC returned {}: {}", status, body),
@@ -491,28 +525,68 @@ pub(super) fn query_aur_rpc_at(
 /// [`RealCheckerFactory`] (which builds the real network-hitting checkers);
 /// tests inject a mock factory that returns canned `PublisherState`s
 /// without touching the network.
+///
+/// Every method takes the invocation's wall-clock retry budget alongside the
+/// attempt policy, so a checker's probe stops when the budget is spent rather
+/// than running the full ladder against a wedged registry.
 pub trait CheckerFactory {
-    fn cargo(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
-    fn chocolatey(&self, source: String, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
-    fn winget(&self, token: Option<String>, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
-    fn aur(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
+    fn cargo(
+        &self,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker>;
+    fn chocolatey(
+        &self,
+        source: String,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker>;
+    fn winget(
+        &self,
+        token: Option<String>,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker>;
+    fn aur(
+        &self,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker>;
 }
 
 /// Production factory — wires up the real HTTP-driven checkers.
 pub struct RealCheckerFactory;
 
 impl CheckerFactory for RealCheckerFactory {
-    fn cargo(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
-        Box::new(CargoCratesIo::new(policy))
+    fn cargo(
+        &self,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(CargoCratesIo::new(policy, deadline))
     }
-    fn chocolatey(&self, source: String, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
-        Box::new(Chocolatey::new(source, policy))
+    fn chocolatey(
+        &self,
+        source: String,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(Chocolatey::new(source, policy, deadline))
     }
-    fn winget(&self, token: Option<String>, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
-        Box::new(Winget::new(token, policy))
+    fn winget(
+        &self,
+        token: Option<String>,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(Winget::new(token, policy, deadline))
     }
-    fn aur(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
-        Box::new(Aur::new(policy))
+    fn aur(
+        &self,
+        policy: RetryPolicy,
+        deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(Aur::new(policy, deadline))
     }
 }
 
@@ -570,6 +644,9 @@ fn run_preflight_inner(
     // gate across every configured publisher (the prod ladder is ~27min worst
     // case). Per-request HTTP timeouts still bound each attempt.
     let policy = RetryPolicy::PREFLIGHT;
+    // One wall-clock budget for the whole gate: a wedged registry probed for
+    // several crates must not spend `retry.max_elapsed` once per crate.
+    let deadline = ctx.retry_deadline();
     let version = ctx.version();
 
     // Walk every crate in the universe and collect per-publisher entries.
@@ -598,7 +675,7 @@ fn run_preflight_inner(
         // ---- cargo -------------------------------------------------------
         if publish.cargo.is_some() && probe("cargo") {
             log.verbose(&format!("checking cargo for '{}@{}'", krate.name, version));
-            let checker = factory.cargo(policy);
+            let checker = factory.cargo(policy, deadline);
             let state = checker.check(&krate.name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -622,7 +699,7 @@ fn run_preflight_inner(
                 "checking chocolatey for '{}@{}'",
                 pkg_name, version
             ));
-            let checker = factory.chocolatey(source, policy);
+            let checker = factory.chocolatey(source, policy, deadline);
             let state = checker.check(&pkg_name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -644,7 +721,7 @@ fn run_preflight_inner(
                 .to_string();
             let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
             log.verbose(&format!("checking winget for '{}@{}'", pkg_id, version));
-            let checker = factory.winget(token, policy);
+            let checker = factory.winget(token, policy, deadline);
             let state = checker.check(&pkg_id, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -664,7 +741,7 @@ fn run_preflight_inner(
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| format!("{}-bin", krate.name));
             log.verbose(&format!("checking AUR for '{}@{}'", pkg_name, version));
-            let checker = factory.aur(policy);
+            let checker = factory.aur(policy, deadline);
             let state = checker.check(&pkg_name, &version, log);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),

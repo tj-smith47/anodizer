@@ -13,14 +13,22 @@ use super::*;
 /// idempotent across retries while surfacing same-version drift instead of
 /// silently skipping a re-release that would install stale content.
 ///
-/// The sparse-index GET routes through [`retry_http_blocking`] so transient
-/// 5xx / 429 / network failures retry per the user's top-level `retry:`
-/// policy; 404 is detected via the helper's `HttpError(404)` Break path and
-/// mapped to `Ok(None)` so a never-published crate doesn't trip retries.
+/// The sparse-index GET routes through [`retry_http_blocking_deadline`] so
+/// transient 5xx / 429 / network failures retry per the user's top-level
+/// `retry:` policy and stop once `deadline` is spent; 404 is detected via the
+/// helper's `HttpError(404)` Break path and mapped to `Ok(None)` so a
+/// never-published crate doesn't trip retries.
+///
+/// `deadline` is the invocation's wall-clock retry budget
+/// ([`anodizer_core::context::Context::retry_deadline`]). This probe is on the
+/// convergent re-run path — both `reconcile()` and the publish loop's
+/// already-published guard reach it — so a wedged index must not stall the very
+/// mechanism that lets a partially-failed release converge.
 pub(crate) fn is_already_published(
     crate_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Option<String>> {
     is_already_published_at(
@@ -28,6 +36,7 @@ pub(crate) fn is_already_published(
         crate_name,
         version,
         policy,
+        deadline,
         log,
     )
 }
@@ -40,9 +49,10 @@ pub(crate) fn is_already_published_at(
     crate_name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Option<String>> {
-    match fetch_index_file(url, crate_name, policy, log)? {
+    match fetch_index_file(url, crate_name, policy, deadline, log)? {
         Some(body) => Ok(parse_index_cksum_for_version(&body, version)),
         None => Ok(None),
     }
@@ -57,18 +67,20 @@ fn fetch_index_file(
     url: &str,
     crate_name: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Option<String>> {
-    use anodizer_core::retry::{SuccessClass, retry_http_blocking};
+    use anodizer_core::retry::{SuccessClass, retry_http_blocking_deadline};
     use std::time::Duration;
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index check")?;
 
     let label = format!("publish: query crates.io index for '{}'", crate_name);
-    let result = retry_http_blocking(
+    let result = retry_http_blocking_deadline(
         anodizer_core::retry::RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(url).send(),
         |status, body| {
@@ -128,9 +140,16 @@ pub(crate) enum CrateIndexExistence {
 pub(crate) fn crate_exists_on_index(
     crate_name: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> CrateIndexExistence {
-    match fetch_index_file(&sparse_index_url(crate_name), crate_name, policy, log) {
+    match fetch_index_file(
+        &sparse_index_url(crate_name),
+        crate_name,
+        policy,
+        deadline,
+        log,
+    ) {
         Ok(Some(_)) => CrateIndexExistence::Exists,
         Ok(None) => CrateIndexExistence::NeverPublished,
         Err(_) => CrateIndexExistence::Unknown,
@@ -221,25 +240,29 @@ pub(crate) fn local_crate_cksum(
 /// byte-match the index cksum, to prove (or disprove) that the mismatch is
 /// only the `.cargo_vcs_info.json` commit stamp.
 ///
-/// Routes through [`retry_http_blocking_bytes`] (not the text-bodied
+/// Routes through [`retry_http_blocking_bytes_deadline`] (not the text-bodied
 /// `retry_http_blocking`): a `.crate` is a gzip tarball, and `resp.text()`'s
-/// lossy UTF-8 pass would corrupt it silently.
+/// lossy UTF-8 pass would corrupt it silently. `deadline` is the invocation's
+/// wall-clock retry budget, shared with the index probe that sent the guard
+/// down this slow path.
 pub(crate) fn fetch_published_crate(
     name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Vec<u8>> {
-    use anodizer_core::retry::{SuccessClass, retry_http_blocking_bytes};
+    use anodizer_core::retry::{SuccessClass, retry_http_blocking_bytes_deadline};
     use std::time::Duration;
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(30))
         .context("publish: build HTTP client for published .crate fetch")?;
     let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
     let label = format!("publish: fetch published .crate for '{name}-{version}'");
-    let (_status, bytes) = retry_http_blocking_bytes(
+    let (_status, bytes) = retry_http_blocking_bytes_deadline(
         anodizer_core::retry::RetryLog::new(&label, log),
         policy,
+        deadline,
         SuccessClass::Strict,
         |_| client.get(&url).send(),
         |status, body| {

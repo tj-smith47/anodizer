@@ -112,6 +112,7 @@ pub fn published_on_crates_io(
     name: &str,
     version: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
     // Test-harness index-base override, mirroring `--simulate-failure`'s env
@@ -126,7 +127,7 @@ pub fn published_on_crates_io(
         }
         _ => sparse_index_url(name),
     };
-    Ok(is_already_published_at(&url, name, version, policy, log)?.is_some())
+    Ok(is_already_published_at(&url, name, version, policy, deadline, log)?.is_some())
 }
 
 /// Whether a crate's resolved `publish.cargo` block targets the default

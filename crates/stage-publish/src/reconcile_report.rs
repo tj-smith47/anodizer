@@ -111,11 +111,13 @@ impl ReconcileReport {
             if ctx.publisher_deselected(p.name()) {
                 continue;
             }
-            let state = p
-                .reconcile(ctx)
-                .unwrap_or_else(|err| ReconcileState::Unknown {
-                    reason: format!("probe failed: {err:#}"),
-                });
+            let probed = {
+                let _scope = anodizer_core::retry::PublisherRetryScope::enter(p.name());
+                p.reconcile(ctx)
+            };
+            let state = probed.unwrap_or_else(|err| ReconcileState::Unknown {
+                reason: format!("probe failed: {err:#}"),
+            });
             rows.push(ReconcileRow {
                 publisher: p.name().to_string(),
                 required: p.required(),

@@ -195,6 +195,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             return Ok(ReconcileState::Absent);
         }
         let retry_policy = ctx.retry_policy();
+        let retry_deadline = ctx.retry_deadline();
 
         let mut published: Vec<(String, String, String)> = Vec::new();
         for name in &plan.order {
@@ -205,7 +206,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 // run() owns the decision.
                 return Ok(ReconcileState::Absent);
             }
-            match is_already_published(name, &version, &retry_policy, &quiet) {
+            match is_already_published(name, &version, &retry_policy, retry_deadline, &quiet) {
                 Ok(Some(cksum)) => published.push((name.clone(), version, cksum)),
                 Ok(None) => return Ok(ReconcileState::Absent),
                 Err(e) => {
@@ -254,7 +255,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 cargo_cfg,
                 provenance,
                 |n, cc, cf| local_crate_cksum(n, cc, cf, &log),
-                |n, v| fetch_published_crate(n, v, &retry_policy, &log),
+                |n, v| fetch_published_crate(n, v, &retry_policy, retry_deadline, &log),
                 &log,
             ) {
                 Ok(CargoSkipDecision::Skip) => {}
@@ -477,6 +478,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 &token,
                 "preflight: crates.io token",
                 &policy,
+                ctx.retry_deadline(),
                 &ctx.logger("preflight"),
                 CRATES_IO_AUTHENTICATED_DENIALS,
             ) {

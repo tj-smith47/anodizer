@@ -182,9 +182,9 @@ pub fn publish_to_cargo(
     // real publish, so there is nothing to mint (and no network round-trip).
     let retry_policy = ctx.retry_policy();
     // One wall-clock budget for the whole cargo publish sequence — the OIDC
-    // mint, the publish loop and the token revoke share it. `retry_deadline()`
-    // re-anchors at `now` on every call, so resolving it per step would hand a
-    // wedged endpoint a fresh `retry.max_elapsed` at each one.
+    // mint, the publish loop, the index probes and the token revoke share it.
+    // Resolved once and threaded, so the helpers that have no `Context` to ask
+    // still read the same value.
     let retry_deadline = ctx.retry_deadline();
     let minted = if ctx.is_dry_run() || ctx.should_skip("cargo") {
         None
@@ -208,7 +208,9 @@ pub fn publish_to_cargo(
         selected,
         log,
         record,
-        is_already_published,
+        move |name: &str, version: &str, policy: &_, log: &StageLogger| {
+            is_already_published(name, version, policy, retry_deadline, log)
+        },
         minted.as_deref(),
     );
 
@@ -344,9 +346,10 @@ pub(crate) fn publish_to_cargo_with(
     ) -> Result<Option<String>>,
     registry_token: Option<&str>,
 ) -> Result<()> {
-    // Resolved before the `&mut ctx` borrow below; the existence probe only
-    // needs the retry policy, not the context.
+    // Resolved before the `&mut ctx` borrow below; the probes only need the
+    // retry policy and this invocation's wall-clock budget, not the context.
     let existence_policy = ctx.retry_policy();
+    let probe_deadline = ctx.retry_deadline();
     publish_to_cargo_with_guard(
         ctx,
         selected,
@@ -355,8 +358,10 @@ pub(crate) fn publish_to_cargo_with(
         already_published_check,
         |name, crate_cfg, cargo_cfg| local_crate_cksum(name, crate_cfg, cargo_cfg, log),
         &anodizer_core::crate_scope::resolve_crate_tag,
-        fetch_published_crate,
-        move |name: &str| crate_exists_on_index(name, &existence_policy, log),
+        move |name: &str, version: &str, policy: &_, log: &StageLogger| {
+            fetch_published_crate(name, version, policy, probe_deadline, log)
+        },
+        move |name: &str| crate_exists_on_index(name, &existence_policy, probe_deadline, log),
         registry_token,
     )
 }

@@ -68,9 +68,8 @@ pub(crate) fn oidc_context_available(ctx: &Context) -> bool {
 /// `cargo publish` in the run via `CARGO_REGISTRY_TOKEN`.
 ///
 /// `deadline` is the publish sequence's wall-clock retry budget, resolved once
-/// by the caller and shared by both hops: `Context::retry_deadline` re-anchors
-/// at `now` on every call, so minting one per hop would hand a wedged endpoint
-/// `retry.max_elapsed` twice over.
+/// by the caller and shared by both hops, so a wedged endpoint cannot spend
+/// `retry.max_elapsed` once per hop.
 pub(crate) fn mint_trusted_publishing_token(
     ctx: &Context,
     policy: &RetryPolicy,

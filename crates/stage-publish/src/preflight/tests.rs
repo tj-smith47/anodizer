@@ -127,6 +127,7 @@ fn crates_io_checker_present_when_version_in_body() {
         "foo",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert!(result.is_ok());
@@ -148,6 +149,7 @@ fn crates_io_checker_absent_when_version_not_in_body() {
         "foo",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert!(result.is_ok());
@@ -170,6 +172,7 @@ fn aur_rpc_absent_on_empty_results() {
         &url,
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert!(result.is_ok());
@@ -190,6 +193,7 @@ fn aur_rpc_present_when_version_matches() {
         &url,
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     assert!(result.is_ok());
@@ -218,6 +222,7 @@ fn winget_pr_absent_on_empty_results() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -249,6 +254,7 @@ fn open_pr_exact_title_rejects_sibling_package_match() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -277,6 +283,7 @@ fn open_pr_exact_title_finds_the_matching_row() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -308,6 +315,7 @@ fn winget_pr_present_on_result() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -335,6 +343,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -362,6 +371,7 @@ fn winget_pr_malformed_json_is_error() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect_err("must be Err");
@@ -389,6 +399,7 @@ fn aur_rpc_malformed_json_is_error() {
         &url,
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect_err("must be Err");
@@ -415,6 +426,7 @@ fn winget_pr_422_maps_to_not_found() {
         &url,
         None,
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("422 must be Ok(NotFound)");
@@ -440,6 +452,7 @@ fn winget_pr_server_error_bubbles_as_err() {
         &url,
         Some("tok"),
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect_err("persistent 5xx must be Err");
@@ -458,6 +471,7 @@ fn aur_rpc_server_error_bubbles_as_err() {
         &url,
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect_err("persistent 5xx must be Err");
@@ -472,21 +486,22 @@ fn aur_rpc_server_error_bubbles_as_err() {
 #[test]
 fn real_checker_factory_builds_named_checkers() {
     let f = RealCheckerFactory;
-    assert_eq!(f.cargo(fast_retry()).publisher_name(), "cargo");
+    assert_eq!(f.cargo(fast_retry(), None).publisher_name(), "cargo");
     assert_eq!(
         f.chocolatey(
             "https://community.chocolatey.org/api/v2/".to_string(),
-            fast_retry()
+            fast_retry(),
+            None
         )
         .publisher_name(),
         "chocolatey"
     );
     assert_eq!(
-        f.winget(Some("tok".to_string()), fast_retry())
+        f.winget(Some("tok".to_string()), fast_retry(), None)
             .publisher_name(),
         "winget"
     );
-    assert_eq!(f.aur(fast_retry()).publisher_name(), "aur");
+    assert_eq!(f.aur(fast_retry(), None).publisher_name(), "aur");
 }
 
 // ---- AUR: 404 → Ok(false) (Clean) ------------------------------------
@@ -500,6 +515,7 @@ fn aur_rpc_absent_on_404() {
         &url,
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -525,6 +541,7 @@ fn crates_io_checker_unknown_on_network_error() {
         "foo",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     );
     let err = result.expect_err("must be Err on connect-refused");
@@ -536,6 +553,7 @@ fn crates_io_checker_unknown_on_network_error() {
         "foo",
         "1.0.0",
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     ) {
         Ok(true) => PublisherState::Published,
@@ -580,6 +598,7 @@ fn winget_pr_sends_authorization_header_when_token_set() {
         &url,
         Some("secret-token"),
         &fast_retry(),
+        None,
         anodizer_core::test_helpers::test_logger(),
     )
     .expect("ok");
@@ -651,7 +670,7 @@ fn chocolatey_checker_submitted_is_in_moderation() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
     let source = format!("http://{}/", addr);
 
-    let checker = Chocolatey::new(source, fast_retry());
+    let checker = Chocolatey::new(source, fast_retry(), None);
     let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
     match state {
         PublisherState::InModeration { reason } => assert!(
@@ -670,7 +689,7 @@ fn chocolatey_checker_approved_is_published() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
     let source = format!("http://{}/", addr);
 
-    let checker = Chocolatey::new(source, fast_retry());
+    let checker = Chocolatey::new(source, fast_retry(), None);
     let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
     assert!(
         matches!(state, PublisherState::Published),
@@ -686,7 +705,7 @@ fn chocolatey_checker_404_is_clean() {
         spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
     let source = format!("http://{}/", addr);
 
-    let checker = Chocolatey::new(source, fast_retry());
+    let checker = Chocolatey::new(source, fast_retry(), None);
     let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
     assert!(
         matches!(state, PublisherState::Clean),
@@ -710,7 +729,7 @@ fn chocolatey_checker_present_without_hash_is_published() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
     let source = format!("http://{}/", addr);
 
-    let checker = Chocolatey::new(source, fast_retry());
+    let checker = Chocolatey::new(source, fast_retry(), None);
     let state = checker.check("foo", "1.0.0", anodizer_core::test_helpers::test_logger());
     assert!(
         matches!(state, PublisherState::Published),
@@ -747,25 +766,43 @@ struct CannedFactory {
 }
 
 impl CheckerFactory for CannedFactory {
-    fn cargo(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+    fn cargo(
+        &self,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
         Box::new(StaticChecker {
             name: "cargo",
             state: self.cargo_state.clone(),
         })
     }
-    fn chocolatey(&self, _source: String, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+    fn chocolatey(
+        &self,
+        _source: String,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
         Box::new(StaticChecker {
             name: "chocolatey",
             state: self.choco_state.clone(),
         })
     }
-    fn winget(&self, _token: Option<String>, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+    fn winget(
+        &self,
+        _token: Option<String>,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
         Box::new(StaticChecker {
             name: "winget",
             state: self.winget_state.clone(),
         })
     }
-    fn aur(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+    fn aur(
+        &self,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
         Box::new(StaticChecker {
             name: "aur",
             state: self.aur_state.clone(),
@@ -1249,16 +1286,34 @@ mod publish_simulation {
     }
 
     impl CheckerFactory for PanicFactory {
-        fn cargo(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+        fn cargo(
+            &self,
+            _policy: RetryPolicy,
+            _deadline: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
             Box::new(PanicChecker)
         }
-        fn chocolatey(&self, _src: String, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+        fn chocolatey(
+            &self,
+            _src: String,
+            _p: RetryPolicy,
+            _deadline: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
             Box::new(PanicChecker)
         }
-        fn winget(&self, _t: Option<String>, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+        fn winget(
+            &self,
+            _t: Option<String>,
+            _p: RetryPolicy,
+            _deadline: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
             Box::new(PanicChecker)
         }
-        fn aur(&self, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+        fn aur(
+            &self,
+            _p: RetryPolicy,
+            _deadline: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
             Box::new(PanicChecker)
         }
     }

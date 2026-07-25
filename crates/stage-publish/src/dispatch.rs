@@ -355,7 +355,10 @@ pub fn dispatch(
                         ));
                         Ok(state)
                     }
-                    None => p.reconcile(ctx),
+                    None => {
+                        let _scope = anodizer_core::retry::PublisherRetryScope::enter(p.name());
+                        p.reconcile(ctx)
+                    }
                 };
                 match reconciled {
                     Ok(ReconcileState::Complete { note }) => {
@@ -495,9 +498,11 @@ pub fn dispatch(
                 let _ = ctx.take_pending_outcome();
                 let _ = ctx.take_pending_evidence();
                 // Attribute any retry backoff this publisher incurs to its name
-                // so the run summary can name the flaky remote. Serial dispatch
-                // makes the scope exact — one publisher runs at a time.
-                let _retry_scope = anodizer_core::retry::RetryScope::enter(p.name());
+                // so the run summary can name the flaky remote, and anchor the
+                // one wall-clock retry budget every seam inside `run` observes.
+                // Serial dispatch makes the scope exact — one publisher runs at
+                // a time.
+                let _retry_scope = anodizer_core::retry::PublisherRetryScope::enter(p.name());
                 match p.run(ctx) {
                     Ok(mut evidence) => {
                         // If `run` recorded an outcome override (e.g.
@@ -2677,5 +2682,106 @@ mod tests {
             "a summary for a different tag must never match"
         );
         assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // -- one retry budget per publisher invocation ----------------------
+
+    /// A publisher that resolves `ctx.retry_deadline()` at several seams of
+    /// one `run` — an auth exchange, the request it authenticates, and a
+    /// cleanup that enters its own retry scope — recording each observation.
+    struct DeadlineProbe {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<Option<std::time::Instant>>>>,
+    }
+
+    impl Publisher for DeadlineProbe {
+        fn name(&self) -> &str {
+            "cargo"
+        }
+        fn group(&self) -> PublisherGroup {
+            PublisherGroup::Submitter
+        }
+        fn required(&self) -> bool {
+            false
+        }
+        fn skips_on_nightly(&self) -> bool {
+            false
+        }
+        fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+            let record = |d| self.seen.lock().unwrap().push(d);
+            record(ctx.retry_deadline());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            record(ctx.retry_deadline());
+            {
+                let _nested = anodizer_core::retry::PublisherRetryScope::enter("cargo: cleanup");
+                record(ctx.retry_deadline());
+            }
+            Ok(anodizer_core::PublishEvidence::new("cargo"))
+        }
+        fn rollback(
+            &self,
+            ctx: &mut Context,
+            _evidence: &anodizer_core::PublishEvidence,
+        ) -> anyhow::Result<()> {
+            self.seen.lock().unwrap().push(ctx.retry_deadline());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn every_seam_of_one_publisher_run_shares_a_single_retry_budget() {
+        // The hole this closes: `retry_deadline` used to mint `now + budget`
+        // per call, so a publisher touching three seams got three budgets and
+        // a wedged registry could spend `retry.max_elapsed` once per seam.
+        // Re-anchoring anywhere inside `run` — including via a fresh
+        // `PublisherRetryScope` — makes the observations diverge and this
+        // fails.
+        let mut ctx = Context::test_fixture();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let p: Box<dyn Publisher> = Box::new(DeadlineProbe {
+            seen: std::sync::Arc::clone(&seen),
+        });
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "every seam must have been reached");
+        let first = seen[0].expect("the dispatch seam must install a budget");
+        for (i, observed) in seen.iter().enumerate() {
+            assert_eq!(
+                *observed,
+                Some(first),
+                "seam {i} observed a different deadline — something re-anchored inside the publisher"
+            );
+        }
+    }
+
+    #[test]
+    fn a_publishers_rollback_gets_its_own_retry_budget() {
+        // The mirror of the above: `run` and the rollback that follows it are
+        // distinct invocations, so the rollback must anchor afresh rather than
+        // inherit a budget that was already spent publishing.
+        let mut ctx = Context::test_fixture();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = DeadlineProbe {
+            seen: std::sync::Arc::clone(&seen),
+        };
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(probe)];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default()).expect("Ok");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let row = report.results[0].clone();
+        let evidence = row
+            .evidence
+            .clone()
+            .expect("a succeeded run records evidence");
+        crate::rollback::execute_rollback_step(&row, &evidence, &publishers, &[], &mut ctx, "", "");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4, "three run seams plus the rollback seam");
+        let publish = seen[0].expect("publish anchors");
+        let rollback = seen[3].expect("rollback anchors");
+        assert!(
+            rollback > publish,
+            "rollback must anchor its own budget, got {rollback:?} <= {publish:?}"
+        );
     }
 }
