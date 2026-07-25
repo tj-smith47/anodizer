@@ -28,7 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       - name: Install actionlint
         working-directory: ${{ runner.temp }}
         run: |
@@ -39,29 +41,40 @@ jobs:
           curl -fsSL --retry 5 -O "${base}/actionlint_${version}_checksums.txt"
           grep " actionlint_${version}_linux_amd64.tar.gz\$" "actionlint_${version}_checksums.txt" | sha256sum -c -
           tar -xzf "actionlint_${version}_linux_amd64.tar.gz" actionlint
+
       - name: Lint workflows
         run: |
           "${RUNNER_TEMP}/actionlint" -color
+
       # yq ships preinstalled on the ubuntu-latest runner image.
       - name: Audit job timeouts
         run: .claude/scripts/audit-job-timeouts.sh
+
       - name: Audit gate mirror
         run: .claude/scripts/audit-gate-mirror.sh
+
       - name: Audit workflow lockstep
         run: .claude/scripts/audit-workflow-lockstep.sh
+
+      - name: Audit docsite source links
+        run: .claude/scripts/audit-doc-source-links.sh
 
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: rustfmt
           cache: "false"
           task: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check formatting
         run: task fmt:check
 
@@ -72,13 +85,17 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: clippy
           sccache: "true"
           task: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Clippy
         run: task clippy
 
@@ -87,12 +104,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           tools: cargo-audit
           cache: "false"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Audit dependencies for RUSTSEC advisories
         run: cargo audit
 
@@ -113,8 +134,11 @@ jobs:
       # here so both the build and upload steps gate on the same condition.
       RELEASE_BOOTSTRAP: ${{ github.ref == 'refs/heads/master' && matrix.os == 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           sccache: "true"
           task: "true"
@@ -123,6 +147,7 @@ jobs:
           # the gate hard-fails on (no silent skip) when nfpm is absent.
           nfpm: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # Make the WiX toolchain reachable so the Windows test shard actually
       # executes msi_is_byte_reproducible_across_time (the MSI determinism
       # verdict) instead of hermetically skipping. v3 ships preinstalled on the
@@ -139,11 +164,14 @@ jobs:
           # the step instead of being swallowed by `|| true` — which would let the
           # MSI determinism test silently revert to its skip-with-pass path.
           dotnet tool install --global wix || dotnet tool update --global wix
+
       - name: Tests
         run: task test
+
       - name: Build release binary
         if: env.RELEASE_BOOTSTRAP == 'true'
         run: task build
+
       - name: Upload release binary
         if: env.RELEASE_BOOTSTRAP == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -158,12 +186,16 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           sccache: "true"
           task: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Package all crates
         run: task package
 
@@ -174,9 +206,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
       - name: Validate release pipeline
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -190,10 +224,14 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           sccache: "true"
+
       - name: Validate README config blocks
         run: cargo xtask validate-readme
 
@@ -204,12 +242,17 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           sccache: "true"
+
       - name: Build anodize CLI
         run: cargo build --release -p anodizer
+
       - name: Validate .anodizer.yaml
         run: ./target/release/anodizer check config
 
@@ -221,15 +264,19 @@ jobs:
     # same headroom as the other real-build jobs in this workflow.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       # No sccache here (unlike the other Rust jobs): the guard rebuilds the
       # same crates twice to compare their C objects, and a compile cache
       # would return the same cached object for both builds regardless of
       # whether clang-cl codegen is actually deterministic, hiding the exact
       # regression this job exists to catch.
-      - uses: ./.github/actions/setup-rust
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Ensure clang-cl + nasm present
         shell: bash
         run: |
@@ -239,6 +286,7 @@ jobs:
           # step; append both so `require_on_path` in the guard sees them.
           printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
           printf '%s\n' 'C:\Program Files\NASM'     >> "$GITHUB_PATH"
+
       - name: Native object determinism (clang-cl)
         shell: bash
         run: bash scripts/native-object-determinism.sh
@@ -258,8 +306,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
           cache-key: ci-coverage
@@ -268,5 +319,6 @@ jobs:
           linux-packaging-tools: "true"
           nfpm: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run coverage and update badge
         run: task coverage:publish

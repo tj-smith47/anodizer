@@ -288,6 +288,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-gate-mirror.sh
 
+  audit:doc-source-links:
+    desc: "Guard: every crates/**.rs path cited in the docsite exists (god-file splits silently break these)."
+    cmds:
+      - .claude/scripts/audit-doc-source-links.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -303,6 +308,7 @@ tasks:
       - task: audit:repo-identity
       - task: audit:gate-mirror
       - task: audit:workflow-lockstep
+      - task: audit:doc-source-links
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

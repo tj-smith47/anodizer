@@ -15,6 +15,13 @@
 # actionlint flags it. The bound for that work lives on the jobs INSIDE the
 # called workflow (which this audit checks when it scans that file). Such jobs
 # are identified by a top-level `.uses` key and skipped here.
+#
+# A `${{ matrix.<key> }}` timeout is ACCEPTED, but only after every matrix leg
+# is resolved and checked: a per-shard bound is the honest shape when legs
+# differ structurally (a Windows leg that is minutes-slower than Linux should
+# not force every leg to carry the worst case). The expression is only as
+# strong as its legs, so a leg missing the key — or carrying a non-positive
+# value — fails exactly as a bare missing timeout does.
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -32,6 +39,22 @@ fi
 
 offenders=""
 checked=0
+
+# Resolve `${{ matrix.<key> }}` to the value each matrix leg supplies, one per
+# line. Reads both matrix shapes: `include:` entries and a bare `key: [a, b]`
+# axis. Prints nothing when the key is absent from the matrix entirely, which
+# the caller treats as a failure (an unresolvable timeout is an unbounded job).
+matrix_timeout_values() {
+    local file="$1" job="$2" key="$3"
+    # `include:` legs. A leg that omits the key yields the `absent` sentinel
+    # rather than an empty line, so "this leg is unbounded" stays reportable
+    # instead of collapsing into "no legs to check".
+    yq -r "(.jobs[\"${job}\"].strategy.matrix.include // [])[] | .[\"${key}\"] // \"absent\"" "$file"
+    # Bare `key: [a, b]` axis. The seq guard keeps a scalar axis value from
+    # being splatted, which yq would reject outright.
+    yq -r "(.jobs[\"${job}\"].strategy.matrix[\"${key}\"] // []) | select(tag == \"!!seq\") | .[]" "$file"
+}
+
 for f in "${FILES[@]}"; do
     # Emit one TSV row per non-reusable-workflow job: <job> <timeout-tag> <timeout-value>.
     # `tag` is yq's type tag ("!!int" only for a literal integer); a missing
@@ -51,9 +74,27 @@ for f in "${FILES[@]}"; do
     while IFS=$'\t' read -r job tag value; do
         [[ -z "$job" ]] && continue
         checked=$((checked + 1))
-        if [[ "$tag" != "!!int" || "$value" -le 0 ]]; then
-            offenders+="  ${f}: job '${job}' has no positive-integer timeout-minutes (found: ${value})"$'\n'
+        if [[ "$tag" == "!!int" && "$value" -gt 0 ]]; then
+            continue
         fi
+        if [[ "$value" =~ ^\$\{\{[[:space:]]*matrix\.([A-Za-z0-9_-]+)[[:space:]]*\}\}$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            legs=$(matrix_timeout_values "$f" "$job" "$key")
+            if [[ -z "$legs" ]]; then
+                offenders+="  ${f}: job '${job}' times out via ${value} but no matrix leg defines '${key}'"$'\n'
+                continue
+            fi
+            while IFS= read -r leg; do
+                [[ -z "$leg" ]] && continue
+                if [[ "$leg" == "absent" ]]; then
+                    offenders+="  ${f}: job '${job}' times out via ${value} but a matrix leg omits '${key}'"$'\n'
+                elif ! [[ "$leg" =~ ^[0-9]+$ ]] || [[ "$leg" -le 0 ]]; then
+                    offenders+="  ${f}: job '${job}' matrix leg sets ${key}=${leg}, not a positive integer"$'\n'
+                fi
+            done <<< "$legs"
+            continue
+        fi
+        offenders+="  ${f}: job '${job}' has no positive-integer timeout-minutes (found: ${value})"$'\n'
     done <<< "$rows"
 done
 
