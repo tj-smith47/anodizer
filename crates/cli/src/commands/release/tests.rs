@@ -1515,17 +1515,15 @@ fn map_head_tags_no_tags_at_head_is_noop() {
     assert!(selected.is_empty(), "no tags → no-op, empty selection");
 }
 
-/// Helper: drive the PRODUCTION tag→crate selection (the inner half of
-/// `map_head_tags_to_crates`, split out so the only thing it omits is the
-/// `git::get_tags_at_head()` read). Tests pass a fixed tag list the way
-/// the wrapper would after reading HEAD, so a regression in the real
-/// selection wiring — not a parallel mirror — is what fails.
+/// Helper: drive the PRODUCTION selection pipeline
+/// (`select_crates_for_head_tags` — filter + tag→crate mapping, the whole
+/// body of `map_head_tags_to_crates` minus only the `git::get_tags_at_head()`
+/// read). Tests pass a fixed tag list the way the wrapper would after reading
+/// HEAD, so dropping the ignore/nightly filter from the production wiring
+/// fails these tests.
 fn run_tag_mapping(crates: &[CrateConfig], head_tags: &[String]) -> Vec<String> {
     let log = StageLogger::new("test", Verbosity::Quiet);
-    // Mirror the wrapper's ignore-filter step so these tests cover the same
-    // two-stage path (filter, then select) production runs.
-    let kept = anodizer_core::git::filter_ignored_tags(head_tags, None, None);
-    select_crates_for_tags(&kept, crates, &log)
+    select_crates_for_head_tags(head_tags, crates, None, &log)
 }
 
 #[test]

@@ -66,13 +66,32 @@ pub(crate) fn map_head_tags_to_crates(
         return Ok(Vec::new());
     }
     log.verbose(&format!("tags at HEAD = {}", head_tags.join(", ")));
-    let kept = git::filter_ignored_tags(&head_tags, git_config, None);
+    Ok(select_crates_for_head_tags(
+        &head_tags,
+        all_known_crates,
+        git_config,
+        log,
+    ))
+}
+
+/// The whole selection pipeline for an already-read HEAD tag list: ignore /
+/// nightly filtering first, then tag→crate mapping. Everything that decides
+/// WHICH crates a tag list selects — including the filter step — lives here,
+/// so it is unit-testable without a git fixture; the wrapper above only adds
+/// the `git::get_tags_at_head()` read.
+pub(crate) fn select_crates_for_head_tags(
+    head_tags: &[String],
+    all_known_crates: &[CrateConfig],
+    git_config: Option<&anodizer_core::config::GitConfig>,
+    log: &StageLogger,
+) -> Vec<String> {
+    let kept = git::filter_ignored_tags(head_tags, git_config, None);
     for dropped in head_tags.iter().filter(|t| !kept.contains(t)) {
         log.verbose(&format!(
             "excluded tag '{dropped}' from crate selection (ignored or nightly-shaped)"
         ));
     }
-    Ok(select_crates_for_tags(&kept, all_known_crates, log))
+    select_crates_for_tags(&kept, all_known_crates, log)
 }
 
 /// Map a concrete list of tags to the set of crates they select, in

@@ -225,7 +225,6 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // opted-in displacement push still happens.
         let log = ctx.logger("publish");
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-        let version = ctx.version();
         let selected = ctx.options.selected_crates.clone();
         // (crate name, pkg name, feed source, republish opt-in) per active entry.
         let entries: Vec<(
@@ -263,7 +262,17 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             return Ok(ReconcileState::Absent);
         }
         let mut notes: Vec<String> = Vec::new();
-        for (_crate_name, pkg_name, source, republish) in &entries {
+        for (crate_name, pkg_name, source, republish) in &entries {
+            // Per-crate version: independent-version workspaces publish each
+            // crate at its OWN tag, so probing the global version would ask
+            // the feed about a version this entry never ships (mirrors the
+            // crate scoping `run()` applies before its own feed guard).
+            let version = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| Ok(ctx.version()),
+            )?;
             match package_feed_hash(source, pkg_name, &version, &policy, &log) {
                 FeedHashResult::Present {
                     status,

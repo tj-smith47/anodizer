@@ -183,18 +183,20 @@ impl PreflightChecker for Winget {
         // the PR `"New version: <PackageIdentifier> version <Version>"`, but
         // GitHub's `in:title` matches words independently so the query
         // works for any title that mentions both tokens.
-        match query_winget_pr(
-            "microsoft",
-            "winget-pkgs",
-            package,
-            version,
+        match query_open_version_pr(
+            &OpenPrQuery {
+                upstream_owner: "microsoft",
+                upstream_repo: "winget-pkgs",
+                package,
+                version,
+            },
             self.token.as_deref(),
             &self.policy,
             log,
         ) {
-            Ok(WingetPrLookup::Found(url)) => PublisherState::PRPending(url),
-            Ok(WingetPrLookup::NotFound) => PublisherState::Clean,
-            Ok(WingetPrLookup::ItemWithoutUrl) => PublisherState::Unknown {
+            Ok(OpenPrLookup::Found(url)) => PublisherState::PRPending(url),
+            Ok(OpenPrLookup::NotFound) => PublisherState::Clean,
+            Ok(OpenPrLookup::ItemWithoutUrl) => PublisherState::Unknown {
                 reason: "winget search response missing html_url".into(),
             },
             Err(e) => PublisherState::Unknown {
@@ -204,63 +206,65 @@ impl PreflightChecker for Winget {
     }
 }
 
-/// Three-way result for the winget PR lookup so the caller can distinguish
+/// Three-way result for an open-PR lookup so the caller can distinguish
 /// "no PR" from "PR row returned but `html_url` was missing" — the second
 /// case used to fall back to the listing URL, which is not a PR.
 #[derive(Debug)]
-pub(crate) enum WingetPrLookup {
+pub(crate) enum OpenPrLookup {
     Found(String),
     NotFound,
     ItemWithoutUrl,
 }
 
-/// Query the GitHub search API for open PRs in microsoft/winget-pkgs that
-/// mention `<package> <version>` in the title.
-///
-/// Returns `Ok(Some(url))` when a matching open PR is found, `Ok(None)`
-/// when no PR exists.
+/// Coordinates of an open-PR probe against an upstream index repository:
+/// "is there an open PR in `<upstream_owner>/<upstream_repo>` whose title
+/// mentions both `<package>` and `<version>`?"
+pub(crate) struct OpenPrQuery<'a> {
+    pub upstream_owner: &'a str,
+    pub upstream_repo: &'a str,
+    pub package: &'a str,
+    pub version: &'a str,
+}
+
+/// Query the GitHub search API for open PRs matching an [`OpenPrQuery`].
 ///
 /// Verified API shape (2026-05-13 against live PR #373590,
 /// `TJSmith.Anodizer 0.2.0`): the JSON has `total_count: u64`,
-/// `items: [{ html_url, title, state, ... }]`. The conventional anodizer
-/// PR title format is `"New version: <PackageIdentifier> version <Version>"`.
-/// GitHub's `in:title` operator matches words independently, so a query
-/// containing `<id>` + `<version>` finds the PR even though the title also
-/// contains the literal word "version".
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn query_winget_pr(
-    upstream_owner: &str,
-    upstream_repo: &str,
-    package: &str,
-    version: &str,
+/// `items: [{ html_url, title, state, ... }]`. GitHub's `in:title` operator
+/// matches words independently, so a query containing `<package>` +
+/// `<version>` finds the PR regardless of the exact title wording — the same
+/// probe serves winget's `"New version: <id> version <v>"`, homebrew's
+/// `"Update <formula> formula to <v>"`, scoop/nix/krew's equivalents.
+pub(crate) fn query_open_version_pr(
+    query: &OpenPrQuery<'_>,
     token: Option<&str>,
     policy: &RetryPolicy,
     log: &StageLogger,
-) -> Result<WingetPrLookup> {
-    let query = format!(
+) -> Result<OpenPrLookup> {
+    let q = format!(
         "repo:{}/{} is:pr is:open {} {} in:title",
-        upstream_owner, upstream_repo, package, version
+        query.upstream_owner, query.upstream_repo, query.package, query.version
     );
-    let encoded = anodizer_core::url::percent_encode_unreserved(&query);
+    let encoded = anodizer_core::url::percent_encode_unreserved(&q);
     // The [`PreflightChecker`] trait carries no env plumbing, so the base
     // resolves against the process env directly — the same source every
     // production caller of this override reads. Tests inject a responder
-    // URL via [`query_winget_pr_at`] instead.
+    // URL via [`query_open_version_pr_at`] instead.
     let base = anodizer_core::http::github_api_base(&anodizer_core::ProcessEnvSource);
     let url = format!("{}/search/issues?q={}&per_page=1", base, encoded);
-    query_winget_pr_at(&url, token, policy, log)
+    query_open_version_pr_at(&url, token, policy, log)
 }
 
-/// Variant of [`query_winget_pr`] that takes a pre-built URL. Sole call site
-/// for the HTTP+parse plumbing — exposed so tests can substitute a local
+/// Variant of [`query_open_version_pr`] that takes a pre-built URL. Sole call
+/// site for the HTTP+parse plumbing — exposed so tests can substitute a local
 /// mock-server URL while still exercising the retry / parse pipeline
 /// end-to-end.
-pub(super) fn query_winget_pr_at(
+pub(super) fn query_open_version_pr_at(
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
     log: &StageLogger,
-) -> Result<WingetPrLookup> {
+) -> Result<OpenPrLookup> {
     let token_clone = token.map(str::to_string);
     let url_clone = url.to_string();
     let label = format!("preflight: winget PR search ({})", url);
@@ -304,7 +308,7 @@ pub(super) fn query_winget_pr_at(
             // 422 = query validation error — treat as no-PR rather than
             // bubbling as Unknown (a malformed query is not a network blip).
             if status_code == 422 {
-                return Ok(WingetPrLookup::NotFound);
+                return Ok(OpenPrLookup::NotFound);
             }
             return Err(err);
         }
@@ -318,7 +322,7 @@ pub(super) fn query_winget_pr_at(
     let total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0);
 
     if total == 0 {
-        return Ok(WingetPrLookup::NotFound);
+        return Ok(OpenPrLookup::NotFound);
     }
 
     let pr_url = v
@@ -332,8 +336,8 @@ pub(super) fn query_winget_pr_at(
     // caller can flag it as Unknown rather than synthesizing a misleading
     // listing-page URL.
     match pr_url {
-        Some(u) => Ok(WingetPrLookup::Found(u)),
-        None => Ok(WingetPrLookup::ItemWithoutUrl),
+        Some(u) => Ok(OpenPrLookup::Found(u)),
+        None => Ok(OpenPrLookup::ItemWithoutUrl),
     }
 }
 

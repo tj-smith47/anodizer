@@ -479,16 +479,20 @@ fn is_nightly_tag_matches_minted_shapes_only() {
         "csi-v0.5.1-9a0d7ed0-nightly",
         "v1.2.3-nightly.4+abc1234",
         "app-v2.0.0-nightly",
+        "0.107.0-nightly.4+9f9c12c",
+        "app-nightly-v1.0.0-9a0d7ed0-nightly",
     ] {
         assert!(is_nightly_tag(t), "{t} must be nightly-shaped");
     }
-    // Real release tags — including a crate genuinely named `nightly-*` —
-    // must never be swallowed.
+    // Real release tags — including crates genuinely named `nightly-*` /
+    // `*-nightly` (the marker sits in the crate-prefix portion, before the
+    // `v<digit>` version start) — must never be swallowed.
     for t in [
         "v1.2.3",
         "core-v0.5.0",
         "v0.2.0-beta.3",
         "nightly-tools-v1.0.0",
+        "app-nightly-v1.0.0",
         "v1.0.0-rc.1",
         "vnightlyish-1.0.0",
     ] {

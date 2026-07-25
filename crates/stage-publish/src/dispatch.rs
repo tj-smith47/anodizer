@@ -246,8 +246,7 @@ pub fn dispatch(
             // Reconcile consult — ordered LAST in the skip cascade (after the
             // one-way-door gate, deselect, config-inactive, and nightly
             // checks) and BEFORE the lazy verify-gate eval and `run()`:
-            // * deselect must win the recorded skip reason (same precedent as
-            //   `deselect_wins_over_config_fully_inactive`) — the operator's
+            // * deselect must win the recorded skip reason — the operator's
             //   explicit signal is never masked by an inference;
             // * `reconcile()` is a network probe; a gated/deselected/inactive
             //   publisher must never pay for one;
@@ -280,32 +279,40 @@ pub fn dispatch(
                         snapshot(ctx, &report);
                         continue;
                     }
-                    Ok(ReconcileState::Diverged { detail }) if p.required() => {
-                        anyhow::bail!(
-                            "{}: this version is already published upstream with DIFFERENT \
-                             content — bump the version and re-release. {detail}",
-                            p.name()
-                        );
-                    }
                     Ok(ReconcileState::Diverged { detail }) => {
-                        // Optional + immutable-version-exists: cannot publish,
-                        // must not abort. required==false keeps the one-way-door
-                        // gate open (gate-neutral tolerated failure).
-                        ctx.logger("publish").warn(&format!(
-                            "{}: version already published with different content — cannot \
-                             republish (optional publisher, continuing): {detail}",
-                            p.name()
-                        ));
+                        // Immutable-version-exists with different content:
+                        // cannot publish, must not abort dispatch — `Err` is
+                        // reserved for catastrophic non-publisher failures, so
+                        // this records `Failed` like any publish failure.
+                        // Required: the failure closes the one-way-door gate
+                        // and the pipeline's normal failure machinery
+                        // (rollback dispatch, on_error hooks, report/summary
+                        // persistence) still runs. Optional: gate-neutral
+                        // tolerated failure.
+                        let msg = format!(
+                            "this version is already published upstream with DIFFERENT \
+                             content — bump the version and re-release. {detail}"
+                        );
+                        if p.required() {
+                            ctx.logger("publish").error(&format!("{}: {msg}", p.name()));
+                        } else {
+                            ctx.logger("publish").warn(&format!(
+                                "{}: version already published with different content — \
+                                 cannot republish (optional publisher, continuing): {detail}",
+                                p.name()
+                            ));
+                        }
                         report.results.push(PublisherResult {
                             name: p.name().into(),
                             group,
                             required: p.required(),
-                            outcome: PublisherOutcome::Failed(format!(
-                                "already published with different content: {detail}"
-                            )),
+                            outcome: PublisherOutcome::Failed(msg),
                             evidence: None,
                         });
                         snapshot(ctx, &report);
+                        if opts.fail_fast {
+                            break 'outer;
+                        }
                         continue;
                     }
                     Ok(ReconcileState::Absent) => {}
@@ -474,7 +481,11 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_diverged_required_aborts_with_bump_message() {
+    fn reconcile_diverged_required_records_failure_and_closes_gate() {
+        // Err from dispatch is reserved for catastrophic non-publisher
+        // failures: a required divergence must land in the REPORT (so the
+        // pipeline's rollback/on_error/persistence machinery still runs) and
+        // close the one-way-door gate for later submitters.
         let mut ctx = Context::test_fixture();
         let (p, run_calls, _) = fake_reconciling(
             "npm",
@@ -484,12 +495,94 @@ mod tests {
                 detail: "tarball sha mismatch".into(),
             },
         );
-        let err = dispatch(&[p], &mut ctx, &DispatchOptions::default())
-            .expect_err("required Diverged must abort");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("bump the version"), "{msg}");
-        assert!(msg.contains("npm"), "{msg}");
+        let (later, later_runs, later_reconciles) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        let report = dispatch(&[p, later], &mut ctx, &DispatchOptions::default())
+            .expect("required Diverged must be recorded, not bubbled");
         assert_eq!(run_calls.load(Ordering::SeqCst), 0);
+        match &report.results[0].outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(msg.contains("bump the version"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            report.submitter_gate_closed(),
+            "required divergence must close the one-way-door gate"
+        );
+        assert_eq!(
+            later_reconciles.load(Ordering::SeqCst),
+            0,
+            "a closed gate must skip the later submitter's probe"
+        );
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            report.results[1].outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+        ));
+    }
+
+    #[test]
+    fn reconcile_diverged_required_fail_fast_stops_dispatch() {
+        let mut ctx = Context::test_fixture();
+        let (p, _, _) = fake_reconciling(
+            "npm",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Diverged {
+                detail: "tarball sha mismatch".into(),
+            },
+        );
+        // Same group so the diverged publisher dispatches first (groups
+        // dispatch reversible-before-one-way-door; registry order holds
+        // within a group).
+        let (later, later_runs, _) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            false,
+            ReconcileState::Absent,
+        );
+        let opts = DispatchOptions {
+            fail_fast: true,
+            ..DispatchOptions::default()
+        };
+        let report = dispatch(&[p, later], &mut ctx, &opts).expect("Ok");
+        assert_eq!(
+            report.results.len(),
+            1,
+            "fail_fast must stop after the divergence"
+        );
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reconcile_not_consulted_for_simulated_failure_publisher() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.simulate_failure_publishers = vec!["cargo".to_string()];
+        let (p, run_calls, reconcile_calls) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            false,
+            ReconcileState::Complete {
+                note: "must not be consulted".into(),
+            },
+        );
+        let report = dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            0,
+            "a simulated-failure publisher must reach its failure path, not skip"
+        );
+        // The simulated failure must actually materialize as Failed, whether
+        // the fake runs or the dispatch layer injects it.
+        assert!(
+            matches!(report.results[0].outcome, PublisherOutcome::Failed(_))
+                || run_calls.load(Ordering::SeqCst) == 1
+        );
     }
 
     #[test]

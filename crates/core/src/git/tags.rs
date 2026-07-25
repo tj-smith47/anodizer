@@ -66,14 +66,25 @@ pub fn is_nightly_tag(tag: &str) -> bool {
     if tag == "nightly" {
         return true;
     }
+    // Only the VERSION portion may carry the nightly marker: a crate honestly
+    // named `app-nightly` must keep its stable `app-nightly-v1.0.0` tags. The
+    // version portion starts at the last `v<digit>` (per-crate tags are
+    // `<prefix>v<version>`); a tag with no `v<digit>` (bare-version templates
+    // like nushell's `0.107.0-nightly.4+sha`) is scanned whole.
+    let scan_from = tag
+        .char_indices()
+        .rfind(|&(i, c)| c == 'v' && tag[i + 1..].starts_with(|n: char| n.is_ascii_digit()))
+        .map(|(i, _)| i + 1)
+        .unwrap_or(0);
+    let scan = &tag[scan_from..];
     const DELIMS: [char; 3] = ['-', '.', '+'];
-    let bytes = tag.as_bytes();
+    let bytes = scan.as_bytes();
     let mut from = 0;
-    while let Some(pos) = tag[from..].find("nightly") {
+    while let Some(pos) = scan[from..].find("nightly") {
         let start = from + pos;
         let end = start + "nightly".len();
         let preceded = start > 0 && DELIMS.contains(&(bytes[start - 1] as char));
-        let followed = end == tag.len() || DELIMS.contains(&(bytes[end] as char));
+        let followed = end == scan.len() || DELIMS.contains(&(bytes[end] as char));
         if preceded && followed {
             return true;
         }
@@ -83,9 +94,26 @@ pub fn is_nightly_tag(tag: &str) -> bool {
 }
 
 /// Built-in `git describe --exclude` globs equivalent to [`is_nightly_tag`]
-/// for the describe-based previous-tag path (glob(7) bracket classes match
-/// the same delimited-`nightly`-token shapes).
-const NIGHTLY_EXCLUDE_GLOBS: [&str; 3] = ["nightly", "*[-.+]nightly", "*[-.+]nightly[-.+]*"];
+/// for the describe-based previous-tag path. Anchored the same way: the
+/// `nightly` token must follow a `v<digit>` version start (or begin a
+/// bare-version tag with a leading digit), so a crate named `app-nightly`
+/// keeps its stable `app-nightly-v1.0.0` tags visible to describe.
+const NIGHTLY_EXCLUDE_GLOBS: [&str; 5] = [
+    "nightly",
+    "*v[0-9]*[-.+]nightly",
+    "*v[0-9]*[-.+]nightly[-.+]*",
+    "[0-9]*[-.+]nightly",
+    "[0-9]*[-.+]nightly[-.+]*",
+];
+
+/// [`NIGHTLY_EXCLUDE_GLOBS`] rendered as `--exclude=<glob>` arguments for any
+/// `git describe` invocation that must not resolve to a nightly tag.
+pub(crate) fn nightly_exclude_describe_args() -> Vec<String> {
+    NIGHTLY_EXCLUDE_GLOBS
+        .iter()
+        .map(|pat| format!("--exclude={}", pat))
+        .collect()
+}
 
 /// Filter an arbitrary tag list through the user's `ignore_tags` (glob) /
 /// `ignore_tag_prefixes` (starts-with) config plus the unconditional
@@ -771,9 +799,7 @@ pub fn find_previous_tag_with_prefix_in(
     }
     // Unconditional nightly exclusion (see `is_nightly_tag`): git-side globs
     // so this path filters the same shapes the list-based paths do.
-    for pat in NIGHTLY_EXCLUDE_GLOBS {
-        exclude_args.push(format!("--exclude={}", pat));
-    }
+    exclude_args.extend(nightly_exclude_describe_args());
 
     // When monorepo_prefix is set, constrain git describe to only consider
     // tags matching this prefix. Without this, git describe would return

@@ -227,7 +227,7 @@ fn winget_pr_absent_on_empty_results() {
         "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
         addr
     );
-    let result = query_winget_pr_at(
+    let result = query_open_version_pr_at(
         &url,
         None,
         &fast_retry(),
@@ -235,7 +235,7 @@ fn winget_pr_absent_on_empty_results() {
     )
     .expect("ok");
     assert!(
-        matches!(result, WingetPrLookup::NotFound),
+        matches!(result, OpenPrLookup::NotFound),
         "no PR when total_count=0"
     );
 }
@@ -253,7 +253,7 @@ fn winget_pr_present_on_result() {
         "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
         addr
     );
-    let result = query_winget_pr_at(
+    let result = query_open_version_pr_at(
         &url,
         None,
         &fast_retry(),
@@ -261,7 +261,7 @@ fn winget_pr_present_on_result() {
     )
     .expect("ok");
     match result {
-        WingetPrLookup::Found(u) => assert!(u.contains("pull/9999"), "correct PR URL: {u}"),
+        OpenPrLookup::Found(u) => assert!(u.contains("pull/9999"), "correct PR URL: {u}"),
         other => panic!("expected Found, got: {:?}", std::mem::discriminant(&other)),
     }
 }
@@ -278,7 +278,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     );
     let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
     let url = format!("http://{}/search/issues", addr);
-    let result = query_winget_pr_at(
+    let result = query_open_version_pr_at(
         &url,
         None,
         &fast_retry(),
@@ -286,7 +286,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     )
     .expect("ok");
     assert!(
-        matches!(result, WingetPrLookup::ItemWithoutUrl),
+        matches!(result, OpenPrLookup::ItemWithoutUrl),
         "items[0] without html_url must surface as a distinct outcome"
     );
 }
@@ -303,7 +303,7 @@ fn winget_pr_malformed_json_is_error() {
     );
     let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
     let url = format!("http://{}/search/issues", addr);
-    let err = query_winget_pr_at(
+    let err = query_open_version_pr_at(
         &url,
         None,
         &fast_retry(),
@@ -352,7 +352,7 @@ fn winget_pr_422_maps_to_not_found() {
         "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 0\r\n\r\n",
     ]);
     let url = format!("http://{}/search/issues", addr);
-    let result = query_winget_pr_at(
+    let result = query_open_version_pr_at(
         &url,
         None,
         &fast_retry(),
@@ -360,7 +360,7 @@ fn winget_pr_422_maps_to_not_found() {
     )
     .expect("422 must be Ok(NotFound)");
     assert!(
-        matches!(result, WingetPrLookup::NotFound),
+        matches!(result, OpenPrLookup::NotFound),
         "422 must map to NotFound, got {result:?}"
     );
 }
@@ -375,7 +375,7 @@ fn winget_pr_server_error_bubbles_as_err() {
     let err500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nboo";
     let (addr, _calls) = spawn_oneshot_http_responder(vec![err500, err500, err500]);
     let url = format!("http://{}/search/issues", addr);
-    let err = query_winget_pr_at(
+    let err = query_open_version_pr_at(
         &url,
         Some("tok"),
         &fast_retry(),
@@ -510,10 +510,10 @@ fn winget_pr_sends_authorization_header_when_token_set() {
     );
     let (addr, captured) = spawn_request_capturing_responder(response);
     let url = format!("http://{}/search/issues", addr);
-    // `.expect()` propagates Result; discard the WingetPrLookup payload
+    // `.expect()` propagates Result; discard the OpenPrLookup payload
     // — this test asserts on the captured Authorization header side
     // effect, not the response body.
-    query_winget_pr_at(
+    query_open_version_pr_at(
         &url,
         Some("secret-token"),
         &fast_retry(),

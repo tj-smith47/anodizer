@@ -306,6 +306,38 @@ pub(crate) fn collect_winget_target(
 /// Anchors the winget activity (manifest generation, fork clone, push,
 /// PR submission) to a specific crate in the log so multi-crate
 /// workspaces are disambiguatable.
+/// Query the upstream index for an open PR matching `target`'s exact
+/// `<PackageIdentifier> <version>`, resolving the same repo token the
+/// submission path uses. Shared by `reconcile()` (all-crates fast-path) and
+/// `run()` (per-crate duplicate-PR self-skip).
+fn open_pr_for_target(
+    ctx: &Context,
+    crate_name: &str,
+    target: &WingetTarget,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<crate::preflight::OpenPrLookup> {
+    let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.winget.as_ref());
+    let token = util::resolve_repo_token(
+        ctx,
+        cfg.and_then(|w| w.repository.as_ref()),
+        Some("WINGET_PKGS_TOKEN"),
+    );
+    crate::preflight::query_open_version_pr(
+        &crate::preflight::OpenPrQuery {
+            upstream_owner: &target.upstream_owner,
+            upstream_repo: &target.upstream_repo,
+            package: &target.package_id,
+            version: &target.version,
+        },
+        token.as_deref(),
+        policy,
+        log,
+    )
+}
+
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate winget publish for '{}'", crate_name)
 }
@@ -399,13 +431,11 @@ impl anodizer_core::Publisher for WingetPublisher {
     fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
         use anodizer_core::ReconcileState;
         // `Complete` = an OPEN PR for this exact `<PackageIdentifier> <version>`
-        // already exists on the upstream — a re-run must not open a duplicate.
-        // A merged/closed PR is `Absent` (a republish proceeds), matching the
-        // dup-PR semantics the global preflight used to enforce as a hard
-        // blocker; here it becomes a local self-skip so the rest of the
-        // release converges instead of aborting. winget's `run()` has no
-        // duplicate-PR self-check of its own, so this override is what closes
-        // that gap once the preflight gate goes report-only.
+        // already exists on the upstream for EVERY active crate — a re-run
+        // must not open duplicates, so the whole publisher skips. A
+        // merged/closed PR is `Absent` (a republish proceeds). Mixed state
+        // (some PRs open, some missing) is `Absent`; `run()`'s own per-crate
+        // open-PR skip then submits only the missing ones.
         let log = ctx.logger("publish");
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
         let selected = ctx.options.selected_crates.clone();
@@ -439,30 +469,17 @@ impl anodizer_core::Publisher for WingetPublisher {
                 // decision (it no-ops with its own diagnostics).
                 return Ok(ReconcileState::Absent);
             };
-            let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
-                .and_then(|c| c.publish.as_ref())
-                .and_then(|p| p.winget.as_ref());
-            let token =
-                util::resolve_repo_token(ctx, cfg.and_then(|w| w.repository.as_ref()), None);
-            match crate::preflight::query_winget_pr(
-                &target.upstream_owner,
-                &target.upstream_repo,
-                &target.package_id,
-                &target.version,
-                token.as_deref(),
-                &policy,
-                &log,
-            ) {
-                Ok(crate::preflight::WingetPrLookup::Found(url)) => {
+            match open_pr_for_target(ctx, crate_name, &target, &policy, &log) {
+                Ok(crate::preflight::OpenPrLookup::Found(url)) => {
                     notes.push(format!(
                         "open PR for {} {}: {url}",
                         target.package_id, target.version
                     ));
                 }
-                Ok(crate::preflight::WingetPrLookup::NotFound) => {
+                Ok(crate::preflight::OpenPrLookup::NotFound) => {
                     return Ok(ReconcileState::Absent);
                 }
-                Ok(crate::preflight::WingetPrLookup::ItemWithoutUrl) => {
+                Ok(crate::preflight::OpenPrLookup::ItemWithoutUrl) => {
                     return Ok(ReconcileState::Unknown {
                         reason: "winget search response missing html_url".into(),
                     });
@@ -537,6 +554,31 @@ impl anodizer_core::Publisher for WingetPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| {
                     let target = collect_winget_target(ctx, crate_name, &log)?;
+                    // Per-crate duplicate-PR self-skip: an open upstream PR
+                    // for this exact package+version means this crate's
+                    // submission already exists, and pushing again would open
+                    // a duplicate — a mixed-state re-run (crate A's PR open,
+                    // crate B's missing) must submit only B. The skipped
+                    // crate records no target: this run pushed nothing for
+                    // it, so rollback must not touch the earlier run's PR.
+                    // Probe failures fall through to publish (the fail-safe
+                    // direction; the upstream's own dup handling backstops).
+                    if let Some(ref t) = target
+                        && !ctx.is_dry_run()
+                        && let Ok(crate::preflight::OpenPrLookup::Found(url)) = open_pr_for_target(
+                            ctx,
+                            crate_name,
+                            t,
+                            &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+                            &log,
+                        )
+                    {
+                        log.status(&format!(
+                            "skipping winget submission for '{}' — open PR already exists: {url}",
+                            crate_name
+                        ));
+                        return Ok(None);
+                    }
                     publish_to_winget(ctx, crate_name, &log)?;
                     Ok(target)
                 },

@@ -183,6 +183,11 @@ pub fn count_commits_since_last_tag_in(cwd: &Path, monorepo_prefix: Option<&str>
         match_arg = format!("--match={}*", prefix);
         describe_args.push(&match_arg);
     }
+    // A stranded nightly tag at/near HEAD must not reset the counter — the
+    // count is "commits since the last VERSION tag", and nightly tags are
+    // never a version signal (same exclusion as the previous-tag paths).
+    let exclude_args: Vec<String> = crate::git::tags::nightly_exclude_describe_args();
+    describe_args.extend(exclude_args.iter().map(String::as_str));
     describe_args.push("HEAD");
     let range = match git_output_in(cwd, &describe_args) {
         Ok(tag) if !tag.is_empty() => format!("{tag}..HEAD"),
