@@ -494,6 +494,44 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // EmissionValidateStage presence
+    //
+    // Both from-scratch builders re-validate the binstall / nix / version-sync
+    // emissions against the produced asset set, so a 404-class `pkg_url` fails
+    // the run instead of a consumer's `cargo binstall`. The release-vs-merge
+    // and release-vs-publish sequence comparisons cannot catch its removal:
+    // the stage lives in `push_artifact_stages`, so deleting it drops it from
+    // BOTH sides of every comparison at once and they stay green. Presence and
+    // placement therefore need their own assertion.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_scratch_pipelines_run_emission_validate_after_checksum_before_publish() {
+        for (pipeline, names) in [
+            (
+                "build_release_pipeline",
+                build_release_pipeline().stage_names(),
+            ),
+            ("build_merge_pipeline", build_merge_pipeline().stage_names()),
+        ] {
+            let emission = idx(&names, "emission-validate", pipeline);
+            let checksum = idx(&names, "checksum", pipeline);
+            let publish = idx(&names, "publish", pipeline);
+            assert!(
+                checksum < emission,
+                "{pipeline}: checksum (idx {checksum}) must precede emission-validate \
+                 (idx {emission}) so the cross-checks see every asset; got {names:?}"
+            );
+            assert!(
+                emission < publish,
+                "{pipeline}: emission-validate (idx {emission}) must precede publish \
+                 (idx {publish}) so a broken emission aborts before anything ships; \
+                 got {names:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // PrePublishGuardStage ordering
     //
     // The guard must sit AFTER ReleaseStage (so `ReleaseURL` is in ctx for the
