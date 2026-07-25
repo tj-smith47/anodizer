@@ -181,10 +181,15 @@ pub fn publish_to_cargo(
     // path). Skipped in dry-run and under `--skip=cargo`: neither reaches a
     // real publish, so there is nothing to mint (and no network round-trip).
     let retry_policy = ctx.retry_policy();
+    // One wall-clock budget for the whole cargo publish sequence — the OIDC
+    // mint, the publish loop and the token revoke share it. `retry_deadline()`
+    // re-anchors at `now` on every call, so resolving it per step would hand a
+    // wedged endpoint a fresh `retry.max_elapsed` at each one.
+    let retry_deadline = ctx.retry_deadline();
     let minted = if ctx.is_dry_run() || ctx.should_skip("cargo") {
         None
     } else {
-        resolve_workspace_cargo_token(ctx, &retry_policy, log)?
+        resolve_workspace_cargo_token(ctx, &retry_policy, retry_deadline, log)?
     };
 
     // Overlay the minted token onto the context as `CARGO_REGISTRY_TOKEN` for
@@ -220,7 +225,7 @@ pub fn publish_to_cargo(
         let published_something = !record.is_empty();
         let defer_for_rollback = result.is_err() && published_something;
         if !defer_for_rollback && let Some(token) = ctx.end_cargo_trusted_publishing() {
-            oidc::revoke_trusted_publishing_token(&token, &retry_policy, log);
+            oidc::revoke_trusted_publishing_token(&token, &retry_policy, retry_deadline, log);
         }
     }
     result
@@ -245,6 +250,7 @@ pub fn publish_to_cargo(
 pub(crate) fn resolve_workspace_cargo_token(
     ctx: &Context,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<Option<String>> {
     use anodizer_core::config::CargoAuthMode;
@@ -298,14 +304,14 @@ pub(crate) fn resolve_workspace_cargo_token(
         .any(|(cargo, _)| cargo.resolved_auth() == CargoAuthMode::Auto);
 
     if any_strict_oidc {
-        return oidc::mint_trusted_publishing_token(ctx, policy, log).map(Some);
+        return oidc::mint_trusted_publishing_token(ctx, policy, deadline, log).map(Some);
     }
     if any_auto {
         if ambient_token_present {
             return Ok(None);
         }
         if oidc_available {
-            return oidc::mint_trusted_publishing_token(ctx, policy, log).map(Some);
+            return oidc::mint_trusted_publishing_token(ctx, policy, deadline, log).map(Some);
         }
         anyhow::bail!(
             "cargo: no credential available to publish to crates.io. Set \

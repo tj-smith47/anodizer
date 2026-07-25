@@ -18,12 +18,12 @@
 //! threads the request env through), PyPI is uploaded directly over HTTP, so
 //! anodizer performs the exchange itself.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::RetryPolicy;
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
@@ -76,10 +76,16 @@ pub(crate) fn mint_token_url(repository: &str) -> Option<String> {
 /// Exchange the ambient GitHub Actions OIDC identity for a short-lived PyPI
 /// upload token. Errors (never falls back to a token) if the request env is
 /// absent, the index is not a Trusted-Publishing host, or either hop fails.
+///
+/// `deadline` is the publish sequence's wall-clock retry budget, resolved once
+/// by the caller and shared by both hops (and by the uploads that follow):
+/// `Context::retry_deadline` re-anchors at `now` on every call, so minting one
+/// per hop would hand a wedged endpoint `retry.max_elapsed` twice over.
 pub(crate) fn mint_trusted_publishing_token(
     ctx: &Context,
     repository: &str,
     policy: &RetryPolicy,
+    deadline: Option<Instant>,
     log: &StageLogger,
 ) -> Result<String> {
     let mint_url = mint_token_url(repository).ok_or_else(|| {
@@ -97,7 +103,7 @@ pub(crate) fn mint_trusted_publishing_token(
         |k| ctx.env_var(k),
         PYPI_AUDIENCE,
         policy,
-        ctx.retry_deadline(),
+        deadline,
         log,
         "pypi",
     )?;
@@ -107,26 +113,8 @@ pub(crate) fn mint_trusted_publishing_token(
 
     // Hop 2: exchange the JWT for a short-lived PyPI upload token.
     let body_json = serde_json::json!({ "token": id_token }).to_string();
-    let (_, mint_body) = retry_http_blocking(
-        RetryLog::new("pypi: Trusted Publishing mint-token", log),
-        policy,
-        SuccessClass::Strict,
-        |_| {
-            client
-                .post(&mint_url)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .body(body_json.clone())
-                .send()
-        },
-        |status, body| {
-            format!(
-                "pypi: POST {} returned HTTP {}: {}",
-                mint_url,
-                status,
-                redact_bearer_tokens(body)
-            )
-        },
+    let mint_body = actions_oidc::post_mint_token(
+        &client, &mint_url, &body_json, policy, deadline, log, "pypi",
     )
     // A refused mint that Warehouse returns as HTTP 4xx (e.g. 422) fast-fails
     // here rather than reaching the success:false branch below, so the

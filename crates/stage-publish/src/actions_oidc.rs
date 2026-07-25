@@ -8,8 +8,11 @@
 //! then exchanges the JWT at its own registry endpoint (hop 2): the MCP
 //! registry's `/v0/auth/github-oidc`, PyPI's `/_/oidc/mint-token`, etc.
 //!
-//! Hop 1 is identical across publishers, so it lives here; hop 2 stays with
-//! each publisher since the endpoint and response shape differ.
+//! Hop 1 is identical across publishers, so it lives here. Hop 2's transport is
+//! identical for the two token-minting publishers (cargo and pypi both POST a
+//! one-field JSON body and read a JSON body back), so the request itself lives
+//! here too as [`post_mint_token`]; the endpoint, the request field name and the
+//! response shape stay with each publisher.
 
 use std::time::Duration;
 
@@ -114,4 +117,141 @@ pub(crate) fn request_id_token(
         bail!("{who}: Actions id-token response missing value");
     }
     Ok(parsed.value)
+}
+
+/// Hop 2's request: POST `body_json` to a registry's Trusted-Publishing
+/// mint-token endpoint and return the raw response body for the caller to
+/// parse. `who` prefixes every error/log message. Shared by the cargo and pypi
+/// publishers — crates.io and Warehouse take the identical request shape and
+/// differ only in the JSON field name (built by the caller) and the response
+/// envelope (parsed by the caller).
+///
+/// `deadline` is the caller's wall-clock retry budget
+/// ([`anodizer_core::context::Context::retry_deadline`]), resolved ONCE for the
+/// whole exchange: a wedged mint endpoint stops when the next backoff would
+/// cross it, rather than running the full attempt ladder after hop 1 already
+/// spent part of the budget.
+pub(crate) fn post_mint_token(
+    client: &reqwest::blocking::Client,
+    mint_url: &str,
+    body_json: &str,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    log: &StageLogger,
+    who: &str,
+) -> Result<String> {
+    let desc = format!("{who}: Trusted Publishing mint-token");
+    let (_, body) = retry_http_blocking_deadline(
+        RetryLog::new(&desc, log),
+        policy,
+        deadline,
+        SuccessClass::Strict,
+        |_| {
+            client
+                .post(mint_url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .body(body_json.to_string())
+                .send()
+        },
+        |status, body| {
+            format!(
+                "{who}: POST {} returned HTTP {}: {}",
+                mint_url,
+                status,
+                redact_bearer_tokens(body)
+            )
+        },
+    )?;
+    Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    const SERVER_ERROR: &str = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+
+    fn log() -> StageLogger {
+        StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    fn client() -> reqwest::blocking::Client {
+        anodizer_core::http::blocking_client(Duration::from_secs(5)).expect("client")
+    }
+
+    /// A ladder whose attempts are individually cheap but collectively slow:
+    /// running it to exhaustion sleeps ~9s across 10 attempts, so one attempt
+    /// in milliseconds proves the deadline (not the attempt count) stopped it.
+    fn slow_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 10,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn mint_token_post_stops_on_an_already_elapsed_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![SERVER_ERROR; 10]);
+        let url = format!("http://{addr}/_/oidc/mint-token");
+        let start = Instant::now();
+        let err = post_mint_token(
+            &client(),
+            &url,
+            r#"{"jwt":"id-token"}"#,
+            &slow_policy(),
+            Some(Instant::now()),
+            &log(),
+            "cargo",
+        )
+        .expect_err("a wedged mint endpoint must surface an error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("cargo: POST") && chain.contains("503"),
+            "{chain}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "an already-elapsed deadline must stop after ONE attempt, not run the ladder"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "deadline check must skip the backoff sleep, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn mint_token_post_runs_the_full_ladder_without_a_deadline() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![SERVER_ERROR; 3]);
+        let url = format!("http://{addr}/_/oidc/mint-token");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let err = post_mint_token(
+            &client(),
+            &url,
+            r#"{"token":"id-token"}"#,
+            &policy,
+            None,
+            &log(),
+            "pypi",
+        )
+        .expect_err("a wedged mint endpoint must surface an error");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("pypi: POST"), "{chain}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "no deadline → run the full attempt ladder"
+        );
+    }
 }

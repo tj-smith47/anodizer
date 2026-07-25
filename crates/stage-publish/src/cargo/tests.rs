@@ -2940,6 +2940,7 @@ fn resolve_token_mode_returns_none_without_any_env() {
     let got = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect("token mode never errors during resolution");
@@ -2961,6 +2962,7 @@ fn resolve_auto_with_ambient_token_returns_none() {
     let got = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect("auto with a token never errors");
@@ -2980,6 +2982,7 @@ fn resolve_auto_without_token_or_oidc_bails() {
     let err = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect_err("auto with no credential must bail");
@@ -3009,6 +3012,7 @@ fn resolve_oidc_against_custom_registry_bails() {
     let err = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect_err("oidc + custom registry is unsupported");
@@ -3026,6 +3030,7 @@ fn resolve_no_active_cargo_config_returns_none() {
     let got = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect("no active cargo config never errors");
@@ -3052,6 +3057,7 @@ fn resolve_ignores_deselected_sibling_oidc_block() {
     let got = resolve_workspace_cargo_token(
         &ctx,
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &quiet_log(),
     )
     .expect("deselected y's auth:oidc must not be considered; x's ambient token resolves cleanly");
@@ -3081,7 +3087,7 @@ fn resolve_auto_without_token_but_oidc_context_routes_to_mint() {
         base_delay: std::time::Duration::from_millis(1),
         max_delay: std::time::Duration::from_millis(1),
     };
-    let err = resolve_workspace_cargo_token(&ctx, &no_retry, &quiet_log())
+    let err = resolve_workspace_cargo_token(&ctx, &no_retry, None, &quiet_log())
         .expect_err("mint against an unreachable OIDC endpoint fails");
     assert!(
         !err.to_string().contains("no credential available"),

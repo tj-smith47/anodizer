@@ -427,7 +427,10 @@ impl anodizer_core::Publisher for CargoPublisher {
         // and it is neither revoked nor disturbed.
         if let Some(token) = ctx.end_cargo_trusted_publishing() {
             let policy = ctx.retry_policy();
-            super::oidc::revoke_trusted_publishing_token(&token, &policy, &log);
+            // The rollback is its own sequence (the publish budget belongs to a
+            // call that already returned), so it anchors one budget here.
+            let deadline = ctx.retry_deadline();
+            super::oidc::revoke_trusted_publishing_token(&token, &policy, deadline, &log);
         }
         Ok(())
     }

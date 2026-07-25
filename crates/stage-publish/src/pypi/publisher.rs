@@ -79,6 +79,7 @@ pub(crate) fn resolve_upload_credential(
     cfg: &PypiConfig,
     repository: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
     label: &str,
     log: &StageLogger,
 ) -> Result<String> {
@@ -101,7 +102,7 @@ pub(crate) fn resolve_upload_credential(
         // documented "Unused when auth: oidc", so it is never resolved here — a
         // malformed inline `token:` template must not abort an OIDC-only run.
         PypiAuthMode::Oidc => {
-            super::oidc::mint_trusted_publishing_token(ctx, repository, policy, log)
+            super::oidc::mint_trusted_publishing_token(ctx, repository, policy, deadline, log)
         }
         // A token when present, else Trusted Publishing when an OIDC context is
         // available, else a hard error naming both paths. A `token:` template
@@ -113,7 +114,9 @@ pub(crate) fn resolve_upload_credential(
             Ok(token) if !token.is_empty() => Ok(token),
             token_result => {
                 if super::oidc::oidc_context_available(ctx) {
-                    super::oidc::mint_trusted_publishing_token(ctx, repository, policy, log)
+                    super::oidc::mint_trusted_publishing_token(
+                        ctx, repository, policy, deadline, log,
+                    )
                 } else {
                     // No OIDC fallback: surface a token-render error if there
                     // was one, else the no-credential guidance.
@@ -386,6 +389,10 @@ pub(crate) fn publish_to_pypi(
         _ => return Ok(()),
     };
     let policy = ctx.retry_policy();
+    // One wall-clock budget for the whole pypi sequence — the OIDC mint and
+    // every file upload share it. `retry_deadline()` re-anchors at `now` on
+    // every call, so resolving it per step would hand a wedged endpoint a fresh
+    // `retry.max_elapsed` at each one.
     let deadline = ctx.retry_deadline();
 
     for (idx, cfg) in entries.iter().enumerate() {
@@ -567,7 +574,8 @@ pub(crate) fn publish_to_pypi(
         }
 
         // ---- Credential + upload ----
-        let token = resolve_upload_credential(ctx, cfg, &repository, &policy, &label, log)?;
+        let token =
+            resolve_upload_credential(ctx, cfg, &repository, &policy, deadline, &label, log)?;
         let client = anodizer_core::http::blocking_client(Duration::from_secs(60))
             .context("pypi: build HTTP client")?;
         for f in &dist_files {

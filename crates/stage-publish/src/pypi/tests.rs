@@ -1428,6 +1428,7 @@ fn oidc_mint_errors_without_request_env() {
         &ctx,
         "https://upload.pypi.org/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &ctx.logger("publish"),
     )
     .expect_err("missing OIDC request env must error");
@@ -1459,6 +1460,7 @@ fn oidc_mode_ignores_a_malformed_inline_token() {
         &cfg,
         "https://upload.pypi.org/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         "pypis[0]",
         &ctx.logger("publish"),
     )
@@ -1503,6 +1505,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
         // Custom index → the mint path fast-fails deterministically offline.
         "https://pypi.example.com/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         "pypis[0]",
         &ctx.logger("publish"),
     )
@@ -1539,6 +1542,7 @@ fn auto_mode_surfaces_the_token_render_error_without_oidc() {
         &cfg,
         "https://upload.pypi.org/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         "pypis[0]",
         &ctx.logger("publish"),
     )
@@ -1566,6 +1570,7 @@ fn oidc_mint_errors_on_custom_index() {
         &ctx,
         "https://pypi.example.com/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+        None,
         &ctx.logger("publish"),
     )
     .expect_err("custom index must error under oidc");
