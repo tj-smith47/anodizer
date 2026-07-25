@@ -8,26 +8,59 @@ sort_by = "weight"
 
 # What works (with proof)
 
-This page is the dogfood test for anodizer. Every feature has one of two
-statuses, and the proof is always something you can open in your browser:
-a release artifact, a published package, or a public registry entry. We
-don't ask you to read source code to verify our claims.
+This page is the dogfood test for anodizer. Every feature carries a status and
+a link, and the status tells you exactly what the link proves.
 
 ## How to read this page
 
 | Status | Means |
 |---|---|
-| ✅ **Verified** | anodizer, cfgd, or brontes ships with it. Click the link to see the public artifact. |
-| ✅ **Verified (tests)** | Implemented and covered by tests; the production codepath awaits a live release that exercises it. The link points at the test or source path. |
-| 🟡 **In progress** | Config is wired and the artifact is built in CI; a public release asset lands on the next release. |
-| ⏳ **Pending** | Implemented and live-wired, but the code path only fires on a condition no release has hit yet (a failure path, an optional override, an output no workflow consumes). Awaits a real run that exercises it. |
-| 🤝 **Help wanted** | Tests pass. We can't validate the production path ourselves: paid account, missing runtime, or a target that doesn't fit our projects. Open an issue if you want to validate it on yours. |
+| ✅ **Verified** | The feature runs on real releases of anodizer, cfgd, or brontes. |
+| ✅ **Verified (tests)** | Implemented and covered by tests; no live release has exercised the code path. The link points at the implementation or its tests. |
+| ⏳ **Pending** | Wired into a live config, but the code path only fires on a condition no release has hit yet: a failure branch, an override nothing passes, an output no workflow consumes, or an upstream gate we're waiting on. |
+| 🤝 **Help wanted** | Tests pass. We can't run the production path ourselves: a paid account, a missing runtime, or a target that doesn't fit any of our three projects. Open an issue if you want to validate it on yours. |
+| ⛔ **Removed (date)** | The surface was deleted. The row stays, with the run evidence that motivated the removal, so the history isn't rewritten. |
+
+### What the link is
+
+A ✅ **Verified** row links the strongest evidence that exists for that feature,
+in this order:
+
+1. **A public artifact** — a release asset, a package page, a registry entry, an
+   image tag. Roughly a quarter of the ✅ rows have one, and it is always
+   preferred.
+2. **The live config or workflow that ran it**, for features that leave no
+   separate artifact of their own: a checksum algorithm, a template variable, a
+   retry budget, a publisher gate. The linked `.anodizer.yaml` or workflow file
+   is the one that executed on the releases listed below; where a specific run
+   demonstrated it, the run URL is cited alongside.
+3. **The implementation, plus the run log line it emitted**, for behavior that
+   is only observable in a release's output — a rollback that fired, a gate that
+   skipped a publisher, a warning that surfaced.
+
+So: a ✅ row always means *this ran*. It does not always mean *there is a file
+you can download because it ran* — many of these features exist precisely so
+that no extra file appears. Where the only evidence is a test, the status says
+**Verified (tests)** instead, and never ✅ Verified.
+
+### Config mode
+
+anodizer runs in three configuration modes and a few features behave
+differently in each, so those rows name the mode they were proven in:
+
+| Mode | Shape | Proven by |
+|---|---|---|
+| **Lockstep** | one workspace, all crates share a version and one `v<version>` tag | anodizer |
+| **Per-crate** | `workspaces:` entries with independent versions, tags, and cadences | cfgd |
+| **Single-crate** | one crate, no workspace | brontes |
+
+Rows without a mode annotation behave identically in all three.
 
 Three public projects use anodizer to ship themselves:
 
-- **anodizer**, releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.16.0](https://github.com/tj-smith47/anodizer/releases/tag/v0.16.0).
-- **cfgd**, a 4-crate workspace (CLI + lib + operator + CSI driver) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.5.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.5.0).
-- **brontes**, a single-crate library (clap → MCP server toolkit) at [github.com/tj-smith47/brontes/releases](https://github.com/tj-smith47/brontes/releases). Latest: [v0.2.1](https://github.com/tj-smith47/brontes/releases/tag/v0.2.1). Library-only pipeline: changelog → source tarball → source SBOM → keyless sign → attestation → cargo publish.
+- **anodizer**, a lockstep workspace (every crate shares one version and one `v<version>` tag) at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.23.0](https://github.com/tj-smith47/anodizer/releases/tag/v0.23.0).
+- **cfgd**, a per-crate workspace (CRD + lib + CLI + operator + CSI driver, five `workspaces:` entries on independent cadences) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.6.1](https://github.com/tj-smith47/cfgd/releases/tag/v0.6.1).
+- **brontes**, a single crate (clap → MCP server toolkit) at [github.com/tj-smith47/brontes/releases](https://github.com/tj-smith47/brontes/releases). Latest: [v0.3.0](https://github.com/tj-smith47/brontes/releases/tag/v0.3.0). Library-only pipeline: changelog → source tarball → source SBOM → keyless sign → attestation → cargo publish.
 
 When a row says "lives on `<package manager>`", click through and you'll
 land on the live page. Where multiple examples exist (one per project), we
