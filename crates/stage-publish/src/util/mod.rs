@@ -85,7 +85,8 @@ pub(crate) use parallelism::{
     run_token_revert_rollback,
 };
 pub(crate) use pr::{
-    PrOrigin, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env, submit_pr_via_gh_with_opts,
+    PrOrigin, PrReconcileTarget, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env,
+    reconcile_open_prs, resolve_upstream_coords, submit_pr_via_gh_with_opts,
     submit_pr_via_gh_with_opts_with_env,
 };
 pub(crate) use template::{

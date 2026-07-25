@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 /// evaluates falsy. Logs the reason. Shared by the live `publish_cask` and the
 /// validator-facing `render_homebrew_cask_for_crate` so the gate is defined
 /// once.
-fn cask_skip_gates_trip(
+pub(super) fn cask_skip_gates_trip(
     ctx: &Context,
     hb_cfg: &anodizer_core::config::HomebrewConfig,
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,

@@ -185,6 +185,7 @@ impl PreflightChecker for Winget {
         // works for any title that mentions both tokens.
         match query_open_version_pr(
             &OpenPrQuery {
+                publisher: self.publisher_name(),
                 upstream_owner: "microsoft",
                 upstream_repo: "winget-pkgs",
                 package,
@@ -220,6 +221,11 @@ pub(crate) enum OpenPrLookup {
 /// "is there an open PR in `<upstream_owner>/<upstream_repo>` whose title
 /// mentions both `<package>` and `<version>`?"
 pub(crate) struct OpenPrQuery<'a> {
+    /// Publisher name for log lines and error text. The probe is shared by
+    /// winget, homebrew, homebrew-core, scoop, nix and krew, so a hard-coded
+    /// label would misattribute every failure to whichever one it was
+    /// written for.
+    pub publisher: &'a str,
     pub upstream_owner: &'a str,
     pub upstream_repo: &'a str,
     pub package: &'a str,
@@ -252,7 +258,7 @@ pub(crate) fn query_open_version_pr(
     // URL via [`query_open_version_pr_at`] instead.
     let base = anodizer_core::http::github_api_base(&anodizer_core::ProcessEnvSource);
     let url = format!("{}/search/issues?q={}&per_page=1", base, encoded);
-    query_open_version_pr_at(&url, token, policy, log)
+    query_open_version_pr_at(query.publisher, &url, token, policy, log)
 }
 
 /// Variant of [`query_open_version_pr`] that takes a pre-built URL. Sole call
@@ -260,6 +266,7 @@ pub(crate) fn query_open_version_pr(
 /// mock-server URL while still exercising the retry / parse pipeline
 /// end-to-end.
 pub(super) fn query_open_version_pr_at(
+    publisher: &str,
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
@@ -267,7 +274,7 @@ pub(super) fn query_open_version_pr_at(
 ) -> Result<OpenPrLookup> {
     let token_clone = token.map(str::to_string);
     let url_clone = url.to_string();
-    let label = format!("preflight: winget PR search ({})", url);
+    let label = format!("preflight: {publisher} PR search ({url})");
 
     let client = blocking_client(Duration::from_secs(15))?;
     let result = retry_http_blocking(
@@ -288,8 +295,9 @@ pub(super) fn query_open_version_pr_at(
         },
         |status, body| {
             format!(
-                "preflight: GitHub search API returned {} for winget PR check: {}",
+                "preflight: GitHub search API returned {} for {} PR check: {}",
                 status,
+                publisher,
                 anodizer_core::redact::redact_bearer_tokens(body)
             )
         },
@@ -318,7 +326,7 @@ pub(super) fn query_open_version_pr_at(
     // Unknown — silently coalescing to `Null` makes a corrupted response
     // indistinguishable from "no PR" (Clean).
     let v: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("malformed winget search response: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("malformed {} PR search response: {}", publisher, e))?;
     let total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0);
 
     if total == 0 {

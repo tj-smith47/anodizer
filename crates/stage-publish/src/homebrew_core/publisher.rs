@@ -741,6 +741,53 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         out
     }
 
+    /// Open-PR reconcile: `Complete` when every active entry's formula
+    /// already has an open bump PR upstream for this exact version.
+    ///
+    /// A homebrew-core bump is a PR against a moderated index, so an open PR
+    /// IS the completed outcome — re-running would re-clone, re-render and
+    /// re-push a branch for work that is already awaiting review. A merged or
+    /// closed PR is `Absent` (a re-bump legitimately proceeds).
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        if ctx.is_dry_run() {
+            return Ok(ReconcileState::Absent);
+        }
+        let cfgs: Vec<anodizer_core::config::HomebrewCoreConfig> =
+            active_homebrew_core_configs(ctx)
+                .into_iter()
+                .cloned()
+                .collect();
+        if cfgs.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let log = ctx.logger("publish");
+        let version = ctx.version();
+        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
+        for cfg in &cfgs {
+            let Ok(formula) = resolve_formula_name(ctx, cfg) else {
+                return Ok(ReconcileState::Absent);
+            };
+            let (upstream_owner, upstream_repo) = resolve_upstream(cfg);
+            // An unresolvable token still probes: the GitHub search API serves
+            // public repos unauthenticated, and homebrew-core is public.
+            let token = resolve_token(ctx, cfg).ok().flatten().map(|t| t.token);
+            targets.push(crate::util::PrReconcileTarget {
+                publisher: HomebrewCorePublisher::PUBLISHER_NAME.into(),
+                upstream_owner,
+                upstream_repo,
+                package: formula,
+                version: version.clone(),
+                token,
+            });
+        }
+        Ok(crate::util::reconcile_open_prs(
+            &targets,
+            &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+            &log,
+        ))
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         // Accumulate every PR that opened BEFORE a mid-loop failure so the

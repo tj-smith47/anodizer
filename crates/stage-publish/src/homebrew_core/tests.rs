@@ -2342,3 +2342,37 @@ fn run_per_crate_mode_threads_commit_author_and_updates_existing_pr() {
         "in-place refresh opens no duplicate PR"
     );
 }
+
+#[test]
+fn reconcile_absent_without_active_entries() {
+    // No `homebrew_cores:` block at all — nothing to probe, and a network
+    // call here would be pure cost on every release that never configured it.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    let state = anodizer_core::Publisher::reconcile(
+        &super::publisher::HomebrewCorePublisher::new(),
+        &mut { ctx },
+    )
+    .expect("probe must not error");
+    assert!(matches!(state, anodizer_core::ReconcileState::Absent));
+}
+
+#[test]
+fn reconcile_absent_under_dry_run() {
+    // Dry-run is the offline snapshot/CI-lint mode; it must never hit the
+    // GitHub search API even with a fully configured entry.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config.homebrew_cores = Some(vec![HomebrewCoreConfig::default()]);
+    ctx.options.dry_run = true;
+    let state = anodizer_core::Publisher::reconcile(
+        &super::publisher::HomebrewCorePublisher::new(),
+        &mut ctx,
+    )
+    .expect("probe must not error");
+    assert!(matches!(state, anodizer_core::ReconcileState::Absent));
+}

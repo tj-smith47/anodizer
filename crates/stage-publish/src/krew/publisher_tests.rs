@@ -80,6 +80,17 @@ fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
 }
 
 #[test]
+fn krew_reconcile_no_active_entries_returns_absent() {
+    let mut ctx = TestContextBuilder::new().build();
+
+    let state = KrewPublisher::new()
+        .reconcile(&mut ctx)
+        .expect("reconcile ok");
+
+    assert!(matches!(state, anodizer_core::ReconcileState::Absent));
+}
+
+#[test]
 fn krew_preflight_defaults_to_pass() {
     let ctx = TestContextBuilder::new().build();
     let p = KrewPublisher::new();

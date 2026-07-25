@@ -482,6 +482,101 @@ pub(crate) struct PrOrigin<'a> {
     pub update_existing_pr: bool,
 }
 
+/// Resolve the `(owner, repo)` a PR-mode publisher submits AGAINST:
+/// `pull_request.base` owner/name when set, else the fork's own coordinates.
+///
+/// `base.owner` / `base.name` may be templated, so both are rendered before
+/// they become an API slug. Shared by the submission path and the open-PR
+/// reconcile probe so the two can never disagree about which repository holds
+/// the PR.
+pub(crate) fn resolve_upstream_coords(
+    repo: Option<&RepositoryConfig>,
+    fork_owner: &str,
+    fork_name: &str,
+    render: &dyn Fn(&str) -> String,
+) -> (String, String) {
+    match repo
+        .and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.base.as_ref())
+    {
+        Some(base) => (
+            base.owner
+                .as_deref()
+                .map(render)
+                .unwrap_or_else(|| fork_owner.to_string()),
+            base.name
+                .as_deref()
+                .map(render)
+                .unwrap_or_else(|| fork_name.to_string()),
+        ),
+        None => (fork_owner.to_string(), fork_name.to_string()),
+    }
+}
+
+/// One PR-mode entry's open-PR coordinates for [`reconcile_open_prs`].
+pub(crate) struct PrReconcileTarget {
+    /// Publisher name, used only to label the probe's log lines and errors.
+    pub publisher: String,
+    pub upstream_owner: String,
+    pub upstream_repo: String,
+    pub package: String,
+    pub version: String,
+    pub token: Option<String>,
+}
+
+/// Reconcile a PR-mode publisher against its upstream index: `Complete` only
+/// when EVERY target already has an open PR for its exact package+version.
+///
+/// All-or-nothing by design — a publisher that skipped its `run()` on mixed
+/// state would never submit the missing entries. On mixed state the caller
+/// falls through to `run()`, which owns the per-entry duplicate-PR self-skip.
+/// A search failure is `Unknown` (fail toward publishing) rather than a false
+/// "no PR", which would open a duplicate.
+pub(crate) fn reconcile_open_prs(
+    targets: &[PrReconcileTarget],
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> anodizer_core::ReconcileState {
+    use crate::preflight::{OpenPrLookup, OpenPrQuery, query_open_version_pr};
+    use anodizer_core::ReconcileState;
+
+    if targets.is_empty() {
+        return ReconcileState::Absent;
+    }
+    let mut notes: Vec<String> = Vec::new();
+    for t in targets {
+        let query = OpenPrQuery {
+            publisher: &t.publisher,
+            upstream_owner: &t.upstream_owner,
+            upstream_repo: &t.upstream_repo,
+            package: &t.package,
+            version: &t.version,
+        };
+        match query_open_version_pr(&query, t.token.as_deref(), policy, log) {
+            Ok(OpenPrLookup::Found(url)) => {
+                notes.push(format!("open PR for {} {}: {url}", t.package, t.version));
+            }
+            Ok(OpenPrLookup::NotFound) => return ReconcileState::Absent,
+            Ok(OpenPrLookup::ItemWithoutUrl) => {
+                return ReconcileState::Unknown {
+                    reason: format!(
+                        "PR search for {} {} returned a row without html_url",
+                        t.package, t.version
+                    ),
+                };
+            }
+            Err(e) => {
+                return ReconcileState::Unknown {
+                    reason: format!("PR search failed for {} {}: {e:#}", t.package, t.version),
+                };
+            }
+        }
+    }
+    ReconcileState::Complete {
+        note: notes.join(", "),
+    }
+}
+
 /// Submit a pull request if `repo.pull_request.enabled` is true.
 ///
 /// Uses `pull_request.base` for the upstream target when available,
@@ -558,23 +653,8 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         Some(pr) if pr.enabled == Some(true) => pr,
         _ => return None,
     };
-    // `base.owner` / `base.name` / `base.branch` / `body` may be templated;
-    // render them before they reach the upstream slug / API payload, mirroring
-    // how the owner/name of the fork are already rendered upstream.
-    let (upstream_owner, upstream_name) = if let Some(ref base) = pr_cfg.base {
-        (
-            base.owner
-                .as_deref()
-                .map(render)
-                .unwrap_or_else(|| repo_owner.to_string()),
-            base.name
-                .as_deref()
-                .map(render)
-                .unwrap_or_else(|| repo_name.to_string()),
-        )
-    } else {
-        (repo_owner.to_string(), repo_name.to_string())
-    };
+    let (upstream_owner, upstream_name) =
+        resolve_upstream_coords(repo, repo_owner, repo_name, render);
     let upstream_owner = upstream_owner.as_str();
     let upstream_name = upstream_name.as_str();
     let upstream_slug = format!("{}/{}", upstream_owner, upstream_name);

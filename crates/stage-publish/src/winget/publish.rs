@@ -327,6 +327,7 @@ fn open_pr_for_target(
     );
     crate::preflight::query_open_version_pr(
         &crate::preflight::OpenPrQuery {
+            publisher: "winget",
             upstream_owner: &target.upstream_owner,
             upstream_repo: &target.upstream_repo,
             package: &target.package_id,

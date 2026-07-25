@@ -228,6 +228,7 @@ fn winget_pr_absent_on_empty_results() {
         addr
     );
     let result = query_open_version_pr_at(
+        "winget",
         &url,
         None,
         &fast_retry(),
@@ -254,6 +255,7 @@ fn winget_pr_present_on_result() {
         addr
     );
     let result = query_open_version_pr_at(
+        "winget",
         &url,
         None,
         &fast_retry(),
@@ -279,6 +281,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
     let url = format!("http://{}/search/issues", addr);
     let result = query_open_version_pr_at(
+        "winget",
         &url,
         None,
         &fast_retry(),
@@ -304,6 +307,7 @@ fn winget_pr_malformed_json_is_error() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
     let url = format!("http://{}/search/issues", addr);
     let err = query_open_version_pr_at(
+        "winget",
         &url,
         None,
         &fast_retry(),
@@ -311,8 +315,10 @@ fn winget_pr_malformed_json_is_error() {
     )
     .expect_err("must be Err");
     assert!(
-        err.to_string().contains("malformed winget search response"),
-        "{err}"
+        err.to_string()
+            .contains("malformed winget PR search response"),
+        "the probe is shared by six publishers, so its errors must name the \
+         caller rather than a hard-coded label: {err}"
     );
 }
 
@@ -353,6 +359,7 @@ fn winget_pr_422_maps_to_not_found() {
     ]);
     let url = format!("http://{}/search/issues", addr);
     let result = query_open_version_pr_at(
+        "winget",
         &url,
         None,
         &fast_retry(),
@@ -376,6 +383,7 @@ fn winget_pr_server_error_bubbles_as_err() {
     let (addr, _calls) = spawn_oneshot_http_responder(vec![err500, err500, err500]);
     let url = format!("http://{}/search/issues", addr);
     let err = query_open_version_pr_at(
+        "winget",
         &url,
         Some("tok"),
         &fast_retry(),
@@ -514,6 +522,7 @@ fn winget_pr_sends_authorization_header_when_token_set() {
     // — this test asserts on the captured Authorization header side
     // effect, not the response body.
     query_open_version_pr_at(
+        "winget",
         &url,
         Some("secret-token"),
         &fast_retry(),

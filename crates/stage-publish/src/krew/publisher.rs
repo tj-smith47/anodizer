@@ -249,6 +249,94 @@ impl anodizer_core::Publisher for KrewPublisher {
             .collect()
     }
 
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        if ctx.is_dry_run() {
+            return Ok(ReconcileState::Absent);
+        }
+        // No `pull_request_enabled` gate here (unlike nix/winget): krew has
+        // no direct-push mode. Both flows — the bot webhook for a plugin
+        // already in the index, and the pr-direct clone+push for a new one —
+        // land as a PR against the upstream index, so every active entry is
+        // worth probing. A bot-created PR's title may not match the search
+        // below; that only yields `Absent` (never a false `Complete`), and
+        // `run()`'s own `webhook_body_is_already_submitted` handling covers
+        // that flow's idempotency independently.
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let selected = ctx.options.selected_crates.clone();
+        let crate_names: Vec<String> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.krew.as_ref())
+                    .is_some_and(|k| {
+                        !crate::publisher_helpers::entry_inactive(
+                            ctx,
+                            k.skip.as_ref(),
+                            k.skip_upload.as_ref(),
+                            k.if_condition.as_deref(),
+                        )
+                    })
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if crate_names.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
+        for crate_name in &crate_names {
+            let target = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let Some(krew_cfg) = ctx
+                        .config
+                        .find_crate(crate_name)
+                        .and_then(|c| c.publish.as_ref())
+                        .and_then(|p| p.krew.as_ref())
+                        .cloned()
+                    else {
+                        return Ok(None);
+                    };
+                    let Ok(plugin_name) =
+                        resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
+                            ctx.render_template(t)
+                        })
+                    else {
+                        return Ok(None);
+                    };
+                    let (upstream_owner, upstream_repo) = resolve_krew_upstream(&krew_cfg);
+                    let token = crate::util::resolve_repo_token(
+                        ctx,
+                        krew_cfg.repository.as_ref(),
+                        Some("KREW_INDEX_TOKEN"),
+                    );
+                    Ok(Some(crate::util::PrReconcileTarget {
+                        publisher: KrewPublisher::PUBLISHER_NAME.into(),
+                        upstream_owner,
+                        upstream_repo,
+                        package: plugin_name,
+                        version: ctx.version(),
+                        token,
+                    }))
+                },
+            )?;
+            match target {
+                Some(t) => targets.push(t),
+                // Unresolvable target (bad template, no plugin name, …):
+                // run() owns the decision and reports its own diagnostics.
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =

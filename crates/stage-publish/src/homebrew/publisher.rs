@@ -280,6 +280,106 @@ fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::Ho
         .collect()
 }
 
+/// Build the open-PR reconcile targets for `crate_name`: its formula, plus
+/// its same-tap cask when one is configured and its skip gates don't trip.
+/// Formula and cask land in the same tap through *separate* PRs, so both
+/// must be enumerated — probing formula-only would report `Complete` while
+/// the cask PR was still missing. Called inside `crate_name`'s own version
+/// scope so the probed `version` matches what that crate would actually
+/// publish under independent-version workspaces.
+fn build_homebrew_crate_reconcile_targets(
+    ctx: &Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<Vec<crate::util::PrReconcileTarget>>> {
+    let Some(hb_cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.homebrew.as_ref())
+    else {
+        return Ok(None);
+    };
+    let Some((fork_owner, fork_name)) =
+        crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
+        hb_cfg.repository.as_ref(),
+        &fork_owner,
+        &fork_name,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+    );
+    let token = crate::util::resolve_repo_token(
+        ctx,
+        hb_cfg.repository.as_ref(),
+        Some("HOMEBREW_TAP_TOKEN"),
+    );
+    let version = ctx.version();
+
+    let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
+    let mut targets = vec![crate::util::PrReconcileTarget {
+        publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
+        upstream_owner: upstream_owner.clone(),
+        upstream_repo: upstream_repo.clone(),
+        package: crate::util::render_or_warn(ctx, log, "brew.name", formula_name_raw)?,
+        version: version.clone(),
+        token: token.clone(),
+    }];
+
+    if let Some(cask_cfg) = hb_cfg.cask.as_ref()
+        && !super::publish_cask::cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)?
+    {
+        let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
+        targets.push(crate::util::PrReconcileTarget {
+            publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
+            upstream_owner,
+            upstream_repo,
+            package: crate::util::render_or_warn(ctx, log, "brew.cask.name", cask_name_raw)?,
+            version,
+            token,
+        });
+    }
+    Ok(Some(targets))
+}
+
+/// Build the open-PR reconcile target for one top-level `homebrew_casks:`
+/// entry. Unlike per-crate entries these always publish at the context-global
+/// version, and carry their own `repository:` block rather than sharing a
+/// formula's tap.
+fn build_homebrew_top_cask_reconcile_target(
+    ctx: &Context,
+    cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    if !crate::publisher_helpers::pull_request_enabled(cask_cfg.repository.as_ref()) {
+        return Ok(None);
+    }
+    let Some((fork_owner, fork_name)) =
+        crate::util::resolve_repo_owner_name(cask_cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
+        cask_cfg.repository.as_ref(),
+        &fork_owner,
+        &fork_name,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+    );
+    let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
+    Ok(Some(crate::util::PrReconcileTarget {
+        publisher: HomebrewPublisher::PUBLISHER_NAME.into(),
+        upstream_owner,
+        upstream_repo,
+        package: crate::util::render_or_warn(ctx, log, "homebrew_casks.name", cask_name_raw)?,
+        version: ctx.version(),
+        token: crate::util::resolve_repo_token(
+            ctx,
+            cask_cfg.repository.as_ref(),
+            Some("HOMEBREW_TAP_TOKEN"),
+        ),
+    }))
+}
+
 impl anodizer_core::Publisher for HomebrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -356,6 +456,82 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             });
         }
         out
+    }
+
+    /// `Complete` = an OPEN upstream PR for this exact formula name +
+    /// version already exists for EVERY active per-crate formula entry.
+    ///
+    /// Formula-only: an entry with a same-tap `cask:` block, or any active
+    /// top-level `homebrew_casks:` entry, opens a SEPARATE cask-titled PR
+    /// this probe cannot enumerate alongside the formula PR — claiming
+    /// `Complete` from the formula PR alone would hide a still-missing cask
+    /// PR, so any cask-producing config punts the whole publisher to
+    /// `run()` instead.
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        if ctx.is_dry_run() {
+            return Ok(ReconcileState::Absent);
+        }
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let selected = &ctx.options.selected_crates;
+        let crate_names: Vec<String> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.homebrew.as_ref())
+                    .is_some_and(|h| {
+                        !crate::publisher_helpers::entry_inactive(
+                            ctx,
+                            None,
+                            h.skip_upload.as_ref(),
+                            h.if_condition.as_deref(),
+                        )
+                    })
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        let top_cask_count = active_homebrew_cask_configs(ctx).len();
+        if crate_names.is_empty() && top_cask_count == 0 {
+            return Ok(ReconcileState::Absent);
+        }
+        for crate_name in &crate_names {
+            let Some(hb_cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.homebrew.as_ref())
+            else {
+                return Ok(ReconcileState::Absent);
+            };
+            if !crate::publisher_helpers::pull_request_enabled(hb_cfg.repository.as_ref()) {
+                // A direct tap push is idempotent by design — it must
+                // never be skipped by this fast path.
+                return Ok(ReconcileState::Absent);
+            }
+        }
+        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
+        for crate_name in &crate_names {
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| build_homebrew_crate_reconcile_targets(ctx, crate_name, &log),
+            )?;
+            match scoped {
+                Some(mut t) => targets.append(&mut t),
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        for cask_cfg in active_homebrew_cask_configs(ctx) {
+            match build_homebrew_top_cask_reconcile_target(ctx, cask_cfg, &log)? {
+                Some(t) => targets.push(t),
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -1250,5 +1426,99 @@ mod publisher_tests {
             .build();
         let p = HomebrewPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    #[test]
+    fn homebrew_reconcile_pr_disabled_returns_absent() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![homebrew_crate("x")])
+            .build();
+        let state = HomebrewPublisher::new()
+            .reconcile(&mut ctx)
+            .expect("reconcile ok");
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "a direct tap push (no pull_request.enabled) is idempotent and must \
+             never be reported Complete: {state:?}"
+        );
+    }
+
+    #[test]
+    fn homebrew_reconcile_no_active_entries_returns_absent() {
+        let mut ctx = TestContextBuilder::new().build();
+        let state = HomebrewPublisher::new()
+            .reconcile(&mut ctx)
+            .expect("reconcile ok");
+        assert!(matches!(state, anodizer_core::ReconcileState::Absent));
+    }
+
+    #[test]
+    fn homebrew_reconcile_targets_cover_formula_and_same_tap_cask() {
+        let mut c = homebrew_crate("demo");
+        if let Some(h) = c.publish.as_mut().and_then(|p| p.homebrew.as_mut()) {
+            h.name = Some("demo-formula".to_string());
+            h.cask = Some(anodizer_core::config::HomebrewCaskConfig {
+                name: Some("demo-cask".to_string()),
+                ..Default::default()
+            });
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let log = ctx.logger("publish");
+        let targets = build_homebrew_crate_reconcile_targets(&ctx, "demo", &log)
+            .expect("target build ok")
+            .expect("targets resolved");
+        let packages: Vec<&str> = targets.iter().map(|t| t.package.as_str()).collect();
+        assert_eq!(
+            packages,
+            vec!["demo-formula", "demo-cask"],
+            "formula and its same-tap cask open SEPARATE PRs — probing only the \
+             formula would report Complete while the cask PR was still missing"
+        );
+    }
+
+    #[test]
+    fn homebrew_reconcile_targets_skip_cask_whose_gates_trip() {
+        let mut c = homebrew_crate("demo");
+        if let Some(h) = c.publish.as_mut().and_then(|p| p.homebrew.as_mut()) {
+            h.cask = Some(anodizer_core::config::HomebrewCaskConfig {
+                name: Some("demo-cask".to_string()),
+                skip_upload: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                ..Default::default()
+            });
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let log = ctx.logger("publish");
+        let targets = build_homebrew_crate_reconcile_targets(&ctx, "demo", &log)
+            .expect("target build ok")
+            .expect("targets resolved");
+        let packages: Vec<&str> = targets.iter().map(|t| t.package.as_str()).collect();
+        assert_eq!(
+            packages,
+            vec!["demo"],
+            "a skipped cask is never published, so demanding an open PR for it \
+             would strand the publisher at Absent forever"
+        );
+    }
+
+    #[test]
+    fn homebrew_reconcile_top_level_cask_push_mode_returns_absent() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.homebrew_casks = Some(vec![anodizer_core::config::HomebrewCaskConfig {
+            name: Some("gui-app".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("homebrew-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        let state = HomebrewPublisher::new()
+            .reconcile(&mut ctx)
+            .expect("reconcile ok");
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "a top-level cask pushed directly to its tap is idempotent and must \
+             never be reported Complete: {state:?}"
+        );
     }
 }

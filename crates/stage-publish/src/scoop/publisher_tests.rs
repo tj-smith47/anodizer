@@ -3,7 +3,7 @@ use anodizer_core::config::{
     CrateConfig, PublishConfig, RepositoryConfig, ScoopConfig, StringOrBool,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
-use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup, ReconcileState};
 
 fn scoop_crate(name: &str) -> CrateConfig {
     CrateConfig {
@@ -406,4 +406,28 @@ fn scoop_sha256_empty_metadata_bails_with_actionable_error() {
         msg.contains("dist/artifacts.json") || msg.contains("re-run"),
         "error must include a next-step hint; got: {msg}"
     );
+}
+
+#[test]
+fn scoop_reconcile_pr_disabled_returns_absent() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate("x")])
+        .build();
+    let state = ScoopPublisher::new()
+        .reconcile(&mut ctx)
+        .expect("reconcile ok");
+    assert!(
+        matches!(state, ReconcileState::Absent),
+        "a direct bucket push (no pull_request.enabled) is idempotent and must \
+         never be reported Complete: {state:?}"
+    );
+}
+
+#[test]
+fn scoop_reconcile_no_active_entries_returns_absent() {
+    let mut ctx = TestContextBuilder::new().build();
+    let state = ScoopPublisher::new()
+        .reconcile(&mut ctx)
+        .expect("reconcile ok");
+    assert!(matches!(state, ReconcileState::Absent));
 }

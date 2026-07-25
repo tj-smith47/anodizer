@@ -116,6 +116,50 @@ fn active_scoop_configs(ctx: &Context) -> Vec<&anodizer_core::config::ScoopConfi
         .collect()
 }
 
+/// Build the open-PR reconcile target for `crate_name`, resolving the fork
+/// repo, the upstream repo (`pull_request.base`, else the fork itself), and
+/// the rendered manifest name — called inside `crate_name`'s own version
+/// scope so the probed `version` matches what that crate would actually
+/// publish under independent-version workspaces.
+fn build_scoop_reconcile_target(
+    ctx: &Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    let Some(scoop_cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.scoop.as_ref())
+    else {
+        return Ok(None);
+    };
+    let Some((fork_owner, fork_name)) =
+        crate::util::resolve_repo_owner_name(scoop_cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
+        scoop_cfg.repository.as_ref(),
+        &fork_owner,
+        &fork_name,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+    );
+    let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+    let package = util::render_or_warn(ctx, log, "scoop.name", manifest_name_raw)?;
+    let token = crate::util::resolve_repo_token(
+        ctx,
+        scoop_cfg.repository.as_ref(),
+        Some("SCOOP_BUCKET_TOKEN"),
+    );
+    Ok(Some(crate::util::PrReconcileTarget {
+        publisher: ScoopPublisher::PUBLISHER_NAME.into(),
+        upstream_owner,
+        upstream_repo,
+        package,
+        version: ctx.version(),
+        token,
+    }))
+}
+
 impl anodizer_core::Publisher for ScoopPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -152,6 +196,71 @@ impl anodizer_core::Publisher for ScoopPublisher {
                 )
             })
             .collect()
+    }
+
+    /// `Complete` = an OPEN upstream PR for this exact bucket manifest name +
+    /// version already exists for EVERY active crate. Scoop's non-PR mode
+    /// pushes a commit straight to the bucket branch — that push is
+    /// idempotent (same content, same commit), so a PR-mode entry is the
+    /// only shape this fast path can safely skip; a direct push always falls
+    /// through to `run()`.
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        if ctx.is_dry_run() {
+            return Ok(ReconcileState::Absent);
+        }
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let selected = &ctx.options.selected_crates;
+        let crate_names: Vec<String> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.scoop.as_ref())
+                    .is_some_and(|s| {
+                        !crate::publisher_helpers::entry_inactive(
+                            ctx,
+                            None,
+                            s.skip_upload.as_ref(),
+                            s.if_condition.as_deref(),
+                        )
+                    })
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if crate_names.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        for crate_name in &crate_names {
+            let Some(scoop_cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.scoop.as_ref())
+            else {
+                return Ok(ReconcileState::Absent);
+            };
+            if !crate::publisher_helpers::pull_request_enabled(scoop_cfg.repository.as_ref()) {
+                return Ok(ReconcileState::Absent);
+            }
+        }
+        let mut targets: Vec<crate::util::PrReconcileTarget> =
+            Vec::with_capacity(crate_names.len());
+        for crate_name in &crate_names {
+            let target = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| build_scoop_reconcile_target(ctx, crate_name, &log),
+            )?;
+            match target {
+                Some(t) => targets.push(t),
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

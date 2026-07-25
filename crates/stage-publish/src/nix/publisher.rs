@@ -258,6 +258,117 @@ impl anodizer_core::Publisher for NixPublisher {
         out
     }
 
+    fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
+        use anodizer_core::ReconcileState;
+        if ctx.is_dry_run() {
+            return Ok(ReconcileState::Absent);
+        }
+        let log = ctx.logger("publish");
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let selected = ctx.options.selected_crates.clone();
+        let crate_names: Vec<String> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.nix.as_ref())
+                    .is_some_and(|n| {
+                        !crate::publisher_helpers::entry_inactive(
+                            ctx,
+                            n.skip.as_ref(),
+                            n.skip_upload.as_ref(),
+                            n.if_condition.as_deref(),
+                        )
+                    })
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if crate_names.is_empty() {
+            return Ok(ReconcileState::Absent);
+        }
+        // The overlay push is a direct branch commit, idempotent on re-run —
+        // only a configured `repository.pull_request` block risks a
+        // duplicate submission worth probing for. Any active entry without
+        // one means the whole publisher must proceed to `run()`.
+        let all_pr_mode = crate_names.iter().all(|crate_name| {
+            ctx.config
+                .find_crate(crate_name)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.nix.as_ref())
+                .is_some_and(|n| {
+                    crate::publisher_helpers::pull_request_enabled(n.repository.as_ref())
+                })
+        });
+        if !all_pr_mode {
+            return Ok(ReconcileState::Absent);
+        }
+        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
+        for crate_name in &crate_names {
+            let target = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let Some(nix_cfg) = ctx
+                        .config
+                        .find_crate(crate_name)
+                        .and_then(|c| c.publish.as_ref())
+                        .and_then(|p| p.nix.as_ref())
+                        .cloned()
+                    else {
+                        return Ok(None);
+                    };
+                    let Some((repo_owner_raw, repo_name_raw)) =
+                        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
+                    else {
+                        return Ok(None);
+                    };
+                    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
+                    let (Ok(name), Ok(repo_owner), Ok(repo_name)) = (
+                        crate::util::render_or_warn(ctx, &log, "nix.name", name_raw),
+                        crate::util::render_or_warn(
+                            ctx,
+                            &log,
+                            "nix.repository.owner",
+                            &repo_owner_raw,
+                        ),
+                        crate::util::render_or_warn(
+                            ctx,
+                            &log,
+                            "nix.repository.name",
+                            &repo_name_raw,
+                        ),
+                    ) else {
+                        return Ok(None);
+                    };
+                    let token = crate::util::resolve_repo_token(
+                        ctx,
+                        nix_cfg.repository.as_ref(),
+                        Some("NIX_PKGS_TOKEN"),
+                    );
+                    Ok(Some(crate::util::PrReconcileTarget {
+                        publisher: NixPublisher::PUBLISHER_NAME.into(),
+                        upstream_owner: repo_owner,
+                        upstream_repo: repo_name,
+                        package: name,
+                        version: ctx.version(),
+                        token,
+                    }))
+                },
+            )?;
+            match target {
+                Some(t) => targets.push(t),
+                // Unresolvable target (no repo owner, bad template, …):
+                // run() owns the decision and reports its own diagnostics.
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        Ok(crate::util::reconcile_open_prs(&targets, &policy, &log))
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =
@@ -426,6 +537,33 @@ mod publisher_tests {
             "empty selection means \"all crates\"; an active entry must keep the \
              publisher live"
         );
+    }
+
+    /// `nix_crate` has no `repository.pull_request` block, so a direct
+    /// overlay push is idempotent by design — `reconcile` must never skip
+    /// it via a stale-PR probe.
+    #[test]
+    fn nix_reconcile_pr_disabled_returns_absent() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate("x")])
+            .build();
+
+        let state = NixPublisher::new()
+            .reconcile(&mut ctx)
+            .expect("reconcile ok");
+
+        assert!(matches!(state, anodizer_core::ReconcileState::Absent));
+    }
+
+    #[test]
+    fn nix_reconcile_no_active_entries_returns_absent() {
+        let mut ctx = TestContextBuilder::new().build();
+
+        let state = NixPublisher::new()
+            .reconcile(&mut ctx)
+            .expect("reconcile ok");
+
+        assert!(matches!(state, anodizer_core::ReconcileState::Absent));
     }
 
     #[test]
