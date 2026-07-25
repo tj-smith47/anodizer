@@ -91,6 +91,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // opens its own sections cleanly.
     let project_root;
     let mut ctx;
+    let setup_result;
     {
         let _setup = log.group("setup");
         // Retag to the section name so body lines inside `::group::setup`
@@ -190,48 +191,84 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         // IsNightly bool rather than a rendered version string.
         run_release_env_preflight(&ctx, &opts, &log)?;
 
-        run_before_hooks(&ctx, &config, &opts, &log)?;
-        render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
-        enforce_dirty_repo_gate(&ctx)?;
-
-        if ctx.is_nightly() {
-            apply_nightly_template_vars(&mut ctx, &config, &log)?;
-        }
-        if ctx.is_snapshot() {
-            apply_snapshot_template_vars(&mut ctx, &config, &log)?;
-        }
-
-        // In publish-only the preserved dist/config.yaml is already on disk and
-        // its sha256 was recorded at determinism-check time; re-rendering it from
-        // the current binary's config serialization would diverge from that hash
-        // and trip hash_verify_preserved_dist. The --split BUILD leg uses
-        // opts.split (it legitimately generates the dist) so it still writes here.
-        if !opts.publish_only {
-            helpers::write_effective_config(&config, &log)?;
-        }
-
-        if !opts.split
-            && !opts.announce_only
-            && let Some(ref milestones) = config.milestones
-        {
-            milestones::preflight_milestones(milestones, &mut ctx, &log)?;
-        }
-    }
-
-    if run_publisher_preflight(&mut ctx, &opts, &log)? {
-        return Ok(());
+        // The run enters the `before:`/`always:` bracket here: from this
+        // call on, every exit — including a `before:` hook that failed —
+        // leaves through the root `always:` hooks at the bottom of this
+        // function. The gates ABOVE this line abort with zero mutations and
+        // without having run a single operator command, so there is nothing
+        // for a teardown hook to undo.
+        setup_result =
+            run_setup_inside_always_bracket(&mut ctx, &config, &opts, release_notes_path, &log);
     }
 
     // A pipeline failure leaves every tag, commit, and published artifact
     // exactly where it landed: recovery is re-running this same command
     // (publishers reconcile and skip what already landed), and deliberate
-    // withdrawal is `anodizer tag rollback`. The only thing a failure fires
-    // is the operator's root `on_error:` hooks.
-    let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
-    if let Err(err) = result {
-        on_error::fire_release_on_error(&ctx, &err, &log);
-        return Err(err);
+    // withdrawal is `anodizer tag rollback`.
+    //
+    // `on_error:` stays scoped to a dispatched-mode failure — the boundary
+    // past which the run can have mutated something. `always:` is wider by
+    // design: it is the `finally` for everything inside the bracket,
+    // including the zero-mutation gates below that `on_error:` deliberately
+    // does not cover.
+    let outcome = match setup_result {
+        Err(err) => Err(err),
+        Ok(()) => match run_publisher_preflight(&mut ctx, &opts, &log) {
+            Err(err) => Err(err),
+            // The preflight answered the whole run; no mode dispatches.
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
+                if let Err(ref err) = result {
+                    on_error::fire_release_on_error(&ctx, err, &log);
+                }
+                result
+            }
+        },
+    };
+    always::finish_with_always_hooks(&ctx, outcome, &log)
+}
+
+/// The setup steps that run inside the `always:` bracket: the root
+/// `before:` hooks plus every gate sequenced after them.
+///
+/// Split out of [`run`] so the bracket has one entry point — a step added
+/// here is covered by the root `always:` hooks automatically, and one added
+/// above the call site is deliberately outside them.
+fn run_setup_inside_always_bracket(
+    ctx: &mut Context,
+    config: &Config,
+    opts: &ReleaseOpts,
+    release_notes_path: Option<(PathBuf, String)>,
+    log: &StageLogger,
+) -> Result<()> {
+    run_before_hooks(ctx, config, opts, log)?;
+    render_release_notes_tmpl(ctx, config, opts, release_notes_path, log)?;
+    enforce_dirty_repo_gate(ctx)?;
+
+    if ctx.is_nightly() {
+        apply_nightly_template_vars(ctx, config, log)?;
     }
+    if ctx.is_snapshot() {
+        apply_snapshot_template_vars(ctx, config, log)?;
+    }
+
+    // In publish-only the preserved dist/config.yaml is already on disk and
+    // its sha256 was recorded at determinism-check time; re-rendering it from
+    // the current binary's config serialization would diverge from that hash
+    // and trip hash_verify_preserved_dist. The --split BUILD leg uses
+    // opts.split (it legitimately generates the dist) so it still writes here.
+    if !opts.publish_only {
+        helpers::write_effective_config(config, log)?;
+    }
+
+    if !opts.split
+        && !opts.announce_only
+        && let Some(ref milestones) = config.milestones
+    {
+        milestones::preflight_milestones(milestones, ctx, log)?;
+    }
+
     Ok(())
 }
 

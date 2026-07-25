@@ -5,7 +5,19 @@
   "type": "object",
   "properties": {
     "after": {
-      "description": "Hooks run after the release pipeline completes.",
+      "description": "Hooks run after the release pipeline completes SUCCESSFULLY.\n\nA failed run never reaches them — route failure handling through `on_error:`, and teardown that must happen either way through `always:`.\n\n```yaml after: hooks: - cmd: ./notify-release-succeeded.sh ```",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "always": {
+      "description": "Hooks run LAST on every terminal path — the release's `finally`.\n\nOrdering: on success they run after `after:`; on failure they run after `on_error:`. They also fire on the one exit neither of those reaches — a `before:` hook that failed before the pipeline started. Use them for teardown that has to happen either way: removing a staging directory, releasing a lock, stopping a sidecar container.\n\nThey fire once per `anodizer release` invocation, pairing 1:1 with `before:` — including on each `--split` shard and on `--merge`, which are separate invocations that each run `before:` of their own.\n\nThe run's outcome is exposed as template vars (`{{ .Success }}`, `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`), so a hook can branch on the outcome and read the error text without interpolating untrusted text into the shell command. `ANODIZER_ERROR` is empty on success.\n\nA failing `always:` hook never masks a release failure: on the failure path it is logged as a warning and the original pipeline error is still what the run exits with. On the success path there is no error to mask, so the hook's own failure fails the run — the same contract `after:` has.\n\n```yaml always: hooks: - cmd: ./teardown-staging.sh ```",
       "default": null,
       "anyOf": [
         {
@@ -8041,7 +8053,7 @@
       ]
     },
     "HooksConfig": {
-      "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).\n\nThe canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
+      "description": "A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.\n\nThe canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
       "type": "object",
       "properties": {
         "hooks": {

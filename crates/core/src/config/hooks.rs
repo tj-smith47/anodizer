@@ -7,12 +7,13 @@ use crate::artifact::ArtifactKind;
 // HooksConfig
 // ---------------------------------------------------------------------------
 
-/// Top-level lifecycle hooks for `before` and `after` blocks.
-/// Each block carries a list of hook commands that run around the
-/// entire pipeline (not individual stages).
+/// A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`,
+/// or `before_publish:`. Each block carries a list of hook commands that
+/// run around the entire pipeline (not individual stages); which block a
+/// list sits under decides when it fires.
 ///
-/// The canonical key is `hooks:` for both `before:` and `after:` to
-/// the conventional spelling. The `post:` spelling is accepted
+/// The canonical key is `hooks:` in every block, matching the conventional
+/// spelling. The `post:` spelling is accepted
 /// as a serde alias on `hooks` for back-compat with the previous
 /// anodizer spelling; users with `after: { post: [...] }` keep working
 /// and a deprecation warning is logged when both spellings appear in

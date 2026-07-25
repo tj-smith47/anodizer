@@ -78,6 +78,7 @@ partial:
 | `includes[].from_url` | 🤝 Help wanted | No live config pulls a remote include |
 | `before` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`before.hooks` runs `cargo fmt --check`, `clippy`, `test`) |
 | `after` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`after.hooks` echo) |
+| `always` | ✅ Verified (tests) | [`crates/cli/tests/always_hooks.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/tests/always_hooks.rs) — the release's `finally`: fires last on success (after `after:`), last on failure (after `on_error:`), and on a `before:` hook failure, which is the exit neither of the others reaches. Fires once per invocation, so each `--split` shard and the `--merge` leg get their own. Neither dogfood config wires it yet |
 | `build.hooks.pre` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.before`) |
 | `build.hooks.post` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.after`) |
 | `snapshot.name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`snapshot.version_template`) |

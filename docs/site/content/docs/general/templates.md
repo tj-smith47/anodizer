@@ -272,6 +272,28 @@ These variables are bound **only** inside a publisher's `on_error` and
 [Release resilience](../advanced/release-resilience.md#on-rollback-hooks) for the
 full hook reference.
 
+### Run-outcome context (root `on_error:` / `always:`)
+
+The root-level hook blocks describe the run as a whole rather than one
+publisher, so they bind a different, smaller set:
+
+| Variable | Env channel | Bound in | Value |
+|----------|-------------|----------|-------|
+| `Error` | `ANODIZER_ERROR` | `on_error:`, `always:` | The pipeline error; empty string in `always:` after a successful run |
+| `RolledBack` | `ANODIZER_ROLLED_BACK` | `on_error:` | Always `false` — a release run never withdraws anything on its own |
+| `Success` | `ANODIZER_SUCCESS` | `always:` | Real boolean — `{% if Success %}` branches correctly |
+| `Version` | `ANODIZER_VERSION` | both | Release version (e.g. `0.8.0`) |
+| `Tag` | `ANODIZER_TAG` | both | Release tag (e.g. `v0.8.0`) |
+
+```yaml
+always:
+  hooks:
+    # Read the untrusted error text from the env channel, never from `cmd`.
+    - cmd: './teardown-staging.sh "$ANODIZER_SUCCESS" "$ANODIZER_ERROR"'
+```
+
+See [Global Hooks](./hooks.md) for the lane ordering.
+
 ## Functions and filters
 
 Tera provides many [built-in filters](https://keats.github.io/tera/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ X | fn(...) }}`) and as a function (`{{ fn(s=X, ...) }}`) — so the GoReleaser positional form (`{{ fn X ... }}`) auto-translates onto them.

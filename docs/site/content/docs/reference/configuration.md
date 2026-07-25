@@ -13,7 +13,8 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `after` | HooksConfig | — | Hooks run after the release pipeline completes. |
+| `after` | HooksConfig | — | Hooks run after the release pipeline completes SUCCESSFULLY.<br><br>A failed run never reaches them — route failure handling through `on_error:`, and teardown that must happen either way through `always:`.<br><br>```yaml after: hooks: - cmd: ./notify-release-succeeded.sh ``` |
+| `always` | HooksConfig | — | Hooks run LAST on every terminal path — the release's `finally`.<br><br>Ordering: on success they run after `after:`; on failure they run after `on_error:`. They also fire on the one exit neither of those reaches — a `before:` hook that failed before the pipeline started. Use them for teardown that has to happen either way: removing a staging directory, releasing a lock, stopping a sidecar container.<br><br>They fire once per `anodizer release` invocation, pairing 1:1 with `before:` — including on each `--split` shard and on `--merge`, which are separate invocations that each run `before:` of their own.<br><br>The run's outcome is exposed as template vars (`{{ .Success }}`, `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`), so a hook can branch on the outcome and read the error text without interpolating untrusted text into the shell command. `ANODIZER_ERROR` is empty on success.<br><br>A failing `always:` hook never masks a release failure: on the failure path it is logged as a warning and the original pipeline error is still what the run exits with. On the success path there is no error to mask, so the hook's own failure fails the run — the same contract `after:` has.<br><br>```yaml always: hooks: - cmd: ./teardown-staging.sh ``` |
 | `announce` | AnnounceConfig | — | Announcement configuration (Slack, Discord, email, etc.). |
 | `appimages` | list of AppImageConfig | `[]` | AppImage configurations. Each entry bundles a built Linux binary plus its desktop integration into a single self-contained `.AppImage` via linuxdeploy. |
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
@@ -75,9 +76,18 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
 ## `after`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+The canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
+| `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
+
+## `always`
+A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
+
+The canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
@@ -215,18 +225,18 @@ YAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; d
 | `url_template` | string | — | Custom URL template for download URLs. |
 
 ## `before`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+The canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
 | `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
 
 ## `before_publish`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+The canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
@@ -681,9 +691,9 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `url_template` | string | — | Override the download URL emitted into the postinstall script (templated). When unset, anodizer derives the URL from the release context. Only consulted in `postinstall` mode. |
 
 ## `on_error`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
+The canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |

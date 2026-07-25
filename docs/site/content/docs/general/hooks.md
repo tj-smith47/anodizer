@@ -1,11 +1,12 @@
 +++
 title = "Global Hooks"
-description = "Run shell commands before or after the release pipeline"
+description = "Run shell commands before, after, or either way around the release pipeline"
 weight = 4
 template = "docs.html"
 +++
 
-Hooks let you run arbitrary shell commands at the start or end of the release pipeline.
+Hooks let you run arbitrary shell commands around the release pipeline — before
+it starts, after it succeeds, after it fails, or on every path either way.
 
 ## Minimal config
 
@@ -23,12 +24,36 @@ after:
 on_error:
   hooks:
     - "./scripts/notify-release-failed.sh"
+
+always:
+  hooks:
+    - "./scripts/teardown-staging.sh"
+```
+
+## The lanes
+
+| Block | Runs when | Ordering |
+|---|---|---|
+| `before` | before any pipeline stage | first |
+| `before_publish` | after the artifacts are built, before any publisher | mid-pipeline |
+| `after` | the pipeline finished **successfully** | after the pipeline |
+| `on_error` | the pipeline **failed** at any stage | after the failure |
+| `always` | **every** terminal path, success or failure | **last**, after `after` / `on_error` |
+
+The four outer lanes map onto `try` / `else` / `catch` / `finally`:
+
+```yaml
+before:   { hooks: ["./stage-secrets.sh"] }    # try
+after:    { hooks: ["./notify.sh ok"] }        # success only
+on_error: { hooks: ["./notify.sh failed"] }    # failure only
+always:   { hooks: ["./teardown-staging.sh"] } # finally — both, runs last
 ```
 
 ## Behavior
 
 - **`before` hooks** run before any pipeline stage executes
-- **`after` hooks** run after all pipeline stages complete successfully
+- **`after` hooks** run after all pipeline stages complete successfully.
+  A failed run never reaches them
 - **`before_publish` hooks** run after build / archive / sign / sbom /
   checksum complete but before any publisher dispatches. They fire **once
   per matching artifact** by default (with `{{ ArtifactName }}` /
@@ -44,19 +69,55 @@ on_error:
   (`{{ .Error }}`, `{{ .RolledBack }}`). Read the error via the env var,
   not template interpolation, to stay shell-injection-safe. An `on_error`
   hook's own failure is logged and never masks the pipeline error
+- **`always` hooks** run **last on every terminal path** — after `after` on
+  a successful run, after `on_error` on a failed one, and also when a
+  `before` hook failed before the pipeline ever started, which is the one
+  exit neither of the other two reaches. Use them for teardown that has to
+  happen either way: removing a staging directory, releasing a lock,
+  stopping a sidecar container. The outcome is exported as
+  `$ANODIZER_SUCCESS` (`true` / `false`), `$ANODIZER_ERROR` (empty on
+  success), `$ANODIZER_VERSION`, `$ANODIZER_TAG` — and as template vars
+  (`{{ .Success }}`, `{{ .Error }}`). `{{ .Success }}` is a real boolean, so
+  `{% if Success %}` branches correctly
 - Each hook is executed via `sh -c "<command>"`
 - If any `before` or `before_publish` hook fails (non-zero exit), the
   pipeline aborts before any subsequent stage runs
 - Hooks are skipped in `--dry-run` mode (logged but not executed)
 - Environment variables from the `env` config section are available to hooks
 
+## `always` and multi-host releases
+
+`always` fires **once per `anodizer release` invocation**, pairing 1:1 with
+`before`. A split fan-out is several invocations, so both blocks run on each
+of them:
+
+```
+release --split   (shard 1)   before → build            → always
+release --split   (shard 2)   before → build            → always
+release --merge               before → post-build → after → always
+```
+
+`after` is the exception: it fires only on the merge, because the shard leg
+stops at the build stage and never reaches the post-pipeline tail. That is
+exactly why teardown belongs in `always` — a shard that staged something in
+`before` gets to clean it up.
+
+## A failing `always` hook
+
+| Run outcome | A failing `always` hook does |
+|---|---|
+| failed | log a warning; the run still exits with the **original** pipeline error |
+| succeeded | fail the run (nothing to mask — same contract as `after`) |
+
+The operator always sees what actually broke the release; a broken teardown
+script can never overwrite that diagnosis.
+
 ## Back-compat alias: `post:`
 
 Older anodizer configs use `after.post:` instead of `after.hooks:`. The
 old spelling is still accepted (folded into `hooks:` at parse time with
 a deprecation warning) so existing configs keep working, but new
-configs should match GoReleaser Pro and use `hooks:` for both `before:`
-and `after:` blocks.
+configs should match GoReleaser Pro and use `hooks:` in every block.
 
 ## Use cases
 

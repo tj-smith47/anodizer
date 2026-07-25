@@ -79,7 +79,17 @@ pub struct Config {
     pub defaults: Option<Defaults>,
     /// Hooks run before the release pipeline starts.
     pub before: Option<HooksConfig>,
-    /// Hooks run after the release pipeline completes.
+    /// Hooks run after the release pipeline completes SUCCESSFULLY.
+    ///
+    /// A failed run never reaches them — route failure handling through
+    /// `on_error:`, and teardown that must happen either way through
+    /// `always:`.
+    ///
+    /// ```yaml
+    /// after:
+    ///   hooks:
+    ///     - cmd: ./notify-release-succeeded.sh
+    /// ```
     pub after: Option<HooksConfig>,
     /// Hooks run when the release pipeline fails at ANY stage (build,
     /// sign, publish, ...). The pipeline holds on failure: published state
@@ -101,6 +111,37 @@ pub struct Config {
     ///     - cmd: ./notify-release-failed.sh
     /// ```
     pub on_error: Option<HooksConfig>,
+    /// Hooks run LAST on every terminal path — the release's `finally`.
+    ///
+    /// Ordering: on success they run after `after:`; on failure they run
+    /// after `on_error:`. They also fire on the one exit neither of those
+    /// reaches — a `before:` hook that failed before the pipeline started.
+    /// Use them for teardown that has to happen either way: removing a
+    /// staging directory, releasing a lock, stopping a sidecar container.
+    ///
+    /// They fire once per `anodizer release` invocation, pairing 1:1 with
+    /// `before:` — including on each `--split` shard and on `--merge`,
+    /// which are separate invocations that each run `before:` of their own.
+    ///
+    /// The run's outcome is exposed as template vars (`{{ .Success }}`,
+    /// `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`,
+    /// `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`), so a hook can
+    /// branch on the outcome and read the error text without interpolating
+    /// untrusted text into the shell command. `ANODIZER_ERROR` is empty on
+    /// success.
+    ///
+    /// A failing `always:` hook never masks a release failure: on the
+    /// failure path it is logged as a warning and the original pipeline
+    /// error is still what the run exits with. On the success path there is
+    /// no error to mask, so the hook's own failure fails the run — the same
+    /// contract `after:` has.
+    ///
+    /// ```yaml
+    /// always:
+    ///   hooks:
+    ///     - cmd: ./teardown-staging.sh
+    /// ```
+    pub always: Option<HooksConfig>,
     /// Hooks run after build/archive/sign/sbom/checksum complete but
     /// immediately before the publish phase dispatches any publisher.
     ///
@@ -375,6 +416,7 @@ impl Default for Config {
             before: None,
             after: None,
             on_error: None,
+            always: None,
             before_publish: None,
             crates: Vec::new(),
             changelog: None,
