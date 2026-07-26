@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-26
+
+### Features
+
+* 3b523c2f4d3b add a root always: hook list that fires last on every path ([@tj-smith47](https://github.com/tj-smith47))
+* 5420467d5b20 give anodizer build the after: and always: teardown lanes ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 6957f524bf4b stop a dry-run failing on the previous run's artifacts ([@tj-smith47](https://github.com/tj-smith47))
+* fdffdce0ed28 scope the previous-tag search to the cut tag's own family ([@tj-smith47](https://github.com/tj-smith47))
+* 0737b271d243 one --skip token per root lane, honored at every site ([@tj-smith47](https://github.com/tj-smith47))
+* e80df3505535 fire the root after: block once per run, not once per crate ([@tj-smith47](https://github.com/tj-smith47))
+* 38657065408f bound every MCP registry call by the retry wall-clock budget ([@tj-smith47](https://github.com/tj-smith47))
+* 1ac87ef164ab bound the cargo and pypi OIDC token hops by the retry budget ([@tj-smith47](https://github.com/tj-smith47))
+* 44c6810416bc skip the built-package cross-check in a dry-run ([@tj-smith47](https://github.com/tj-smith47))
+* ee427df6bfe1 attribute stage backoff to the stage that incurred it ([@tj-smith47](https://github.com/tj-smith47))
+* 183ee2f4f4f1 make the wall-clock retry budget one value per publisher invocation ([@tj-smith47](https://github.com/tj-smith47))
+* 72a27e879c46 give every registered builtin a Go positional form ([@tj-smith47](https://github.com/tj-smith47))
+* 30e294dc4411 honor raw blocks, rewrite every pipeline segment, and cap nesting depth ([@tj-smith47](https://github.com/tj-smith47))
+* 25d5e67cb58f rewrite Go calls in range and assignment blocks too ([@tj-smith47](https://github.com/tj-smith47))
+* 1174b24ed40a rewrite Go sub-expression arguments recursively ([@tj-smith47](https://github.com/tj-smith47))
+* 815bc8e91a19 split artifact.rs along the kind/registry/filter/report seam ([@tj-smith47](https://github.com/tj-smith47))
+* 2514724e0f3f split git/tags.rs along the family / discover / previous / position / mutate seam ([@tj-smith47](https://github.com/tj-smith47))
+* 758adcb2e06d split log.rs into a log/ module dir ([@tj-smith47](https://github.com/tj-smith47))
+* 9aa94250a6c7 split run.rs along the exec / process-tree seam ([@tj-smith47](https://github.com/tj-smith47))
+* dfcdf0c24fa0 split publisher.rs along the resolve/publish/publisher seam ([@tj-smith47](https://github.com/tj-smith47))
+* 528077d7f033 fold the github push-probe arguments into a params struct ([@tj-smith47](https://github.com/tj-smith47))
+* 1a3353080f8c converge PR-mode reconcile on one target builder per publisher ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.23.0] - 2026-07-25
 
 ### Features
@@ -747,7 +778,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/tj-smith47/anodizer/compare/v0.20.0...v0.22.1
