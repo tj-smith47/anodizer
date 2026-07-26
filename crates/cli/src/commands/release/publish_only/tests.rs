@@ -793,10 +793,12 @@ fn merge_workspace_skip_propagates_cfgd_core_announce_skip() {
 /// publish-only run would leak the per-iteration dist into the
 /// caller's context.
 #[test]
+#[serial_test::serial(cwd)]
 fn run_per_crate_restores_ctx_config_dist_on_error() {
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
 
+    let _repo = HermeticRepoCwd::committed();
     let tmp = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     let original_dist = tmp.path().join("dist");
@@ -847,6 +849,78 @@ fn seed_valid_preserved_dist(dist_base: &std::path::Path, name: &str) {
     std::fs::write(crate_dist.join("artifacts.json"), "[]").unwrap();
 }
 
+/// A temp git repo installed as the process cwd for the lifetime of the
+/// value, so a test reads git state it owns instead of whatever the process
+/// cwd happens to point at.
+///
+/// The code under test shells to git in the process cwd from two places: the
+/// changelog stage (`git tag --list`, `git log HEAD`) and
+/// `apply_per_crate_tag`'s `PreviousTag` lookup (`git describe`). Inheriting
+/// the process cwd therefore makes a test's result depend on what a
+/// concurrently-running cwd swapper has the cwd pointed at.
+///
+/// A process-wide cwd swap, so every holder must be `#[serial(cwd)]` — which
+/// is also what puts it in the same serial group as every other cwd swapper
+/// instead of racing them from the unkeyed `#[serial]` group.
+struct HermeticRepoCwd {
+    // The guard is declared FIRST on purpose: struct fields drop in
+    // declaration order, so the cwd is restored before the tempdir it points
+    // at is removed.
+    _cwd: anodizer_core::test_helpers::CwdGuard,
+    _tmp: tempfile::TempDir,
+}
+
+impl HermeticRepoCwd {
+    /// A repo with no commits. `git describe` fails fast in it — caught and
+    /// logged by `apply_per_crate_tag`, leaving `Tag` (what the tag tests
+    /// assert) untouched.
+    fn empty() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["init", "-q"]).current_dir(tmp.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
+            "git init must succeed for the hermetic tag-test repo",
+        );
+        Self::enter(tmp)
+    }
+
+    /// A repo with one commit and a `v0.1.0` tag — what every test driving
+    /// the real publish-only pipeline needs. The changelog stage aborts the
+    /// run when the cwd resolves to no repository (`git tag --list` fails) or
+    /// to a repository with no commits (`git log HEAD` fails), and the
+    /// commit-less case is exactly the state [`HermeticRepoCwd::empty`]
+    /// installs for its own callers.
+    fn committed() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("README.md"), "hermetic fixture\n").unwrap();
+        anodizer_core::test_helpers::init_git_repo(tmp.path());
+        Self::enter(tmp)
+    }
+
+    fn enter(tmp: tempfile::TempDir) -> Self {
+        let cwd = anodizer_core::test_helpers::CwdGuard::new(tmp.path()).unwrap();
+        Self {
+            _cwd: cwd,
+            _tmp: tmp,
+        }
+    }
+}
+
+/// Run `body` with the process cwd swapped to an empty hermetic repo. Callers
+/// must be `#[serial(cwd)]` — see [`HermeticRepoCwd`].
+fn with_hermetic_git_cwd(body: impl FnOnce()) {
+    let _repo = HermeticRepoCwd::empty();
+    body();
+}
+
 /// Build the dry-run `Context` matching [`seed_valid_preserved_dist`]'s
 /// commit/version so the preserved-context cross-checks pass.
 fn preserved_dist_ctx(config: &anodizer_core::config::Config) -> anodizer_core::context::Context {
@@ -881,10 +955,12 @@ fn preserved_dist_ctx(config: &anodizer_core::config::Config) -> anodizer_core::
 /// asserts — this pins the per-iteration placement, not just
 /// outer-stale clearing.
 #[test]
+#[serial_test::serial(cwd)]
 fn run_per_crate_resets_publish_outcome_each_iteration() {
     use anodizer_core::config::Config;
     use anodizer_core::publish_report::PublishReport;
 
+    let _repo = HermeticRepoCwd::committed();
     let tmp = tempfile::tempdir().unwrap();
     let dist_base = tmp.path().join("dist");
     seed_valid_preserved_dist(&dist_base, "a");
@@ -938,9 +1014,11 @@ fn run_per_crate_resets_publish_outcome_each_iteration() {
 /// "still-cleared state stayed cleared" without noticing — this
 /// assert catches that drift loudly.
 #[test]
+#[serial_test::serial(cwd)]
 fn run_per_crate_pipeline_marks_publish_attempted() {
     use anodizer_core::config::Config;
 
+    let _repo = HermeticRepoCwd::committed();
     let tmp = tempfile::tempdir().unwrap();
     let dist_base = tmp.path().join("dist");
     seed_valid_preserved_dist(&dist_base, "a");
@@ -990,12 +1068,13 @@ fn run_per_crate_pipeline_marks_publish_attempted() {
 /// stage reaching the network.
 #[test]
 #[cfg(unix)]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn root_after_hooks_fire_once_per_run_in_every_config_mode() {
     use anodizer_core::config::{
         Config, CrateConfig, HookEntry, HooksConfig, StructuredHook, WorkspaceConfig,
     };
 
+    let _repo = HermeticRepoCwd::committed();
     for (label, crate_specs) in [
         ("single-crate", vec![("app", "v{{ Version }}")]),
         (
@@ -1055,11 +1134,6 @@ fn root_after_hooks_fire_once_per_run_in_every_config_mode() {
         };
 
         let mut ctx = preserved_dist_ctx(&config);
-        // The changelog stage reads git history from the PROCESS cwd, which
-        // a concurrently-running test may have swapped out from under it.
-        // Hook cardinality is independent of it, so skip it and keep this
-        // test hermetic.
-        ctx.options.skip_stages = vec!["changelog".to_string()];
         let log = anodizer_core::log::StageLogger::new(
             "root-after-cardinality-test",
             anodizer_core::log::Verbosity::Quiet,
@@ -1111,10 +1185,11 @@ fn released_crate_cfg(name: &str, tag_template: &str) -> anodizer_core::config::
 /// tag), not the prior iteration's. This is the file the action-side
 /// `release-url` output reads via `.release_url`.
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn run_per_crate_metadata_carries_per_crate_release_url() {
     use anodizer_core::config::Config;
 
+    let _repo = HermeticRepoCwd::committed();
     let tmp = tempfile::tempdir().unwrap();
     let dist_base = tmp.path().join("dist");
     seed_valid_preserved_dist(&dist_base, "a");
@@ -1412,39 +1487,6 @@ mod per_crate_tag {
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("per-crate-tag-test", Verbosity::Quiet)
-    }
-
-    /// Run `body` with the process cwd swapped to a freshly-`git
-    /// init`ed empty temp repo, restoring the original cwd after.
-    ///
-    /// `apply_per_crate_tag`'s `PreviousTag` lookup shells to `git
-    /// describe` in the process cwd; without this the tag tests would
-    /// scan the real anodize checkout (non-hermetic, slow, and
-    /// dependent on whatever tags happen to be in the dev's tree). An
-    /// empty repo makes the lookup return an error fast — caught and
-    /// logged by `apply_per_crate_tag`, leaving `Tag` (the thing under
-    /// test) untouched. Process-wide cwd swap, so callers must be
-    /// `#[serial(cwd)]` (the workspace-canonical cwd serial group).
-    fn with_hermetic_git_cwd(body: impl FnOnce()) {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(
-            anodizer_core::test_helpers::output_with_spawn_retry(
-                || {
-                    let mut cmd = std::process::Command::new("git");
-                    cmd.args(["init", "-q"]).current_dir(tmp.path());
-                    cmd
-                },
-                "git",
-            )
-            .status
-            .success(),
-            "git init must succeed for the hermetic tag-test repo",
-        );
-        // The shared CwdGuard swaps into `tmp` and restores cwd on Drop
-        // (panic-safe). Declared after `tmp` so cwd is restored before the
-        // tempdir is deleted.
-        let _cwd = anodizer_core::test_helpers::CwdGuard::new(tmp.path()).unwrap();
-        body();
     }
 
     fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
