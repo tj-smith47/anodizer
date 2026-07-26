@@ -73,19 +73,24 @@ GOD_FILE_LIMIT=1000
 #
 # Format: "<path>:<pinned ceiling>:<why>".
 GOD_FILE_EXEMPT=(
-    "crates/cli/src/lib.rs:1093:CLI surface aggregator — clap command wiring, one flat block per subcommand; splitting it scatters the argument surface across files without reducing it"
+    "crates/cli/src/lib.rs:1093:CLI surface aggregator — clap command wiring, one flat block per subcommand; splitting it scatters the argument surface across files without reducing it. Ratified 2026-07-26 as a standing exemption from the >1000-production-line rule; do not re-open it as a split target"
 )
 
-GOD_FILE_DEBT=(
-    "crates/core/src/log.rs:1305:predates this guard; StageLogger + rendering + redaction + the test-helpers capture surface in one file, and each is separable"
-)
+GOD_FILE_DEBT=()
 
 # `--others --exclude-standard` alongside the tracked set: a god file written
 # but not yet `git add`ed is exactly the case this guard exists to catch, and a
 # tracked-only listing would pass it silently. `-u` dedupes the overlap.
+#
+# `-f -` drops index entries with no file on disk: a split in progress deletes
+# `foo.rs` in the worktree before that deletion is staged, and `--cached` keeps
+# listing it. Without the filter every downstream reader (grep, awk) fails on
+# the missing path, and the line counter charges the file 0 production lines —
+# a vanishing act that would let a genuinely oversized file pass.
 mapfile -t ALL_RS < <(
     git ls-files --cached --others --exclude-standard -- 'crates/**/*.rs' 'crates/*.rs' 2>/dev/null |
-        sort -u
+        sort -u |
+        while IFS= read -r _f; do [[ -f "$_f" ]] && printf '%s\n' "$_f"; done
 )
 if [[ ${#ALL_RS[@]} -eq 0 ]]; then
     echo "audit-god-files: no crates/**/*.rs tracked; nothing to scan." >&2

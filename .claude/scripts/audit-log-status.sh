@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guard: no subprocess/HTTP command-echo at default verbosity.
 #
-# Contract (crates/core/src/log.rs): `log.status(...)` prints a default-visible
+# Contract (crates/core/src/log/): `log.status(...)` prints a default-visible
 # `•` line; `log.verbose(...)` shows only under `-v`. The literal subprocess
 # command line (joined argv), the bare HTTP request a publisher fires, rendered
 # temp/config/output paths, and other internal execution detail belong at
@@ -113,7 +113,7 @@ if [[ -n "$violations" ]]; then
     echo "These .status(...) calls echo a subprocess command (joined argv or a"
     echo "hand-assembled '<verb> … --flag'), a rendered temp/config/output path,"
     echo "or a bare HTTP request ('DELETE {url}') at DEFAULT verbosity. Per the"
-    echo "contract in crates/core/src/log.rs, the literal command/request belongs"
+    echo "contract in crates/core/src/log/, the literal command/request belongs"
     echo "at log.verbose(...); at default emit only a concise per-artifact RESULT"
     echo "line (the stage-srpm idiom: \`creating source RPM <name>\`)."
     echo

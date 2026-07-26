@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Guard: status labels come ONLY from log.rs, never open-coded.
+# Guard: status labels come ONLY from the log module, never open-coded.
 #
-# Contract (crates/core/src/log.rs): the Warning / Error / Note status labels
+# Contract (crates/core/src/log/): the Warning / Error / Note status labels
 # are rendered by render_warning / render_error / render_note (and surfaced via
 # StageLogger::warn / ::error / the tracing formatter). Those are the single
 # source of truth for the label text, palette, AND format — a right-aligned
@@ -12,7 +12,7 @@
 #
 # This audit fails (exit 1) when a string literal OPENS (immediately after its
 # `"`) with a `Warning: ` / `Error: ` / `Note: ` label — colon then one space —
-# anywhere in crate source outside the log.rs authority. That exact shape is the
+# anywhere in crate source outside the log module authority. That exact shape is the
 # canonical open-coded status line; the audit intentionally does NOT chase
 # labels assembled dynamically (e.g. `format!("{}: ", lbl)`) or mid-literal,
 # which carry no `"<Label>: ` opener.
@@ -42,7 +42,7 @@ while IFS= read -r hit; do
     violations+="$hit"$'\n'
 done < <(
     grep -rnP "$LABEL_RE" crates/*/src --include='*.rs' 2>/dev/null \
-        | grep -v 'crates/core/src/log.rs:' || true
+        | grep -v 'crates/core/src/log/' || true
 )
 
 if [[ -n "$violations" ]]; then
@@ -50,7 +50,7 @@ if [[ -n "$violations" ]]; then
     echo
     echo "$violations"
     echo "These string literals open-code a status-label prefix instead of going"
-    echo "through the single authority in crates/core/src/log.rs. That reintroduces"
+    echo "through the single authority in crates/core/src/log/. That reintroduces"
     echo "the colon-suffixed, mis-aligned line the format is pinned against."
     echo
     echo "Fix: call log.warn(msg) / log.error(msg) (or render_warning / render_error"
