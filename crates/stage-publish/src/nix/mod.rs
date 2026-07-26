@@ -9,6 +9,8 @@ mod publish;
 pub mod publisher;
 
 #[cfg(test)]
+mod publisher_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use flake::{

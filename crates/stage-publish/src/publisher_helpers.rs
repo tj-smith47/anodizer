@@ -177,6 +177,37 @@ pub(crate) fn with_published_crate_scope<T>(
     anodizer_core::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, body)
 }
 
+/// Resolve one open-PR probe target per crate, each inside that crate's own
+/// published-version scope so the probed version matches what the crate would
+/// actually publish under independent-version workspaces.
+///
+/// `None` from `build` means that entry's coordinates are unresolvable, which
+/// collapses the whole probe to `None`: a publisher that skipped `run()` on a
+/// partially-resolved set would never submit the remaining entries.
+pub(crate) fn collect_pr_reconcile_targets(
+    ctx: &mut anodizer_core::context::Context,
+    crate_names: &[String],
+    build: impl Fn(
+        &anodizer_core::context::Context,
+        &str,
+    ) -> anyhow::Result<Option<crate::util::PrReconcileTarget>>,
+) -> anyhow::Result<Option<Vec<crate::util::PrReconcileTarget>>> {
+    let mut targets = Vec::with_capacity(crate_names.len());
+    for crate_name in crate_names {
+        let target = with_published_crate_scope(
+            ctx,
+            crate_name,
+            &anodizer_core::crate_scope::resolve_crate_tag,
+            |ctx| build(ctx, crate_name),
+        )?;
+        match target {
+            Some(t) => targets.push(t),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(targets))
+}
+
 /// Canonical wording for a PR-based publisher's rollback failure warn line.
 ///
 /// PR-based rollbacks shell out to `git revert HEAD --no-edit` + `git push`.

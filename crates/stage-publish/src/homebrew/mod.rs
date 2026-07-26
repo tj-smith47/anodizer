@@ -22,6 +22,8 @@ mod publish_top;
 pub mod publisher;
 
 #[cfg(test)]
+mod publisher_tests;
+#[cfg(test)]
 mod tests;
 
 pub use cask::{

@@ -182,6 +182,60 @@ fn active_nix_configs(ctx: &Context) -> Vec<&anodizer_core::config::NixConfig> {
         .collect()
 }
 
+/// Build the open-PR reconcile target for `crate_name`, resolving the overlay
+/// name and the upstream repo (`pull_request.base`, else the fork itself) —
+/// called inside `crate_name`'s own version scope so the probed `version`
+/// matches what that crate would actually publish under independent-version
+/// workspaces.
+pub(crate) fn build_nix_reconcile_target(
+    ctx: &Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    let Some(nix_cfg) = ctx
+        .config
+        .find_crate(crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.nix.as_ref())
+    else {
+        return Ok(None);
+    };
+    let Some((repo_owner_raw, repo_name_raw)) =
+        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
+    let (Ok(name), Ok(repo_owner), Ok(repo_name)) = (
+        crate::util::render_or_warn(ctx, log, "nix.name", name_raw),
+        crate::util::render_or_warn(ctx, log, "nix.repository.owner", &repo_owner_raw),
+        crate::util::render_or_warn(ctx, log, "nix.repository.name", &repo_name_raw),
+    ) else {
+        return Ok(None);
+    };
+    let token =
+        crate::util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
+    // run() submits through `maybe_submit_pr`, which resolves base-else-fork.
+    // Probing the bare fork searches a repo the PR never lands in whenever
+    // `pull_request.base` is set.
+    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
+        nix_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+    );
+    let version = ctx.version();
+    Ok(Some(crate::util::PrReconcileTarget {
+        publisher: NixPublisher::PUBLISHER_NAME.into(),
+        title: crate::nix::publish::build::pr_title(&name, &version),
+        upstream_owner,
+        upstream_repo,
+        package: name,
+        version,
+        token,
+    }))
+}
+
 impl anodizer_core::Publisher for NixPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -306,78 +360,16 @@ impl anodizer_core::Publisher for NixPublisher {
         if !all_pr_mode {
             return Ok(ReconcileState::Absent);
         }
-        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
-        for crate_name in &crate_names {
-            let target = crate::publisher_helpers::with_published_crate_scope(
-                ctx,
-                crate_name,
-                &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| {
-                    let Some(nix_cfg) = ctx
-                        .config
-                        .find_crate(crate_name)
-                        .and_then(|c| c.publish.as_ref())
-                        .and_then(|p| p.nix.as_ref())
-                        .cloned()
-                    else {
-                        return Ok(None);
-                    };
-                    let Some((repo_owner_raw, repo_name_raw)) =
-                        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
-                    else {
-                        return Ok(None);
-                    };
-                    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
-                    let (Ok(name), Ok(repo_owner), Ok(repo_name)) = (
-                        crate::util::render_or_warn(ctx, &log, "nix.name", name_raw),
-                        crate::util::render_or_warn(
-                            ctx,
-                            &log,
-                            "nix.repository.owner",
-                            &repo_owner_raw,
-                        ),
-                        crate::util::render_or_warn(
-                            ctx,
-                            &log,
-                            "nix.repository.name",
-                            &repo_name_raw,
-                        ),
-                    ) else {
-                        return Ok(None);
-                    };
-                    let token = crate::util::resolve_repo_token(
-                        ctx,
-                        nix_cfg.repository.as_ref(),
-                        Some("NIX_PKGS_TOKEN"),
-                    );
-                    // run() submits through `maybe_submit_pr`, which resolves
-                    // base-else-fork. Probing the bare fork searches a repo the
-                    // PR never lands in whenever `pull_request.base` is set.
-                    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
-                        nix_cfg.repository.as_ref(),
-                        &repo_owner,
-                        &repo_name,
-                        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-                    );
-                    let version = ctx.version();
-                    Ok(Some(crate::util::PrReconcileTarget {
-                        publisher: NixPublisher::PUBLISHER_NAME.into(),
-                        title: crate::nix::publish::build::pr_title(&name, &version),
-                        upstream_owner,
-                        upstream_repo,
-                        package: name,
-                        version,
-                        token,
-                    }))
-                },
-            )?;
-            match target {
-                Some(t) => targets.push(t),
-                // Unresolvable target (no repo owner, bad template, …):
-                // run() owns the decision and reports its own diagnostics.
-                None => return Ok(ReconcileState::Absent),
-            }
-        }
+        let Some(targets) = crate::publisher_helpers::collect_pr_reconcile_targets(
+            ctx,
+            &crate_names,
+            |ctx, crate_name| build_nix_reconcile_target(ctx, crate_name, &log),
+        )?
+        else {
+            // Unresolvable target (no repo owner, bad template, ...):
+            // run() owns the decision and reports its own diagnostics.
+            return Ok(ReconcileState::Absent);
+        };
         Ok(crate::util::reconcile_open_prs(
             &targets, &policy, deadline, &log,
         ))

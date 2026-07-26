@@ -212,6 +212,47 @@ fn active_krew_configs(ctx: &Context) -> Vec<&anodizer_core::config::KrewConfig>
         .collect()
 }
 
+/// Build the open-PR reconcile target for `crate_name`, resolving the plugin
+/// name and the upstream index coordinates — called inside `crate_name`'s own
+/// version scope so the probed `version` matches what that crate would
+/// actually publish under independent-version workspaces.
+pub(crate) fn build_krew_reconcile_target(
+    ctx: &Context,
+    crate_name: &str,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    let Some(krew_cfg) = ctx
+        .config
+        .find_crate(crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.krew.as_ref())
+    else {
+        return Ok(None);
+    };
+    let Ok(plugin_name) = resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
+        ctx.render_template(t)
+    }) else {
+        return Ok(None);
+    };
+    let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg, &|t| {
+        ctx.render_template(t).unwrap_or_else(|_| t.to_string())
+    });
+    let token = crate::util::resolve_repo_token(
+        ctx,
+        krew_cfg.repository.as_ref(),
+        Some("KREW_INDEX_TOKEN"),
+    );
+    let version = ctx.version();
+    Ok(Some(crate::util::PrReconcileTarget {
+        publisher: KrewPublisher::PUBLISHER_NAME.into(),
+        title: crate::krew::publish::pr_title(crate_name, &version),
+        upstream_owner,
+        upstream_repo,
+        package: plugin_name,
+        version,
+        token,
+    }))
+}
+
 impl anodizer_core::Publisher for KrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -294,56 +335,16 @@ impl anodizer_core::Publisher for KrewPublisher {
         if crate_names.is_empty() {
             return Ok(ReconcileState::Absent);
         }
-        let mut targets: Vec<crate::util::PrReconcileTarget> = Vec::new();
-        for crate_name in &crate_names {
-            let target = crate::publisher_helpers::with_published_crate_scope(
-                ctx,
-                crate_name,
-                &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| {
-                    let Some(krew_cfg) = ctx
-                        .config
-                        .find_crate(crate_name)
-                        .and_then(|c| c.publish.as_ref())
-                        .and_then(|p| p.krew.as_ref())
-                        .cloned()
-                    else {
-                        return Ok(None);
-                    };
-                    let Ok(plugin_name) =
-                        resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
-                            ctx.render_template(t)
-                        })
-                    else {
-                        return Ok(None);
-                    };
-                    let (upstream_owner, upstream_repo) = resolve_krew_upstream(&krew_cfg, &|t| {
-                        ctx.render_template(t).unwrap_or_else(|_| t.to_string())
-                    });
-                    let token = crate::util::resolve_repo_token(
-                        ctx,
-                        krew_cfg.repository.as_ref(),
-                        Some("KREW_INDEX_TOKEN"),
-                    );
-                    let version = ctx.version();
-                    Ok(Some(crate::util::PrReconcileTarget {
-                        publisher: KrewPublisher::PUBLISHER_NAME.into(),
-                        title: crate::krew::publish::pr_title(crate_name, &version),
-                        upstream_owner,
-                        upstream_repo,
-                        package: plugin_name,
-                        version,
-                        token,
-                    }))
-                },
-            )?;
-            match target {
-                Some(t) => targets.push(t),
-                // Unresolvable target (bad template, no plugin name, …):
-                // run() owns the decision and reports its own diagnostics.
-                None => return Ok(ReconcileState::Absent),
-            }
-        }
+        let Some(targets) = crate::publisher_helpers::collect_pr_reconcile_targets(
+            ctx,
+            &crate_names,
+            build_krew_reconcile_target,
+        )?
+        else {
+            // Unresolvable target (bad template, no plugin name, ...):
+            // run() owns the decision and reports its own diagnostics.
+            return Ok(ReconcileState::Absent);
+        };
         Ok(crate::util::reconcile_open_prs(
             &targets, &policy, deadline, &log,
         ))

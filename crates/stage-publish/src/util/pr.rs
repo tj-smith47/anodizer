@@ -2212,4 +2212,165 @@ mod tests {
         );
         drop(work);
     }
+
+    // -- reconcile_open_prs ------------------------------------------------
+    // Every PR-mode publisher funnels its probe through this function, so a
+    // wrong verdict here is the difference between skipping a needed publish
+    // and opening a duplicate PR. Neither failure is loud.
+
+    fn json_200(body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    fn probe_target(package: &str, title: &str) -> super::PrReconcileTarget {
+        super::PrReconcileTarget {
+            publisher: "scoop".to_string(),
+            title: title.to_string(),
+            upstream_owner: "upstream-org".to_string(),
+            upstream_repo: "bucket".to_string(),
+            package: package.to_string(),
+            version: "1.2.3".to_string(),
+            token: None,
+        }
+    }
+
+    fn run_probe(
+        targets: &[super::PrReconcileTarget],
+        responses: Vec<&'static str>,
+    ) -> anodizer_core::ReconcileState {
+        let (addr, _hits) = spawn_oneshot_http_responder(responses);
+        let _lock = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _base = anodizer_core::test_helpers::env::EnvGuard::set(
+            "ANODIZER_GITHUB_API_BASE",
+            &format!("http://{addr}"),
+        );
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        super::reconcile_open_prs(
+            targets,
+            &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+            None,
+            &log,
+        )
+    }
+
+    #[test]
+    fn reconcile_open_prs_with_no_targets_is_absent() {
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let state = super::reconcile_open_prs(
+            &[],
+            &anodizer_core::retry::RetryPolicy::PREFLIGHT,
+            None,
+            &log,
+        );
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "nothing to probe must never read as Complete: {state:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_open_prs_is_complete_when_the_target_has_a_matching_open_pr() {
+        let t = probe_target("mytool", "Update mytool manifest to 1.2.3");
+        let state = run_probe(
+            std::slice::from_ref(&t),
+            vec![json_200(
+                r#"{"total_count":1,"items":[{"title":"Update mytool manifest to 1.2.3","html_url":"https://github.com/upstream-org/bucket/pull/7"}]}"#,
+            )],
+        );
+        match state {
+            anodizer_core::ReconcileState::Complete { note } => {
+                assert!(note.contains("pull/7"), "note must cite the PR: {note}");
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_open_prs_is_absent_when_no_open_pr_matches() {
+        let t = probe_target("mytool", "Update mytool manifest to 1.2.3");
+        let state = run_probe(
+            std::slice::from_ref(&t),
+            vec![json_200(r#"{"total_count":0,"items":[]}"#)],
+        );
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "no open PR means run() must still submit: {state:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_open_prs_ignores_a_row_whose_title_is_not_the_submitter_s() {
+        let t = probe_target("mytool", "Update mytool manifest to 1.2.3");
+        // The word-level search also matches unrelated PRs; only the exact
+        // submitter title proves THIS release already has one open.
+        let state = run_probe(
+            std::slice::from_ref(&t),
+            vec![json_200(
+                r#"{"total_count":1,"items":[{"title":"Bump mytool to 1.2.3 in docs","html_url":"https://x/1"}]}"#,
+            )],
+        );
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "a near-miss title must not be claimed as this release's PR: {state:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_open_prs_is_unknown_when_a_matching_row_lacks_html_url() {
+        let t = probe_target("mytool", "Update mytool manifest to 1.2.3");
+        let state = run_probe(
+            std::slice::from_ref(&t),
+            vec![json_200(
+                r#"{"total_count":1,"items":[{"title":"Update mytool manifest to 1.2.3"}]}"#,
+            )],
+        );
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Unknown { .. }),
+            "a row without html_url must not synthesize a URL: {state:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_open_prs_is_unknown_when_the_search_response_is_malformed() {
+        let t = probe_target("mytool", "Update mytool manifest to 1.2.3");
+        // Fail toward publishing: coalescing a corrupt body to "no PR" would
+        // be indistinguishable from a clean miss.
+        let state = run_probe(std::slice::from_ref(&t), vec![json_200("not json at all")]);
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Unknown { .. }),
+            "a corrupt search body must not read as a clean miss: {state:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_open_prs_is_absent_when_only_some_targets_have_open_prs() {
+        let targets = vec![
+            probe_target("tool-a", "Update tool-a manifest to 1.2.3"),
+            probe_target("tool-b", "Update tool-b manifest to 1.2.3"),
+        ];
+        // All-or-nothing: a publisher that skipped run() on mixed state would
+        // never submit the entry that is still missing.
+        let state = run_probe(
+            &targets,
+            vec![
+                json_200(
+                    r#"{"total_count":1,"items":[{"title":"Update tool-a manifest to 1.2.3","html_url":"https://x/1"}]}"#,
+                ),
+                json_200(r#"{"total_count":0,"items":[]}"#),
+            ],
+        );
+        assert!(
+            matches!(state, anodizer_core::ReconcileState::Absent),
+            "mixed state must fall through to run(): {state:?}"
+        );
+    }
 }

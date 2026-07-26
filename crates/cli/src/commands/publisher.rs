@@ -1336,4 +1336,74 @@ crates:
         );
         assert!(result.is_ok());
     }
+
+    // -- split_shellwords (Go shellwords.Parse parity) ---------------------
+    // A custom publisher's `cmd` is a single string the user writes; a
+    // mis-split here silently runs a DIFFERENT command than the one they
+    // configured, with no error anywhere.
+
+    fn words(s: &str) -> Vec<String> {
+        split_shellwords(s)
+    }
+
+    #[test]
+    fn split_shellwords_splits_on_runs_of_whitespace() {
+        assert_eq!(words("curl -T file"), vec!["curl", "-T", "file"]);
+        assert_eq!(words("  curl \t -T   file  "), vec!["curl", "-T", "file"]);
+        assert!(words("").is_empty());
+        assert!(words("   ").is_empty());
+    }
+
+    #[test]
+    fn split_shellwords_keeps_double_quoted_runs_together() {
+        assert_eq!(
+            words(r#"curl -H "Content-Type: text/plain" url"#),
+            vec!["curl", "-H", "Content-Type: text/plain", "url"]
+        );
+    }
+
+    #[test]
+    fn split_shellwords_keeps_single_quoted_runs_together() {
+        assert_eq!(
+            words("sh -c 'echo hello world'"),
+            vec!["sh", "-c", "echo hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shellwords_treats_a_backslash_escape_as_a_literal() {
+        assert_eq!(words(r"echo a\ b"), vec!["echo", "a b"]);
+        assert_eq!(words(r#"echo \"quoted\""#), vec!["echo", "\"quoted\""]);
+    }
+
+    #[test]
+    fn split_shellwords_does_not_expand_escapes_inside_single_quotes() {
+        // Single quotes are literal in shellwords: the backslash survives.
+        assert_eq!(words(r"echo 'a\b'"), vec!["echo", r"a\b"]);
+    }
+
+    #[test]
+    fn split_shellwords_nests_the_other_quote_style_verbatim() {
+        assert_eq!(words(r#"sh -c "it's fine""#), vec!["sh", "-c", "it's fine"]);
+        assert_eq!(
+            words(r#"sh -c 'say "hi"'"#),
+            vec!["sh", "-c", r#"say "hi""#]
+        );
+    }
+
+    #[test]
+    fn split_shellwords_yields_no_word_for_an_empty_quoted_string() {
+        // An empty quoted run pushes nothing — `current` is still empty when
+        // the closing quote lands, so no zero-length argument is emitted.
+        assert_eq!(words(r#"cmd "" x"#), vec!["cmd", "x"]);
+    }
+
+    #[test]
+    fn format_command_line_joins_args_and_omits_a_trailing_space_when_empty() {
+        assert_eq!(format_command_line("curl", &[]), "curl");
+        assert_eq!(
+            format_command_line("curl", &["-T".to_string(), "f".to_string()]),
+            "curl -T f"
+        );
+    }
 }

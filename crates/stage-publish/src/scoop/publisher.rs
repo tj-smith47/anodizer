@@ -121,7 +121,7 @@ fn active_scoop_configs(ctx: &Context) -> Vec<&anodizer_core::config::ScoopConfi
 /// the rendered manifest name — called inside `crate_name`'s own version
 /// scope so the probed `version` matches what that crate would actually
 /// publish under independent-version workspaces.
-fn build_scoop_reconcile_target(
+pub(crate) fn build_scoop_reconcile_target(
     ctx: &Context,
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
@@ -249,20 +249,14 @@ impl anodizer_core::Publisher for ScoopPublisher {
                 return Ok(ReconcileState::Absent);
             }
         }
-        let mut targets: Vec<crate::util::PrReconcileTarget> =
-            Vec::with_capacity(crate_names.len());
-        for crate_name in &crate_names {
-            let target = crate::publisher_helpers::with_published_crate_scope(
-                ctx,
-                crate_name,
-                &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| build_scoop_reconcile_target(ctx, crate_name, &log),
-            )?;
-            match target {
-                Some(t) => targets.push(t),
-                None => return Ok(ReconcileState::Absent),
-            }
-        }
+        let Some(targets) = crate::publisher_helpers::collect_pr_reconcile_targets(
+            ctx,
+            &crate_names,
+            |ctx, crate_name| build_scoop_reconcile_target(ctx, crate_name, &log),
+        )?
+        else {
+            return Ok(ReconcileState::Absent);
+        };
         Ok(crate::util::reconcile_open_prs(
             &targets, &policy, deadline, &log,
         ))

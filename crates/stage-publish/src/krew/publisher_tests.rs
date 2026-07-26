@@ -875,3 +875,116 @@ fn krew_rollback_counts_failed_close_on_server_error() {
         cap.warn_messages()
     );
 }
+
+fn krew_crate_with(name: &str, repo: RepositoryConfig, plugin: Option<&str>) -> CrateConfig {
+    CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            krew: Some(KrewConfig {
+                repository: Some(repo),
+                name: plugin.map(str::to_string),
+                short_description: Some("a kubectl plugin".to_string()),
+                description: Some("a kubectl plugin".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn krew_target(
+    ctx: &anodizer_core::context::Context,
+    crate_name: &str,
+) -> Option<crate::util::PrReconcileTarget> {
+    super::publisher::build_krew_reconcile_target(ctx, crate_name).expect("builder ok")
+}
+
+#[test]
+fn build_krew_reconcile_target_defaults_to_the_canonical_krew_index() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("krew-index-fork".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![krew_crate_with("x", repo, None)])
+        .build();
+    let t = krew_target(&ctx, "x").expect("target built");
+    // The PR lands against the canonical index, never the fork — probing the
+    // fork would find no open PR and re-submit a duplicate.
+    assert_eq!(t.upstream_owner, "kubernetes-sigs");
+    assert_eq!(t.upstream_repo, "krew-index");
+}
+
+#[test]
+fn build_krew_reconcile_target_honors_an_explicit_pull_request_base() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("krew-index-fork".to_string()),
+        pull_request: Some(anodizer_core::config::PullRequestConfig {
+            enabled: Some(true),
+            base: Some(anodizer_core::config::PullRequestBaseConfig {
+                owner: Some("private-org".to_string()),
+                name: Some("internal-index".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![krew_crate_with("x", repo, None)])
+        .build();
+    let t = krew_target(&ctx, "x").expect("target built");
+    assert_eq!(t.upstream_owner, "private-org");
+    assert_eq!(t.upstream_repo, "internal-index");
+}
+
+#[test]
+fn build_krew_reconcile_target_title_is_sourced_from_the_submitter() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("krew-index-fork".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![krew_crate_with("x", repo, None)])
+        .build();
+    let t = krew_target(&ctx, "x").expect("target built");
+    // A probe that re-derives the title drifts silently from the submitter and
+    // reports Complete for a PR that was never opened.
+    assert_eq!(t.title, crate::krew::publish::pr_title("x", &t.version));
+}
+
+#[test]
+fn build_krew_reconcile_target_renders_a_templated_plugin_name() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("krew-index-fork".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![krew_crate_with(
+            "x",
+            repo,
+            Some("{{ .ProjectName }}-plugin"),
+        )])
+        .build();
+    let t = krew_target(&ctx, "x").expect("target built");
+    assert!(!t.package.contains("{{"), "unrendered name: {}", t.package);
+    assert!(t.package.ends_with("-plugin"), "got {}", t.package);
+}
+
+#[test]
+fn build_krew_reconcile_target_without_a_krew_block_is_none() {
+    let crate_cfg = CrateConfig {
+        name: "x".to_string(),
+        path: ".".to_string(),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    assert!(krew_target(&ctx, "x").is_none());
+}

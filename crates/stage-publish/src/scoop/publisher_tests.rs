@@ -431,3 +431,142 @@ fn scoop_reconcile_no_active_entries_returns_absent() {
         .expect("reconcile ok");
     assert!(matches!(state, ReconcileState::Absent));
 }
+
+fn scoop_crate_with(name: &str, repo: RepositoryConfig, manifest: Option<&str>) -> CrateConfig {
+    CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            scoop: Some(ScoopConfig {
+                repository: Some(repo),
+                name: manifest.map(str::to_string),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn reconcile_target(ctx: &Context, crate_name: &str) -> Option<crate::util::PrReconcileTarget> {
+    let log = anodizer_core::log::StageLogger::new("scoop", anodizer_core::log::Verbosity::Quiet);
+    build_scoop_reconcile_target(ctx, crate_name, &log).expect("builder ok")
+}
+
+#[test]
+fn build_scoop_reconcile_target_probes_the_pull_request_base_not_the_fork() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("scoop-bucket".to_string()),
+        pull_request: Some(anodizer_core::config::PullRequestConfig {
+            enabled: Some(true),
+            base: Some(anodizer_core::config::PullRequestBaseConfig {
+                owner: Some("upstream-org".to_string()),
+                name: Some("upstream-bucket".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate_with("x", repo, None)])
+        .build();
+    let t = reconcile_target(&ctx, "x").expect("target built");
+    // Probing the fork would find no open PR and re-submit a duplicate, so the
+    // base coords — not the fork's — are the load-bearing part of the probe.
+    assert_eq!(t.upstream_owner, "upstream-org");
+    assert_eq!(t.upstream_repo, "upstream-bucket");
+}
+
+#[test]
+fn build_scoop_reconcile_target_falls_back_to_the_fork_when_no_base_is_set() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("scoop-bucket".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate_with("x", repo, None)])
+        .build();
+    let t = reconcile_target(&ctx, "x").expect("target built");
+    assert_eq!(t.upstream_owner, "acme");
+    assert_eq!(t.upstream_repo, "scoop-bucket");
+}
+
+#[test]
+fn build_scoop_reconcile_target_title_is_sourced_from_the_submitter() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("scoop-bucket".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate_with("x", repo, None)])
+        .build();
+    let t = reconcile_target(&ctx, "x").expect("target built");
+    // A probe that re-derives the title drifts silently from the submitter and
+    // reports Complete for a PR that was never opened.
+    assert_eq!(
+        t.title,
+        crate::scoop::publish::pr_title(&t.package, &t.version)
+    );
+}
+
+#[test]
+fn build_scoop_reconcile_target_defaults_package_to_the_crate_name() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("scoop-bucket".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate_with("mytool", repo, None)])
+        .build();
+    assert_eq!(
+        reconcile_target(&ctx, "mytool").expect("target").package,
+        "mytool"
+    );
+}
+
+#[test]
+fn build_scoop_reconcile_target_renders_a_templated_manifest_name() {
+    let repo = RepositoryConfig {
+        owner: Some("acme".to_string()),
+        name: Some("scoop-bucket".to_string()),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new()
+        .crates(vec![scoop_crate_with(
+            "x",
+            repo,
+            Some("{{ .ProjectName }}-cli"),
+        )])
+        .build();
+    let t = reconcile_target(&ctx, "x").expect("target built");
+    assert!(
+        !t.package.contains("{{"),
+        "manifest name must be rendered, not passed through raw: {}",
+        t.package
+    );
+    assert!(t.package.ends_with("-cli"), "got {}", t.package);
+}
+
+#[test]
+fn build_scoop_reconcile_target_without_a_repository_is_none() {
+    let crate_cfg = CrateConfig {
+        name: "x".to_string(),
+        path: ".".to_string(),
+        publish: Some(PublishConfig {
+            scoop: Some(ScoopConfig::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    assert!(
+        reconcile_target(&ctx, "x").is_none(),
+        "no owner/name means no probe coordinates; run() owns the diagnostics"
+    );
+}

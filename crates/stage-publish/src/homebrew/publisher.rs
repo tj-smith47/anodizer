@@ -286,7 +286,7 @@ fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::Ho
 /// `submit_homebrew_pr` opens. Called inside `crate_name`'s own version scope
 /// so the probed `version` matches what that crate would actually publish
 /// under independent-version workspaces.
-fn build_homebrew_crate_reconcile_target(
+pub(crate) fn build_homebrew_crate_reconcile_target(
     ctx: &Context,
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
@@ -352,7 +352,7 @@ fn build_homebrew_crate_reconcile_target(
 /// entry. Unlike per-crate entries these always publish at the context-global
 /// version, and carry their own `repository:` block rather than sharing a
 /// formula's tap.
-fn build_homebrew_top_cask_reconcile_target(
+pub(crate) fn build_homebrew_top_cask_reconcile_target(
     ctx: &Context,
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
     log: &anodizer_core::log::StageLogger,
