@@ -947,14 +947,17 @@ changelog:
   format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
   filters:
     exclude:
-      - "^docs:"
-      - "^ci:"
-      - "^chore:"
-      - "^style:"
-      - "^build"
-      - "^test"
-      - "^revert"
-      - "^chore\\(deps\\)"
+      # Every pattern carries the optional-scope group. Filters match the raw
+      # subject, so a bare "^docs:" misses "docs(metadata): ..." and the commit
+      # lands in Others; a bare "^test" matches any subject merely starting with
+      # those letters. The explicit form is wrong in neither direction.
+      - "^docs(\\(.*\\))?!?:"
+      - "^ci(\\(.*\\))?!?:"
+      - "^chore(\\(.*\\))?!?:"
+      - "^style(\\(.*\\))?!?:"
+      - "^build(\\(.*\\))?!?:"
+      - "^test(\\(.*\\))?!?:"
+      - "^revert(\\(.*\\))?!?:"
       - "^Merge "
       - "Merge pull request"
       - "Merge branch"

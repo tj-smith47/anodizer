@@ -256,8 +256,8 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
+      - "^docs(\\(.*\\))?!?:"
+      - "^test(\\(.*\\))?!?:"
 checksum:
   algorithm: sha256
 ```
