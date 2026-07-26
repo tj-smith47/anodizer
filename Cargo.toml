@@ -139,7 +139,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jsonschema = "0.48"
+jsonschema = "0.49"
 serde_yaml_ng = "0.10"
 roxmltree = "0.21"
 toml = "1.1"
@@ -232,7 +232,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # tracked ignore in `.cargo/audit.toml`, not a blocker here.
 object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
 object = { version = "0.39", default-features = false, features = ["read", "elf", "macho", "std"] }
-serial_test = "3"
+serial_test = "4"
 schemars = "1.2"
 # 2.0 adopted. GoReleaser template parity is preserved by keeping every custom
 # filter/function body on serde_json::Value behind the JSON boundary adapter
@@ -248,7 +248,7 @@ blake3 = "1"
 crc32fast = "1"
 md-5 = "0.10" # digest-0.10 line; see the sha1/sha2 pin note above
 hmac = "0.12" # digest-0.10 line; see the sha1/sha2 pin note above
-base64 = "0.22"
+base64 = "0.23"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
