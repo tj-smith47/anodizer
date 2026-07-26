@@ -393,7 +393,7 @@ fn format_default(val: Option<&Value>, section: Option<&str>) -> String {
         Some(v) => {
             let inline = format!("`{v}`");
             match section {
-                Some(anchor) if inline.len() > MAX_INLINE_DEFAULT => {
+                Some(anchor) if inline.chars().count() > MAX_INLINE_DEFAULT => {
                     format!("[per field](#{anchor})")
                 }
                 _ => inline,
@@ -402,8 +402,8 @@ fn format_default(val: Option<&Value>, section: Option<&str>) -> String {
     }
 }
 
-/// Longest Default cell rendered literally before it is replaced by a link to
-/// the type's section. Sized against the columns beside it: field names and type
+/// Longest Default cell, in characters, rendered literally before it is
+/// replaced by a link to the type's section. Sized against the columns beside it: field names and type
 /// names both run to roughly 20 characters, so a default past this width is the
 /// column that decides the table's total width, and the Description column pays
 /// for it.
@@ -1058,6 +1058,37 @@ mod tests {
         assert_eq!(
             format_default(Some(&serde_json::json!({})), Some("x")),
             "`{}`"
+        );
+    }
+
+    #[test]
+    fn section_anchors_are_unique() {
+        // `section_anchor` is lossy — `[]` and `.` both collapse to `-` — so two
+        // section names can slug to one anchor. Two headings sharing an id means
+        // every link to it silently resolves to whichever one the renderer emits
+        // first, and nothing reports it. Counted, not set-collected: a set would
+        // hide the very thing under test.
+        let md = generate_config_reference(&load_templates()).expect("render");
+        let emitted: Vec<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("## "))
+            .filter_map(|l| l.rsplit_once("{#"))
+            .filter_map(|(_, rest)| rest.strip_suffix('}'))
+            .collect();
+        let distinct: std::collections::HashSet<&&str> = emitted.iter().collect();
+        assert_eq!(
+            emitted.len(),
+            distinct.len(),
+            "two section names slug to the same anchor: {:?}",
+            {
+                let mut dupes: Vec<&&str> = emitted
+                    .iter()
+                    .filter(|a| emitted.iter().filter(|b| b == a).count() > 1)
+                    .collect();
+                dupes.sort_unstable();
+                dupes.dedup();
+                dupes
+            }
         );
     }
 
