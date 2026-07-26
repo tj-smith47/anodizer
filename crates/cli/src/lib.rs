@@ -372,7 +372,7 @@ pub enum Commands {
         #[arg(
             long,
             value_delimiter = ',',
-            help = "Skip stages (comma-separated: pre-hooks, post-hooks, validate, before)"
+            help = "Skip hook lanes or stages (comma-separated: before, after, always, on-error, validate, sign, notarize)"
         )]
         skip: Vec<String>,
     },

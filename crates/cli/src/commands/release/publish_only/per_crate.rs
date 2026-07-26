@@ -32,8 +32,8 @@ impl HookKind {
 /// from the crate's RESOLVED [`CrateConfig`] after the workspace overlay is
 /// applied) scoped to the crate's already-anchored template vars.
 ///
-/// Honors `--skip=before` / `--skip=after` exactly like the top-level hooks
-/// so an operator can suppress both surfaces with one flag. A crate with no
+/// Honors `--skip=before` / `--skip=after` — the same tokens the root lanes
+/// honor, so one flag suppresses a lane across both surfaces. A crate with no
 /// matching hook block is a no-op. The top-level `before:` / `after:` hooks
 /// fire separately (once per release in the outer dispatcher) — this only
 /// adds the per-crate surface.

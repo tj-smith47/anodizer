@@ -32,13 +32,13 @@ always:
 
 ## The lanes
 
-| Block | Runs when | Ordering |
-|---|---|---|
-| `before` | before any pipeline stage | first |
-| `before_publish` | after the artifacts are built, before any publisher | mid-pipeline |
-| `after` | the pipeline finished **successfully** | after the pipeline |
-| `on_error` | the pipeline **failed** at any stage | after the failure |
-| `always` | **every** terminal path, success or failure | **last**, after `after` / `on_error` |
+| Block | Runs when | Ordering | `--skip` token |
+|---|---|---|---|
+| `before` | before any pipeline stage | first | `before` |
+| `before_publish` | after the artifacts are built, before any publisher | mid-pipeline | `before-publish` |
+| `after` | the pipeline finished **successfully** | after the pipeline | `after` |
+| `on_error` | the pipeline **failed** at any stage | after the failure | `on-error` |
+| `always` | **every** terminal path, success or failure | **last**, after `after` / `on_error` | `always` |
 
 The four outer lanes map onto `try` / `else` / `catch` / `finally`:
 
@@ -78,6 +78,42 @@ which is where build teardown belongs.
 
 Every other command (`publish`, `announce`, `check`, `tag`, ...) runs no root
 lane at all — `publish` runs only the mid-pipeline `before_publish` hooks.
+
+## Suppressing a lane with `--skip`
+
+Every root lane has a `--skip` token, and `release` and `build` accept the
+same four, so one skip list works on whichever command a job runs:
+
+```bash
+anodizer release --skip=on-error       # ship without the failure notifier
+anodizer build   --skip=before,always  # no staging, no teardown
+```
+
+The token is the block name in kebab-case, so `on_error:` is `--skip=on-error`
+(the same shape `before_publish:` → `--skip=before-publish` uses). An
+unrecognized token is a hard usage error listing the valid set — a `--skip`
+value is never accepted and silently ignored:
+
+```
+$ anodizer build --skip=post-hooks
+Error: invalid --skip value(s): post-hooks. Valid options: before, after,
+always, on-error, validate, sign, notarize
+```
+
+One token covers every scope the lane fires in: `--skip=before` suppresses
+the root `before:` block AND every `crates[].before:` block, and
+`--skip=on-error` suppresses the root `on_error:` block AND every
+`publish.on_error:` block.
+
+`--skip=always` is deliberate, not an oversight. `always` is the run's
+`finally`, but `--skip=before` already suppresses the lane it pairs with, and
+a teardown hook firing against state nothing staged is the incoherent half of
+that pair. The cost is the obvious one: **teardown does not run**, so
+anything the run staged stays staged.
+
+`anodizer build` has no `on_error:` lane, so `build --skip=on-error` is
+accepted with nothing to suppress. The token stays in build's vocabulary so a
+caller's single skip list does not have to vary by command.
 
 ## Behavior
 

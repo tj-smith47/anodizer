@@ -78,12 +78,18 @@ pub struct Config {
     /// Default values applied to all crates unless overridden.
     pub defaults: Option<Defaults>,
     /// Hooks run before the release pipeline starts.
+    ///
+    /// Use `--skip=before` to bypass — one token covers this block and every
+    /// `crates[].before:` block.
     pub before: Option<HooksConfig>,
     /// Hooks run after the release pipeline completes SUCCESSFULLY.
     ///
     /// A failed run never reaches them — route failure handling through
     /// `on_error:`, and teardown that must happen either way through
     /// `always:`.
+    ///
+    /// Use `--skip=after` to bypass — one token covers this block and every
+    /// `crates[].after:` block.
     ///
     /// ```yaml
     /// after:
@@ -105,6 +111,9 @@ pub struct Config {
     /// `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so
     /// hooks can consume the error text without shell interpolation.
     ///
+    /// Use `--skip=on-error` to bypass — one token covers this block and
+    /// every `publish.on_error:` block.
+    ///
     /// ```yaml
     /// on_error:
     ///   hooks:
@@ -119,9 +128,15 @@ pub struct Config {
     /// Use them for teardown that has to happen either way: removing a
     /// staging directory, releasing a lock, stopping a sidecar container.
     ///
-    /// They fire once per `anodizer release` invocation, pairing 1:1 with
-    /// `before:` — including on each `--split` shard and on `--merge`,
-    /// which are separate invocations that each run `before:` of their own.
+    /// They fire once per `anodizer release` / `anodizer build` invocation,
+    /// pairing 1:1 with `before:` — including on each `--split` shard and on
+    /// `--merge`, which are separate invocations that each run `before:` of
+    /// their own.
+    ///
+    /// Use `--skip=always` to bypass. Skipping the `finally` lane is
+    /// supported on purpose — `--skip=before` already suppresses the lane it
+    /// pairs with — but the consequence is that teardown does not run, so
+    /// anything the run staged stays staged.
     ///
     /// The run's outcome is exposed as template vars (`{{ .Success }}`,
     /// `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`,

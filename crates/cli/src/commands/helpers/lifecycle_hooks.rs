@@ -45,8 +45,9 @@ pub(crate) fn run_root_before_hooks(
 /// Fire the root `after:` hooks — the success lane, run once the command's
 /// work has completed without error.
 ///
-/// A failed run never reaches them; teardown that must happen either way
-/// belongs in `always:`. A config with no `after:` block is a no-op.
+/// Honors `--skip=after`. A failed run never reaches them; teardown that must
+/// happen either way belongs in `always:`. A config with no `after:` block is
+/// a no-op.
 ///
 /// Canonical key is `after.hooks:`. The legacy `after.post:` spelling is
 /// folded into `hooks:` at config-parse time by
@@ -58,6 +59,9 @@ pub(crate) fn run_root_after_hooks(
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<()> {
+    if ctx.should_skip("after") {
+        return Ok(());
+    }
     let Some(hooks) = config.after.as_ref().and_then(|h| h.hooks.as_deref()) else {
         return Ok(());
     };
@@ -82,11 +86,20 @@ pub(crate) fn run_root_after_hooks(
 ///
 /// Dry-run previews the hooks instead of executing them (the standard
 /// hook-runner behavior).
+///
+/// Honors `--skip=always`, which suppresses the lane and passes `outcome`
+/// through untouched. Skipping the `finally` lane is the operator's call:
+/// `--skip=before` already suppresses the setup lane, and a teardown that
+/// still fires against state nothing staged is the incoherent half of that
+/// pair. The consequence is that teardown does not run.
 pub(crate) fn finish_with_always_hooks(
     ctx: &Context,
     outcome: Result<()>,
     log: &StageLogger,
 ) -> Result<()> {
+    if ctx.should_skip("always") {
+        return outcome;
+    }
     let Some(hooks) = ctx.config.always.as_ref().and_then(|h| h.hooks.as_deref()) else {
         return outcome;
     };
@@ -285,41 +298,72 @@ mod tests {
         assert!(format!("{err:#}").contains("boom"));
     }
 
-    /// `--skip=before` suppresses the root `before:` lane; the `after:`
-    /// lane has no such token and is unaffected by it.
+    /// Each root lane's `--skip` token suppresses that lane and only that
+    /// lane. Driven through the real runners with `before:` / `after:` /
+    /// `always:` all configured, so the assertion is the exact set of hooks
+    /// that executed rather than one lane's presence.
     #[test]
     #[cfg(unix)]
-    fn skip_before_suppresses_only_the_before_lane() {
+    fn each_root_lane_skip_token_suppresses_only_its_own_lane() {
+        for (token, expect) in [
+            ("before", "after\nalways\n"),
+            ("after", "before\nalways\n"),
+            ("always", "before\nafter\n"),
+            ("on-error", "before\nafter\nalways\n"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let out = dir.path().join("fired.txt");
+            let hook = |label: &str| {
+                Some(HooksConfig {
+                    hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                        cmd: format!("printf '{label}\\n' >> {}", out.display()),
+                        ..Default::default()
+                    })]),
+                    post: None,
+                })
+            };
+            let config = Config {
+                before: hook("before"),
+                after: hook("after"),
+                always: hook("always"),
+                ..Default::default()
+            };
+            let ctx = Context::new(
+                config.clone(),
+                ContextOptions {
+                    skip_stages: vec![token.to_string()],
+                    ..ContextOptions::default()
+                },
+            );
+            let log = StageLogger::new("test", Verbosity::Quiet);
+            run_root_before_hooks(&ctx, &config, false, &log).expect("before lane");
+            run_root_after_hooks(&ctx, &config, false, &log).expect("after lane");
+            finish_with_always_hooks(&ctx, Ok(()), &log).expect("always lane");
+            let fired = std::fs::read_to_string(&out).unwrap_or_default();
+            assert_eq!(
+                fired, expect,
+                "--skip={token} must suppress exactly its own lane, got {fired:?}"
+            );
+        }
+    }
+
+    /// `--skip=always` passes the outcome through untouched on the failure
+    /// path too: suppressing the teardown lane must not change what the run
+    /// exits with.
+    #[test]
+    #[cfg(unix)]
+    fn skip_always_preserves_the_failure_outcome() {
         let dir = tempfile::tempdir().expect("tempdir");
         let out = dir.path().join("fired.txt");
-        let hook = |label: &str| {
-            Some(HooksConfig {
-                hooks: Some(vec![HookEntry::Structured(StructuredHook {
-                    cmd: format!("printf '{label}\\n' >> {}", out.display()),
-                    ..Default::default()
-                })]),
-                post: None,
-            })
-        };
-        let config = Config {
-            before: hook("before"),
-            after: hook("after"),
-            ..Default::default()
-        };
-        let ctx = Context::new(
-            config.clone(),
-            ContextOptions {
-                skip_stages: vec!["before".to_string()],
-                ..ContextOptions::default()
-            },
-        );
+        let mut ctx = ctx_with_always(format!("printf 'teardown\\n' >> {}", out.display()));
+        ctx.options.skip_stages = vec!["always".to_string()];
         let log = StageLogger::new("test", Verbosity::Quiet);
-        run_root_before_hooks(&ctx, &config, false, &log).expect("skipped lane is a no-op");
-        run_root_after_hooks(&ctx, &config, false, &log).expect("after lane runs");
-        let fired = std::fs::read_to_string(&out).expect("the after hook must have fired");
-        assert_eq!(
-            fired, "after\n",
-            "--skip=before must suppress the before lane and leave after alone: {fired:?}"
+        let err = finish_with_always_hooks(&ctx, Err(anyhow::anyhow!("publish failed: 502")), &log)
+            .expect_err("the pipeline error must survive a skipped teardown lane");
+        assert!(format!("{err:#}").contains("publish failed: 502"));
+        assert!(
+            !out.exists(),
+            "--skip=always must suppress the teardown lane on the failure path too"
         );
     }
 

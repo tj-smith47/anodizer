@@ -859,14 +859,15 @@ fn harness_extra_skip_with_default_stages_includes_nfpm() {
 
 /// PRESERVE_SET stages MUST never appear in the extra skip list,
 /// regardless of whether the operator listed them via `--stages=`.
-/// Skipping `validate` would let bad configs through; skipping
-/// `before` would silently drop user hooks; skipping `templatefiles`
-/// would leave downstream stages without their materialized inputs.
+/// Skipping `validate` would let bad configs through; skipping a root hook
+/// lane would silently drop user hooks (and un-pair `before:` from its
+/// `always:` teardown); skipping `templatefiles` would leave downstream
+/// stages without their materialized inputs.
 #[test]
 fn harness_extra_skip_omits_preserve_set() {
     let stages = vec![StageId::Build, StageId::Archive];
     let extra = compute_extra_skip(&stages);
-    for name in PRESERVE_SET {
+    for name in PRESERVE_SET.iter() {
         assert!(
             !extra.iter().any(|s| s == name),
             "compute_extra_skip emitted PRESERVE_SET stage `{name}`: {extra:?}"

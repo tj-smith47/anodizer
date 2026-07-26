@@ -1,12 +1,43 @@
 use super::*;
 
+/// The root hook lanes as `--skip` tokens, in the order a run passes
+/// through them.
+///
+/// One token per lane, accepted identically by `anodizer release` and
+/// `anodizer build`, and honored at every site that fires a lane — the root
+/// block, the per-crate `crates[].before:` / `crates[].after:` blocks, and
+/// the per-publisher `publish.on_error:` blocks — so one flag suppresses a
+/// lane everywhere it can fire.
+///
+/// Tokens are kebab-case like the rest of the vocabulary, so the `on_error:`
+/// block's token is `on-error`, the same shape `before_publish:` →
+/// `--skip=before-publish` already uses.
+///
+/// `always:` is skippable deliberately. It is the run's `finally`, but
+/// `--skip` is the operator's per-invocation escape hatch and the asymmetry
+/// it removes is the genuinely incoherent state: `--skip=before` already
+/// suppresses the setup lane, so with no `--skip=always` the teardown lane
+/// would still fire against state that was never staged. The cost is stated
+/// where the lane is documented — skipping `always:` means teardown does not
+/// run, and whatever the run staged stays staged.
+///
+/// `anodizer build` has no `on_error:` lane (a failed local build is not a
+/// failed release; it reaches `always:` with `ANODIZER_SUCCESS=false`), so
+/// `--skip=on-error` has nothing to suppress there. It stays in build's
+/// vocabulary anyway: the token set is published to machine consumers via
+/// `anodizer vocabulary` and a caller's one skip list has to work on
+/// whichever command a job runs.
+pub const ROOT_HOOK_LANE_SKIPS: &[&str] = &["before", "after", "always", "on-error"];
+
 /// Non-publisher `--skip` tokens for the `release` command: the pipeline
 /// stage / phase names that are NOT publishers.
 ///
 /// The publisher tokens are NOT listed here — they are derived from
 /// [`PublisherKind`] and unioned in by [`VALID_RELEASE_SKIPS`], so the
-/// `--skip` publisher vocabulary cannot drift from the registry. Keep ONLY
-/// non-publisher stage tokens here.
+/// `--skip` publisher vocabulary cannot drift from the registry. The root
+/// hook lanes are not listed here either — they come from
+/// [`ROOT_HOOK_LANE_SKIPS`], which `release` and `build` share. Keep ONLY
+/// non-publisher, non-lane stage tokens here.
 ///
 /// Two pairs look like publishers but are stages and belong here:
 /// `snapcraft` is the snap *build* stage (its publisher sibling is
@@ -25,7 +56,6 @@ pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
     "appimage",
     "flatpak",
     "srpm",
-    "before",
     "before-publish",
     "notarize",
     "archive",
@@ -44,9 +74,10 @@ pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
     "verify-release",
 ];
 
-/// Valid `--skip` values for the `release` command: every pipeline
-/// stage/phase token ([`NON_PUBLISHER_RELEASE_SKIPS`]) PLUS every publisher
-/// token (derived from [`PublisherKind`]).
+/// Valid `--skip` values for the `release` command: every root hook lane
+/// token ([`ROOT_HOOK_LANE_SKIPS`]) PLUS every pipeline stage/phase token
+/// ([`NON_PUBLISHER_RELEASE_SKIPS`]) PLUS every publisher token (derived
+/// from [`PublisherKind`]).
 ///
 /// Skip tokens are stage names plus publisher names. Every publisher's skip
 /// token is its canonical [`crate::Publisher::name`] / [`PublisherKind::token`]
@@ -63,9 +94,10 @@ pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
 /// `mcp`, `schemastore`, `upstream-aur` — had silently fallen out of the old
 /// hand-maintained literal.)
 pub static VALID_RELEASE_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    NON_PUBLISHER_RELEASE_SKIPS
+    ROOT_HOOK_LANE_SKIPS
         .iter()
         .copied()
+        .chain(NON_PUBLISHER_RELEASE_SKIPS.iter().copied())
         .chain(PublisherKind::iter().map(PublisherKind::token))
         .collect()
 });
@@ -96,16 +128,18 @@ pub struct ReleaseToken {
 }
 
 /// The full canonical `--skip` / `--publishers` vocabulary as structured
-/// entries, derived entirely from [`NON_PUBLISHER_RELEASE_SKIPS`] and
-/// [`PublisherKind::iter`] — no hand-maintained list. Adding a publisher
-/// variant or a non-publisher stage token updates this automatically.
+/// entries, derived entirely from [`ROOT_HOOK_LANE_SKIPS`],
+/// [`NON_PUBLISHER_RELEASE_SKIPS`] and [`PublisherKind::iter`] — no
+/// hand-maintained list. Adding a publisher variant, a hook lane, or a
+/// non-publisher stage token updates this automatically.
 ///
 /// The set of [`ReleaseToken::token`] values equals [`VALID_RELEASE_SKIPS`]
 /// exactly (enforced by a by-construction test), so anodizer and its
 /// consumers can never disagree on the legal token set.
 pub fn release_skip_vocabulary() -> Vec<ReleaseToken> {
-    NON_PUBLISHER_RELEASE_SKIPS
+    ROOT_HOOK_LANE_SKIPS
         .iter()
+        .chain(NON_PUBLISHER_RELEASE_SKIPS.iter())
         .map(|&token| ReleaseToken {
             token,
             is_publisher: false,
@@ -119,8 +153,28 @@ pub fn release_skip_vocabulary() -> Vec<ReleaseToken> {
         .collect()
 }
 
-/// Valid --skip values for the `build` command.
-pub const VALID_BUILD_SKIPS: &[&str] = &["pre-hooks", "post-hooks", "validate", "before"];
+/// Non-lane `--skip` tokens for the `build` command: the gates `build`'s own
+/// code consults.
+///
+/// `build` runs a fixed stage list rather than the release pipeline, so its
+/// vocabulary is deliberately narrow — a token here must name something
+/// `anodizer build` actually reads (`validate` gates config / git validation,
+/// `sign` gates the binary-sign stage, `notarize` gates notarization).
+const NON_LANE_BUILD_SKIPS: &[&str] = &["validate", "sign", "notarize"];
+
+/// Valid `--skip` values for the `build` command: every root hook lane token
+/// ([`ROOT_HOOK_LANE_SKIPS`]) PLUS the build-specific gates
+/// ([`NON_LANE_BUILD_SKIPS`]).
+///
+/// The lane half is shared verbatim with [`VALID_RELEASE_SKIPS`] so a caller
+/// holding one skip list can hand it to either command.
+pub static VALID_BUILD_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    ROOT_HOOK_LANE_SKIPS
+        .iter()
+        .copied()
+        .chain(NON_LANE_BUILD_SKIPS.iter().copied())
+        .collect()
+});
 
 /// Validate that all skip values are in the allowed set.
 ///

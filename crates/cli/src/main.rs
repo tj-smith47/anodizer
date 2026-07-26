@@ -500,7 +500,7 @@ fn run() {
             let debug = cli.debug;
             let quiet = cli.quiet;
 
-            if let Err(msg) = validate_skip_values(&skip, VALID_BUILD_SKIPS) {
+            if let Err(msg) = validate_skip_values(&skip, &VALID_BUILD_SKIPS) {
                 exit_usage_error(&msg);
             }
 

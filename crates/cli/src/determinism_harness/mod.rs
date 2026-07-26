@@ -70,6 +70,7 @@ use anodizer_core::{AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismR
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use strum::{EnumIter, IntoEnumIterator};
 
 use artifacts::{
@@ -88,13 +89,21 @@ use preserve::{
 /// the harness diffs, but the pipeline needs them to function:
 ///
 /// - `validate` — config / target / signing-cred validation.
-/// - `before` — user `before:` hooks (e.g. codegen).
 /// - `templatefiles` — pre-build template materialization.
+/// - every root hook lane ([`anodizer_core::context::ROOT_HOOK_LANE_SKIPS`])
+///   — the operator's own `before:` hooks can be codegen the build needs,
+///   and the lanes pair: a child that ran `before:` must reach `always:` or
+///   its teardown never fires.
 ///
 /// Adding any of these to the child `--skip=` list would break stages
 /// that depend on their side-effects-on-context (not on disk), which is
 /// why the harness's complement-set calculation subtracts them.
-const PRESERVE_SET: &[&str] = &["validate", "before", "templatefiles"];
+static PRESERVE_SET: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    ["validate", "templatefiles"]
+        .into_iter()
+        .chain(anodizer_core::context::ROOT_HOOK_LANE_SKIPS.iter().copied())
+        .collect()
+});
 
 /// Whether a stage consumes the compiled release binary as input, so the
 /// child release pipeline MUST run the `build` stage to produce it.

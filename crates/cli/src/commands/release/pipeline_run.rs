@@ -413,7 +413,8 @@ pub(crate) fn run_post_pipeline(
     }
 }
 
-/// Run only the user-defined `after:` hooks. Extracted so
+/// Run only the user-defined `after:` hooks, honoring `--skip=after` via the
+/// shared root-lane reader. Extracted so
 /// `--announce-only` can fire them post-announce without re-running
 /// custom publishers / milestones / metadata writes (which already
 /// fired during the prior end-to-end run), and so the per-crate

@@ -23,9 +23,9 @@ const RELEASE_ON_ERROR_ENV_VARS: [(&str, &str); 4] = [
 
 /// Fire the root `on_error:` hooks after a release-pipeline failure.
 ///
-/// Notification / cleanup hooks: a hook's own failure is logged and never
-/// masks the pipeline error. Dry-run previews the hooks instead of
-/// executing them (the standard hook-runner behavior).
+/// Honors `--skip=on-error`. Notification / cleanup hooks: a hook's own
+/// failure is logged and never masks the pipeline error. Dry-run previews
+/// the hooks instead of executing them (the standard hook-runner behavior).
 ///
 /// `{{ .RolledBack }}` / `$ANODIZER_ROLLED_BACK` is always `false`: the
 /// pipeline no longer withdraws anything on its own. The var stays exported
@@ -33,6 +33,9 @@ const RELEASE_ON_ERROR_ENV_VARS: [(&str, &str); 4] = [
 /// withdrawal is `anodizer tag rollback`, which is a separate command with
 /// its own output.
 pub(super) fn fire_release_on_error(ctx: &Context, err: &anyhow::Error, log: &StageLogger) {
+    if ctx.should_skip("on-error") {
+        return;
+    }
     let Some(hooks) = ctx
         .config
         .on_error
@@ -136,6 +139,41 @@ mod tests {
         assert!(
             fired.contains("rolled=false"),
             "the pipeline never auto-withdraws, so the hook must see rolled=false: {fired}"
+        );
+    }
+
+    /// `--skip=on-error` suppresses the root failure-notification lane. The
+    /// token is kebab-case like the rest of the vocabulary (`on_error:` →
+    /// `on-error`, the shape `before_publish:` → `before-publish` uses) and
+    /// matches the label the hook runner already logs.
+    #[test]
+    #[cfg(unix)]
+    fn skip_on_error_suppresses_the_root_on_error_lane() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let config = Config {
+            on_error: Some(HooksConfig {
+                hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                    cmd: format!("printf 'fired\\n' >> {}", out.display()),
+                    ..Default::default()
+                })]),
+                post: None,
+            }),
+            ..Default::default()
+        };
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                skip_stages: vec!["on-error".to_string()],
+                ..ContextOptions::default()
+            },
+        );
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        fire_release_on_error(&ctx, &anyhow::anyhow!("sign stage failed: boom"), &log);
+        assert!(
+            !out.exists(),
+            "--skip=on-error must suppress the root on_error: lane"
         );
     }
 

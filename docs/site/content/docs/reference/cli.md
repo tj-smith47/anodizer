@@ -86,7 +86,7 @@ Build binaries only (always runs in snapshot mode)
 | `--single-target` | — | — | Build only for the host target triple |
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |
 | `--output` | `-o` | — | Copy the built binary to this path (requires --single-target and single crate) |
-| `--skip` | — | — | Skip stages (comma-separated: pre-hooks, post-hooks, validate, before) |
+| `--skip` | — | — | Skip hook lanes or stages (comma-separated: before, after, always, on-error, validate, sign, notarize) |
 
 
 ### `anodizer check`

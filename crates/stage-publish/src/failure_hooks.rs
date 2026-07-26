@@ -175,6 +175,10 @@ pub(crate) fn run_report_var(ctx: &Context) -> String {
 /// Fire `on_error` hooks for a single FAILED publisher. Called from the
 /// dispatch failure path AFTER rollback has been attempted. `error` is the
 /// publisher's failure message (the `{{ .Error }}` value).
+///
+/// Honors `--skip=on-error`, the same token that suppresses the root
+/// `on_error:` lane — one flag covers both surfaces, exactly as
+/// `--skip=before` / `--skip=after` cover the root and per-crate lanes.
 /// `rollback_happened` is RUN-WIDE — true if any publisher was rolled back
 /// (or rollback was attempted and failed) during this run — and is exposed
 /// as `{{ .RolledBack }}` in the template surface.
@@ -189,6 +193,9 @@ pub(crate) fn fire_on_error(
     run_report: &str,
     log: &StageLogger,
 ) {
+    if ctx.should_skip("on-error") {
+        return;
+    }
     let hooks = resolve_hooks(ctx, |p| p.on_error.as_deref());
     if hooks.is_empty() {
         return;
@@ -384,6 +391,39 @@ mod tests {
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
         }
+    }
+
+    /// `--skip=on-error` covers the per-publisher `publish.on_error:`
+    /// surface as well as the root lane, so one flag suppresses failure
+    /// notification everywhere it can fire — the same reach `--skip=before`
+    /// / `--skip=after` have over the root and per-crate lanes.
+    #[test]
+    fn skip_on_error_suppresses_the_per_publisher_on_error_hooks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let out_str = out.display().to_string().replace('\\', "/");
+        let publish = PublishConfig {
+            on_error: Some(vec![cmd_hook(&format!("printf 'fired\\n' >> {out_str}"))]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_with_publish("app", publish)])
+            .skip_stages(vec!["on-error".to_string()])
+            .build();
+        let res = result("homebrew", PublisherGroup::Manager, true);
+        fire_on_error(
+            &ctx,
+            &res,
+            "tap push rejected",
+            false,
+            &run_report_var(&ctx),
+            &log(),
+        );
+        assert!(
+            !out.exists(),
+            "--skip=on-error must suppress the per-publisher on_error hooks too"
+        );
     }
 
     /// A workspace-only crate's `publish.on_error` hooks must fire: a

@@ -155,12 +155,78 @@ fn release_skip_vocabulary_flags_match_publisher_kind() {
                 entry.token
             );
             assert!(
-                NON_PUBLISHER_RELEASE_SKIPS.contains(&entry.token),
-                "non-publisher entry `{}` is not in NON_PUBLISHER_RELEASE_SKIPS",
+                NON_PUBLISHER_RELEASE_SKIPS.contains(&entry.token)
+                    || ROOT_HOOK_LANE_SKIPS.contains(&entry.token),
+                "non-publisher entry `{}` is in neither NON_PUBLISHER_RELEASE_SKIPS \
+                 nor ROOT_HOOK_LANE_SKIPS",
                 entry.token
             );
         }
     }
+}
+
+/// Every root hook lane is a `--skip` token on BOTH commands, so a caller's
+/// one skip list works on whichever command a job runs. The lane half of
+/// each vocabulary is the same slice, which is what keeps them from drifting
+/// apart one token at a time.
+#[test]
+fn both_skip_vocabularies_carry_every_root_hook_lane() {
+    for lane in ROOT_HOOK_LANE_SKIPS {
+        assert!(
+            VALID_RELEASE_SKIPS.contains(lane),
+            "`release --skip={lane}` would be rejected"
+        );
+        assert!(
+            VALID_BUILD_SKIPS.contains(lane),
+            "`build --skip={lane}` would be rejected"
+        );
+    }
+    assert_eq!(
+        ROOT_HOOK_LANE_SKIPS,
+        &["before", "after", "always", "on-error"],
+        "the lane tokens are a published CLI surface — changing one is a breaking change \
+         for every consumer scripting against it"
+    );
+}
+
+/// A `--skip` token that names nothing must be a hard error, never a silent
+/// no-op: an ignored token means the operator's suppression request quietly
+/// did not happen.
+///
+/// `pre-hooks` / `post-hooks` are pinned by name. They were in the `build`
+/// vocabulary while nothing in the codebase read either one, so passing them
+/// was accepted and did nothing at all.
+#[test]
+fn unknown_skip_tokens_are_rejected_by_both_vocabularies() {
+    for token in ["pre-hooks", "post-hooks", "on_error", "not-a-lane"] {
+        let value = vec![token.to_string()];
+        let build_err = validate_skip_values(&value, &VALID_BUILD_SKIPS)
+            .expect_err("build must reject an unknown --skip token");
+        assert!(
+            build_err.contains(token),
+            "the build error must name the offending token: {build_err}"
+        );
+        let release_err = validate_skip_values(&value, &VALID_RELEASE_SKIPS)
+            .expect_err("release must reject an unknown --skip token");
+        assert!(
+            release_err.contains(token),
+            "the release error must name the offending token: {release_err}"
+        );
+    }
+}
+
+/// The `build` vocabulary stays narrow on purpose: beyond the shared hook
+/// lanes it holds only gates `anodizer build`'s own code consults, so a
+/// token it accepts is a token that does something.
+#[test]
+fn build_skip_vocabulary_is_lanes_plus_the_gates_build_reads() {
+    let expected: BTreeSet<&str> = ROOT_HOOK_LANE_SKIPS
+        .iter()
+        .copied()
+        .chain(["validate", "sign", "notarize"])
+        .collect();
+    let actual: BTreeSet<&str> = VALID_BUILD_SKIPS.iter().copied().collect();
+    assert_eq!(expected, actual);
 }
 
 fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
