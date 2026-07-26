@@ -96,7 +96,7 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
 - **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
 - **`len`** — `{{ len .Tags }}` becomes `{{ Tags | length }}`.
 - **Positional function calls** — every helper in the [Functions and filters](#functions-and-filters) tables accepts its Go-style positional form (`{{ trimprefix Tag "v" }}`, `{{ sha256 ArtifactPath }}`, `{{ envOrDefault "CI" "no" }}`) and is mapped to Tera's named-argument form. The variadic builtins `map` `list` `printf` `print` `println` collect their trailing arguments into an array parameter; `slice X 0 7` becomes the piped filter `X | slice(start=0, end=7)`.
-- **Subexpression arguments** — a parenthesized Go call used as an argument is rewritten too, at any nesting depth, in every argument slot (including the variadic tail) and inside `{% if %}` / `{% for %}` conditions:
+- **Subexpression arguments** — a parenthesized Go call used as an argument is rewritten too, at any nesting depth, in every argument slot (including the variadic tail):
 
   ```text
   {{ trimprefix (base Path) "v" }}          → {{ trimprefix(s=(base(s=Path)), prefix="v") }}
@@ -105,6 +105,13 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
   ```
 
   A parenthesis inside a string literal is string contents, never nesting, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups — rather than the engine's parse error, which points at the following token.
+- **Positional calls in statement blocks** — a Go call is rewritten wherever a value expression is accepted, not only inside `{{ }}`: `if` / `else if` conditions, the collection of a `range`, and the right-hand side of a `$var :=` assignment.
+
+  ```text
+  {{ if contains (tolower .Os) "win" }}       → {% if contains(s=(tolower(s=Os)), substr="win") %}
+  {{ range filter .Lines "^v" }}              → {% for val in filter(items=Lines, regexp="^v") %}
+  {{ $v := trimprefix (base .Path) "v" }}     → {% set v = trimprefix(s=(base(s=Path)), prefix="v") %}
+  ```
 - **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
 
 ```yaml

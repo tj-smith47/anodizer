@@ -1539,3 +1539,62 @@ fn test_imbalance_diagnostic_is_bounded_and_utf8_safe() {
     assert!(std::str::from_utf8(err.as_bytes()).is_ok());
     assert!(err.contains('…'), "long block must be truncated: {err}");
 }
+
+// ---- Positional calls in `for` and `set` control blocks ----
+
+#[test]
+fn test_positional_call_in_for_block() {
+    assert_eq!(
+        preprocess("{% for x in filter .Lines \"^v\" %}{{ x }}{% endfor %}"),
+        "{% for x in filter(items=Lines, regexp=\"^v\") %}{{ x }}{% endfor %}"
+    );
+    // Go's `range` reaches the same rewrite through Pass 0.
+    assert_eq!(
+        preprocess("{{ range filter .Lines \"^v\" }}{{ . }}{{ end }}"),
+        "{% for val in filter(items=Lines, regexp=\"^v\") %}{{ val }}{% endfor %}"
+    );
+    // Sub-expression collection.
+    assert_eq!(
+        preprocess("{% for x in (filter .Lines \"^v\") %}{{ x }}{% endfor %}"),
+        "{% for x in (filter(items=Lines, regexp=\"^v\")) %}{{ x }}{% endfor %}"
+    );
+    // The key/value form finds the same `in` separator.
+    assert_eq!(
+        preprocess("{% for k, v in filter .Lines \"^v\" %}{{ k }}{% endfor %}"),
+        "{% for k, v in filter(items=Lines, regexp=\"^v\") %}{{ k }}{% endfor %}"
+    );
+}
+
+#[test]
+fn test_positional_call_in_set_block() {
+    // Go's `{{ $v := trimprefix .Tag "v" }}`.
+    assert_eq!(
+        preprocess("{{ $v := trimprefix .Tag \"v\" }}"),
+        "{% set v = trimprefix(s=Tag, prefix=\"v\") %}"
+    );
+    assert_eq!(
+        preprocess("{{ $v := printf \"%s-%s\" .Os .Arch }}"),
+        "{% set v = printf(format=\"%s-%s\", args=[Os, Arch]) %}"
+    );
+    assert_eq!(
+        preprocess("{{ $v := trimprefix (base .Path) \"v\" }}"),
+        "{% set v = trimprefix(s=(base(s=Path)), prefix=\"v\") %}"
+    );
+}
+
+/// A plain collection or value must survive untouched — the rewrite only fires
+/// when the expression actually is a Go call.
+#[test]
+fn test_plain_for_and_set_expressions_are_untouched() {
+    for template in [
+        "{% for x in Tags %}{{ x }}{% endfor %}",
+        "{% for k, v in Env %}{{ k }}{% endfor %}",
+        "{% for x in Tags | reverse %}{{ x }}{% endfor %}",
+        "{% set v = Version %}",
+        "{% set v = trimprefix(s=Tag, prefix=\"v\") %}",
+        "{% endfor %}",
+        "{% else %}",
+    ] {
+        assert_eq!(preprocess(template), template);
+    }
+}

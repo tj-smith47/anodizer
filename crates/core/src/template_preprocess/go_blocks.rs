@@ -6,7 +6,7 @@
 //! (`try_rewrite_control_block`) used by the positional pass.
 
 use super::dots_dollars::strip_dollar_vars;
-use super::positional::{rewrite_subexprs_only, try_rewrite_piped, try_rewrite_standalone};
+use super::positional::rewrite_expr_tokens;
 use super::static_regex;
 use super::tokens::{Token, significant_tokens, token_to_str, tokenize_block};
 use regex::Regex;
@@ -236,15 +236,17 @@ pub(super) fn extract_block_parts(block: &str) -> (&str, &str, &str) {
 
 /// Try to rewrite positional function calls inside `{% %}` control blocks.
 ///
-/// Handles patterns like:
+/// Every control block that carries a value expression routes it through the
+/// same rewriter `{{ }}` blocks use, so a Go call behaves identically wherever
+/// it is written:
 /// - `{% if contains Version "rc" %}` → `{% if contains(s=Version, substr="rc") %}`
-/// - `{% if replace Tag "v" "" %}` → `{% if replace(s=Tag, old="v", new="") %}`
-/// - ` if Version | replace "v" "" ` → ` if Version | replace(from="v", to="") `
 /// - `{% if contains (tolower Os) "win" %}` →
 ///   `{% if contains(s=(tolower(s=Os)), substr="win") %}`
-///
-/// The approach: identify the block keyword (`if`, `elif`, etc.),
-/// then attempt positional rewriting on the expression that follows it.
+/// - ` if Version | replace "v" "" ` → ` if Version | replace(from="v", to="") `
+/// - `{% for x in filter Lines "^v" %}` →
+///   `{% for x in filter(items=Lines, regexp="^v") %}`
+/// - `{% set v = trimprefix Tag "v" %}` (Go's `$v := trimprefix .Tag "v"`) →
+///   `{% set v = trimprefix(s=Tag, prefix="v") %}`
 pub(super) fn try_rewrite_control_block(inner: &str) -> Option<String> {
     let tokens = tokenize_block(inner);
     let sig = significant_tokens(&tokens);
@@ -253,20 +255,10 @@ pub(super) fn try_rewrite_control_block(inner: &str) -> Option<String> {
         return None;
     }
 
-    // Identify the control keyword and find where the expression starts.
-    // Keywords: `if`, `elif`, `set ... =`, etc.
-    // We care about `if` and `elif` (which contain expressions that might use
-    // positional function syntax).
     let keyword = match sig.first() {
         Some(Token::Ident(k)) => k.as_str(),
         _ => return None,
     };
-
-    // Only handle `if` and `elif` — these take expressions.
-    // `for`, `endfor`, `endif`, `else`, `set`, etc. don't use positional funcs.
-    if keyword != "if" && keyword != "elif" {
-        return None;
-    }
 
     // Find the index of the keyword token in the full (with-whitespace) token list.
     let keyword_end_idx = tokens
@@ -274,20 +266,43 @@ pub(super) fn try_rewrite_control_block(inner: &str) -> Option<String> {
         .position(|t| matches!(t, Token::Ident(k) if k == keyword))
         .map(|i| i + 1)?;
 
-    // The expression portion is everything after the keyword.
-    let expr_tokens: Vec<Token> = tokens[keyword_end_idx..].to_vec();
+    // Where the value expression begins, per keyword. `endif` / `endfor` /
+    // `else` and anything unrecognised carry no expression at all.
+    let expr_start = match keyword {
+        "if" | "elif" => keyword_end_idx,
+        // `{% for x in COLL %}` / `{% for k, v in COLL %}` — the loop variables
+        // sit between the keyword and the `in` separator.
+        "for" => index_after(
+            &tokens,
+            keyword_end_idx,
+            |t| matches!(t, Token::Ident(k) if k == "in"),
+        )?,
+        // `{% set v = EXPR %}` — what Pass 0 makes of Go's `{{ $v := EXPR }}`.
+        "set" | "set_global" => index_after(
+            &tokens,
+            keyword_end_idx,
+            |t| matches!(t, Token::Other(s) if s == "="),
+        )?,
+        _ => return None,
+    };
 
-    // Standalone, then piped, then anything that merely carries a Go
-    // sub-expression (`{% if (isEnvSet "CI") %}`).
-    let rewritten = try_rewrite_standalone(&expr_tokens)
-        .or_else(|| try_rewrite_piped(&expr_tokens))
-        .or_else(|| rewrite_subexprs_only(&expr_tokens))?;
+    let expr_tokens: Vec<Token> = tokens[expr_start..].to_vec();
+    let rewritten = rewrite_expr_tokens(&expr_tokens)?;
 
-    let prefix: String = tokens[..keyword_end_idx]
+    let prefix: String = tokens[..expr_start]
         .iter()
         .map(|t| token_to_str(t))
         .collect();
     Some(format!("{}{}", prefix, rewritten))
+}
+
+/// Index just past the first token at or after `from` that satisfies `pred`.
+fn index_after(tokens: &[Token], from: usize, pred: impl Fn(&Token) -> bool) -> Option<usize> {
+    tokens
+        .iter()
+        .skip(from)
+        .position(pred)
+        .map(|offset| from + offset + 1)
 }
 
 #[cfg(test)]
