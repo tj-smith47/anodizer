@@ -26,9 +26,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup-docs
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up docs toolchain
+        uses: ./.github/actions/setup-docs
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check generated docs are up-to-date
         run: task docs:check
+
+      - name: Install Zola
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: zola
+
+      - name: Build the docsite
+        run: task docs:site

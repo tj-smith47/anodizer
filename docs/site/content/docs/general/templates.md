@@ -428,7 +428,7 @@ Examples below use the Tera-native no-dot idiom.
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
 | `list` | fn | `{{ list(items=[Os, Arch]) \| join(sep="-") }}` | `linux-amd64` |
-| `list` (rendered bare) | fn | `{{ list(items=["a", "b"]) }}` | `["a", "b"]` — see the note below |
+| `list` (rendered bare) | fn | `{{/* list(items=["a", "b"]) */}}` | `["a", "b"]` — see the note below |
 | `map` | fn | `{% set M = map(pairs=["a", 1]) %}{{ M.a }}` | `1` |
 | `index` | fn | `{{ index(collection=Parts, key=0) }}` | element at index |
 | `indexOrDefault` | fn | `{{ indexOrDefault(map=M, key="k", default="-") }}` | value or default |
