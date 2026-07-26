@@ -14,10 +14,9 @@ use super::value_to_string;
 
 pub(super) fn register(tera: &mut tera::Tera) {
     // list(items=[...]) — creates a list from an items array.
-    // Note: Go-style `(list "a" "b")` syntax is handled by the preprocessor
-    // (Pass 2 in template_preprocess.rs), which rewrites it to `["a", "b"]`
-    // before Tera sees it. This function registration exists for direct Tera
-    // usage, e.g. `{{ list(items=["a", "b"]) }}`.
+    // Note: the Go subexpression form `(list "a" "b")` never reaches Tera —
+    // the preprocessor's Pass 2 rewrites it to the array literal `["a", "b"]`.
+    // Pass 3 rewrites the bare call form `list "a" "b"` onto this function.
     tera.register_json_function(
         "list",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -112,7 +111,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // englishJoin filter: {{ list "a" "b" "c" | englishJoin }} — pipe form
+    // englishJoin filter: {{ (list "a" "b" "c") | englishJoin }} — pipe form
     tera.register_json_filter(
         "englishJoin",
         |value: &Value, args: &HashMap<String, Value>| {
@@ -260,7 +259,8 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // map(items={...}, key="k", default="d") — lookup a key in a map with default
+    // indexOrDefault(map={...}, key="k", default="d") — look a key up in a map,
+    // falling back to `default` (empty string when omitted).
     tera.register_json_function(
         "indexOrDefault",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -280,7 +280,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // index(map={...}, key="k") — access a map by key or array by index.
+    // index(collection={...}, key="k") — access a map by key or array by index.
     // Go template: {{ index .Map "key" }} → access map by key.
     // Go template: {{ index .Slice 0 }} → access array by index.
     // Returns empty string if key/index not found.
@@ -337,8 +337,12 @@ pub(super) fn register(tera: &mut tera::Tera) {
     tera.register_json_filter("contains_any", in_filter);
 
     // --- Go `slice` builtin (superset of Tera's native slice) ---
+    // Registered as a filter only, never a function: Tera's own `slice` is a
+    // filter, so overriding in place keeps every existing `| slice(...)` call
+    // working, and the Go call form `slice s 0 7` is rewritten to this filter
+    // by the preprocessor rather than needing a second, Go-shaped surface.
     // slice(start=, end=) — substring of a string (char-boundary safe) or
-    // sub-slice of an array, end-exclusive (`slice(s, 0, 7)` → first 7 chars).
+    // sub-slice of an array, end-exclusive (`slice s 0 7` → first 7 chars).
     // `start` is OPTIONAL (default 0) and NEGATIVE indices count from the end
     // (`start=-2` → last 2), matching Tera's native array slice so user
     // templates relying on it keep working. Go's positional `slice X 0 7` only

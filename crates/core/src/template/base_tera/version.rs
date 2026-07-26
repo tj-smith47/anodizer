@@ -58,7 +58,7 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
 pub(super) fn register(tera: &mut tera::Tera) {
     // --- Version increment functions ---
 
-    // incpatch("1.2.3") → "1.2.4"
+    // incpatch(v="1.2.3") → "1.2.4"
     tera.register_json_function(
         "incpatch",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -70,7 +70,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // incminor("1.2.3") → "1.3.0"
+    // incminor(v="1.2.3") → "1.3.0"
     tera.register_json_function(
         "incminor",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -82,7 +82,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // incmajor("1.2.3") → "2.0.0"
+    // incmajor(v="1.2.3") → "2.0.0"
     tera.register_json_function(
         "incmajor",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {

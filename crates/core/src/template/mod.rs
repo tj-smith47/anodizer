@@ -37,6 +37,8 @@ mod vars;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use base_tera::registered_builtin_names;
 pub use base_tera::ruby_escape_str;
 pub use guard::{Residual, assert_no_unrendered, assert_no_unrendered_logged};
 pub use render::{extract_artifact_ext, render};

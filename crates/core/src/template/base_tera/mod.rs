@@ -39,19 +39,34 @@ fn value_to_string(v: &Value) -> Cow<'_, str> {
     }
 }
 
+/// Register every builtin family on `tera`.
+fn register_all(tera: &mut tera::Tera) {
+    text::register_ruby_escape(tera);
+    text::register(tera);
+    env_file::register(tera);
+    version::register(tera);
+    hash::register(tera);
+    datetime::register(tera);
+    path::register(tera);
+    collection::register(tera);
+    printf::register(tera);
+}
+
 /// Base Tera instance with custom filters pre-registered.
 /// Cloned per render() call (cheap — no templates to clone).
 pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     let mut tera = tera::Tera::default();
-    text::register_ruby_escape(&mut tera);
-    text::register(&mut tera);
-    env_file::register(&mut tera);
-    version::register(&mut tera);
-    hash::register(&mut tera);
-    datetime::register(&mut tera);
-    path::register(&mut tera);
-    collection::register(&mut tera);
-    printf::register(&mut tera);
-
+    register_all(&mut tera);
     tera
 });
+
+/// Every builtin name [`register_all`] registers, derived by replaying the
+/// registrations under the engine adapter's recorder. A builtin joins this set
+/// the moment its registration call is added — nothing to keep in sync.
+#[cfg(test)]
+pub(crate) fn registered_builtin_names() -> std::collections::BTreeSet<&'static str> {
+    super::engine_adapter::record_registrations(|| {
+        let mut scratch = tera::Tera::default();
+        register_all(&mut scratch);
+    })
+}

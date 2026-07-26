@@ -43,6 +43,40 @@ pub(super) fn kwargs_to_map(kwargs: &Kwargs) -> TeraResult<HashMap<String, serde
     kwargs.deserialize()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Builtin names seen by [`JsonRegisterExt`] while a recorder is installed
+    /// on the calling thread. The registration calls are the only authority on
+    /// which builtins exist, so a test that must stay in lockstep with that set
+    /// reads it from here rather than restating it as a literal list.
+    static RECORDED_NAMES: std::cell::RefCell<Option<std::collections::BTreeSet<&'static str>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn record_name(name: &'static str) {
+    RECORDED_NAMES.with(|slot| {
+        if let Some(names) = slot.borrow_mut().as_mut() {
+            names.insert(name);
+        }
+    });
+}
+
+/// Run `register`, returning every builtin name it registers through
+/// [`JsonRegisterExt`].
+///
+/// The recorder is thread-local, so a render on another thread registering its
+/// context-aware `envOrDefault` / `isEnvSet` / `time` / `now_format` overrides
+/// cannot contaminate the snapshot.
+#[cfg(test)]
+pub(super) fn record_registrations(
+    register: impl FnOnce(),
+) -> std::collections::BTreeSet<&'static str> {
+    RECORDED_NAMES.with(|slot| *slot.borrow_mut() = Some(std::collections::BTreeSet::new()));
+    register();
+    RECORDED_NAMES.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+}
+
 /// Registration wrappers adapting JSON-shaped closures to tera 2.0's
 /// filter/function traits. Every custom registration goes through these so
 /// there is exactly one engine-boundary conversion site.
@@ -80,6 +114,8 @@ impl JsonRegisterExt for tera::Tera {
             + Sync
             + 'static,
     {
+        #[cfg(test)]
+        record_name(name);
         self.register_filter(
             name,
             // Owned `Value` arg: `ArgFromValue` for `tera::Value` is identity,
@@ -100,6 +136,8 @@ impl JsonRegisterExt for tera::Tera {
             + Sync
             + 'static,
     {
+        #[cfg(test)]
+        record_name(name);
         self.register_function(
             name,
             move |kwargs: Kwargs, _: &State| -> TeraResult<tera::Value> {

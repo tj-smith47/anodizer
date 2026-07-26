@@ -63,7 +63,9 @@ pub(super) fn preprocess_map_syntax(template: &str) -> String {
 
 /// Pass 3: Convert Go-style positional function calls to Tera named-arg syntax.
 ///
-/// Handles two forms for `replace`, `split`, `contains`, `in`, and `reReplaceAll`:
+/// Every builtin in [`POSITIONAL_FUNCTIONS`] and [`UNARY_FUNCTIONS`] is handled
+/// in standalone form; those with an argument-taking filter form are also
+/// handled piped. Two representative examples of each:
 ///
 /// **Standalone (function) form:**
 /// - `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
@@ -111,9 +113,9 @@ pub(super) fn preprocess_positional_syntax(template: &str) -> String {
                 return format!("{}{}{}", open, rewritten, close);
             }
 
-            // `printf "fmt" a b …`, `print a b …`, `println a b …` collect
-            // their trailing positional args into an `args=[…]` array.
-            if let Some(rewritten) = try_rewrite_printf_like(&tokens) {
+            // `printf "fmt" a b …`, `print a b …`, `println a b …`, `list a b …`
+            // collect their trailing positional args into a named array.
+            if let Some(rewritten) = try_rewrite_variadic(&tokens) {
                 return format!("{}{}{}", open, rewritten, close);
             }
 
@@ -134,93 +136,175 @@ pub(super) fn preprocess_positional_syntax(template: &str) -> String {
 }
 
 /// Positional syntax signature for a function/filter.
+#[derive(Clone, Copy)]
 struct PositionalSyntax {
     /// Function name (e.g. "replace").
     name: &'static str,
-    /// Number of positional args (excluding the function name).
-    arity: usize,
     /// Parameter names for standalone form (e.g. `replace(s=..., old=..., new=...)`).
+    /// Its length is the Go positional arity.
     standalone_params: &'static [&'static str],
     /// Parameter names for piped form (e.g. `| replace(from=..., to=...)`).
-    /// First standalone param is implicit (comes from the pipe), so piped has one fewer.
+    /// The first standalone param is implicit (it comes from the pipe), so this
+    /// is one shorter. Empty means the builtin has no argument-taking filter
+    /// form and a pipe is left alone.
     piped_params: &'static [&'static str],
 }
 
-/// Data-driven table of known positional syntax rewrites.
+/// Data-driven table of the multi-argument positional syntax rewrites.
+/// Single-argument builtins live in [`UNARY_FUNCTIONS`].
 static POSITIONAL_FUNCTIONS: &[PositionalSyntax] = &[
     PositionalSyntax {
         name: "replace",
-        arity: 3,
         standalone_params: &["s", "old", "new"],
         piped_params: &["from", "to"],
     },
     PositionalSyntax {
         name: "split",
-        arity: 2,
         standalone_params: &["s", "sep"],
         piped_params: &["sep"],
     },
     PositionalSyntax {
         name: "contains",
-        arity: 2,
         standalone_params: &["s", "substr"],
         piped_params: &["substr"],
     },
     PositionalSyntax {
         name: "in",
-        arity: 2,
         standalone_params: &["items", "value"],
         piped_params: &["value"],
     },
     PositionalSyntax {
         name: "reReplaceAll",
-        arity: 3,
         standalone_params: &["pattern", "input", "replacement"],
         piped_params: &["pattern", "replacement"],
     },
     PositionalSyntax {
         name: "filter",
-        arity: 2,
         standalone_params: &["items", "regexp"],
         piped_params: &["regexp"],
     },
     PositionalSyntax {
         name: "reverseFilter",
-        arity: 2,
         standalone_params: &["items", "regexp"],
         piped_params: &["regexp"],
     },
     PositionalSyntax {
-        name: "readFile",
-        arity: 1,
-        standalone_params: &["path"],
-        piped_params: &[],
-    },
-    PositionalSyntax {
-        name: "mustReadFile",
-        arity: 1,
-        standalone_params: &["path"],
-        piped_params: &[],
-    },
-    PositionalSyntax {
         name: "index",
-        arity: 2,
         standalone_params: &["collection", "key"],
         piped_params: &["key"],
     },
-    // Pasted GoReleaser `{{ time "2006-01-02" }}` is positional; the `time`
-    // function takes a named `format=` arg, so rewrite arity-1 to that.
     PositionalSyntax {
-        name: "time",
-        arity: 1,
-        standalone_params: &["format"],
+        name: "trimprefix",
+        standalone_params: &["s", "prefix"],
+        piped_params: &["prefix"],
+    },
+    PositionalSyntax {
+        name: "trimsuffix",
+        standalone_params: &["s", "suffix"],
+        piped_params: &["suffix"],
+    },
+    PositionalSyntax {
+        name: "envOrDefault",
+        standalone_params: &["name", "default"],
+        piped_params: &[],
+    },
+    PositionalSyntax {
+        name: "indexOrDefault",
+        standalone_params: &["map", "key", "default"],
         piped_params: &[],
     },
 ];
 
-/// Look up a function name in the positional syntax table.
-fn lookup_positional(name: &str) -> Option<&'static PositionalSyntax> {
-    POSITIONAL_FUNCTIONS.iter().find(|p| p.name == name)
+const PARAM_S: &[&str] = &["s"];
+const PARAM_V: &[&str] = &["v"];
+const PARAM_NAME: &[&str] = &["name"];
+const PARAM_PATH: &[&str] = &["path"];
+const PARAM_ITEMS: &[&str] = &["items"];
+const PARAM_FORMAT: &[&str] = &["format"];
+
+/// Builtins whose Go form carries exactly one positional argument, paired with
+/// the named parameter that argument maps onto. None of them has an
+/// argument-taking filter form, so a piped occurrence is left alone.
+static UNARY_FUNCTIONS: &[(&str, &[&str])] = &[
+    ("abs", PARAM_S),
+    ("base", PARAM_S),
+    ("blake2b", PARAM_S),
+    ("blake2s", PARAM_S),
+    ("blake3", PARAM_S),
+    ("crc32", PARAM_S),
+    ("dir", PARAM_S),
+    ("englishJoin", PARAM_ITEMS),
+    ("incmajor", PARAM_V),
+    ("incminor", PARAM_V),
+    ("incpatch", PARAM_V),
+    ("isEnvSet", PARAM_NAME),
+    ("md5", PARAM_S),
+    ("mdv2escape", PARAM_S),
+    ("mustReadFile", PARAM_PATH),
+    ("readFile", PARAM_PATH),
+    ("sha1", PARAM_S),
+    ("sha224", PARAM_S),
+    ("sha256", PARAM_S),
+    ("sha384", PARAM_S),
+    ("sha512", PARAM_S),
+    ("sha3_224", PARAM_S),
+    ("sha3_256", PARAM_S),
+    ("sha3_384", PARAM_S),
+    ("sha3_512", PARAM_S),
+    // Pasted GoReleaser `{{ time "2006-01-02" }}` is positional; the `time`
+    // function takes a named `format=` arg.
+    ("time", PARAM_FORMAT),
+    ("title", PARAM_S),
+    ("tolower", PARAM_S),
+    ("toupper", PARAM_S),
+    ("trim", PARAM_S),
+    ("urlPathEscape", PARAM_S),
+];
+
+/// Look up a function name in the positional syntax tables.
+fn lookup_positional(name: &str) -> Option<PositionalSyntax> {
+    if let Some(spec) = POSITIONAL_FUNCTIONS.iter().find(|p| p.name == name) {
+        return Some(*spec);
+    }
+    UNARY_FUNCTIONS
+        .iter()
+        .find(|(unary_name, _)| *unary_name == name)
+        .map(|(name, standalone_params)| PositionalSyntax {
+            name,
+            standalone_params,
+            piped_params: &[],
+        })
+}
+
+/// Builtins the preprocessor rewrites outside [`lookup_positional`], each named
+/// with the pass that owns it: `list` and `map` are variadic constructors
+/// ([`try_rewrite_variadic`] / [`preprocess_map_syntax`]), `printf` / `print` /
+/// `println` are variadic formatters ([`try_rewrite_variadic`]), and `slice`
+/// becomes a piped filter ([`try_rewrite_slice`]).
+#[cfg(test)]
+pub(super) const PREPROCESSED_ELSEWHERE: &[&str] =
+    &["list", "map", "print", "printf", "println", "slice"];
+
+/// Builtins that have no Go positional form to rewrite, each with its reason:
+///
+/// - `contains_any` — anodizer's alias for `in`, added because Tera reserves
+///   `in` as a keyword inside `{% %}` bodies. The Go spelling is `in`.
+/// - `date` — restores the tera 1.x `date` filter; not a Go builtin.
+/// - `now_format` — the target Pass 4 rewrites Go's `.Now.Format "…"` method
+///   call into. Users never write the name, so there is no call form to accept.
+/// - `ruby_escape` — anodizer's Homebrew formula/cask literal escaper, with no
+///   Go counterpart.
+#[cfg(test)]
+pub(super) const NO_POSITIONAL_FORM: &[&str] =
+    &["contains_any", "date", "now_format", "ruby_escape"];
+
+/// Every builtin name the positional syntax tables cover.
+#[cfg(test)]
+pub(super) fn positional_builtin_names() -> impl Iterator<Item = &'static str> {
+    POSITIONAL_FUNCTIONS
+        .iter()
+        .map(|spec| spec.name)
+        .chain(UNARY_FUNCTIONS.iter().map(|(name, _)| *name))
 }
 
 /// True when the significant tokens already contain a `(` (named-arg syntax) or
@@ -290,13 +374,26 @@ fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
     ))
 }
 
-/// Rewrite Go `printf "fmt" a b …`, `print a b …`, and `println a b …` to the
-/// named-arg forms `printf(format="fmt", args=[a, b, …])` /
-/// `print(args=[a, b, …])` / `println(args=[a, b, …])`.
+/// Variadic Go builtins, paired with the named array parameter their trailing
+/// positional args collect into.
+const VARIADIC_FUNCTIONS: &[(&str, &str)] = &[
+    ("printf", "args"),
+    ("print", "args"),
+    ("println", "args"),
+    ("list", "items"),
+];
+
+/// Rewrite the variadic Go builtins to their named-arg forms:
+/// `printf "fmt" a b …` → `printf(format="fmt", args=[a, b, …])`,
+/// `print a b …` → `print(args=[a, b, …])`,
+/// `println a b …` → `println(args=[a, b, …])`, and
+/// `list a b …` → `list(items=[a, b, …])`.
 ///
-/// These builtins are variadic, so trailing positional args collect into an
-/// `args` array (mirroring the `map(pairs=[…])` rewrite).
-fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
+/// Trailing positional args collect into one array parameter, mirroring the
+/// `map(pairs=[…])` rewrite. `(list …)` used as a subexpression is already an
+/// array literal by this point — Pass 2 rewrote it — so only the bare call form
+/// reaches here.
+fn try_rewrite_variadic(tokens: &[Token]) -> Option<String> {
     let sig = significant_tokens(tokens);
 
     if already_named_or_piped(&sig) {
@@ -307,12 +404,21 @@ fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
         Some(Token::Ident(name)) => name.as_str(),
         _ => return None,
     };
-    if !matches!(func_name, "printf" | "print" | "println") {
+    let array_param = VARIADIC_FUNCTIONS
+        .iter()
+        .find(|(name, _)| *name == func_name)
+        .map(|(_, param)| *param)?;
+
+    // A bare `{{ list }}` is far likelier to be a variable reference than an
+    // empty constructor — `list` is the canonical stand-in name, and `list.0`
+    // indexing is a supported compat form. Require an actual argument before
+    // claiming the name. The printf family carries no such ambiguity.
+    if func_name == "list" && sig.len() < 2 {
         return None;
     }
 
-    // `printf` consumes its first arg as the format string; `print`/`println`
-    // treat every arg as a value to concatenate.
+    // `printf` consumes its first arg as the format string; the rest treat
+    // every arg as a value.
     let rest = &sig[1..];
     let (format_part, value_tokens) = if func_name == "printf" {
         let fmt = rest.first()?;
@@ -325,7 +431,7 @@ fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
         .iter()
         .map(|t| format_arg_value(t))
         .collect::<Option<Vec<_>>>()?;
-    let args_literal = format!("args=[{}]", values.join(", "));
+    let args_literal = format!("{}=[{}]", array_param, values.join(", "));
 
     let params = match format_part {
         Some(fmt) => format!("format={}, {}", fmt, args_literal),
@@ -357,8 +463,8 @@ pub(super) fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
 
     let spec = lookup_positional(func_name)?;
 
-    // sig should be: [funcname, arg1, arg2, ...] with `arity` args.
-    if sig.len() != spec.arity + 1 {
+    // sig should be: [funcname, arg1, arg2, ...] with one arg per parameter.
+    if sig.len() != spec.standalone_params.len() + 1 {
         return None;
     }
 
@@ -437,9 +543,15 @@ pub(super) fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
 
     let spec = lookup_positional(func_name)?;
 
+    // An empty `piped_params` means no argument-taking filter form exists, so
+    // there is nothing to rewrite a pipe into — leave the block untouched and
+    // let Tera report the unknown filter against the text the user wrote.
+    if spec.piped_params.is_empty() {
+        return None;
+    }
+
     // Piped form has one fewer arg than standalone (the first arg comes from the pipe).
-    let piped_arity = spec.arity - 1;
-    if sig_after.len() != piped_arity + 1 {
+    if sig_after.len() != spec.piped_params.len() + 1 {
         return None;
     }
 

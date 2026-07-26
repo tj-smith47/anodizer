@@ -1126,3 +1126,160 @@ fn test_multiline_block_method_call_rewrite_applies() {
 fn test_multiline_block_numeric_index_rewrite_applies() {
     assert_eq!(preprocess("{{\n  list.0 }}"), "{{\n  list[0] }}");
 }
+
+// ---- Roster coverage: registered builtins vs. positional handling ----
+
+/// The positional-rewrite roster is hand-maintained, so a builtin registered
+/// without a matching entry silently loses its Go form — the template that
+/// uses it fails to parse in its entirety. Derive the check from the live
+/// registration set (recorded at the engine-adapter boundary) so a new builtin
+/// cannot join without a decision being recorded about its positional form.
+#[test]
+fn every_registered_builtin_has_positional_handling_or_an_exemption() {
+    use super::positional::{NO_POSITIONAL_FORM, PREPROCESSED_ELSEWHERE, positional_builtin_names};
+    use std::collections::BTreeSet;
+
+    let registered = crate::template::registered_builtin_names();
+    let accounted_for: BTreeSet<&str> = positional_builtin_names()
+        .chain(PREPROCESSED_ELSEWHERE.iter().copied())
+        .chain(NO_POSITIONAL_FORM.iter().copied())
+        .collect();
+
+    let unhandled: Vec<&str> = registered.difference(&accounted_for).copied().collect();
+    assert!(
+        unhandled.is_empty(),
+        "registered builtin(s) with no Go positional form and no exemption: {unhandled:?}\n\
+         Add each to POSITIONAL_FUNCTIONS/UNARY_FUNCTIONS in \
+         template_preprocess/positional.rs, or — if it genuinely has no Go \
+         call form — to NO_POSITIONAL_FORM with the reason."
+    );
+
+    let stale: Vec<&str> = accounted_for.difference(&registered).copied().collect();
+    assert!(
+        stale.is_empty(),
+        "positional roster names(s) that are no longer registered builtins: {stale:?}"
+    );
+}
+
+// ---- Positional form for the single-argument string builtins ----
+
+#[test]
+fn test_preprocess_positional_tolower_toupper() {
+    assert_eq!(
+        preprocess("{{ tolower \"ABC\" }}"),
+        "{{ tolower(s=\"ABC\") }}"
+    );
+    assert_eq!(preprocess("{{ toupper .Os }}"), "{{ toupper(s=Os) }}");
+}
+
+#[test]
+fn test_preprocess_positional_trim_and_title() {
+    assert_eq!(
+        preprocess("{{ trim \"  x  \" }}"),
+        "{{ trim(s=\"  x  \") }}"
+    );
+    assert_eq!(
+        preprocess("{{ title \"hello world\" }}"),
+        "{{ title(s=\"hello world\") }}"
+    );
+}
+
+#[test]
+fn test_preprocess_positional_trimprefix_trimsuffix() {
+    assert_eq!(
+        preprocess("{{ trimprefix .Tag \"v\" }}"),
+        "{{ trimprefix(s=Tag, prefix=\"v\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ trimsuffix .Name \".exe\" }}"),
+        "{{ trimsuffix(s=Name, suffix=\".exe\") }}"
+    );
+}
+
+#[test]
+fn test_preprocess_piped_trimprefix_trimsuffix() {
+    assert_eq!(
+        preprocess("{{ .Tag | trimprefix \"v\" }}"),
+        "{{ Tag | trimprefix(prefix=\"v\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ .Name | trimsuffix \".exe\" }}"),
+        "{{ Name | trimsuffix(suffix=\".exe\") }}"
+    );
+}
+
+/// A builtin with no argument-taking filter form must leave a pipe alone —
+/// rewriting `| trim` to `| trim()` would shadow Tera's own zero-arg filter.
+#[test]
+fn test_zero_arg_pipes_are_left_alone() {
+    for template in [
+        "{{ Description | trim }}",
+        "{{ Description | title }}",
+        "{{ Version | incpatch }}",
+        "{{ Path | readFile }}",
+    ] {
+        assert_eq!(preprocess(template), template);
+    }
+}
+
+#[test]
+fn test_preprocess_positional_path_and_digest_builtins() {
+    assert_eq!(
+        preprocess("{{ dir \"a/b/c.txt\" }}"),
+        "{{ dir(s=\"a/b/c.txt\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ base .ArtifactPath }}"),
+        "{{ base(s=ArtifactPath) }}"
+    );
+    assert_eq!(
+        preprocess("{{ sha256 .ArtifactPath }}"),
+        "{{ sha256(s=ArtifactPath) }}"
+    );
+    assert_eq!(
+        preprocess("{{ sha3_512 .ArtifactPath }}"),
+        "{{ sha3_512(s=ArtifactPath) }}"
+    );
+}
+
+#[test]
+fn test_preprocess_positional_version_and_env_builtins() {
+    assert_eq!(
+        preprocess("{{ incpatch .Version }}"),
+        "{{ incpatch(v=Version) }}"
+    );
+    assert_eq!(
+        preprocess("{{ isEnvSet \"CI\" }}"),
+        "{{ isEnvSet(name=\"CI\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ envOrDefault \"CI\" \"no\" }}"),
+        "{{ envOrDefault(name=\"CI\", default=\"no\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ indexOrDefault .Env \"CI\" \"no\" }}"),
+        "{{ indexOrDefault(map=Env, key=\"CI\", default=\"no\") }}"
+    );
+}
+
+/// The bare `list a b` call form collects into `items=[…]`; a lone `{{ list }}`
+/// stays a variable reference.
+#[test]
+fn test_preprocess_bare_list_call() {
+    assert_eq!(
+        preprocess("{{ list \"a\" \"b\" }}"),
+        "{{ list(items=[\"a\", \"b\"]) }}"
+    );
+    assert_eq!(preprocess("{{ list }}"), "{{ list }}");
+    assert_eq!(preprocess("{{ list.0 }}"), "{{ list[0] }}");
+}
+
+/// Control blocks route through the same roster, so a newly rostered builtin
+/// works inside `{% if %}` too.
+#[test]
+fn test_control_block_uses_extended_roster() {
+    assert_eq!(
+        preprocess("{{ if isEnvSet \"CI\" }}yes{{ end }}"),
+        "{% if isEnvSet(name=\"CI\") %}yes{% endif %}"
+    );
+}
