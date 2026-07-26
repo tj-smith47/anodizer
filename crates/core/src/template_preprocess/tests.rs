@@ -1459,7 +1459,7 @@ fn test_unclosed_subexpr_is_reported_not_rewritten() {
     // No rewrite may consume the rest of the block.
     assert_eq!(preprocess(input), input);
 
-    let err = super::check_balanced_parens(input)
+    let err = super::check_block_expressions(input)
         .expect_err("an unclosed group must be rejected")
         .to_string();
     assert!(err.contains("1 unclosed `(`"), "{err}");
@@ -1472,7 +1472,7 @@ fn test_unclosed_subexpr_is_reported_not_rewritten() {
 
 #[test]
 fn test_unmatched_close_paren_is_reported() {
-    let err = super::check_balanced_parens("{{ trimprefix base \"v\") }}")
+    let err = super::check_block_expressions("{{ trimprefix base \"v\") }}")
         .expect_err("a stray `)` must be rejected")
         .to_string();
     assert!(err.contains("no matching `(`"), "{err}");
@@ -1480,7 +1480,7 @@ fn test_unmatched_close_paren_is_reported() {
 
 #[test]
 fn test_multiple_unclosed_groups_are_counted() {
-    let err = super::check_balanced_parens("{{ toupper (trimprefix (base .Path \"v\" }}")
+    let err = super::check_block_expressions("{{ toupper (trimprefix (base .Path \"v\" }}")
         .expect_err("two unclosed groups must be rejected")
         .to_string();
     assert!(err.contains("2 unclosed `(`"), "{err}");
@@ -1490,7 +1490,7 @@ fn test_multiple_unclosed_groups_are_counted() {
 /// the cause rather than the paren count it produces.
 #[test]
 fn test_unterminated_string_literal_is_named_as_the_cause() {
-    let err = super::check_balanced_parens("{{ base (trimprefix \"a\\\"b/v1\" \"a\") }}")
+    let err = super::check_block_expressions("{{ base (trimprefix \"a\\\"b/v1\" \"a\") }}")
         .expect_err("an unterminated literal must be rejected")
         .to_string();
     assert!(err.contains("unterminated string literal"), "{err}");
@@ -1508,7 +1508,7 @@ fn test_balanced_expressions_pass_the_check() {
         "{% if contains (tolower .Os) \"win\" %}W{% endif %}",
     ] {
         assert!(
-            super::check_balanced_parens(template).is_ok(),
+            super::check_block_expressions(template).is_ok(),
             "rejected a balanced template: {template}"
         );
     }
@@ -1520,12 +1520,12 @@ fn test_balanced_expressions_pass_the_check() {
 fn test_raw_blocks_are_exempt_from_the_balance_check() {
     let raw = "{% raw %}{{ trimprefix (base \"x\" }}{% endraw %}";
     assert!(
-        super::check_balanced_parens(raw).is_ok(),
+        super::check_block_expressions(raw).is_ok(),
         "raw block rejected"
     );
     // The exemption ends at `endraw`.
     let after = "{% raw %}ok{% endraw %}{{ trimprefix (base \"x\" }}";
-    assert!(super::check_balanced_parens(after).is_err());
+    assert!(super::check_block_expressions(after).is_err());
 }
 
 /// The diagnostic quotes the offending block, so a very long or multibyte
@@ -1533,7 +1533,7 @@ fn test_raw_blocks_are_exempt_from_the_balance_check() {
 #[test]
 fn test_imbalance_diagnostic_is_bounded_and_utf8_safe() {
     let long = format!("{{{{ trimprefix (base \"{}\" }}}}", "日本語".repeat(80));
-    let err = super::check_balanced_parens(&long)
+    let err = super::check_block_expressions(&long)
         .expect_err("still unbalanced")
         .to_string();
     assert!(std::str::from_utf8(err.as_bytes()).is_ok());
@@ -1597,4 +1597,216 @@ fn test_plain_for_and_set_expressions_are_untouched() {
     ] {
         assert_eq!(preprocess(template), template);
     }
+}
+
+// ---- Raw-escaped text is exempt from every pass ----
+
+/// Text between `{% raw %}` and `{% endraw %}` reaches the engine literally, so
+/// no pass may rewrite it. One shape per pass, since each pass owns a different
+/// rewrite.
+#[test]
+fn test_raw_blocks_survive_every_pass_verbatim() {
+    for shape in [
+        "{{ if .X }}y{{ end }}",               // Pass 0 block conversion
+        "{{ $v := .Tag }}",                    // Pass 0 assignment + `$` strip
+        "{{ .Version }}",                      // Pass 1 leading dot
+        "{{ in (list \"a\" \"b\") .Os }}",     // Pass 2 list sub-expression
+        "{{ eq .A .B }}",                      // Pass 2b comparison
+        "{{ len .Tags }}",                     // Pass 2b len
+        "{{ map \"k\" \"v\" }}",               // Pass 2c map
+        "{{ trimprefix .Tag \"v\" }}",         // Pass 3 standalone
+        "{{ trimprefix (base .Path) \"v\" }}", // Pass 3 sub-expression
+        "{{ .Version | replace \"v\" \"\" }}", // Pass 3 pipeline
+        "{{ slice .Commit 0 7 }}",             // Pass 3 slice
+        "{{ .Now.Format \"2006\" }}",          // Pass 4 method call
+        "{{ list.0 }}",                        // Pass 5 numeric index
+    ] {
+        let template = format!("{{% raw %}}{shape}{{% endraw %}}");
+        assert_eq!(preprocess(&template), template, "shape: {shape}");
+    }
+}
+
+/// Every rostered builtin's positional call form is left alone inside raw.
+/// Derived from the roster tables so a builtin added later is covered without
+/// editing this test.
+#[test]
+fn test_raw_blocks_exempt_every_rostered_builtin() {
+    use super::positional::positional_specs;
+
+    for (name, params) in positional_specs() {
+        let args = vec!["\"x\""; params.len()].join(" ");
+        let template = format!("{{% raw %}}{{{{ {name} {args} }}}}{{% endraw %}}");
+        assert_eq!(preprocess(&template), template, "builtin `{name}`");
+    }
+}
+
+/// The exemption starts at `{% raw %}` and ends at `{% endraw %}` — a Go call
+/// on either side is still rewritten.
+#[test]
+fn test_rewrites_resume_outside_the_raw_span() {
+    assert_eq!(
+        preprocess("{{ .A }}{% raw %}{{ .B }}{% endraw %}{{ .C }}"),
+        "{{ A }}{% raw %}{{ .B }}{% endraw %}{{ C }}"
+    );
+    // Two spans with live text between them.
+    assert_eq!(
+        preprocess("{% raw %}{{ .A }}{% endraw %}{{ .B }}{% raw %}{{ .C }}{% endraw %}"),
+        "{% raw %}{{ .A }}{% endraw %}{{ B }}{% raw %}{{ .C }}{% endraw %}"
+    );
+    // The whitespace-control spellings mark a span too.
+    assert_eq!(
+        preprocess("{%- raw -%}{{ .A }}{%- endraw -%}{{ .B }}"),
+        "{%- raw -%}{{ .A }}{%- endraw -%}{{ B }}"
+    );
+}
+
+/// An unterminated `{% raw %}` covers the rest of the template: the engine
+/// rejects it, and the passes must not rewrite the text it marked literal on
+/// the way to that error.
+#[test]
+fn test_unterminated_raw_covers_the_tail() {
+    assert_eq!(
+        preprocess("{{ .A }}{% raw %}{{ .B }}"),
+        "{{ A }}{% raw %}{{ .B }}"
+    );
+}
+
+/// Only a `{% … %}` tag delimits a span, matching tera's lexer — which scans
+/// for the next `{%` and never inspects a `{{ … }}`. Reading `{{ endraw }}` as
+/// a terminator ended the exemption early and rewrote the rest of the span;
+/// reading `{{ raw }}` as an opener swallowed the rest of the template.
+#[test]
+fn test_expression_blocks_do_not_delimit_a_raw_span() {
+    assert_eq!(
+        preprocess("{% raw %}{{ endraw }}{{ .B }}{% endraw %}{{ .C }}"),
+        "{% raw %}{{ endraw }}{{ .B }}{% endraw %}{{ C }}"
+    );
+    assert_eq!(preprocess("{{ raw }}{{ .B }}"), "{{ raw }}{{ B }}");
+}
+
+// ---- A positional call anywhere in a pipeline ----
+
+/// Go accepts a positional call in every pipeline slot. Rewriting only the
+/// segment after the last pipe left the earlier ones as raw Go syntax, and the
+/// resulting parse error took the whole template with it.
+#[test]
+fn test_positional_call_before_a_pipe() {
+    assert_eq!(
+        preprocess("{{ trimprefix .Tag \"v\" | upper }}"),
+        "{{ trimprefix(s=Tag, prefix=\"v\") | upper }}"
+    );
+    assert_eq!(
+        preprocess("{{ .Version | replace \"v\" \"\" | upper }}"),
+        "{{ Version | replace(from=\"v\", to=\"\") | upper }}"
+    );
+    assert_eq!(
+        preprocess("{{ list \"a\" \"b\" | join(sep=\" \") }}"),
+        "{{ list(items=[\"a\", \"b\"]) | join(sep=\" \") }}"
+    );
+    // A sub-expression argument inside a segment before the pipe.
+    assert_eq!(
+        preprocess("{{ printf \"%s\" (tolower .Os) | upper }}"),
+        "{{ printf(format=\"%s\", args=[(tolower(s=Os))]) | upper }}"
+    );
+    // `slice`'s own rewrite introduces a pipe; a further filter chains onto it.
+    assert_eq!(
+        preprocess("{{ slice .Commit 0 7 | upper }}"),
+        "{{ Commit | slice(start=0, end=7) | upper }}"
+    );
+    // The same rewrite reaches a control block's value expression.
+    assert_eq!(
+        preprocess("{% for x in filter .Lines \"^v\" | reverse %}{{ x }}{% endfor %}"),
+        "{% for x in filter(items=Lines, regexp=\"^v\") | reverse %}{{ x }}{% endfor %}"
+    );
+}
+
+/// Every segment of a chain is rewritten, not just the last one.
+#[test]
+fn test_every_pipeline_segment_is_rewritten() {
+    assert_eq!(
+        preprocess("{{ .Tag | trimprefix \"v\" | replace \".\" \"-\" | split \"-\" }}"),
+        "{{ Tag | trimprefix(prefix=\"v\") | replace(from=\".\", to=\"-\") | split(sep=\"-\") }}"
+    );
+}
+
+/// A `|` inside a string literal or a sub-expression is not a segment boundary:
+/// the tokenizer captured each whole, so segmentation obeys exactly the literal
+/// and paren rules the sub-expression rewrite obeys.
+#[test]
+fn test_pipe_inside_a_literal_or_subexpr_is_not_a_boundary() {
+    assert_eq!(
+        preprocess("{{ replace .Tag \"|\" \"-\" }}"),
+        "{{ replace(s=Tag, old=\"|\", new=\"-\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ trimprefix (replace .Tag \"|\" \"-\") \"v\" }}"),
+        "{{ trimprefix(s=(replace(s=Tag, old=\"|\", new=\"-\")), prefix=\"v\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ (replace .Tag \"a|b\" \"-\") | upper }}"),
+        "{{ (replace(s=Tag, old=\"a|b\", new=\"-\")) | upper }}"
+    );
+}
+
+// ---- Expression nesting is capped ----
+
+/// `{{ tolower (tolower ( … "A" … )) }}` with `n` nested calls, so `n` is both
+/// the call count and the parenthesis depth.
+fn nested_calls(n: usize) -> String {
+    format!("{{{{ {}\"A\"{} }}}}", "tolower (".repeat(n), ")".repeat(n))
+}
+
+/// Unbounded nesting used to kill the process — the rewriter rebuilds the whole
+/// nest at every level — with no diagnostic at all.
+#[test]
+fn test_expression_nesting_is_capped_with_a_named_diagnostic() {
+    let limit = super::MAX_EXPR_NESTING;
+    super::check_block_expressions(&nested_calls(limit))
+        .expect("the limit itself must be accepted");
+
+    let err = super::check_block_expressions(&nested_calls(limit + 1))
+        .expect_err("one level past the limit must be rejected")
+        .to_string();
+    assert!(err.contains("over-nested expression in template"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "parentheses nest {} deep, past the limit of {limit}",
+            limit + 1
+        )),
+        "{err}"
+    );
+    // The offending block is quoted, bounded exactly as the imbalance
+    // diagnostic bounds it.
+    assert!(err.contains("{{ tolower (tolower"), "{err}");
+    assert!(err.contains('…'), "long block must be truncated: {err}");
+}
+
+/// The rewriter's cap and the check's cap agree, so a template the check
+/// accepts is rewritten all the way down with no Go call left behind.
+#[test]
+fn test_the_deepest_accepted_nesting_is_fully_rewritten() {
+    let at_limit = nested_calls(super::MAX_EXPR_NESTING);
+    super::check_block_expressions(&at_limit).expect("the limit must be accepted");
+    let out = preprocess(&at_limit);
+    assert!(!out.contains("tolower ("), "a Go call survived the rewrite");
+    assert_eq!(out.matches("tolower(s=").count(), super::MAX_EXPR_NESTING);
+}
+
+/// The rewriter's own bound keeps the pass terminating for a caller that
+/// skipped the check: past the cap a group is emitted verbatim instead of
+/// descended into.
+#[test]
+fn test_preprocess_stops_descending_past_the_cap() {
+    let past_limit = nested_calls(super::MAX_EXPR_NESTING + 20);
+    let out = preprocess(&past_limit);
+    // One rewrite per group entered (levels 1..=MAX), plus the block's own
+    // outermost call, which sits at level 0 inside no group at all.
+    assert_eq!(
+        out.matches("tolower(s=").count(),
+        super::MAX_EXPR_NESTING + 1
+    );
+    assert!(
+        out.contains("tolower ("),
+        "the tail past the cap must stay verbatim"
+    );
 }

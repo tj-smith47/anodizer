@@ -3,8 +3,9 @@
 //! Tracks a stack of block types (`if`, `for`, `with`) so each `{{ end }}`
 //! emits the correct closing tag. Also exposes the shared block-extraction
 //! helper (`extract_block_parts`) and the `if`/`elif` rewrite hook
-//! (`try_rewrite_control_block`) used by the positional pass.
+//! (`try_rewrite_control_block`).
 
+use super::blocks::{raw_span_at, raw_spans};
 use super::dots_dollars::strip_dollar_vars;
 use super::positional::rewrite_expr_tokens;
 use super::static_regex;
@@ -64,11 +65,9 @@ fn tera_block(ltrim: &str, content: &str, rtrim: &str) -> String {
 /// Tracks a stack of block types (`if`, `for`, `with`) to emit the correct
 /// closing tag (`endif`, `endfor`, `endif`) for each `{{ end }}`.
 pub(super) fn preprocess_go_blocks(template: &str) -> String {
-    // Strategy: scan for Go block patterns and replace them.
-    // We need a stack to track what `{{ end }}` should become.
-    //
-    // Process line-by-line isn't suitable since blocks can be inline.
-    // Instead, scan left to right, replacing each Go block pattern.
+    // A left-to-right scan, not a line-by-line one: a Go block can open and
+    // close inline, so line boundaries carry no structure. `{{ end }}` is
+    // ambiguous on its own — only the stack says which closing tag it becomes.
 
     let mut result = String::with_capacity(template.len());
     // Stack tracks block type and context variable (for `with`/`range` dot-rewriting).
@@ -76,8 +75,18 @@ pub(super) fn preprocess_go_blocks(template: &str) -> String {
     let mut block_stack: Vec<(&str, Option<String>)> = Vec::new();
     let mut pos = 0;
     let bytes = template.as_bytes();
+    // This pass scans characters rather than blocks, so it cannot reach the
+    // raw exemption through `replace_live_blocks`; it consumes the same spans
+    // that helper derives.
+    let raw = raw_spans(template);
 
     while pos < bytes.len() {
+        if let Some(span) = raw_span_at(&raw, pos) {
+            result.push_str(&template[pos..span.end]);
+            pos = span.end;
+            continue;
+        }
+
         // Look for `{{` at current position
         if pos + 1 < bytes.len() && bytes[pos] == b'{' && bytes[pos + 1] == b'{' {
             let remaining = &template[pos..];

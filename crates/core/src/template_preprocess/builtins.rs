@@ -1,6 +1,6 @@
 //! Pass 2 list-subexpression rewriting and Pass 2b Go builtin/comparison/logical/`len` rewrites.
 
-use super::GO_BLOCK_RE;
+use super::blocks::replace_live_blocks;
 use super::go_blocks::extract_block_parts;
 use super::static_regex;
 use super::string_lit::RAW_STRING_RE_ALT;
@@ -27,27 +27,24 @@ static LIST_SUBEXPR_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// This runs before positional syntax rewriting so that the `in` function can
 /// receive a Tera array literal as its first argument.
 pub(super) fn preprocess_list_subexpr(template: &str) -> String {
-    GO_BLOCK_RE
-        .replace_all(template, |caps: &regex::Captures| {
-            let block = &caps[0];
-            // Only process blocks that contain `(list ` — fast path for the common case.
-            if !block.contains("(list ") {
-                return block.to_string();
-            }
-            LIST_SUBEXPR_RE
-                .replace_all(block, |lcaps: &regex::Captures| {
-                    let inner = &lcaps[1];
-                    // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
-                    // Bare identifiers pass through as variable references: `[Os, "windows"]`.
-                    static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
-                    });
-                    let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
-                    format!("[{}]", items.join(", "))
-                })
-                .to_string()
-        })
-        .to_string()
+    replace_live_blocks(template, |block: &str| {
+        // Only process blocks that contain `(list ` — fast path for the common case.
+        if !block.contains("(list ") {
+            return block.to_string();
+        }
+        LIST_SUBEXPR_RE
+            .replace_all(block, |lcaps: &regex::Captures| {
+                let inner = &lcaps[1];
+                // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
+                // Bare identifiers pass through as variable references: `[Os, "windows"]`.
+                static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
+                    static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
+                });
+                let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
+                format!("[{}]", items.join(", "))
+            })
+            .to_string()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -72,29 +69,27 @@ const COMPARISON_OPS: &[(&str, &str)] = &[
 /// are already in Tera-native form (no leading dots, list subexprs already
 /// converted to array literals).
 pub(super) fn preprocess_go_builtins(template: &str) -> String {
-    GO_BLOCK_RE
-        .replace_all(template, |caps: &regex::Captures| {
-            let block = &caps[0];
-            let (open, inner, close) = extract_block_parts(block);
+    replace_live_blocks(template, |block: &str| {
+        let (open, inner, close) = extract_block_parts(block);
 
-            // Quick check: does this block contain any Go builtin we care about?
-            let needs_rewrite = COMPARISON_OPS.iter().any(|(name, _)| {
-                // Check for function name followed by whitespace (avoid matching
-                // substrings like "request" containing "eq").
-                let with_space = format!("{} ", name);
-                inner.contains(&*with_space)
-            }) || inner.contains("and ")
-                || inner.contains("or ")
-                || inner.contains("len ");
+        // Cheap containment test before the token-level rewrite, which is the
+        // expensive path and applies to a small minority of blocks.
+        let needs_rewrite = COMPARISON_OPS.iter().any(|(name, _)| {
+            // Check for function name followed by whitespace (avoid matching
+            // substrings like "request" containing "eq").
+            let with_space = format!("{} ", name);
+            inner.contains(&*with_space)
+        }) || inner.contains("and ")
+            || inner.contains("or ")
+            || inner.contains("len ");
 
-            if !needs_rewrite {
-                return block.to_string();
-            }
+        if !needs_rewrite {
+            return block.to_string();
+        }
 
-            let rewritten = rewrite_go_builtins_in_expr(inner);
-            format!("{}{}{}", open, rewritten, close)
-        })
-        .to_string()
+        let rewritten = rewrite_go_builtins_in_expr(inner);
+        format!("{}{}{}", open, rewritten, close)
+    })
 }
 
 /// Rewrite Go builtin functions in an expression string.

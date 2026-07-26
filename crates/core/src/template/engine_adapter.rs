@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use tera::{Kwargs, State, TeraResult};
 
 use crate::template_preprocess::string_lit;
+use crate::template_preprocess::{raw_span_at, raw_spans};
 
 /// Convert an engine value to its JSON equivalent via serde.
 pub(super) fn to_json(v: &tera::Value) -> TeraResult<serde_json::Value> {
@@ -220,9 +221,22 @@ pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::
     // Depth of `{`/`}` map-literal nesting inside the current block, outside
     // any string literal. `}}` only closes the block at depth 0.
     let mut brace_depth: u32 = 0;
+    // This scan walks characters rather than blocks, so it consumes the shared
+    // raw spans directly instead of reaching the exemption through the
+    // preprocessor's block helpers.
+    let raw = raw_spans(template);
     let mut chars = template.char_indices().peekable();
 
     while let Some((i, c)) = chars.next() {
+        // Raw text reaches the render literally, so a doubled backslash inside
+        // it is emitted as two characters instead of the one the author wrote.
+        if let Some(span) = raw_span_at(&raw, i) {
+            out.push_str(&template[i..span.end]);
+            while chars.next_if(|&(j, _)| j < span.end).is_some() {}
+            region = Region::Text;
+            brace_depth = 0;
+            continue;
+        }
         match region {
             Region::Text => {
                 if c == '{' {
@@ -515,6 +529,23 @@ mod tests {
     #[test]
     fn backslash_shim_leaves_text_outside_blocks_untouched() {
         let tpl = r#"C:\path\to\thing {{ Version }} more \raw text"#;
+        assert_eq!(double_string_literal_backslashes(tpl), tpl);
+    }
+
+    /// Raw-escaped text is emitted literally, with no unescaping pass to undo
+    /// a doubled backslash — so doubling one inside a raw span puts a second
+    /// backslash in the rendered output. The span is skipped through the same
+    /// shared boundaries the preprocessor passes use.
+    #[test]
+    fn backslash_shim_leaves_raw_spans_alone() {
+        assert_eq!(
+            double_string_literal_backslashes(
+                r#"{% raw %}{{ f(a="\d") }}{% endraw %}{{ g(b="\s") }}"#
+            ),
+            r#"{% raw %}{{ f(a="\d") }}{% endraw %}{{ g(b="\\s") }}"#
+        );
+        // Plain raw text, outside any block, is equally literal.
+        let tpl = r#"{% raw %}grep '\d\+' file{% endraw %}"#;
         assert_eq!(double_string_literal_backslashes(tpl), tpl);
     }
 

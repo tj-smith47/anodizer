@@ -5,7 +5,7 @@ use tera::TeraResult;
 
 use crate::env_source::{EnvSource, ProcessEnvSource};
 use crate::template_preprocess::{
-    check_balanced_parens, preprocess, protect_shell_param_length, restore_shell_param_length,
+    check_block_expressions, preprocess, protect_shell_param_length, restore_shell_param_length,
 };
 
 use super::base_tera::{BASE_TERA, translate_go_time_format};
@@ -28,9 +28,9 @@ fn insert_sorted(ctx: &mut tera::Context, key: &'static str, map: &HashMap<Strin
 /// keys referenced in the template with empty strings.
 ///
 /// An empty string is returned for `{{ .Env.NONEXISTENT }}` rather than
-/// erroring. Tera's strict mode would error on a missing map key, so we scan
-/// the preprocessed template for `Env.VARNAME` references and ensure every
-/// referenced key exists in the env map (defaulting to "").
+/// erroring. Tera's strict mode would error on a missing map key, so the
+/// preprocessed template is scanned for `Env.VARNAME` references and every
+/// referenced key is ensured to exist in the env map (defaulting to "").
 ///
 /// Fallback semantics: when an `Env.X` key is not in `TemplateVars::env`,
 /// `std::env::var(X)` is consulted before defaulting to `""`. This is
@@ -65,7 +65,6 @@ fn build_tera_context_for_template(
     }
 
     let mut augmented_vars = vars.clone();
-    // Replace the env map with our augmented one.
     augmented_vars.env = env_with_defaults;
 
     build_tera_context(&augmented_vars)
@@ -158,7 +157,7 @@ pub fn render_with_env(
 ) -> Result<String> {
     // Runs against the source text so the diagnostic quotes what the author
     // wrote, not a half-rewritten intermediate.
-    check_balanced_parens(template)?;
+    check_block_expressions(template)?;
     // Shield bash `${#…}` from Tera's `{#` comment-open before parsing, so it
     // reaches the rendered output literally (GoReleaser's Go templates have no
     // such collision); the inverse restore runs on the rendered string below.

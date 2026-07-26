@@ -4570,3 +4570,65 @@ fn test_multiline_block_backslash_shim() {
         "[abc]"
     );
 }
+
+/// Raw-escaped text is the one contract that outranks every rewrite: whatever
+/// the author put between `{% raw %}` and `{% endraw %}` must render back
+/// byte-identical, including the Go and shell shapes the passes exist to
+/// rewrite everywhere else.
+#[test]
+fn test_raw_block_contents_render_verbatim() {
+    let vars = test_vars();
+    for literal in [
+        "{{ .Version }}",
+        "{{ trimprefix .Tag \"v\" }}",
+        "{{ trimprefix (base .Path) \"v\" }}",
+        "{{ .Version | replace \"v\" \"\" }}",
+        "{{ if .X }}y{{ end }}",
+        "{{ list.0 }}",
+        "{{ $v := .Tag }}",
+        r"grep '\d\+' file",
+        r#"{{ reReplaceAll(pattern="(\w+)", replacement="$1") }}"#,
+        // The `${#…}` shield round-trips through a raw span rather than
+        // skipping it: the placeholder is emitted literally and restored.
+        "${#VAR}",
+        "echo ${#ARR[@]}",
+    ] {
+        let template = format!("{{% raw %}}{literal}{{% endraw %}}");
+        assert_eq!(render(&template, &vars).unwrap(), literal, "raw: {literal}");
+    }
+}
+
+/// A Go positional call is legal in every pipeline slot, so each one renders.
+#[test]
+fn test_positional_calls_render_in_every_pipeline_slot() {
+    let vars = test_vars();
+    for (template, expected) in [
+        ("{{ trimprefix .Tag \"v\" | upper }}", "1.2.3"),
+        ("{{ trimprefix \"vabc\" \"v\" | upper }}", "ABC"),
+        ("{{ .Version | replace \".\" \"-\" | upper }}", "1-2-3"),
+        ("{{ list \"a\" \"b\" | join(sep=\"-\") }}", "a-b"),
+        (
+            "{{ .Tag | trimprefix \"v\" | replace \".\" \"-\" }}",
+            "1-2-3",
+        ),
+    ] {
+        assert_eq!(render(template, &vars).unwrap(), expected, "{template}");
+    }
+}
+
+/// Nesting past the cap is rejected by name instead of killing the process on
+/// the way to the engine.
+#[test]
+fn test_over_nested_expression_is_rejected_by_name() {
+    let vars = test_vars();
+    let template = format!(
+        "{{{{ {}\"A\"{} }}}}",
+        "tolower (".repeat(200),
+        ")".repeat(200)
+    );
+    let err = render(&template, &vars)
+        .expect_err("a 200-deep nest must be rejected")
+        .to_string();
+    assert!(err.contains("over-nested expression in template"), "{err}");
+    assert!(err.contains("parentheses nest 200 deep"), "{err}");
+}

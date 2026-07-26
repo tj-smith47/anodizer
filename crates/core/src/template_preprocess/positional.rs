@@ -1,10 +1,10 @@
 //! Pass 2c map syntax + Pass 3 positional → named-arg syntax rewriting.
 
-use super::GO_BLOCK_RE;
+use super::blocks::replace_live_blocks;
 use super::go_blocks::{extract_block_parts, try_rewrite_control_block};
 use super::static_regex;
 use super::string_lit::RAW_STRING_RE_ALT;
-use super::tokens::{Token, significant_tokens, token_to_str, tokenize_block};
+use super::tokens::{MAX_EXPR_NESTING, Token, significant_tokens, token_to_str, tokenize_block};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -19,46 +19,42 @@ static MAP_POSITIONAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     let item = format!(r"(?:{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*)");
     // Require at least two args (one key-value pair).
     // Use a capture group for the preceding character instead of look-behind.
-    // No look-ahead needed; the greedy match of args handles the boundary
-    // naturally, and we only apply this inside template blocks anyway.
+    // No look-ahead needed: the greedy match of args handles the boundary,
+    // and the pattern only ever runs against one template block's contents.
     let pattern = format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))map\s+(?P<args>{item}(?:\s+{item})+)");
     static_regex(&pattern)
 });
 
 /// Rewrite Go-style `map "k1" "v1" "k2" "v2"` to `map(pairs=["k1", "v1", "k2", "v2"])`.
 pub(super) fn preprocess_map_syntax(template: &str) -> String {
-    GO_BLOCK_RE
-        .replace_all(template, |caps: &regex::Captures| {
-            let block = &caps[0];
-            // Fast path: skip blocks that don't contain `map `.
-            if !block.contains("map ") {
-                return block.to_string();
-            }
-            // Skip blocks that already have named-arg syntax for map.
-            if block.contains("map(") {
-                return block.to_string();
-            }
+    replace_live_blocks(template, |block: &str| {
+        // Fast path: skip blocks that don't contain `map `.
+        if !block.contains("map ") {
+            return block.to_string();
+        }
+        // Skip blocks that already have named-arg syntax for map.
+        if block.contains("map(") {
+            return block.to_string();
+        }
 
-            let (open, inner, close) = extract_block_parts(block);
+        let (open, inner, close) = extract_block_parts(block);
 
-            let rewritten = MAP_POSITIONAL_RE
-                .replace_all(inner, |mcaps: &regex::Captures| {
-                    let pre = mcaps.name("pre").map_or("", |m| m.as_str());
-                    let args_str = mcaps.name("args").map_or("", |m| m.as_str());
-                    // Tokenize the arguments.
-                    static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
-                    });
-                    let items: Vec<&str> =
-                        ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();
-                    let array_literal = format!("[{}]", items.join(", "));
-                    format!("{}map(pairs={})", pre, array_literal)
-                })
-                .to_string();
+        let rewritten = MAP_POSITIONAL_RE
+            .replace_all(inner, |mcaps: &regex::Captures| {
+                let pre = mcaps.name("pre").map_or("", |m| m.as_str());
+                let args_str = mcaps.name("args").map_or("", |m| m.as_str());
+                // Tokenize the arguments.
+                static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
+                    static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
+                });
+                let items: Vec<&str> = ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();
+                let array_literal = format!("[{}]", items.join(", "));
+                format!("{}map(pairs={})", pre, array_literal)
+            })
+            .to_string();
 
-            format!("{}{}{}", open, rewritten, close)
-        })
-        .to_string()
+        format!("{}{}{}", open, rewritten, close)
+    })
 }
 
 /// Pass 3: Convert Go-style positional function calls to Tera named-arg syntax.
@@ -95,40 +91,79 @@ pub(super) fn preprocess_map_syntax(template: &str) -> String {
 /// wherever it accepts a value, so grouping survives even when the inner form
 /// needs no rewrite.
 pub(super) fn preprocess_positional_syntax(template: &str) -> String {
-    GO_BLOCK_RE
-        .replace_all(template, |caps: &regex::Captures| {
-            let block = &caps[0];
+    replace_live_blocks(template, |block: &str| {
+        // Extract the open/close delimiters and inner content, accounting
+        // for Tera's whitespace-control variants (`{{-`, `-}}`, `{%-`, `-%}`).
+        let (open, inner, close) = extract_block_parts(block);
 
-            // Extract the open/close delimiters and inner content, accounting
-            // for Tera's whitespace-control variants (`{{-`, `-}}`, `{%-`, `-%}`).
-            let (open, inner, close) = extract_block_parts(block);
-
-            if block.starts_with("{%") {
-                // For control blocks like `{% if contains Version "rc" %}`,
-                // we need to rewrite the expression portion after the keyword.
-                if let Some(rewritten) = try_rewrite_control_block(inner) {
-                    return format!("{}{}{}", open, rewritten, close);
-                }
-                return block.to_string();
+        if block.starts_with("{%") {
+            // A control block (`{% if contains Version "rc" %}`) carries its
+            // expression after the keyword, so only that portion is rewritten.
+            if let Some(rewritten) = try_rewrite_control_block(inner) {
+                return format!("{}{}{}", open, rewritten, close);
             }
+            return block.to_string();
+        }
 
-            // Tokenize the inner content of `{{ }}` blocks.
-            let tokens = tokenize_block(inner);
-            if tokens.is_empty() {
-                return block.to_string();
-            }
+        // Tokenize the inner content of `{{ }}` blocks.
+        let tokens = tokenize_block(inner);
+        if tokens.is_empty() {
+            return block.to_string();
+        }
 
-            match rewrite_expr_tokens(&tokens) {
-                Some(rewritten) => format!("{}{}{}", open, rewritten, close),
-                // No positional syntax detected; return unchanged.
-                None => block.to_string(),
-            }
-        })
-        .to_string()
+        match rewrite_expr_tokens(&tokens) {
+            Some(rewritten) => format!("{}{}{}", open, rewritten, close),
+            // No positional syntax detected; return unchanged.
+            None => block.to_string(),
+        }
+    })
 }
 
 /// Rewrite one Go expression — the inside of a `{{ }}` block, or the inside of
 /// a sub-expression — into Tera syntax. `None` means nothing matched.
+///
+/// A `|` splits the expression into a head and one filter segment per pipe,
+/// and each segment is rewritten on its own. Go accepts a positional call in
+/// every one of those slots (`trimprefix .Tag "v" | upper`,
+/// `.Version | replace "v" "" | upper`), so treating the presence of a pipe as
+/// grounds to skip the head — or rewriting only the last segment — loses the
+/// call and takes the whole template's parse with it.
+pub(super) fn rewrite_expr_tokens(tokens: &[Token]) -> Option<String> {
+    rewrite_expr_tokens_at(tokens, 0)
+}
+
+/// [`rewrite_expr_tokens`], carrying the sub-expression nesting depth reached
+/// so far so the recursion is bounded (see [`rewrite_subexpr`]).
+fn rewrite_expr_tokens_at(tokens: &[Token], depth: usize) -> Option<String> {
+    let segments = pipe_segments(tokens);
+    match segments.as_slice() {
+        [only] => rewrite_head_segment(only, depth),
+        _ => rewrite_pipeline(&segments, depth),
+    }
+}
+
+/// Split `tokens` on the pipes that separate pipeline segments.
+///
+/// Only a top-level [`Token::Pipe`] is a boundary. A `|` inside a string
+/// literal, an array literal, or a sub-expression never reaches this function
+/// as its own token — the tokenizer captured each of those whole — so the
+/// segmentation obeys exactly the literal and paren rules the sub-expression
+/// rewrite obeys.
+fn pipe_segments(tokens: &[Token]) -> Vec<&[Token]> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        if matches!(token, Token::Pipe) {
+            segments.push(&tokens[start..i]);
+            start = i + 1;
+        }
+    }
+    segments.push(&tokens[start..]);
+    segments
+}
+
+/// Rewrite the head of a pipeline (or a whole pipe-free expression): the slot
+/// that carries a value rather than a filter applied to one.
 ///
 /// The forms are tried most-specific first:
 /// 1. `slice item start [end]` → the piped filter `item | slice(start=…)`,
@@ -137,34 +172,58 @@ pub(super) fn preprocess_positional_syntax(template: &str) -> String {
 /// 2. `printf "fmt" a b …` / `print` / `println` / `list a b …` — the variadic
 ///    builtins, whose trailing args collect into one named array.
 /// 3. `funcname arg1 arg2 [arg3]` — the standalone (function) form.
-/// 4. `expr | funcname arg1 [arg2]` — the piped (filter) form.
-/// 5. Anything else that merely *contains* a sub-expression, so a Go call
+/// 4. Anything else that merely *contains* a sub-expression, so a Go call
 ///    nested inside an expression this pass does not otherwise touch
 ///    (`{{ (tolower Os) ~ "-" }}`) still gets rewritten.
-pub(super) fn rewrite_expr_tokens(tokens: &[Token]) -> Option<String> {
-    try_rewrite_slice(tokens)
-        .or_else(|| try_rewrite_variadic(tokens))
-        .or_else(|| try_rewrite_standalone(tokens))
-        .or_else(|| try_rewrite_piped(tokens))
-        .or_else(|| rewrite_subexprs_only(tokens))
+fn rewrite_head_segment(tokens: &[Token], depth: usize) -> Option<String> {
+    try_rewrite_slice(tokens, depth)
+        .or_else(|| try_rewrite_variadic(tokens, depth))
+        .or_else(|| try_rewrite_standalone(tokens, depth))
+        .or_else(|| rewrite_subexprs_only(tokens, depth))
+}
+
+/// Rewrite each segment of a pipeline and rejoin them on `|`, preserving the
+/// author's spacing around every pipe. `None` when no segment changed, so a
+/// pipeline of Tera-native filters is passed through byte-identical.
+fn rewrite_pipeline(segments: &[&[Token]], depth: usize) -> Option<String> {
+    let mut out = String::new();
+    let mut changed = false;
+    for (i, segment) in segments.iter().enumerate() {
+        if i > 0 {
+            out.push('|');
+        }
+        let rewritten = if i == 0 {
+            rewrite_head_segment(segment, depth)
+        } else {
+            try_rewrite_filter(segment, depth).or_else(|| rewrite_subexprs_only(segment, depth))
+        };
+        match rewritten {
+            Some(text) => {
+                changed = true;
+                out.push_str(&text);
+            }
+            None => out.extend(segment.iter().map(|t| token_to_str(t))),
+        }
+    }
+    changed.then_some(out)
 }
 
 /// Reconstruct `tokens` verbatim except for sub-expressions, which are
 /// rewritten recursively. `None` when there is no sub-expression to descend
 /// into, so callers can distinguish "nothing to do" from "rewritten".
-pub(super) fn rewrite_subexprs_only(tokens: &[Token]) -> Option<String> {
+pub(super) fn rewrite_subexprs_only(tokens: &[Token], depth: usize) -> Option<String> {
     tokens
         .iter()
         .any(|t| matches!(t, Token::SubExpr(_)))
-        .then(|| render_tokens(tokens))
+        .then(|| render_tokens(tokens, depth))
 }
 
 /// Reconstruct a token slice, recursively rewriting every sub-expression.
-fn render_tokens(tokens: &[Token]) -> String {
+fn render_tokens(tokens: &[Token], depth: usize) -> String {
     tokens
         .iter()
         .map(|t| match t {
-            Token::SubExpr(text) => rewrite_subexpr(text),
+            Token::SubExpr(text) => rewrite_subexpr(text, depth),
             other => token_to_str(other).into_owned(),
         })
         .collect()
@@ -173,12 +232,22 @@ fn render_tokens(tokens: &[Token]) -> String {
 /// Rewrite the inside of a `( … )` sub-expression, keeping the parentheses.
 ///
 /// Recursion bottoms out because the inner slice is strictly shorter than the
-/// token that contained it.
-fn rewrite_subexpr(text: &str) -> String {
+/// token that contained it, and is additionally capped at
+/// [`MAX_EXPR_NESTING`] so author-controlled nesting cannot exhaust the stack
+/// or memory. `depth` is the nesting level of the expression this group sits
+/// in, so the group itself opens level `depth + 1` — the same level
+/// `tokens::scan_parens` counts. The two caps therefore agree exactly: a
+/// template `template_preprocess::check_block_expressions` accepts is rewritten
+/// all the way down. Past the cap the group is emitted verbatim, which only
+/// keeps the pass terminating for a caller that skipped that check.
+fn rewrite_subexpr(text: &str, depth: usize) -> String {
+    if depth + 1 > MAX_EXPR_NESTING {
+        return text.to_string();
+    }
     // The token always carries both delimiters, so trimming one byte from each
     // end yields the inner expression.
     let inner = &text[1..text.len() - 1];
-    match rewrite_expr_tokens(&tokenize_block(inner)) {
+    match rewrite_expr_tokens_at(&tokenize_block(inner), depth + 1) {
         Some(rewritten) => format!("({})", rewritten),
         None => text.to_string(),
     }
@@ -363,15 +432,16 @@ pub(super) fn positional_specs() -> impl Iterator<Item = (&'static str, &'static
         .chain(UNARY_FUNCTIONS.iter().copied())
 }
 
-/// True when the significant tokens already contain a bare `(` (named-arg
-/// syntax) or a `|` (piped). The standalone-rewrite helpers all bail in that
-/// case, so this shared guard keeps the check in one place.
+/// True when the tokens already contain a bare `(` — Tera's named-arg call
+/// syntax, which every rewrite helper leaves alone. Shared so the check lives
+/// in one place.
 ///
 /// A balanced Go sub-expression is its own [`Token::SubExpr`], never a bare
-/// `(`, so `trimprefix (base Path) "v"` is still recognised as standalone.
-fn already_named_or_piped(sig: &[&Token]) -> bool {
-    sig.iter()
-        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
+/// `(`, so `trimprefix (base Path) "v"` is still recognised as positional.
+fn is_named_arg_call(tokens: &[&Token]) -> bool {
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Other(s) if s == "("))
 }
 
 /// Extract the leading and trailing whitespace tokens of a block so the
@@ -401,10 +471,10 @@ fn block_whitespace(tokens: &[Token]) -> (&str, &str) {
 /// item being sliced, which maps onto Tera's pipe input — so the standalone
 /// Go call becomes a piped filter rather than a function call. Accepts 2 or 3
 /// positional args (`slice X 0` = start only; `slice X 0 7` = start + end).
-fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
+fn try_rewrite_slice(tokens: &[Token], depth: usize) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    if already_named_or_piped(&sig) {
+    if is_named_arg_call(&sig) {
         return None;
     }
 
@@ -417,10 +487,10 @@ fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
         return None;
     }
 
-    let item = format_arg_value(sig[1])?;
-    let start = format_arg_value(sig[2])?;
+    let item = format_arg_value(sig[1], depth)?;
+    let start = format_arg_value(sig[2], depth)?;
     let params = if sig.len() == 4 {
-        let end = format_arg_value(sig[3])?;
+        let end = format_arg_value(sig[3], depth)?;
         format!("start={}, end={}", start, end)
     } else {
         format!("start={}", start)
@@ -452,10 +522,10 @@ const VARIADIC_FUNCTIONS: &[(&str, &str)] = &[
 /// `map(pairs=[…])` rewrite. `(list …)` used as a subexpression is already an
 /// array literal by this point — Pass 2 rewrote it — so only the bare call form
 /// reaches here.
-fn try_rewrite_variadic(tokens: &[Token]) -> Option<String> {
+fn try_rewrite_variadic(tokens: &[Token], depth: usize) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    if already_named_or_piped(&sig) {
+    if is_named_arg_call(&sig) {
         return None;
     }
 
@@ -481,14 +551,14 @@ fn try_rewrite_variadic(tokens: &[Token]) -> Option<String> {
     let rest = &sig[1..];
     let (format_part, value_tokens) = if func_name == "printf" {
         let fmt = rest.first()?;
-        (Some(format_arg_value(fmt)?), &rest[1..])
+        (Some(format_arg_value(fmt, depth)?), &rest[1..])
     } else {
         (None, rest)
     };
 
     let values: Vec<String> = value_tokens
         .iter()
-        .map(|t| format_arg_value(t))
+        .map(|t| format_arg_value(t, depth))
         .collect::<Option<Vec<_>>>()?;
     let args_literal = format!("{}=[{}]", array_param, values.join(", "));
 
@@ -507,11 +577,11 @@ fn try_rewrite_variadic(tokens: &[Token]) -> Option<String> {
 /// `contains <arg> <quoted>` → `contains(s=<arg>, substr=<quoted>)`
 ///
 /// Returns `None` if the pattern doesn't match.
-pub(super) fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
+pub(super) fn try_rewrite_standalone(tokens: &[Token], depth: usize) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    // Parens mean already named-arg syntax; a pipe means this isn't standalone.
-    if already_named_or_piped(&sig) {
+    // Parens mean already named-arg syntax.
+    if is_named_arg_call(&sig) {
         return None;
     }
 
@@ -530,7 +600,7 @@ pub(super) fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
     // Collect formatted arg values.
     let args: Vec<String> = sig[1..]
         .iter()
-        .map(|t| format_arg_value(t))
+        .map(|t| format_arg_value(t, depth))
         .collect::<Option<Vec<_>>>()?;
 
     // Build the named-arg call string.
@@ -542,60 +612,30 @@ pub(super) fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Preserve leading/trailing whitespace from the original block.
-    let leading_ws = tokens
-        .first()
-        .and_then(|t| match t {
-            Token::Space(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
-    let trailing_ws = tokens
-        .last()
-        .and_then(|t| match t {
-            Token::Space(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
-
+    let (leading_ws, trailing_ws) = block_whitespace(tokens);
     Some(format!(
         "{}{}({}){}",
         leading_ws, func_name, params_str, trailing_ws
     ))
 }
 
-/// Try to rewrite piped positional form:
-/// `<expr> | replace <quoted> <quoted>` → `<expr> | replace(from=<quoted>, to=<quoted>)`
-/// `<expr> | split <quoted>` → `<expr> | split(sep=<quoted>)`
-/// `<expr> | contains <quoted>` → `<expr> | contains(substr=<quoted>)`
+/// Try to rewrite one filter segment of a pipeline — the tokens between two
+/// pipes, or after the last one:
+/// `replace <quoted> <quoted>` → `replace(from=<quoted>, to=<quoted>)`
+/// `split <quoted>` → `split(sep=<quoted>)`
+/// `contains <quoted>` → `contains(substr=<quoted>)`
 ///
-/// Returns `None` if the pattern doesn't match.
-pub(super) fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
-    // Find the LAST pipe in the token stream. This handles chained filters like
-    // `Version | trimprefix(prefix="v") | replace "." "-"` — we only rewrite
-    // the final segment after the last pipe.
-    let last_pipe_idx = tokens.iter().rposition(|t| matches!(t, Token::Pipe))?;
+/// Returns `None` if the pattern doesn't match, which leaves the segment — and
+/// so the whole pipeline's spacing around it — byte-identical.
+fn try_rewrite_filter(tokens: &[Token], depth: usize) -> Option<String> {
+    let sig = significant_tokens(tokens);
 
-    // Everything before the pipe (the expression being piped).
-    let before_pipe = &tokens[..last_pipe_idx];
-    // Everything after the pipe.
-    let after_pipe = &tokens[last_pipe_idx + 1..];
-
-    // If there are parentheses in the after-pipe tokens, the last filter is
-    // already using named-arg syntax — nothing to rewrite.
-    if after_pipe
-        .iter()
-        .any(|t| matches!(t, Token::Other(s) if s == "("))
-    {
+    // A `(` glued to the filter name is Tera's own named-arg syntax already.
+    if is_named_arg_call(&sig) {
         return None;
     }
 
-    let sig_after = significant_tokens(after_pipe);
-    if sig_after.is_empty() {
-        return None;
-    }
-
-    let func_name = match sig_after.first() {
+    let func_name = match sig.first() {
         Some(Token::Ident(name)) => name.as_str(),
         _ => return None,
     };
@@ -603,21 +643,21 @@ pub(super) fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
     let spec = lookup_positional(func_name)?;
 
     // An empty `piped_params` means no argument-taking filter form exists, so
-    // there is nothing to rewrite a pipe into — leave the block untouched and
+    // there is nothing to rewrite a pipe into — leave the segment untouched and
     // let Tera report the unknown filter against the text the user wrote.
     if spec.piped_params.is_empty() {
         return None;
     }
 
     // Piped form has one fewer arg than standalone (the first arg comes from the pipe).
-    if sig_after.len() != spec.piped_params.len() + 1 {
+    if sig.len() != spec.piped_params.len() + 1 {
         return None;
     }
 
     // Collect formatted arg values.
-    let args: Vec<String> = sig_after[1..]
+    let args: Vec<String> = sig[1..]
         .iter()
-        .map(|t| format_arg_value(t))
+        .map(|t| format_arg_value(t, depth))
         .collect::<Option<Vec<_>>>()?;
 
     // Build the named-arg call string.
@@ -629,24 +669,10 @@ pub(super) fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Reconstruct the before-pipe portion, descending into any sub-expression
-    // it carries (`{{ (base Path) | trimprefix "v" }}`).
-    let before_str: String = render_tokens(before_pipe);
-    // Preserve trailing whitespace from the original block.
-    let trailing_ws = tokens
-        .last()
-        .and_then(|t| match t {
-            Token::Space(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
-
+    let (leading_ws, trailing_ws) = block_whitespace(tokens);
     Some(format!(
-        "{} | {}({}){}",
-        before_str.trim_end(),
-        func_name,
-        params_str,
-        trailing_ws
+        "{}{}({}){}",
+        leading_ws, func_name, params_str, trailing_ws
     ))
 }
 
@@ -655,12 +681,12 @@ pub(super) fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
 /// - Identifiers are used bare (they reference template variables).
 /// - Array literals are used as-is (e.g., `["a", "b"]`).
 /// - Sub-expressions are rewritten recursively, parentheses kept.
-fn format_arg_value(token: &Token) -> Option<String> {
+fn format_arg_value(token: &Token, depth: usize) -> Option<String> {
     match token {
         Token::Quoted(s) => Some(s.clone()),
         Token::Ident(s) => Some(s.clone()),
         Token::ArrayLiteral(s) => Some(s.clone()),
-        Token::SubExpr(s) => Some(rewrite_subexpr(s)),
+        Token::SubExpr(s) => Some(rewrite_subexpr(s, depth)),
         _ => None,
     }
 }

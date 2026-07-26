@@ -5,9 +5,9 @@ use anyhow::{Context as _, Result};
 ///
 /// Use this for "trusted" templates baked into the binary (PKGBUILD body,
 /// cask/formula skeletons, nuspec, etc.) where parse failure is a programmer
-/// bug, but we still want the error to flow through `Result` rather than a
-/// panic site so the anti-pattern hook stays clean and the caller's stage
-/// label reaches the user as `.with_context(...)?`.
+/// bug, but the error still flows through `Result` rather than a panic site,
+/// so the anti-pattern hook stays clean and the caller's stage label reaches
+/// the user as `.with_context(...)?`.
 pub fn parse_static(name: &str, raw: &str) -> Result<tera::Tera> {
     let mut tera = tera::Tera::default();
     // Empty suffix list = escape nothing; the element type must be named for

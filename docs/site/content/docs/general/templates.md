@@ -30,6 +30,66 @@ Templates use `{{ }}` for variable interpolation and `{% %}` for control flow:
 name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
+## Literal template text (`{% raw %}`)
+
+Text between `{% raw %}` and `{% endraw %}` reaches the output byte-identical.
+That covers the Go→Tera translation too: **no preprocessing pass rewrites
+anything inside a raw span** — not the leading-dot strip, not the block
+conversion, not positional-call rewriting, not numeric indexing, not the
+string-literal backslash shim. Raw spans are detected once and every pass
+consumes that one answer, so the guarantee holds for passes added later.
+
+```yaml
+# A hook that hands a Go template to another tool, unrendered
+before:
+  hooks:
+    - "helm template ./chart --set tag={% raw %}{{ .Chart.AppVersion }}{% endraw %}"
+
+# A release note that quotes anodizer's own syntax
+release:
+  footer: "Name your artifacts with {% raw %}{{ trimprefix .Tag \"v\" }}{% endraw %}."
+```
+
+```text
+{% raw %}{{ .Version }}{% endraw %}             → {{ .Version }}
+{% raw %}{{ if .X }}y{{ end }}{% endraw %}      → {{ if .X }}y{{ end }}
+{% raw %}{{ list.0 }}{% endraw %}               → {{ list.0 }}
+{% raw %}grep '\d\+' file{% endraw %}           → grep '\d\+' file
+{{ .Version }}{% raw %}{{ .B }}{% endraw %}     → 1.2.3{{ .B }}
+```
+
+Rewriting resumes at `{% endraw %}`. A nested `{% raw %}` has no special
+meaning — the inner tag is literal text, so `{% raw %}{% raw %}x{% endraw %}`
+renders `{% raw %}x`. A `{% raw %}` that is never closed covers the rest of the
+template, which the engine then rejects:
+
+```text
+error: failed to parse template: {% raw %}{{ .Version }}
+```
+
+## Nesting depth
+
+Parenthesised groups in one block may nest at most **64** deep. Every group is
+rewritten by descending into it, so an unbounded nest exhausts the stack before
+the engine sees the block at all; the limit turns that into a named error.
+
+```yaml
+# Rejected — 65 nested groups
+name_template: "{{ tolower (tolower (tolower (… 62 more …))) }}"
+
+# Accepted — bind the intermediate result instead of nesting further
+name_template: "{% set stem = trimprefix Tag \"v\" %}{{ tolower stem }}"
+```
+
+```text
+error: over-nested expression in template `{{ tolower (tolower (tolower (tolower (tolo…`: parentheses nest 65 deep, past the limit of 64. Every group is rewritten by descending into it, so a deeper nest exhausts memory or the stack before the engine sees the block. Bind an intermediate result to a variable and nest fewer calls.
+```
+
+The quoted block is truncated on a char boundary, so one runaway expression
+cannot spill a whole template into the message. The limit sits far above any
+hand-written call — tera's own parser rejects an expression well before this
+depth.
+
 ## Undefined variables
 
 Anodizer runs Tera in strict mode: referencing an undefined variable is a
@@ -104,7 +164,16 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
   {{ printf "%s-%s" (tolower Os) Arch }}    → {{ printf(format="%s-%s", args=[(tolower(s=Os)), Arch]) }}
   ```
 
-  A parenthesis inside a string literal is string contents, never nesting, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups — rather than the engine's parse error, which points at the following token.
+  A parenthesis inside a string literal is string contents, never nesting, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups — rather than the engine's parse error, which points at the following token. Groups that nest past the [depth limit](#nesting-depth) are rejected the same way.
+- **Positional calls in a pipeline** — a `|` splits the expression into a head and one filter segment per pipe, and a Go positional call is accepted in every one of those slots:
+
+  ```text
+  {{ trimprefix .Tag "v" | upper }}         → {{ trimprefix(s=Tag, prefix="v") | upper }}
+  {{ .Version | replace "v" "" | upper }}   → {{ Version | replace(from="v", to="") | upper }}
+  {{ list "a" "b" | join(sep=" ") }}        → {{ list(items=["a", "b"]) | join(sep=" ") }}
+  ```
+
+  A `|` inside a string literal or a sub-expression is string contents or nesting, never a segment boundary.
 - **Positional calls in statement blocks** — a Go call is rewritten wherever a value expression is accepted, not only inside `{{ }}`: `if` / `else if` conditions, the collection of a `range`, and the right-hand side of a `$var :=` assignment.
 
   ```text
@@ -389,9 +458,12 @@ special-casing `list` alone would leave `{{ list "a" "b" }}` and
 `{{ split "a.b" "." }}` printing two different shapes.
 
 Choose the separator explicitly whenever the value lands in consumer-visible
-text (a changelog entry, a release note, an announcement body):
+text (a changelog entry, a release note, an announcement body). The Go
+positional form of the constructor works here too, so a config copied from a
+`.goreleaser.yaml` needs no rewrite:
 
 ```yaml
+message_template: "built for {{ list Os Arch | join(sep=\" \") }}"             # a b
 message_template: "built for {{ list(items=[Os, Arch]) | join(sep=\" \") }}"   # a b
 message_template: "built for {{ englishJoin(items=[Os, Arch]) }}"              # a and b
 ```
