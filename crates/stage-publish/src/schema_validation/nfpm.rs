@@ -189,15 +189,29 @@ fn validate_built_packages(
 ) -> Result<Vec<SchemaFinding>> {
     let mut findings = Vec::new();
 
+    // A dry-run builds no packages, so every registered `LinuxPackage` path is
+    // a PREDICTION. Testing the filesystem cannot tell "this run built it" from
+    // "an earlier run left it there", and an earlier run's package carries that
+    // run's version — so inspecting it reports a mismatch describing the gap
+    // between two runs rather than a defect in either. The primary config
+    // schema floor still covers the rendered config here.
+    if ctx.options.dry_run {
+        log.verbose(
+            "nfpm packages are predicted, not built, in a dry-run; relying on the \
+             config schema floor",
+        );
+        return Ok(findings);
+    }
+
     for artifact in ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
     {
         let path = artifact.path.as_path();
-        // The secondary layer inspects a package physically on disk. A
-        // snapshot/dry-run registers the predicted `LinuxPackage` path without
-        // building the file, so a missing file means the build did not run
-        // here — the primary schema floor already covered the rendered config.
+        // The secondary layer inspects a package physically on disk. A snapshot
+        // that skipped the nfpm build registers the predicted `LinuxPackage`
+        // path without producing the file, so a missing file means the build
+        // did not run here — the primary schema floor already covered it.
         if !path.exists() {
             log.verbose(&format!(
                 "nfpm package {} not built in this run; relying on the config \
