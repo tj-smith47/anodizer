@@ -1,11 +1,10 @@
 use super::helpers;
 use crate::pipeline;
 use anodizer_core::context::{Context, ContextOptions};
-use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct BuildOpts {
     pub crate_names: Vec<String>,
@@ -70,31 +69,61 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::setup_context(&mut ctx, &config, &log)?;
 
-    // Run before-hooks.
-    // Respect --skip=before like the release pipeline.
-    if !ctx.should_skip("before")
-        && let Some(before) = &config.before
-        && let Some(ref hooks) = before.hooks
-    {
-        pipeline::run_hooks(
-            hooks,
-            "before",
-            HookRunContext::new(false, &log, Some(ctx.template_vars())),
-        )?;
-    }
+    // The run enters the `before:`/`always:` bracket here: from this call on,
+    // every exit — including a `before:` hook that failed — leaves through the
+    // root `always:` hooks. Everything above it (config load, workspace scope,
+    // context setup) aborts with zero mutations and without having run a single
+    // operator command, so there is nothing for a teardown hook to undo.
+    let outcome = run_inside_always_bracket(
+        &mut ctx,
+        &config,
+        BuildBody {
+            has_single_target,
+            output_path: output_path.as_deref(),
+        },
+        &log,
+    );
+    helpers::finish_with_always_hooks(&ctx, outcome, &log)
+}
+
+/// The `--output` copy's two inputs, bundled so the bracket body keeps a
+/// named-field signature instead of a positional `bool` + `Option` pair.
+struct BuildBody<'a> {
+    /// `--single-target` was given; `--output` requires it because only one
+    /// binary can be copied.
+    has_single_target: bool,
+    /// `--output <path>`: where to copy the single built binary.
+    output_path: Option<&'a Path>,
+}
+
+/// Everything `anodizer build` does inside the root `before:`/`always:`
+/// bracket: the `before:` hooks, the build / upx / sign / notarize stages,
+/// the metadata write, the `--output` copy, and the `after:` hooks.
+///
+/// Split out of [`run`] so the bracket has one entry point — a step added
+/// here is covered by the root `always:` hooks automatically, and one added
+/// above the call site is deliberately outside them. Mirrors
+/// `release::run_setup_inside_always_bracket`.
+fn run_inside_always_bracket(
+    ctx: &mut Context,
+    config: &anodizer_core::config::Config,
+    body: BuildBody<'_>,
+    log: &StageLogger,
+) -> Result<()> {
+    helpers::run_root_before_hooks(ctx, config, false, log)?;
 
     // Dump effective (resolved) config to dist/config.yaml before the build runs.
-    helpers::write_effective_config(&config, &log)?;
+    helpers::write_effective_config(config, log)?;
 
     // Run build stage
     let build_stage = anodizer_stage_build::BuildStage;
     log.verbose("running build stage");
-    build_stage.run(&mut ctx)?;
+    build_stage.run(ctx)?;
 
     // Run UPX stage (compresses binaries if configured)
     let upx_stage = anodizer_stage_upx::UpxStage;
     log.verbose("running upx stage");
-    upx_stage.run(&mut ctx)?;
+    upx_stage.run(ctx)?;
 
     // Binary-only signing.
     // Mirrors the full release pipeline but skips the generic `signs`
@@ -104,26 +133,26 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     if !ctx.should_skip("sign") {
         let binary_sign_stage = anodizer_stage_sign::BinarySignStage;
         log.verbose("running binary-sign stage");
-        binary_sign_stage.run(&mut ctx)?;
+        binary_sign_stage.run(ctx)?;
     }
 
     // macOS notarization.
     if !ctx.should_skip("notarize") {
         let notarize_stage = anodizer_stage_notarize::NotarizeStage;
         log.verbose("running notarize stage");
-        notarize_stage.run(&mut ctx)?;
+        notarize_stage.run(ctx)?;
     }
 
     // Print artifact size table if configured
-    helpers::run_report_sizes(&mut ctx, &config, &log);
+    helpers::run_report_sizes(ctx, config, log);
 
     // Write metadata.json + artifacts.json (the build-command pipeline
     // includes metadata.Pipe).
-    helpers::write_metadata_and_artifacts(&mut ctx, &config, &log)?;
+    helpers::write_metadata_and_artifacts(ctx, config, log)?;
 
     // --output: copy the built binary to the specified path
-    if let Some(ref output_path) = output_path {
-        if !has_single_target {
+    if let Some(output_path) = body.output_path {
+        if !body.has_single_target {
             anyhow::bail!("--output requires --single-target (only one binary can be copied)");
         }
 
@@ -155,7 +184,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("binary has no filename"))?,
             )
         } else {
-            output_path.clone()
+            output_path.to_path_buf()
         };
 
         std::fs::copy(&binary.path, &dest).with_context(|| {
@@ -167,6 +196,11 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         })?;
         log.status(&format!("copied binary to {}", dest.display()));
     }
+
+    // The root `after:` hooks are the success lane: they close the run once
+    // every artifact the command produces exists (including the `--output`
+    // copy). A failed build short-circuits above and reaches only `always:`.
+    helpers::run_root_after_hooks(ctx, config, false, log)?;
 
     log.status("build complete");
     Ok(())

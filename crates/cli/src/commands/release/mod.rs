@@ -1,4 +1,3 @@
-mod always;
 mod announce_only;
 mod context_setup;
 mod crate_select;
@@ -20,7 +19,6 @@ use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::git;
-use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template;
 use anyhow::{Context as _, Result};

@@ -1,5 +1,5 @@
-//! Root `always:` hooks — the release's `finally` — on the paths a
-//! post-release hook can silently never reach, plus the lane ordering.
+//! Root `always:` hooks — the `finally` of `release` and `build` — on the
+//! paths a post-run hook can silently never reach, plus the lane ordering.
 //!
 //! Each test drives the real binary against a fixture whose `after:`,
 //! `on_error:` and `always:` blocks all append their own label to one
@@ -214,5 +214,117 @@ fn always_hooks_run_after_the_after_hooks_on_success() {
     assert!(
         !stderr.contains("would run on-error hook"),
         "on_error: must not fire on a successful run.\nstderr:\n{stderr}"
+    );
+}
+
+/// Config for the `build`-command bracket, named after the
+/// `create_test_project` package so the build stage compiles a real
+/// binary. Carries all four root lanes so the assertions pin which ones
+/// `anodizer build` reaches AND which it does not.
+fn build_config_with_hook_lanes(marker: &Path, before: &str) -> String {
+    let marker = marker.display();
+    let host = anodizer_cli::detect_host_target().expect("rustc -vV must succeed in test env");
+    format!(
+        r#"project_name: test-project
+before:
+  hooks:
+    - '{before}'
+after:
+  hooks:
+    - 'printf "after\n" >> {marker}'
+on_error:
+  hooks:
+    - 'printf "on_error\n" >> {marker}'
+always:
+  hooks:
+    - 'printf "always success=$ANODIZER_SUCCESS\n" >> {marker}'
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+"#,
+    )
+}
+
+/// `anodizer build` runs root `before:` hooks, so state staged there needs
+/// a teardown lane on the same command. The bracket is the full
+/// `before` → work → `after` → `always`, in that order, on a build that
+/// succeeded.
+///
+/// `on_error:` is deliberately absent from `build`'s lane set: it is the
+/// release-failed notification lane, and a local build failure is not a
+/// failed release. The fixture configures it anyway so this asserts the
+/// scoping instead of leaving it undocumented.
+#[test]
+fn build_command_fires_the_whole_root_bracket_on_success() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("lanes.txt");
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        &build_config_with_hook_lanes(
+            &marker,
+            &format!("printf \"before\\n\" >> {}", { marker.display() }),
+        ),
+    );
+    init_git_repo(tmp.path());
+
+    let out = run_anodizer(tmp.path(), &["build", "--timeout", "5m"]);
+    assert!(
+        out.status.success(),
+        "anodizer build must succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Vacuity guard: the bracket must close around a build that actually
+    // produced something, not around a no-op that reached the success path
+    // without compiling anything.
+    let artifacts = fs::read_to_string(tmp.path().join("dist/artifacts.json"))
+        .expect("the build must have written dist/artifacts.json");
+    assert!(
+        artifacts.contains("\"binary\""),
+        "the build must have produced a binary artifact: {artifacts}"
+    );
+
+    let lanes = lanes_fired(&marker, &out, "build success");
+    assert_eq!(
+        lanes,
+        vec!["before", "after", "always success=true"],
+        "build must close the bracket it opens: after: then always:, both \
+         after the before: hooks.\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A `before:` hook that fails aborts `anodizer build` before the build
+/// stage — the exit `after:` structurally cannot reach. `always:` must
+/// still fire and see the run as failed, which is the whole point of
+/// giving `build` a teardown lane: whatever `before:` staged gets cleaned
+/// up even though the run never got anywhere.
+#[test]
+fn build_command_fires_always_when_before_hooks_fail() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("lanes.txt");
+    create_test_project(tmp.path());
+    create_config(tmp.path(), &build_config_with_hook_lanes(&marker, "exit 7"));
+    init_git_repo(tmp.path());
+
+    let out = run_anodizer(tmp.path(), &["build", "--timeout", "5m"]);
+    assert!(
+        !out.status.success(),
+        "a failing before: hook must fail the build.\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lanes = lanes_fired(&marker, &out, "build before-hook failure");
+    assert_eq!(
+        lanes,
+        vec!["always success=false"],
+        "only always: reaches a before-hook failure, and it must see \
+         success=false"
     );
 }

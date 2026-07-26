@@ -226,7 +226,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             }
         },
     };
-    always::finish_with_always_hooks(&ctx, outcome, &log)
+    helpers::finish_with_always_hooks(&ctx, outcome, &log)
 }
 
 /// The setup steps that run inside the `always:` bracket: the root

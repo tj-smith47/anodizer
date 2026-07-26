@@ -56,19 +56,10 @@ pub(crate) fn run_before_hooks(
     // double-run within one process. Only `--publish-only` / `--announce-only`
     // legitimately skip: they operate on already-produced artifacts (no build,
     // no archive), so hook-generated inputs no longer apply.
-    if !opts.publish_only
-        && !opts.announce_only
-        && !ctx.should_skip("before")
-        && let Some(before) = &config.before
-        && let Some(ref hooks) = before.hooks
-    {
-        pipeline::run_hooks(
-            hooks,
-            "before",
-            HookRunContext::new(opts.dry_run, log, Some(ctx.template_vars())),
-        )?;
+    if opts.publish_only || opts.announce_only {
+        return Ok(());
     }
-    Ok(())
+    helpers::run_root_before_hooks(ctx, config, opts.dry_run, log)
 }
 
 /// Render `--release-notes-tmpl` now that template vars are populated and
@@ -429,11 +420,6 @@ pub(crate) fn run_post_pipeline(
 /// publish-only loop — which runs the post-pipeline once per crate under
 /// [`RootAfterHooks::Defer`] — can close the root lane exactly once.
 ///
-/// Canonical key is `after.hooks:`. The legacy
-/// `after.post:` spelling is folded into `hooks:` at config-parse
-/// time by `HooksConfig::merge_hook_aliases`, so this reader only
-/// needs the canonical field.
-///
 /// Note on `--merge` interaction: `before:` hooks DO run on merge (see
 /// `run_before_hooks`) because the merge phase runs the archive / nfpm
 /// stages, which consume hook-generated inputs (e.g. a generated man page
@@ -450,15 +436,5 @@ pub(super) fn run_post_pipeline_after_hooks_only(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    if let Some(after) = &config.after
-        && let Some(ref hooks) = after.hooks
-    {
-        pipeline::run_hooks(
-            hooks,
-            "after",
-            HookRunContext::new(dry_run, log, Some(ctx.template_vars())),
-        )?;
-    }
-
-    Ok(())
+    helpers::run_root_after_hooks(ctx, config, dry_run, log)
 }

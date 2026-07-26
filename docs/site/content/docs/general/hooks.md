@@ -49,6 +49,36 @@ on_error: { hooks: ["./notify.sh failed"] }    # failure only
 always:   { hooks: ["./teardown-staging.sh"] } # finally — both, runs last
 ```
 
+## Which commands run which lanes
+
+| Lane | `anodizer release` | `anodizer build` | `anodizer publish` |
+|---|---|---|---|
+| `before` | ✅ | ✅ | — |
+| `before_publish` | ✅ | — | ✅ |
+| `after` | ✅ | ✅ | — |
+| `on_error` | ✅ | — | — |
+| `always` | ✅ | ✅ | — |
+
+`anodizer build` opens the same bracket `release` does, so state a `before`
+hook stages has a teardown lane on the command that staged it:
+
+```
+$ anodizer build
+  • ran before hook: ./stage-staging.sh
+  • built binary myapp (x86_64-unknown-linux-gnu)
+  • ran after hook: ./notify.sh built
+  • build complete
+  • ran always hook: ./teardown-staging.sh
+```
+
+`on_error` stays release-only on purpose: it is the release-failed
+notification lane, and a local build failure is not a failed release. A
+failed `anodizer build` still reaches `always` with `$ANODIZER_SUCCESS=false`,
+which is where build teardown belongs.
+
+Every other command (`publish`, `announce`, `check`, `tag`, ...) runs no root
+lane at all — `publish` runs only the mid-pipeline `before_publish` hooks.
+
 ## Behavior
 
 - **`before` hooks** run before any pipeline stage executes
@@ -87,9 +117,8 @@ always:   { hooks: ["./teardown-staging.sh"] } # finally — both, runs last
 
 ## `always` and multi-host releases
 
-`always` fires **once per `anodizer release` invocation**, pairing 1:1 with
-`before`. A split fan-out is several invocations, so both blocks run on each
-of them:
+`always` fires **once per invocation**, pairing 1:1 with `before`. A split
+fan-out is several invocations, so both blocks run on each of them:
 
 ```
 release --split   (shard 1)   before → build            → always
