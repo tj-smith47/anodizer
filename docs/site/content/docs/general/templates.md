@@ -95,7 +95,7 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
 - **`$` variables** — `$myvar` Go locals are accepted.
 - **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
 - **`len`** — `{{ len .Tags }}` becomes `{{ Tags | length }}`.
-- **Positional function calls** — Go-style positional arguments for `replace` `split` `contains` `in` `reReplaceAll` `map` `slice` `time` `printf` `print` `println` are mapped to Tera's named-argument form.
+- **Positional function calls** — every helper in the [Functions and filters](#functions-and-filters) tables accepts its Go-style positional form (`{{ trimprefix Tag "v" }}`, `{{ sha256 ArtifactPath }}`, `{{ envOrDefault "CI" "no" }}`) and is mapped to Tera's named-argument form. The variadic builtins `map` `list` `printf` `print` `println` collect their trailing arguments into an array parameter; `slice X 0 7` becomes the piped filter `X | slice(start=0, end=7)`. A subexpression argument (`{{ trimprefix (base Path) "v" }}`) is not rewritten — pipe it instead.
 - **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
 
 ```yaml
@@ -304,19 +304,19 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `lower` / `tolower` | filter | `{{ Os \| lower }}` | `linux` |
-| `upper` / `toupper` | filter | `{{ Os \| upper }}` | `LINUX` |
+| `lower` / `tolower` | filter / fn | `{{ Os \| lower }}` | `linux` |
+| `upper` / `toupper` | filter / fn | `{{ Os \| upper }}` | `LINUX` |
 | `title` | filter / fn | `{{ "hello world" \| title }}` | `Hello World` |
 | `trim` | filter / fn | `{{ " x " \| trim }}` | `x` |
-| `trimprefix` | filter | `{{ Tag \| trimprefix(prefix="v") }}` | `1.2.3` |
-| `trimsuffix` | filter | `{{ File \| trimsuffix(suffix=".tar.gz") }}` | strips suffix |
+| `trimprefix` | filter / fn | `{{ Tag \| trimprefix(prefix="v") }}` | `1.2.3` |
+| `trimsuffix` | filter / fn | `{{ File \| trimsuffix(suffix=".tar.gz") }}` | strips suffix |
 | `replace` | filter / fn | `{{ Version \| replace(from=".", to="_") }}` | `1_2_3` |
 | `split` | filter / fn | `{{ "a.b.c" \| split(sep=".") }}` | `["a","b","c"]` |
 | `contains` | filter / fn | `{{ Tag \| contains(substr="rc") }}` | `true` / `false` |
-| `slice` | filter / fn | `{{ Tag \| slice(start=1, end=4) }}` | `1.2` (end-exclusive, Go semantics) |
-| `reReplaceAll` | fn | `{{ reReplaceAll(pattern="[^0-9]", input=Tag, replacement="") }}` | digits only |
-| `urlPathEscape` | fn | `{{ urlPathEscape(s=Branch) }}` | percent-encoded path segment |
-| `mdv2escape` | filter | `{{ Body \| mdv2escape }}` | Telegram MarkdownV2-escaped |
+| `slice` | filter | `{{ Tag \| slice(start=1, end=4) }}` | `1.2` (end-exclusive, Go semantics) |
+| `reReplaceAll` | filter / fn | `{{ reReplaceAll(pattern="[^0-9]", input=Tag, replacement="") }}` | digits only |
+| `urlPathEscape` | filter / fn | `{{ urlPathEscape(s=Branch) }}` | percent-encoded path segment |
+| `mdv2escape` | filter / fn | `{{ Body \| mdv2escape }}` | Telegram MarkdownV2-escaped |
 | `ruby_escape` | filter | `{{ Desc \| ruby_escape }}` | safe in a Ruby `"…"` literal |
 
 ### Formatting
@@ -334,9 +334,9 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `dir` | filter | `{{ ArtifactPath \| dir }}` | parent directory |
-| `base` | filter | `{{ ArtifactPath \| base }}` | final path component |
-| `abs` | filter | `{{ "./dist" \| abs }}` | absolute path |
+| `dir` | filter / fn | `{{ ArtifactPath \| dir }}` | parent directory |
+| `base` | filter / fn | `{{ ArtifactPath \| base }}` | final path component |
+| `abs` | filter / fn | `{{ "./dist" \| abs }}` | absolute path |
 
 ### List and map
 
@@ -347,17 +347,17 @@ Examples below use the Tera-native no-dot idiom.
 | `index` | fn | `{{ index(collection=Parts, key=0) }}` | element at index |
 | `indexOrDefault` | fn | `{{ indexOrDefault(map=M, key="k", default="-") }}` | value or default |
 | `in` / `contains_any` | filter / fn | `{{ in(items=["rc", "beta"], value=Prerelease) }}` | `true` / `false` |
-| `filter` | fn | `{{ filter(items=Lines, regexp="^v") }}` | matching lines |
-| `reverseFilter` | fn | `{{ reverseFilter(items=Lines, regexp="^#") }}` | non-matching lines |
-| `englishJoin` | fn | `{{ englishJoin(items=Names) }}` | `a, b, and c` |
+| `filter` | filter / fn | `{{ filter(items=Lines, regexp="^v") }}` | matching lines |
+| `reverseFilter` | filter / fn | `{{ reverseFilter(items=Lines, regexp="^#") }}` | non-matching lines |
+| `englishJoin` | filter / fn | `{{ englishJoin(items=Names) }}` | `a, b, and c` |
 
 ### Semver
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `incpatch` | filter | `{{ Version \| incpatch }}` | `1.2.4` |
-| `incminor` | filter | `{{ Version \| incminor }}` | `1.3.0` |
-| `incmajor` | filter | `{{ Version \| incmajor }}` | `2.0.0` |
+| `incpatch` | filter / fn | `{{ Version \| incpatch }}` | `1.2.4` |
+| `incminor` | filter / fn | `{{ Version \| incminor }}` | `1.3.0` |
+| `incmajor` | filter / fn | `{{ Version \| incmajor }}` | `2.0.0` |
 
 <!-- The Environment/File/Time examples whose arguments are all string literals
      are wrapped in zola's comment-escape (open brace pair + /* ... */ + close):
