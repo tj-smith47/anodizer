@@ -173,7 +173,7 @@ pub(crate) fn collect_artifacts<'a>(
     }
 
     // blob upload uses the canonical release-uploadable set — see
-    // `release_uploadable_kinds()` in `crates/core/src/artifact.rs` for the
+    // `release_uploadable_kinds()` in `crates/core/src/artifact/kind.rs` for the
     // authoritative list. When `include_meta` is true, append Metadata.
     let mut uploadable_kinds: Vec<ArtifactKind> = release_uploadable_kinds().to_vec();
     if config.include_meta.unwrap_or(false) {
