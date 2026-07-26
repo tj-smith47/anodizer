@@ -218,7 +218,7 @@ mod tests {
     // races with other tests that shell out to `git log HEAD` from the
     // workspace root (e.g. test_changelog_stage_*_falls_back_to_git_no_token).
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn fetch_gitea_commits_retries_5xx_then_succeeds() {
         use std::sync::atomic::Ordering;
 

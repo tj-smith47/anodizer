@@ -1013,7 +1013,7 @@ fn test_skips_disabled_reddit() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_dry_run_reddit() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1052,7 +1052,7 @@ fn test_dry_run_reddit() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_application_id_returns_error() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1085,7 +1085,7 @@ fn test_missing_reddit_application_id_returns_error() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_application_id_warn_and_skip() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1104,7 +1104,7 @@ fn test_missing_reddit_application_id_warn_and_skip() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_username_warn_and_skip() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1123,7 +1123,7 @@ fn test_missing_reddit_username_warn_and_skip() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_username_returns_error() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1158,7 +1158,7 @@ fn test_missing_reddit_username_returns_error() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_sub_warn_and_skip() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1177,7 +1177,7 @@ fn test_missing_reddit_sub_warn_and_skip() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_missing_reddit_sub_returns_error() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
@@ -1227,7 +1227,7 @@ fn test_skips_disabled_twitter() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_dry_run_twitter() {
     let announce = AnnounceConfig {
         twitter: Some(TwitterAnnounce {
@@ -1267,7 +1267,7 @@ fn test_dry_run_twitter() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_twitter_missing_env_var_returns_error() {
     let announce = AnnounceConfig {
         twitter: Some(TwitterAnnounce {
@@ -1329,7 +1329,7 @@ fn set_mastodon_creds(ctx: &mut Context) {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_dry_run_mastodon() {
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
@@ -1446,7 +1446,7 @@ fn test_mastodon_missing_env_var_returns_error() {
 }
 
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_mastodon_empty_server_skips() {
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
@@ -1543,7 +1543,7 @@ fn test_mastodon_missing_client_secret_returns_error() {
 /// or rewrite the `~` and break the filter pipeline. Drives a dry-run end
 /// to end with `message_template: None` so the default path actually fires.
 #[test]
-#[serial]
+#[serial(announce_env)]
 fn test_telegram_default_template_renders_without_tilde() {
     let announce = AnnounceConfig {
         telegram: Some(TelegramAnnounce {

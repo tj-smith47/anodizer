@@ -259,7 +259,7 @@ impl ReleaseConfig {
     ///
     /// Note: the runtime env override `ANODIZER_GITHUB_UPLOAD_PACE_MS` takes
     /// precedence and is applied at the call site (it needs the request-scoped
-    /// [`crate::Context`]), mirroring how `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`
+    /// [`crate::context::Context`]), mirroring how `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`
     /// overrides [`Self::upload_concurrency`].
     pub fn resolved_upload_pace(&self) -> std::time::Duration {
         self.upload_pace

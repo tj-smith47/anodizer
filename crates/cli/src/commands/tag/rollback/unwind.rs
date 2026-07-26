@@ -2,7 +2,7 @@
 //!
 //! Withdrawing a release has two halves. The git half — revert the bump
 //! commit, delete the tags, delete the tag's GitHub release — lives in
-//! [`super::run`]. This module is the other half: re-invoking each
+//! [`super::run()`]. This module is the other half: re-invoking each
 //! `Publisher`'s `rollback()` against the state a prior release run
 //! persisted, so a deliberate withdrawal also closes the tap PRs, deletes
 //! the mirrored blobs, and yanks what a one-way door left behind.

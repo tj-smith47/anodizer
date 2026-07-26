@@ -60,7 +60,7 @@ pub struct ReleaseOpts {
     /// non-Windows host — both need a native SDK cargo-zigbuild can't supply;
     /// `*-windows-gnu` and linux targets cross-build from any host). Resolved
     /// into the same
-    /// `targets` intersection-filter at the top of [`run`]: the configured
+    /// `targets` intersection-filter at the top of [`run()`]: the configured
     /// target union is partitioned via
     /// [`anodizer_core::partial::host_buildable_targets`], the skipped set is
     /// logged once, and the kept set is fed through the existing

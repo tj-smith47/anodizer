@@ -103,7 +103,7 @@ pub(super) fn hash_hex_len(algorithm: &str) -> usize {
 }
 
 /// Closed set of supported checksum algorithm names. Re-exported from the
-/// authoritative [`ChecksumConfig::SUPPORTED_ALGORITHMS`] in `anodizer-core`
+/// authoritative `ChecksumConfig::SUPPORTED_ALGORITHMS` in `anodizer-core`
 /// (colocated with the config field it documents) so the config rustdoc, the
 /// `validate_algorithm` Default()-time check, and `hash_file`'s dispatch all
 /// share one list. A `tests::hash_file_covers_every_supported_algorithm`

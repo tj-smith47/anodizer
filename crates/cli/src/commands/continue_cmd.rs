@@ -120,7 +120,7 @@ crates:
     /// `setup_context` (git resolution) before `load_artifacts_from_dist`,
     /// so either failure mode is acceptable — both pin the prelude.
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn no_merge_missing_dist_or_git_bails() {
         let tmp = tempfile::tempdir().unwrap();
         write_minimal_config(tmp.path());
@@ -145,7 +145,6 @@ crates:
     /// builds context manually but still loads config. A bogus override
     /// must err on find_config.
     #[test]
-    #[serial]
     fn merge_missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let err = run(ContinueOpts {

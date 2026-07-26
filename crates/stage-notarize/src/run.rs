@@ -809,7 +809,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd, path_env)]
     fn retry_driver_reinvokes_after_transient_failure() {
         let tools = FakeToolDir::new();
         // First call: exit 1 with a retriable network marker. Second call:
@@ -828,9 +828,10 @@ mod tests {
         let args = vec![bin, "notary-submit".to_string()];
         // Run from `work` so the `.attempted` marker lands in a temp dir.
         // CwdGuard restores cwd on Drop (panic-safe); declared after `work` so
-        // cwd is restored before the tempdir is deleted. Stays on this binary's
-        // unnamed #[serial] group — its FakeToolDir siblings already mutually
-        // exclude on shared process state, of which cwd is one facet.
+        // cwd is restored before the tempdir is deleted. This is the one test
+        // here contending on BOTH resources, so it names both keys — the
+        // FakeToolDir siblings hold only `path_env` and would not exclude a
+        // cwd swapper on their own.
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(work.path()).unwrap();
         let res = run_with_retry(
             &args,
@@ -849,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn retry_driver_does_not_retry_nonretriable_failure() {
         let tools = FakeToolDir::new();
         // status: Invalid is a hard Apple rejection — must NOT retry.
@@ -943,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_dmg_signs_notarizes_and_staples() {
         let tools = FakeToolDir::new();
         tools.tool("codesign").install();
@@ -992,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_dmg_wait_false_skips_stapling() {
         let tools = FakeToolDir::new();
         tools.tool("codesign").install();
@@ -1014,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_dmg_codesign_nonzero_exit_errors() {
         let tools = FakeToolDir::new();
         tools
@@ -1043,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_dmg_notarytool_invalid_errors_before_staple() {
         let tools = FakeToolDir::new();
         tools.tool("codesign").install();
@@ -1071,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_dmg_stapler_nonzero_exit_errors() {
         let tools = FakeToolDir::new();
         tools.tool("codesign").install();
@@ -1157,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_pkg_productsigns_and_notarizes() {
         let tools = FakeToolDir::new();
         // productsign writes the `<pkg>.signed` output the stage renames over the original.
@@ -1197,7 +1198,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn native_pkg_productsign_nonzero_exit_errors() {
         let tools = FakeToolDir::new();
         tools
@@ -1229,7 +1230,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn cross_platform_signs_and_submits_with_rcodesign() {
         let tools = FakeToolDir::new();
         // One rcodesign stub handles both `sign` and `notary-submit`; emit an
@@ -1322,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn cross_platform_missing_certificate_path_errors() {
         // Non-dry-run stat-check rejects a certificate path that does not exist
         // before any rcodesign spawn.

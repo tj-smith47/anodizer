@@ -29,7 +29,7 @@ impl HookKind {
 }
 
 /// Fire a crate's per-crate `before:` / `after:` lifecycle hooks (resolved
-/// from the crate's RESOLVED [`CrateConfig`] after the workspace overlay is
+/// from the crate's RESOLVED `CrateConfig` after the workspace overlay is
 /// applied) scoped to the crate's already-anchored template vars.
 ///
 /// Honors `--skip=before` / `--skip=after` — the same tokens the root lanes

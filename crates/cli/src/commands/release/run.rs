@@ -232,7 +232,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 /// The setup steps that run inside the `always:` bracket: the root
 /// `before:` hooks plus every gate sequenced after them.
 ///
-/// Split out of [`run`] so the bracket has one entry point — a step added
+/// Split out of [`run()`] so the bracket has one entry point — a step added
 /// here is covered by the root `always:` hooks automatically, and one added
 /// above the call site is deliberately outside them.
 fn run_setup_inside_always_bracket(
@@ -273,7 +273,7 @@ fn run_setup_inside_always_bracket(
 }
 
 /// Run the selected release mode (publish-only / announce-only / split /
-/// merge / full pipeline). Split out of [`run`] so the caller can route
+/// merge / full pipeline). Split out of [`run()`] so the caller can route
 /// every mode's failure through the root `on_error:` hooks uniformly,
 /// while the zero-mutation preflight gates stay outside that boundary.
 pub(crate) fn dispatch_release_modes(

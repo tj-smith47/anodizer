@@ -17,7 +17,7 @@ use crate::artifact::ArtifactKind;
 /// as a serde alias on `hooks` for back-compat with the previous
 /// anodizer spelling; users with `after: { post: [...] }` keep working
 /// and a deprecation warning is logged when both spellings appear in
-/// the same block (see [`HooksConfig::merge_hook_aliases`]).
+/// the same block (see `HooksConfig::merge_hook_aliases`).
 #[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksConfig {

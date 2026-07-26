@@ -717,7 +717,7 @@ fn test_to_artifacts_json_with_artifacts() {
 /// disagree on that byte sequence even when every other artifact matches.
 /// Normalizes the artifact path relative to the working directory.
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn to_artifacts_json_strips_absolute_worktree_prefix() {
     let tmp = tempfile::tempdir().unwrap();
     // RAII: restores the original cwd on drop even if the body panics, so a
@@ -823,7 +823,7 @@ fn to_artifacts_json_output_is_order_insensitive() {
 /// `docker push` the value verbatim. Mirrors `shouldRelPath`'s
 /// docker-kind carve-out.
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn to_artifacts_json_preserves_docker_image_refs() {
     let mut registry = ArtifactRegistry::new();
     registry.add(Artifact {

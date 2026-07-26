@@ -218,7 +218,7 @@ mod tests {
     // races with other tests that shell out to `git log HEAD` from the
     // workspace root (e.g. test_changelog_stage_*_falls_back_to_git_no_token).
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn fetch_gitlab_commits_retries_5xx_then_succeeds() {
         use std::sync::atomic::Ordering;
 
@@ -280,7 +280,7 @@ mod tests {
     // `&sha[..7]` byte slice the parser once used: `sha.get(..7)` truncates on
     // a char boundary or falls back to the whole string.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn fetch_gitlab_commits_short_multibyte_id_does_not_panic() {
         // `id` is "café" — 4 chars / 5 bytes, shorter than 7 and with a
         // multibyte char straddling byte 4: a naive `&sha[..7]` would panic.

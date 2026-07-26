@@ -274,7 +274,7 @@ fn effective_rustflags(
 /// its resolved config env map plus the `process` environment the cargo
 /// subprocess inherits — the value the build stage stamps into the
 /// artifact's `amd64_variant` metadata. The flags string is picked by
-/// cargo's own source precedence ([`effective_rustflags`]), with config and
+/// cargo's own source precedence (`effective_rustflags`), with config and
 /// process merged at each tier (config wins on the same key). `None` for
 /// non-x86_64 targets and for env whose effective flags carry no level (the
 /// untuned baseline) — including a process `RUSTFLAGS` (e.g. a CI

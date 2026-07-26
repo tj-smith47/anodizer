@@ -285,7 +285,7 @@ pub(crate) fn map_to_supported_arches(binaries: &[Artifact]) -> Vec<FlatpakBinar
 /// The rendered bundle filename paired with the template that produced it:
 /// `(rendered_name, resolved_template)`. The resolved template is the user's
 /// `name_template` when set, else the composed default — exactly the string the
-/// [`ArchPathGuard`] cites when it rejects a clobber, so the diagnostic names
+/// `ArchPathGuard` cites when it rejects a clobber, so the diagnostic names
 /// the template the user can fix.
 pub(crate) type RenderedFilename = (String, String);
 

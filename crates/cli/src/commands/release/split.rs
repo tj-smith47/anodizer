@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// skipped when `None` on serialization. The split/merge path
 /// historically didn't populate them, but the determinism harness's
 /// `--preserve-dist` flag emits a sibling
-/// [`crate::determinism_harness::preserve::PreservedArtifact`] with
+/// `crate::determinism_harness::preserve::PreservedArtifact` with
 /// the same field names + types. Adding `Option`-typed fields here
 /// means a publish-only consumer that reads `context.json` can
 /// deserialize either shape via this single type — without requiring

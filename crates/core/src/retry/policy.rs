@@ -82,7 +82,7 @@ pub struct RetryPolicy {
     ///
     /// 1. [`crate::config::RetryConfig::to_policy`] clamps user YAML
     ///    (`attempts: 0` -> `1`) at the config-surface boundary.
-    /// 2. [`retry_sync`] / [`retry_async`] clamp again at the loop boundary
+    /// 2. `retry_sync` / `retry_async` clamp again at the loop boundary
     ///    to protect direct `RetryPolicy { max_attempts: 0, .. }`
     ///    constructions (e.g. test fixtures).
     ///
@@ -201,7 +201,7 @@ impl RetryPolicy {
 pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 
 /// Default wall-clock budget for a retry ladder when `retry.max_elapsed` is not
-/// set. Resolved into an absolute deadline by [`crate::Context::retry_deadline`]
+/// set. Resolved into an absolute deadline by [`crate::context::Context::retry_deadline`]
 /// and threaded into the engine by publishers, so a ladder bounded only by
 /// attempt count cannot run unbounded on a slow-but-not-failing endpoint. It is
 /// a *default*, not a hard ceiling: an operator raises (or lowers) it with
@@ -299,7 +299,7 @@ pub fn current_budget_anchor() -> Option<std::time::Instant> {
 
 /// RAII scope for ONE [`crate::Publisher`] invocation: it installs the backoff
 /// attribution label (a [`RetryScope`]) and anchors the wall-clock retry budget
-/// that [`crate::Context::retry_deadline`] reports for the whole invocation.
+/// that [`crate::context::Context::retry_deadline`] reports for the whole invocation.
 ///
 /// Install exactly one at every seam that calls into a publisher —
 /// `run`, `reconcile`, `rollback`, `preflight`. The budget belongs to the

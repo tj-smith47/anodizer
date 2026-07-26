@@ -94,7 +94,7 @@ static SECTION_DEPTH: AtomicUsize = AtomicUsize::new(0);
 /// into the parent's stream. Without an inherited base depth the child's
 /// section headers would render flush-left, visually escaping the
 /// parent's open section. The parent exports its depth here; the child
-/// reads it once (see [`base_depth`]) and offsets every indent by it.
+/// reads it once (see `base_depth`) and offsets every indent by it.
 pub const LOG_DEPTH_ENV: &str = "ANODIZER_LOG_DEPTH";
 
 /// Base nesting depth inherited from a parent process via
@@ -168,7 +168,7 @@ static PENDING: Mutex<Vec<PendingHeader>> = Mutex::new(Vec::new());
 /// so the deferred headers appear above their first line in correct nesting
 /// order. A header renders at its own stored [`PendingHeader::depth`] — the
 /// 2-space-per-level indent, the right-aligned bold-green verb in the
-/// [`VERB_COLUMN`] gutter, then (if non-empty) one space and the message.
+/// `VERB_COLUMN` gutter, then (if non-empty) one space and the message.
 ///
 /// No-op when nothing is pending (the common case once a section has already
 /// emitted its first line), so the per-body-line cost is one uncontended lock.
@@ -187,7 +187,7 @@ fn flush_pending() {
 }
 
 /// Render a section/stage header line at `depth`: the 2-space-per-level
-/// nesting indent, a bold-green verb right-aligned in the [`VERB_COLUMN`]
+/// nesting indent, a bold-green verb right-aligned in the `VERB_COLUMN`
 /// gutter, then (only for a non-empty `msg`) a single space and the message.
 ///
 /// The single source of truth shared by both header-emitting paths — the
@@ -200,7 +200,7 @@ fn render_header(depth: usize, verb: &str, msg: &str) -> String {
     render_gutter(&"  ".repeat(depth), verb, |s| s.green().bold(), msg)
 }
 
-/// Render one gutter line: `label` right-aligned in the [`VERB_COLUMN`] gutter
+/// Render one gutter line: `label` right-aligned in the `VERB_COLUMN` gutter
 /// (painted by `paint`) after `prefix`, then a space and `msg` — or, when `msg`
 /// is empty, the bare painted label with no trailing space. The single column
 /// system shared by section headers and the Warning/Error/Note status labels,
@@ -246,7 +246,7 @@ const MARKER_FAILURE: &str = "✗";
 /// Map a pipeline stage name to its full Cargo-style header phrase
 /// (`"Building binaries"`, `"Signing artifacts"`, `"Publishing"`). Drives
 /// [`StageLogger::group`]'s deferred header: the leading verb is right-aligned
-/// into the [`VERB_COLUMN`] gutter (bold-green, matching `cargo`'s
+/// into the `VERB_COLUMN` gutter (bold-green, matching `cargo`'s
 /// `   Compiling foo` look), and the remaining words form the message that
 /// follows. A single-word phrase (`"Publishing"`) renders just the gutter
 /// verb with no trailing message.
@@ -307,7 +307,7 @@ pub fn stage_header(stage: &str) -> &'static str {
 
 /// Render the themed `Warning` line for `msg`: the label right-aligned in the
 /// gutter (bold-yellow, no colon) at the enclosing section's header indent
-/// ([`label_indent`]), so it reads as a peer of the section verbs and its
+/// (`label_indent`), so it reads as a peer of the section verbs and its
 /// message aligns with theirs. The single source of truth for the warning
 /// palette and label, shared by [`StageLogger::warn`] and the CLI's tracing
 /// formatter so a library-side `warn!` looks identical to a logger warn (one
@@ -342,7 +342,7 @@ pub fn render_note(msg: &str) -> String {
 ///
 /// This is the body-line depth (`•` detail / `success` / `failure` / `kv`
 /// rows). Status labels do NOT use it — they sit one level shallower at the
-/// enclosing header's depth via [`label_indent`].
+/// enclosing header's depth via `label_indent`.
 pub fn indent() -> String {
     "  ".repeat(current_depth())
 }
@@ -357,7 +357,7 @@ pub fn indent() -> String {
 /// body indent here would push the gutter-aligned label two columns past both
 /// the sibling headers and the body bullets, leaving it floating on its own.
 ///
-/// Floored at the inherited [`base_depth`] so a label emitted with no open
+/// Floored at the inherited `base_depth` so a label emitted with no open
 /// section never dedents below the ambient (e.g. GitHub Actions) indent.
 fn label_indent() -> String {
     "  ".repeat(current_depth().saturating_sub(1).max(base_depth()))
@@ -653,7 +653,7 @@ impl StageLogger {
     /// [`StageLogger::check_output`] and [`StageLogger::redact`]. Wraps the
     /// list in a private cell that nothing else mutates — a frozen table,
     /// same as before this method's underlying storage moved to
-    /// `Arc<Mutex<_>>`. Use [`StageLogger::with_shared_env`] to attach a
+    /// `Arc<Mutex<_>>`. Use `StageLogger::with_shared_env` to attach a
     /// cell that can still change after construction.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = Some(Arc::new(Mutex::new(env)));
@@ -697,7 +697,7 @@ impl StageLogger {
     }
 
     /// Redact secret values from `s` using this logger's attached env,
-    /// re-read from the cell at call time (see [`Self::with_shared_env`]) —
+    /// re-read from the cell at call time (see `Self::with_shared_env`) —
     /// a secret added to a live cell after this logger was constructed is
     /// still masked.
     ///
@@ -846,7 +846,7 @@ impl StageLogger {
     /// Heartbeat / liveness body line — a cyan `•` marker, then `msg`. Renders a
     /// slow operation (`still running cargo publish (2m15s)`) so it is not
     /// mistaken for a hang. Shown only when [`Self::heartbeats_enabled`], and
-    /// recorded at its own [`LogLevel::Heartbeat`] level.
+    /// recorded at its own `LogLevel::Heartbeat` level.
     pub fn heartbeat(&self, msg: &str) {
         if !self.heartbeats_enabled() {
             return;
@@ -918,7 +918,7 @@ impl StageLogger {
     /// Open a log section for stage `title`.
     ///
     /// The Cargo-style header (derived from [`stage_header`]: the phrase's
-    /// leading verb bold-green and right-aligned in the [`VERB_COLUMN`]
+    /// leading verb bold-green and right-aligned in the `VERB_COLUMN`
     /// gutter, then one space and the remaining words — `   Building binaries`,
     /// ` Publishing` for a single-word phrase) is *deferred*: it prints only
     /// when this section emits its first real body line, matching GoReleaser
@@ -1070,8 +1070,8 @@ impl StageLogger {
     /// machine-readable data channel (GHA step outputs like `new_tag=…`, plus
     /// json/changelog/metadata payloads), and a hook's child stdout teed onto
     /// stdout would corrupt it. Progress UX belongs on stderr with every other
-    /// human/log line. Recorded into any attached [`LogCapture`] at
-    /// [`LogLevel::Verbose`] so tests can assert the stream surfaced.
+    /// human/log line. Recorded into any attached `LogCapture` at
+    /// `LogLevel::Verbose` so tests can assert the stream surfaced.
     ///
     /// `line` must be a single line with its trailing newline already
     /// stripped (the caller's line reader does this); the newline is added
@@ -1083,7 +1083,7 @@ impl StageLogger {
     /// Tee a single line of a child process's standard error to this
     /// process's stderr, unmodified except for secret redaction. The stderr
     /// companion to [`Self::stream_child_stdout`]; recorded at
-    /// [`LogLevel::Error`] so the verbose-failure double-emit guard is
+    /// `LogLevel::Error` so the verbose-failure double-emit guard is
     /// observable in tests.
     pub fn stream_child_stderr(&self, line: &str) {
         self.stream_child_line(line, true);
@@ -1095,7 +1095,7 @@ impl StageLogger {
     /// Both child streams tee to stderr (see
     /// [`stream_child_stdout`](Self::stream_child_stdout)); the methods differ
     /// only in which capture level the line is recorded under
-    /// (`from_stderr` selects [`LogLevel::Error`] vs [`LogLevel::Verbose`]),
+    /// (`from_stderr` selects `LogLevel::Error` vs `LogLevel::Verbose`),
     /// so the write lives here once.
     ///
     /// `flush_pending()` runs first so a streamed line never prints *above* its
@@ -1432,11 +1432,18 @@ mod tests {
     /// would silently grab the wrong line.
     ///
     /// Unix-only. The fd-2 swap is process-global across the WHOLE
-    /// `anodizer-core` test binary, so callers carry the crate-wide unnamed
-    /// `#[serial_test::serial]` key (the convention in
-    /// [`crate::test_helpers`]) to mutually exclude against every other
-    /// env/cwd/fd-mutating test; `SECTION_TEST_LOCK` only orders the in-file
-    /// `PENDING`/`SECTION_DEPTH` state these callers also touch.
+    /// `anodizer-core` test binary, so a caller must exclude every other test
+    /// whose output could land in the capture: itself and its `stderr_fd`
+    /// peers, plus the two groups in this binary whose tests spawn
+    /// subprocesses that inherit fd 2 — hence
+    /// `#[serial_test::serial(cwd, path_env, stderr_fd)]`.
+    /// `SECTION_TEST_LOCK` only orders the in-file `PENDING`/`SECTION_DEPTH`
+    /// state these callers also touch.
+    ///
+    /// Under `cargo nextest` (the gate) each test is its own process, so fd 2
+    /// is private and the keys are belt-and-braces; they carry the weight only
+    /// under an in-process `cargo test`, where an unkeyed `#[serial]` would
+    /// have excluded nothing keyed at all.
     #[cfg(unix)]
     fn capture_stderr(f: impl FnOnce()) -> Option<String> {
         use std::io::{Read, Seek, SeekFrom, Write};
@@ -1465,7 +1472,7 @@ mod tests {
         // SAFETY: dup/dup2 on the live stderr fd; the saved fd is owned by the
         // StderrRestore guard below, which restores fd 2 and closes the dup on
         // every exit path (panic-safe). The whole swap is serialized by the
-        // caller's crate-wide `#[serial]` key.
+        // caller's `#[serial(cwd, path_env, stderr_fd)]` keys.
         let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
         assert!(saved >= 0, "dup(stderr) failed");
         unsafe {
@@ -1494,7 +1501,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd, path_env, stderr_fd)]
     fn test_header_paths_emit_identical_bytes() {
         // Regression guard for the v0.9.1 drift where stage headers rendered
         // with 2/3/4/5 leading spaces depending on which path printed them.
@@ -1508,9 +1515,9 @@ mod tests {
         // sees real output; under a bare in-process `cargo test` libtest
         // intercepts `eprintln!` and `capture_stderr` returns None, so the body
         // falls back to re-checking the shared helper rather than failing
-        // spuriously. The crate-wide `#[serial]` key keeps every other
-        // env/fd-mutating test out of the fd-swapped capture; SECTION_TEST_LOCK
-        // only orders the in-file PENDING/SECTION_DEPTH state.
+        // spuriously. The named serial keys keep the subprocess-spawning and
+        // fd-swapping tests out of the capture; SECTION_TEST_LOCK only orders
+        // the in-file PENDING/SECTION_DEPTH state.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
         let log = StageLogger::new("sign", Verbosity::Normal);
         // Absolute depth both paths must render at (includes any inherited base
@@ -1590,7 +1597,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd, path_env, stderr_fd)]
     fn test_single_word_header_emits_no_trailing_space() {
         // A single-word phrase (empty message) renders the bare gutter verb
         // with NO trailing space on the REAL `step` path — a stray space here
@@ -1658,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(stderr_fd)]
     fn test_status_label_aligns_with_enclosing_header_not_body_depth() {
         // Regression: a Warning/Error/Note fired INSIDE a section must align
         // with that section's HEADER (label in the verb column, message in the
@@ -1689,7 +1696,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd, path_env, stderr_fd)]
     fn test_capture_stderr_restores_fd_on_panic() {
         // The fd-restore must run on the unwind path: a panic inside `f`
         // (the asserts in the real callers are a reachable panic path) must

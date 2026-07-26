@@ -465,7 +465,7 @@ fn capture_inner(
     })
 }
 
-/// Spawn `cmd` through [`capture_inner`] and apply the success/failure decision
+/// Spawn `cmd` through `capture_inner` and apply the success/failure decision
 /// via `check_output` — the shared core behind [`run_checked`],
 /// [`run_checked_with_stdin`], and their timeout variants. A non-zero exit
 /// becomes an `Err`; callers that must inspect a non-zero `Output` themselves
@@ -516,7 +516,7 @@ pub fn run_capture_timeout(
 /// earns the liveness heartbeat for free. Errors only on spawn / wait failure.
 ///
 /// Verbose streaming, secret redaction, and heartbeat behavior are identical to
-/// every other `run_*` entry point, since all share [`capture_inner`].
+/// every other `run_*` entry point, since all share `capture_inner`.
 pub fn run_capture(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
     capture_impl(cmd, log, label, None)
 }

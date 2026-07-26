@@ -86,7 +86,6 @@ crates:
     }
 
     #[test]
-    #[serial]
     fn missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let err = run(AnnounceOpts {
@@ -109,7 +108,7 @@ crates:
     /// before `load_artifacts_from_dist`; either failure mode is
     /// acceptable — both pin the prelude wiring.
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn missing_dist_or_git_bails() {
         let tmp = tempfile::tempdir().unwrap();
         write_minimal_config(tmp.path());
@@ -132,7 +131,6 @@ crates:
     /// `announce --merge` reaches `find_config` first; an absent config must
     /// surface as the find-config error, identical to the no-merge path.
     #[test]
-    #[serial]
     fn merge_missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let err = run(AnnounceOpts {

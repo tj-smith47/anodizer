@@ -535,7 +535,7 @@ pub fn configured_producer_stages(
 /// Stage tokens of every config-gated producer whose payload binary `host_os`
 /// natively builds. `host_os` is a `target`-style OS token
 /// (`"linux"` / `"macos"` / `"windows"`); an unrecognized value yields an
-/// empty list. Order follows [`CONFIGURED_PRODUCERS`] within the OS group.
+/// empty list. Order follows `CONFIGURED_PRODUCERS` within the OS group.
 ///
 /// The determinism harness's `--stages`-absent default unions its always-on
 /// base with this set so each OS-native installer runs on the shard that
@@ -554,7 +554,7 @@ pub fn os_native_producer_tokens(host_os: &str) -> Vec<&'static str> {
 ///
 /// Single source for both the config-configured producer set
 /// ([`configured_producer_stages`]) and the per-host OS-native producer set
-/// ([`os_native_producer_tokens`]): adding a producer to [`CONFIGURED_PRODUCERS`]
+/// ([`os_native_producer_tokens`]): adding a producer to `CONFIGURED_PRODUCERS`
 /// extends both derivations at once, so the determinism default and the
 /// preflight set cannot list a producer the other misses.
 struct ConfiguredProducer {

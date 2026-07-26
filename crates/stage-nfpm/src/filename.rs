@@ -249,7 +249,7 @@ fn apk_filename(info: &FileNameInfo<'_>) -> String {
 }
 
 /// apk version composition:
-///   {version}[_prerelease]["-r"+release][-{p,cvs,svn,git,hg}prefix+metadata]
+///   `{version}[_prerelease]["-r"+release][-{p,cvs,svn,git,hg}prefix+metadata]`
 /// Release always gets an `r` prefix if the user omitted it; metadata
 /// gets a `p` prefix unless it already starts with a known VCS tag.
 fn apk_pkgver(info: &FileNameInfo<'_>) -> String {

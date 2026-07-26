@@ -133,7 +133,7 @@ pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 /// groups (`group/subgroup/repo`). Returns `None` when the URL has no
 /// recognizable host or path.
 ///
-/// This is the host-preserving counterpart of [`parse_remote_owner_repo`]:
+/// This is the host-preserving counterpart of `parse_remote_owner_repo`:
 /// it keeps the host so callers (e.g. changelog compare-link footers) can
 /// build links against a self-hosted GitLab/Gitea instead of assuming
 /// `github.com`.
@@ -191,7 +191,7 @@ pub fn detect_remote_web_base_in(cwd: &Path) -> Result<String> {
 /// Get the owner/repo from the `origin` remote configured in `cwd`,
 /// regardless of SCM host.
 ///
-/// Uses [`parse_remote_owner_repo`] which works with any git hosting provider
+/// Uses `parse_remote_owner_repo` which works with any git hosting provider
 /// (GitHub, GitLab, Gitea, etc.).
 pub(crate) fn detect_owner_repo_in(cwd: &Path) -> Result<(String, String)> {
     let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;

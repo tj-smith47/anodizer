@@ -152,7 +152,7 @@ pub(crate) fn fetch_crate_commits(
 }
 
 /// Fetch git commits scoped by `scope.dirs`, then apply the precise
-/// `changelog.paths` glob intersect ([`scope.narrow`]) when one is required.
+/// `changelog.paths` glob intersect (`scope.narrow`) when one is required.
 ///
 /// When no narrowing is needed the git pathspec already bounds the result
 /// exactly, so this delegates to the metadata-only [`fetch_git_commits`].

@@ -40,7 +40,7 @@ pub struct TagOpts {
     pub custom_tag: Option<String>,
     /// Explicit `--version`: tag exactly this version, bypassing autotag
     /// derivation and the Cargo.toml-ahead guard. Accepts `1.2.3` or `v1.2.3`;
-    /// normalized + validated in [`run`].
+    /// normalized + validated in [`run()`].
     pub version_override: Option<String>,
     pub default_bump: Option<String>,
     /// When set, select a specific crate's tag_template for tagging.
@@ -253,7 +253,7 @@ pub(crate) struct WorkspaceBumpEdits<'a> {
 /// auto-detection.
 ///
 /// Used only for the bootstrap workspace-root discovery, where the root is not
-/// yet known. Once the root is known, prefer [`resolve_config_path_at`] so a
+/// yet known. Once the root is known, prefer `resolve_config_path_at` so a
 /// subdirectory invocation still finds the repo-root config.
 fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
     opts.config_override
@@ -333,7 +333,7 @@ pub(crate) struct PushControls<'a> {
     pre_hooks: &'a [anodizer_core::config::HookEntry],
     post_hooks: &'a [anodizer_core::config::HookEntry],
     /// Tag names present on `remote` (one ls-remote per invocation, fetched by
-    /// [`run`]); `None` when there is no remote or the fetch failed (local
+    /// [`run()`]); `None` when there is no remote or the fetch failed (local
     /// fallback). Threaded into previous-tag resolution so a remotely-deleted
     /// tag that survives in this clone never counts as "previous".
     remote_tags: Option<&'a std::collections::HashSet<String>>,

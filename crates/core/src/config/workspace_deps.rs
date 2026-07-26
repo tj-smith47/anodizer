@@ -193,7 +193,7 @@ pub fn discover_cargo_workspace_member_names(base_dir: &Path) -> HashSet<String>
 /// order requirement — and must not contribute an edge, or the standard
 /// dev-only-cycle idiom (B depends on A, A path-dev-deps B for tests) would
 /// derive a cycle the publish-order validator rejects. See
-/// [`extract_publishable_dev_deps`]. The crate's own package name is filtered out: a
+/// `extract_publishable_dev_deps`. The crate's own package name is filtered out: a
 /// crate never depends on itself, and a `path`/`workspace` dev-dependency on
 /// its own package (a common test-helpers pattern) would otherwise appear as a
 /// self-edge and corrupt the topological order. Missing / unparsable

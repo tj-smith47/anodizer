@@ -85,7 +85,7 @@ pub(super) fn crates_versioned_by_tag<'c>(
     out
 }
 
-/// Layer 2 of [`check_not_irreversibly_published`]: refuse rollback when
+/// Layer 2 of `check_not_irreversibly_published`: refuse rollback when
 /// any tag's crates.io-targeting crate@version is live on the crates.io
 /// sparse index — GLOBAL registry state, consulted regardless of what this
 /// run's summaries say (a prior run may have burned the version; its

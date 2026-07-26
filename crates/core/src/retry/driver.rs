@@ -15,7 +15,7 @@ use std::time::Duration;
 /// This variant is attempt-count-bounded only; a caller that wants a wall-clock
 /// budget (a shorter or operator-raised [`DEFAULT_MAX_ELAPSED`]) uses
 /// [`retry_sync_deadline`] with the deadline from
-/// [`crate::Context::retry_deadline`].
+/// [`crate::context::Context::retry_deadline`].
 ///
 /// Every failed attempt that will be retried emits a default-visible warn
 /// (`<desc> attempt n/max failed (<cause>); retrying in <delay>`) via `rlog`
@@ -92,7 +92,7 @@ where
 /// Like [`retry_async`], but stops once the next backoff would push total
 /// wall-time past `deadline` — the async counterpart of [`retry_sync_deadline`],
 /// so async publishers (release-asset uploads, GitLab/Gitea API calls layered on
-/// [`retry_http_async`]) can honor the same [`crate::Context::retry_deadline`]
+/// [`retry_http_async`]) can honor the same [`crate::context::Context::retry_deadline`]
 /// budget. `deadline: None` is byte-for-byte the attempt-count-only behavior.
 pub async fn retry_async_deadline<T, E, F, Fut>(
     rlog: RetryLog<'_>,

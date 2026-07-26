@@ -211,7 +211,7 @@ pub(crate) fn crate_h1(crate_name: &str) -> String {
 /// else `# Changelog`.
 ///
 /// A root H1 must NEVER carry a crate name. `from_file` / `from_url` header
-/// sources need a full release [`Context`] to resolve and are handled by the
+/// sources need a full release `Context` to resolve and are handled by the
 /// release-pipeline header path; this absent-file synthesis falls back to the
 /// plain `# Changelog` default (an EXISTING root H1 is always preserved, so the
 /// default only applies on first creation).

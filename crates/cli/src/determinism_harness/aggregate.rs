@@ -80,7 +80,7 @@ impl Harness {
     /// Resolve the [`AggregateKind`] for `name`, consulting the manifest's
     /// `combined = "true"` markers as well as the filename-suffix registry.
     /// The marker path lets an operator-renamed combined file (`SHA512SUMS`)
-    /// be recognized as a [`CombinedChecksums`] aggregate.
+    /// be recognized as a `CombinedChecksums` aggregate.
     pub(crate) fn aggregate_kind_for_name(
         &self,
         name: &str,

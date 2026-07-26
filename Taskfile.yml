@@ -293,6 +293,35 @@ tasks:
     cmds:
       - .claude/scripts/audit-doc-source-links.sh
 
+  audit:god-files:
+    desc: "Guard: no source file carries more than 1000 lines of PRODUCTION code (test code never counts)."
+    cmds:
+      - .claude/scripts/audit-god-files.sh
+
+  audit:serial-groups:
+    desc: "Guard: every #[serial] names its group (an unkeyed #[serial] does not serialise against any keyed one)."
+    cmds:
+      - .claude/scripts/audit-serial-groups.sh
+
+  audit:doc-links:
+    # rustdoc's intra-doc link resolution is the only checker for `[`Foo`]`
+    # references; nothing else in the toolchain reads them. The lint is
+    # warn-by-default and `cargo doc` is not part of any other local target,
+    # so a broken link is invisible until a reader clicks dead text on the
+    # rendered docs. `--document-private-items` widens the check to private
+    # items' doc comments too — that is where the god-file splits do their
+    # damage, since a moved item keeps its name and loses its path.
+    # `private_intra_doc_links` is a separate lint for the inverse case: a
+    # public item linking to a private one. It resolves locally and passes the
+    # broken-link check, then renders as dead text on docs.rs, where the target
+    # is not published.
+    desc: "Guard: every rustdoc intra-doc link resolves (dead links on docs.rs / the docs site are invisible without this)."
+    deps: [_check:tmp-headroom]
+    env:
+      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links
+    cmds:
+      - cargo doc --workspace --no-deps --document-private-items
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -309,6 +338,9 @@ tasks:
       - task: audit:gate-mirror
       - task: audit:workflow-lockstep
       - task: audit:doc-source-links
+      - task: audit:doc-links
+      - task: audit:god-files
+      - task: audit:serial-groups
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

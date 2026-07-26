@@ -3,7 +3,7 @@
 //! Defines the [`GitHubClient`] trait that abstracts GitHub API operations
 //! needed by the release stage. The real octocrab-based implementation lives
 //! in `crates/stage-release`; this module provides only the trait definition
-//! and a [`MockGitHubClient`] for testing.
+//! and a `MockGitHubClient` for testing.
 //!
 //! # Usage
 //!
@@ -129,7 +129,7 @@ pub struct DeleteTagParams {
 ///
 /// Implementations:
 /// - Real: wraps octocrab (lives in `crates/stage-release`)
-/// - Mock: [`MockGitHubClient`] for tests (records calls, configurable responses)
+/// - Mock: `MockGitHubClient` for tests (records calls, configurable responses)
 pub trait GitHubClient {
     /// Create a new GitHub release.
     fn create_release(&self, params: &CreateReleaseParams) -> anyhow::Result<ReleaseInfo>;

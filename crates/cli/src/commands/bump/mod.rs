@@ -475,7 +475,7 @@ mod tests {
     /// `--config <missing file>` must bail loudly, never silently proceed
     /// with defaults — the same guard every sibling command pins.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let mut o = opts();

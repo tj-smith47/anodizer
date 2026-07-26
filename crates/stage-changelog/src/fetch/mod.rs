@@ -157,7 +157,7 @@ fn is_bad_revision(stderr: &str) -> bool {
         || lower.contains("fatal: ambiguous")
 }
 
-/// Decode the `%H%x1f...%b%x1e` git-log wire format into [`Commit`]s by
+/// Decode the `%H%x1f...%b%x1e` git-log wire format into `Commit`s by
 /// delegating to the single core record decoder
 /// (`anodizer_core::git::parse_commit_output`), so the body / author handling
 /// can never drift from the rest of the changelog pipeline.
@@ -338,7 +338,7 @@ mod tests {
     // workspace_root, not the process cwd — so an off-root caller (cwd ≠ repo)
     // still reads the repo's commits.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn fetch_git_commits_uses_workspace_root_not_cwd() {
         let repo = tempfile::tempdir().expect("repo tempdir");
         let repo_path = repo.path();

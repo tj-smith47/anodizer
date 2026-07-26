@@ -28,6 +28,8 @@ CLAUDE.local.md
 !.claude/scripts/audit-gate-mirror.sh
 !.claude/scripts/audit-workflow-lockstep.sh
 !.claude/scripts/audit-doc-source-links.sh
+!.claude/scripts/audit-god-files.sh
+!.claude/scripts/audit-serial-groups.sh
 !.claude/scripts/test-os.sh
 !.claude/scripts/test-os-winserver.ps1
 !.claude/scripts/test-os-suite.sh

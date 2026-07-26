@@ -652,7 +652,7 @@ fn inference_does_not_override_explicit_repository() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn inference_no_ops_when_owner_or_name_empty() {
     // Defensive: an empty owner OR name in release.github must not
     // produce a half-baked URL like https://github.com//repo. Run inside a
@@ -741,7 +741,7 @@ fn temp_git_repo_no_remote() -> tempfile::TempDir {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn infer_repository_derives_from_github_remote_when_no_release_block() {
     // No release block at all: the git-remote fallback must derive
     // url + source="github" from a GitHub `origin`.
@@ -756,7 +756,7 @@ fn infer_repository_derives_from_github_remote_when_no_release_block() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn infer_repository_not_forced_for_non_github_remote() {
     // A self-hosted / non-GitHub remote must NOT be force-derived — the
     // repository object stays user-supplied (here: empty).
@@ -775,7 +775,7 @@ fn infer_repository_not_forced_for_non_github_remote() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn infer_repository_user_set_wins_over_github_remote() {
     // An explicit repository.url must survive even when a GitHub remote
     // could otherwise be derived.

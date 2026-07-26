@@ -14,8 +14,8 @@ use crate::template::engine_adapter::{JsonRegisterExt, try_get_value};
 ///
 /// Backslash must be escaped before the quote so the quote's inserted escape
 /// backslash is not itself doubled. Use this anywhere a user-supplied value is
-/// spliced into a `"…"` Ruby literal — both the Tera [`ruby_escape`](register_ruby_escape)
-/// filter and the Rust `format!`/`push_str` sites in the Homebrew
+/// spliced into a `"…"` Ruby literal — both the Tera `ruby_escape` filter
+/// (registered by `register_ruby_escape`) and the `format!`/`push_str` sites in the Homebrew
 /// formula/cask generators route through it so there is a single escape
 /// implementation.
 pub fn ruby_escape_str(s: &str) -> String {
@@ -29,7 +29,7 @@ pub fn ruby_escape_str(s: &str) -> String {
 /// `desc "…"`, `homepage "…"`, `url "…"`, and similar Homebrew formula/cask
 /// stanzas without producing invalid Ruby.
 ///
-/// Shared by both [`BASE_TERA`] and `parse_static` so that the trusted
+/// Shared by both `BASE_TERA` and `parse_static` so that the trusted
 /// formula/cask templates have the filter available even though they build a
 /// fresh `tera::Tera` rather than cloning `BASE_TERA`.
 pub(crate) fn register_ruby_escape(tera: &mut tera::Tera) {

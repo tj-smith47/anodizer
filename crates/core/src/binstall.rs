@@ -357,7 +357,7 @@ pub struct ArchiveAssetName {
 /// set on `ctx`.
 ///
 /// This is the single source of truth shared by cargo-binstall `pkg_url`
-/// derivation ([`derive_overrides`]) and the `curl | sh` remote installer's
+/// derivation (`derive_overrides`) and the `curl | sh` remote installer's
 /// per-`os-arch` `case` table ([`crate::installer::render_installer_cases`]):
 /// both must resolve to the same asset or a consumer hits a 404, so both render
 /// through the *same* `archive.name_template` + `format_overrides` the archive

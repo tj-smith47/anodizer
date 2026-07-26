@@ -283,7 +283,7 @@ mod tests {
     // ---- Compare API path (prev_tag is Some) ----
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn compare_api_success_parses_two_commits() {
         let dir = tempfile::tempdir().expect("script dir");
         // Two commits + an empty files array (so path filtering is a no-op).
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn compare_api_logins_are_unique_and_sorted() {
         let dir = tempfile::tempdir().expect("script dir");
         // Three commits, two by `ada` — logins set must de-dup.
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn compare_api_path_filter_passes_through_when_match() {
         let dir = tempfile::tempdir().expect("script dir");
         // One commit; `files` includes "src/foo.rs"; filter on "src/" must
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn compare_api_path_filter_excludes_all_when_no_match() {
         let dir = tempfile::tempdir().expect("script dir");
         // `files` only has src/foo.rs but the filter is "docs/" — every
@@ -424,7 +424,7 @@ mod tests {
     // ---- /commits endpoint (prev_tag is None — paginated array) ----
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn commits_endpoint_no_prev_tag_parses_two_commits() {
         let dir = tempfile::tempdir().expect("script dir");
         // Paginated endpoint returns a JSON array directly.
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn commits_endpoint_url_encodes_path_with_spaces() {
         // Stub `gh` writes the joined args to a fixed file inside the
         // script dir, then emits an empty JSON array so the parser
@@ -492,7 +492,7 @@ mod tests {
     // ---- Co-author extraction ----
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn co_authors_are_extracted_and_added_to_logins() {
         let dir = tempfile::tempdir().expect("script dir");
         // Multi-line commit message with a Co-authored-by trailer. The
@@ -529,7 +529,7 @@ mod tests {
     // ---- Failure path: gh exits non-zero ----
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn gh_failure_surfaces_error_with_redacted_token() {
         let dir = tempfile::tempdir().expect("script dir");
         let token = "ghp_secret_token_abc123";

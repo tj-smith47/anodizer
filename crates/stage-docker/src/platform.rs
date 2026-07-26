@@ -6,7 +6,7 @@
 ///
 /// Handles three-component platform strings like `"linux/arm/v7"` by
 /// concatenating the arch and variant (e.g. `"armv7"`), which matches
-/// the output of [`map_target`] for armv7/armv6 Rust triples.
+/// the output of `map_target` for armv7/armv6 Rust triples.
 ///
 /// Examples:
 /// - `"linux/amd64"` → `"amd64"`

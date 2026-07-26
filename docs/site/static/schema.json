@@ -1224,7 +1224,7 @@
           ]
         },
         "completions": {
-          "description": "Turnkey shell-completion generation: auto-generate (or harvest, or copy) completion files and bundle them into every archive produced by this entry. See [`CompletionsConfig`] for the three generation modes.",
+          "description": "Turnkey shell-completion generation: auto-generate (or harvest, or copy) completion files and bundle them into every archive produced by this entry. See `CompletionsConfig` for the three generation modes.",
           "anyOf": [
             {
               "$ref": "#/definitions/CompletionsConfig"
@@ -1300,7 +1300,7 @@
           ]
         },
         "manpages": {
-          "description": "Turnkey man-page generation: auto-generate (or harvest, or copy) man pages and bundle them into every archive produced by this entry. See [`ManpagesConfig`] for the three generation modes.",
+          "description": "Turnkey man-page generation: auto-generate (or harvest, or copy) man pages and bundle them into every archive produced by this entry. See `ManpagesConfig` for the three generation modes.",
           "anyOf": [
             {
               "$ref": "#/definitions/ManpagesConfig"
@@ -8053,7 +8053,7 @@
       ]
     },
     "HooksConfig": {
-      "description": "A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.\n\nThe canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
+      "description": "A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.\n\nThe canonical key is `hooks:` in every block, matching the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).",
       "type": "object",
       "properties": {
         "hooks": {
@@ -13671,7 +13671,7 @@
           ]
         },
         "max_elapsed": {
-          "description": "Cap on TOTAL retry wall-time across all attempts of a single operation. Retrying stops before a backoff sleep would push elapsed time past this budget, so a long transient storm fails cleanly (with the last error, resumable on an idempotent re-run) instead of running the full attempt ladder. Unset (field default `None`) resolves to a 15-minute budget ([`crate::retry::DEFAULT_MAX_ELAPSED`]); set it to raise or lower that ceiling. A publisher honors this budget by threading [`crate::Context::retry_deadline`] into its retry ladder; those whose surrounding CI job has a hard timeout should keep it below that timeout.",
+          "description": "Cap on TOTAL retry wall-time across all attempts of a single operation. Retrying stops before a backoff sleep would push elapsed time past this budget, so a long transient storm fails cleanly (with the last error, resumable on an idempotent re-run) instead of running the full attempt ladder. Unset (field default `None`) resolves to a 15-minute budget ([`crate::retry::DEFAULT_MAX_ELAPSED`]); set it to raise or lower that ceiling. A publisher honors this budget by threading [`crate::context::Context::retry_deadline`] into its retry ladder; those whose surrounding CI job has a hard timeout should keep it below that timeout.",
           "anyOf": [
             {
               "$ref": "#/definitions/HumanDuration"

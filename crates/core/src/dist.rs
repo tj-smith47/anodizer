@@ -9,7 +9,7 @@
 //! one-way-release-fatal failure mode when the two disagree).
 //!
 //! Mirrors the single-source pattern of
-//! [`crate::config::attestation::AttestationConfig::SUBJECTS_MANIFEST_NAME`].
+//! `crate::config::attestation::AttestationConfig::SUBJECTS_MANIFEST_NAME`.
 
 /// `dist/metadata.json` — project metadata (name, tag, version, commit, …).
 pub const METADATA_JSON: &str = "metadata.json";

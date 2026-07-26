@@ -52,7 +52,7 @@ impl HttpError {
 }
 
 /// Extract the upstream HTTP status from an [`anyhow::Error`] chain produced by
-/// [`retry_http_blocking`] / [`retry_http_async`].
+/// `retry_http_blocking` / `retry_http_async`.
 ///
 /// Returns `0` when no [`HttpError`] is present in the chain — a transport-level
 /// failure that never received a response, or a non-HTTP error.
@@ -129,7 +129,7 @@ impl StdError for Retriable {
 ///     equivalent of Go's `io.EOF` sentinel).
 ///
 /// 1b. **Substring match on the lowercased Display form** against
-///     [`NETWORK_ERROR_NEEDLES`]. Covers the canonical surface plus the
+///     `NETWORK_ERROR_NEEDLES`. Covers the canonical surface plus the
 ///     Windows / Rust-stdlib phrasings that bypass the kind check when an
 ///     error has been wrapped (e.g. reqwest coercing the inner kind to
 ///     `Other` while preserving the OS message text).

@@ -919,7 +919,7 @@ fn test_is_single_target_true_when_set() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(path_env)]
 fn test_populate_runtime_vars() {
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -2069,7 +2069,7 @@ fn retry_deadline_is_unbounded_when_the_configured_budget_cannot_be_represented(
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(path_env)]
 fn populate_runtime_vars_sets_rustc_version() {
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());

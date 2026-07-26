@@ -5,7 +5,7 @@
 //! through an injected [`EnvSource`] trait object. Production code uses
 //! [`ProcessEnvSource`] (calls `std::env::var`); tests inject a
 //! [`MapEnvSource`] via
-//! [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env)
+//! `TestContextBuilder::env`
 //! to drive deterministic branches without mutating the process env.
 //!
 //! ```no_run

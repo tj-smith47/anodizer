@@ -347,7 +347,7 @@ impl crate::stage::Stage for BeforePublishStage {
     }
 }
 
-/// Body of [`BeforePublishStage::run`] with an injectable per-crate tag
+/// Body of `BeforePublishStage::run` with an injectable per-crate tag
 /// resolver. Production passes [`crate::crate_scope::resolve_crate_tag`];
 /// tests inject a fixed-tag closure so the full stage (global + per-crate
 /// passes) can be exercised without a git fixture.
@@ -407,7 +407,7 @@ impl CrateLifecycleKind {
         }
     }
 
-    /// The per-crate hook block this kind reads from a [`CrateConfig`].
+    /// The per-crate hook block this kind reads from a `CrateConfig`.
     fn block(self, c: &crate::config::CrateConfig) -> Option<&crate::config::HooksConfig> {
         match self {
             CrateLifecycleKind::Before => c.before.as_ref(),

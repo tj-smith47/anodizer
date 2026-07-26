@@ -51,7 +51,7 @@ impl Context {
         Verbosity::from_flags(self.options.quiet, self.options.verbose, self.options.debug)
     }
 
-    /// Resolve the user's `retry:` block into a concrete [`RetryPolicy`],
+    /// Resolve the user's `retry:` block into a concrete `RetryPolicy`,
     /// applying defaults when `retry:` is unset. Equivalent to
     /// `ctx.config.retry.unwrap_or_default().to_policy()` but centralizes
     /// the lookup so a future refactor can hang validation / clamping off

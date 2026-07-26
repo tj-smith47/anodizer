@@ -529,7 +529,7 @@ fn filter_ignored_tags_applies_config_and_nightly_exclusion() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn find_latest_tag_skips_stranded_nightly_tags_unconditionally() {
     // A failed nightly strands `<prefix>v<higher-semver>-<sha>-nightly`;
     // latest-tag resolution must keep returning the real latest stable tag
@@ -546,7 +546,7 @@ fn find_latest_tag_skips_stranded_nightly_tags_unconditionally() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_none_config_unchanged_behavior() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -560,7 +560,7 @@ fn test_find_latest_tag_none_config_unchanged_behavior() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_get_all_semver_tags_ignore_tags() {
     // The tag subcommand's find_previous_tag calls through to
     // get_all_semver_tags; its ignore_tags wiring must exclude matching
@@ -581,7 +581,7 @@ fn test_get_all_semver_tags_ignore_tags() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_get_all_semver_tags_ignore_tag_prefixes() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -603,7 +603,7 @@ fn test_get_all_semver_tags_ignore_tag_prefixes() {
 /// matches every tag (`starts_with("")`), so all candidates are ignored and
 /// the lookup yields `None`. Locks the subtler half of the dedup divergence.
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_empty_ignore_prefix_excludes_all() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -628,7 +628,7 @@ fn test_find_latest_tag_empty_ignore_prefix_excludes_all() {
 /// The opposite polarity from `find_latest` above — flipping the flag in the
 /// shared helper would break exactly one of this pair.
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_smartsemver_empty_ignore_prefix_is_skipped() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -656,7 +656,7 @@ fn test_smartsemver_empty_ignore_prefix_is_skipped() {
 /// the two names sort. Name inequality alone lets it through, so the
 /// smartsemver path compares resolved commits and walks on to `v0.1.0`.
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_smartsemver_skips_candidate_on_the_current_tags_commit() {
     use std::process::Command;
 
@@ -707,7 +707,7 @@ fn test_smartsemver_skips_candidate_on_the_current_tags_commit() {
 /// from an already-tagged commit has no new commits, and answering `None`
 /// would widen the range from "empty" to "the entire history".
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_smartsemver_keeps_co_located_tag_when_no_other_candidate() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -728,7 +728,7 @@ fn test_smartsemver_keeps_co_located_tag_when_no_other_candidate() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_get_all_semver_tags_no_config_unchanged() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -741,7 +741,7 @@ fn test_get_all_semver_tags_no_config_unchanged() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_tags_exact_match() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -758,7 +758,7 @@ fn test_find_latest_tag_ignore_tags_exact_match() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_tags_multiple() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -775,7 +775,7 @@ fn test_find_latest_tag_ignore_tags_multiple() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_tag_prefixes() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -811,7 +811,7 @@ fn test_find_latest_tag_ignore_tag_prefixes() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_all_returns_none() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -828,7 +828,7 @@ fn test_find_latest_tag_ignore_all_returns_none() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_tags_and_prefixes_combined() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -847,7 +847,7 @@ fn test_find_latest_tag_ignore_tags_and_prefixes_combined() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_prefixed_template() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -873,7 +873,7 @@ fn test_find_latest_tag_with_prefixed_template() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_default_git_config_same_as_none() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -890,7 +890,7 @@ fn test_find_latest_tag_default_git_config_same_as_none() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -968,7 +968,7 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_ignore_tags_template_rendered() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1039,7 +1039,7 @@ fn init_repo_with_tagged_commits(dir: &std::path::Path, tags: &[&str]) {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_with_ignore_tags() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1064,7 +1064,7 @@ fn test_find_previous_tag_with_ignore_tags() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_with_ignore_tag_prefixes() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1088,7 +1088,7 @@ fn test_find_previous_tag_with_ignore_tag_prefixes() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_no_config_unchanged_behavior() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1136,7 +1136,7 @@ fn test_strip_monorepo_prefix_partial_match() {
 // -----------------------------------------------------------------------
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_monorepo_prefix_filters_and_returns_full_tag() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1165,7 +1165,7 @@ fn test_find_latest_tag_with_monorepo_prefix_filters_and_returns_full_tag() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_monorepo_prefix_semver_comparison_uses_stripped_tag() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1185,7 +1185,7 @@ fn test_find_latest_tag_with_monorepo_prefix_semver_comparison_uses_stripped_tag
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_monorepo_prefix_no_matching_tags() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1201,7 +1201,7 @@ fn test_find_latest_tag_with_monorepo_prefix_no_matching_tags() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_monorepo_prefix_none_behaves_like_original() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1218,7 +1218,7 @@ fn test_find_latest_tag_with_monorepo_prefix_none_behaves_like_original() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1440,7 +1440,7 @@ fn head_is_at_tag_returns_false_when_head_has_no_tag() {
 // -----------------------------------------------------------------------
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_semver_mode_orders_by_semver() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1458,7 +1458,7 @@ fn test_find_latest_tag_semver_mode_orders_by_semver() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_semver_mode_ignores_prerelease_suffix_setting() {
     // For semver mode, `prerelease_suffix` must not flip the path into
     // git-delegated sort; ordering stays Rust-side SemVer.
@@ -1479,7 +1479,7 @@ fn test_find_latest_tag_semver_mode_ignores_prerelease_suffix_setting() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_smartsemver_returns_semver_highest() {
     // find_latest_tag_matching with smartsemver performs pure SemVer ordering
     // without prerelease filtering. The filter applies only to the
@@ -1502,7 +1502,7 @@ fn test_find_latest_tag_smartsemver_returns_semver_highest() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1526,7 +1526,7 @@ fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
     // The SemVer regex captures everything after the first `-` as the prerelease
     // identifier, so `v1.1.0-rc1` (no dot separator) is still flagged as a
@@ -1555,7 +1555,7 @@ fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     // Regression: shipping v0.2.0 after a v0.2.0-beta.3
     // tag must surface v0.1.0 as the predecessor (not the beta) so the
@@ -1579,7 +1579,7 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prerelease() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -1598,7 +1598,7 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
     // No template_vars supplied; filter must engage from current_tag alone.
     let tmp = tempfile::tempdir().unwrap();
@@ -1620,7 +1620,7 @@ fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_monorepo_prefix() {
     // Monorepo: tags "svc/v0.1.0", "svc/v0.2.0-beta.3", "svc/v0.2.0".
     // With current_tag "svc/v0.2.0" (release), smartsemver must return
@@ -1645,7 +1645,7 @@ fn test_find_previous_tag_smartsemver_monorepo_prefix() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
     // Only tag is the current one; after excluding current_tag, no candidates remain.
     let tmp = tempfile::tempdir().unwrap();
@@ -1663,7 +1663,7 @@ fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
 }
 
 #[test]
-#[serial]
+#[serial(path_env)]
 fn list_remote_tag_names_dedupes_peeled_annotated_entries() {
     use std::process::Command;
 
@@ -1783,7 +1783,7 @@ fn init_repo_with_ssh_signing(dir: &std::path::Path) -> tempfile::TempDir {
 /// re-run with `sign=true` must upgrade it to a SIGNED tag via the
 /// idempotent-reuse branch, not silently reuse the unsigned one.
 #[test]
-#[serial]
+#[serial(path_env)]
 fn create_tag_local_only_upgrades_unsigned_reuse_to_signed() {
     let tmp = tempfile::tempdir().unwrap();
     let _keydir = init_repo_with_ssh_signing(tmp.path());
@@ -1809,7 +1809,7 @@ fn create_tag_local_only_upgrades_unsigned_reuse_to_signed() {
 /// The reuse branch must NOT re-create when the existing tag is ALREADY signed
 /// (sign=true): a signed tag at HEAD is reused as-is.
 #[test]
-#[serial]
+#[serial(path_env)]
 fn create_tag_local_only_reuses_already_signed_tag() {
     let tmp = tempfile::tempdir().unwrap();
     let _keydir = init_repo_with_ssh_signing(tmp.path());

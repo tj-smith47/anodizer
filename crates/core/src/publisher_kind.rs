@@ -17,9 +17,9 @@
 //!   pipeline stage instead. This replaces the former hand-maintained
 //!   `PUBLISH_STAGE_PUBLISHERS` list.
 //!
-//! The publisher portion of [`crate::context::valid_release_skips`] and
+//! The publisher portion of `crate::context::valid_release_skips` and
 //! `stage-publish`'s `valid_publisher_names` / `all_publishers` are all driven
-//! off [`PublisherKind::iter`], so the `--skip` / `--publishers` vocabulary
+//! off `PublisherKind::iter`, so the `--skip` / `--publishers` vocabulary
 //! and the trait registry can never drift from this enum again.
 //!
 //! Lives in `anodizer-core` (not `stage-publish`) because
@@ -34,7 +34,7 @@ use strum::EnumIter;
 ///
 /// Variant order matches the historical `all_publishers()` ordering (the trait-dispatched
 /// publishers first, in registry order) followed by the five
-/// out-of-dispatch publish stages, so [`Self::iter`]-derived lists preserve
+/// out-of-dispatch publish stages, so `Self::iter`-derived lists preserve
 /// the prior error-message ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
 pub enum PublisherKind {

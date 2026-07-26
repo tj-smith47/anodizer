@@ -150,7 +150,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
 ///   * native Gpg4win understands only the drive-letter form
 ///     (`C:\` / `C:/`); a `/c/...` path is "No such file or directory".
 ///
-/// We detect which build is on `PATH` ([`gpg_on_path_is_msys`], from
+/// We detect which build is on `PATH` (`gpg_on_path_is_msys`, from
 /// `gpg --version`'s `Home:` line) and emit the matching form. The
 /// drive-letter forward-slash form is also what native cosign/openssl
 /// accept, so it is the correct default for every non-MSYS case.
@@ -578,7 +578,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_happy_path_yields_keys_and_config() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -652,7 +652,7 @@ mod provision_tests {
     /// real host openssl) is required to drive the unavailable branch
     /// deterministically.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_succeeds_without_openssl_yielding_no_apk_key() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -669,7 +669,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_cosign_unavailable() {
         let tools = FakeToolDir::new();
         // `cosign version` failing is treated the same as cosign missing.
@@ -686,7 +686,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_cosign_keygen_fails() {
         let tools = FakeToolDir::new();
         tools
@@ -707,7 +707,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_cosign_key_file_missing() {
         let tools = FakeToolDir::new();
         // generate-key-pair "succeeds" but writes no cosign.key.
@@ -720,7 +720,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_gpg_unavailable() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -734,7 +734,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_on_out_of_range_sde() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -746,7 +746,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_gen_key_fails() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -766,7 +766,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_list_secret_keys_fails() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -788,7 +788,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_fingerprint_unparseable() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
@@ -812,7 +812,7 @@ mod provision_tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn provision_bails_when_export_fails() {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);

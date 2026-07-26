@@ -225,7 +225,7 @@ pub(crate) fn render_section_config_fields(
 /// templated `groups[].title` / `divider` / `paths` (so the write path renders
 /// them the same way the in-pipeline `Stage::run` does).
 ///
-/// Returns the resolved [`ChangelogConfig`] alongside the grouped tree.
+/// Returns the resolved `ChangelogConfig` alongside the grouped tree.
 /// Returns `Ok(None)` under the conditions every caller treats as "nothing to
 /// release": no anodizer config is present / it has no `changelog:` block, or
 /// there are no qualifying commits in range (after filtering/grouping).
@@ -369,7 +369,7 @@ pub(crate) fn group_section_commits(
 /// heading).
 ///
 /// Thin Markdown wrapper over [`group_section_commits`]; returns the resolved
-/// [`ChangelogConfig`] alongside the rendered body. `Ok(None)` propagates the
+/// `ChangelogConfig` alongside the rendered body. `Ok(None)` propagates the
 /// same "nothing to release" conditions.
 pub(crate) fn render_section_body(
     workspace_root: &std::path::Path,

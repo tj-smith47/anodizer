@@ -86,7 +86,7 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///   (the harness's complement set). Doubling N is safe in any env
 ///   because of this skip list.
 /// - `--no-env-preflight` — always. The replica runs in a deliberately
-///   credential-less env; see [`build_subprocess_command`].
+///   credential-less env; see `build_subprocess_command`.
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
@@ -281,7 +281,7 @@ const PREFETCH_BACKOFF: Duration = Duration::from_secs(3);
 /// rebuild needs, on any shard: the explicit-target Windows shards, the
 /// multi-arch `targets:''` macOS/Ubuntu shards, and the host-side man-page
 /// `before:` hook (`cargo run --bin anodize`) alike. See
-/// [`build_fetch_command`] for why an explicit `--target` is the bug this
+/// `build_fetch_command` for why an explicit `--target` is the bug this
 /// guards against.
 ///
 /// The child inherits the host env (operator cargo/proxy/registry config,

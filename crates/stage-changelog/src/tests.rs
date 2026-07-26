@@ -1343,7 +1343,7 @@ fn test_integration_changelog_empty_after_filters() {
 // -----------------------------------------------------------------------
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_integration_changelog_stage_with_real_git_repo() {
     use anodizer_core::config::{
         ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig,
@@ -1507,7 +1507,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
 /// never dirties the working tree. Both halves are asserted against the SAME
 /// real git repo so the only variable is the flag.
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_dist_write_gated_on_preview_flag() {
     use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
     use std::process::Command;
@@ -1762,7 +1762,7 @@ fn test_empty_changelog_when_all_commits_filtered() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_written_to_correct_output_location() {
     use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
     use std::process::Command;
@@ -1991,7 +1991,7 @@ fn test_render_changelog_very_short_hash_preserved() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_create_dist_dir_failure() {
     use anodizer_core::config::{Config, CrateConfig};
     use std::process::Command;
@@ -2063,7 +2063,7 @@ fn test_changelog_create_dist_dir_failure() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_write_failure_on_readonly_path() {
     use anodizer_core::config::{Config, CrateConfig};
     use std::process::Command;
@@ -2134,7 +2134,7 @@ fn test_changelog_write_failure_on_readonly_path() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_dry_run_writes_file() {
     use anodizer_core::config::{Config, CrateConfig};
     use std::process::Command;
@@ -3206,7 +3206,7 @@ fn test_validation_rejects_unsupported_source() {
 // `serial` because this test shells out to `git` from process cwd, which
 // races with sibling tests that swap cwd (fetch::gitlab::tests use CwdGuard).
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
     // When use: gitlab but no token is available, should fall back to git
     // (which will also fail in a test environment, but the point is that
@@ -3246,7 +3246,7 @@ fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
 // `serial` because this test shells out to `git` from process cwd, which
 // races with sibling tests that swap cwd (fetch::gitea::tests use CwdGuard).
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
@@ -3319,7 +3319,7 @@ fn test_should_preempt_scm_to_git_pure_git_mode_no_preempt() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
     // End-to-end: with `use: github` + no previous tag, the stage should
     // succeed without making an API call (pre-empt path). This is run in
@@ -3428,7 +3428,7 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_lockstep_resolves_prev_tag_once_not_full_history() {
     // Lockstep workspace: two crates share ONE tag namespace (`v{{ .Version }}`),
     // so at release time the just-cut tag (v0.12.0) IS the latest match for
@@ -3588,7 +3588,7 @@ fn seed_intervening_sibling_history(repo: &std::path::Path, first: &str, sibling
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_prev_tag_skips_sibling_track_tag_on_the_same_commit() {
     // The cfgd shape: the root track's release (`v0.2.0`) and a sibling
     // track's (`core-v0.2.0`) are cut from ONE commit. An unscoped look-back
@@ -3625,7 +3625,7 @@ fn test_prev_tag_skips_sibling_track_tag_on_the_same_commit() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_prev_tag_skips_intervening_sibling_tag_on_default_sort() {
     // The ancestry-walking `git describe` path needs the same family scope:
     // without `--match`, `git describe --abbrev=0 v0.2.0^` answers with the
@@ -3653,7 +3653,7 @@ fn test_prev_tag_skips_intervening_sibling_tag_on_default_sort() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_prev_tag_bare_version_template_is_still_family_scoped() {
     // `tag_template: "{{ Version }}"` extracts an EMPTY prefix. Fed to a
     // prefix filter it matches every tag in the repository, so the family scope
@@ -3686,7 +3686,7 @@ fn test_prev_tag_bare_version_template_is_still_family_scoped() {
 }
 
 #[test]
-#[serial]
+#[serial(cwd)]
 fn test_multitrack_changelog_body_is_not_empty() {
     // The symptom itself: the rendered body, not just the tag selection. A
     // sibling tag at the cut commit collapsed the range and shipped release

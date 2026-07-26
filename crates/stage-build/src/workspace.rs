@@ -109,7 +109,7 @@ pub(crate) fn resolve_binary_path(expected: &Path, crate_path: &str) -> PathBuf 
 /// `CARGO_BUILD_TARGET_DIR` from the injected env source, finally
 /// defaulting to `target`. Production wires up
 /// [`anodizer_core::ProcessEnvSource`] via
-/// [`anodizer_core::Context::env_source`]; tests inject a
+/// `anodizer_core::Context::env_source`; tests inject a
 /// [`anodizer_core::MapEnvSource`] so the fallback branches can be
 /// exercised without mutating the process env.
 ///

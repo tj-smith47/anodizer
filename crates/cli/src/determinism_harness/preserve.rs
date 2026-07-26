@@ -30,7 +30,7 @@ use std::path::Path;
 /// One artifact entry in [`PreservedDistContext::artifacts`].
 ///
 /// Schema is a hybrid of the load-bearing fields from
-/// [`crate::commands::release::split::SplitArtifact`] (`name`, `path`)
+/// `crate::commands::release::split::SplitArtifact` (`name`, `path`)
 /// and two harness-specific fields (`sha256`, `size`) the publish-only
 /// path uses to verify preserved bytes against the determinism check's
 /// recorded hashes before re-signing fires.
@@ -76,7 +76,7 @@ pub struct PreservedArtifact {
 /// `<dest>/context.json` once the harness greens.
 ///
 /// Schema mirrors the load-bearing subset of
-/// [`crate::commands::release::split::SplitContext`]: `artifacts`,
+/// `crate::commands::release::split::SplitContext`: `artifacts`,
 /// `targets`, `version`, `commit`. The publish-only pipeline reads
 /// this file to rehydrate `ctx.artifacts` + the per-target matrix
 /// before running the sign + publish stages.

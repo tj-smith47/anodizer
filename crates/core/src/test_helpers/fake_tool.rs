@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn activate_prepends_path_and_restores() {
         let before = std::env::var_os("PATH");
         let tools = FakeToolDir::new();

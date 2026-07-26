@@ -264,11 +264,11 @@ pub struct ArchiveConfig {
     pub if_condition: Option<String>,
     /// Turnkey shell-completion generation: auto-generate (or harvest, or
     /// copy) completion files and bundle them into every archive produced by
-    /// this entry. See [`CompletionsConfig`] for the three generation modes.
+    /// this entry. See `CompletionsConfig` for the three generation modes.
     pub completions: Option<super::CompletionsConfig>,
     /// Turnkey man-page generation: auto-generate (or harvest, or copy) man
     /// pages and bundle them into every archive produced by this entry. See
-    /// [`ManpagesConfig`] for the three generation modes.
+    /// `ManpagesConfig` for the three generation modes.
     pub manpages: Option<super::ManpagesConfig>,
 }
 

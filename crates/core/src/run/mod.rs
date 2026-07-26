@@ -1,5 +1,5 @@
 //! Single subprocess-execution helper that captures stdout/stderr and routes
-//! the result through [`StageLogger::check_output`].
+//! the result through `StageLogger::check_output`.
 //!
 //! Consolidates the spawn / capture / surface-on-failure pattern that every
 //! stage repeats by hand so the success/failure surface stays consistent:
@@ -26,9 +26,9 @@
 //! Command`), which `module-boundaries.md` explicitly sanctions.
 //!
 //! Submodules:
-//! - [`exec`] — the `run_checked*` / `run_capture*` entry points and the
+//! - `exec` — the `run_checked*` / `run_capture*` entry points and the
 //!   spawn / tee / bounded-wait capture loop behind them.
-//! - [`process_tree`] — child-subtree isolation and reaping (Unix process
+//! - `process_tree` — child-subtree isolation and reaping (Unix process
 //!   group, Windows Job Object), the live-subtree registry, and the external
 //!   SIGTERM/SIGINT handler that drains it.
 

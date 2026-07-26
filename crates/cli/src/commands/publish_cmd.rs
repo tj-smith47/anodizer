@@ -101,7 +101,6 @@ crates:
     }
 
     #[test]
-    #[serial]
     fn missing_config_bails_with_helpful_message() {
         let tmp = tempfile::tempdir().unwrap();
         // No config file, no Cargo.toml -> find_config bails.
@@ -132,7 +131,7 @@ crates:
     /// artifact-load step, so either failure mode is acceptable — both
     /// pin the dispatch wiring through the prelude.
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn missing_dist_artifacts_or_git_bails() {
         let tmp = tempfile::tempdir().unwrap();
         write_minimal_config(tmp.path());
@@ -157,7 +156,6 @@ crates:
     /// `publish --merge` reaches `find_config` first; an absent config must
     /// surface as the find-config error, identical to the no-merge path.
     #[test]
-    #[serial]
     fn merge_missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let err = run(PublishOpts {

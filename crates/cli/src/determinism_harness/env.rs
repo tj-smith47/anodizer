@@ -5,7 +5,7 @@
 //! - **Linux / macOS**: explicit identity-only [`HARNESS_ENV_ALLOWLIST`].
 //! - **Windows**: inherit everything, then drop credentials, workflow
 //!   internals, and `GITHUB_*` / `RUNNER_*` namespace state via
-//!   [`windows_env_should_drop`].
+//!   `windows_env_should_drop`.
 //!
 //! Plus the per-target MSVC determinism flag injection (`/Brepro` /
 //! `/OPT:NOICF` / `/INCREMENTAL:NO` / `/DEBUG:NONE` / strip=symbols),
@@ -41,7 +41,7 @@ use std::path::Path;
 ///
 /// This list is the contractual surface on **all** platforms. On Windows,
 /// [`build_subprocess_env`] additionally inherits the rest of the host env
-/// minus everything covered by [`windows_env_should_drop`].
+/// minus everything covered by `windows_env_should_drop`.
 pub(super) const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     // Toolchain identity.
     "RUSTUP_HOME",

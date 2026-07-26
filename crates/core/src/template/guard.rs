@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 
 /// A residual `{{` … `}}` delimiter pair found in finished manifest text.
 ///
-/// Returned by [`find_unrendered`]; the `snippet` is already secret-redacted
+/// Returned by `find_unrendered`; the `snippet` is already secret-redacted
 /// (see [`assert_no_unrendered`]) so it is safe to surface in logs or errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Residual {

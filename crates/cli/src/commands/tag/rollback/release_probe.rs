@@ -55,7 +55,7 @@ pub(super) fn probe_release_for_tag(
 /// Refuse rollback when any tag about to be deleted carries a
 /// published (non-draft) GitHub release.
 ///
-/// Fallback layer of [`check_not_irreversibly_published`], consulted
+/// Fallback layer of `check_not_irreversibly_published`, consulted
 /// only for tags with no run summary on disk: a published release is
 /// the strongest remaining signal that one-way-door publishers shipped
 /// alongside it.

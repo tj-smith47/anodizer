@@ -58,7 +58,7 @@ pub(super) fn set_own_process_group(_cmd: &mut Command) {}
 ///   outlives its leader, so a leaked descendant is reaped after the leader
 ///   exits.
 /// - **Windows**: the child's pid (registry key + `taskkill` fallback target)
-///   plus an optional [`JobHandle`](windows_job::JobHandle) for the Job Object
+///   plus an optional `JobHandle` (see `windows_job`) for the Job Object
 ///   the child and every process it spawns belong to; reaped via
 ///   `TerminateJobObject`. Job membership — not a live root — anchors the tree,
 ///   so descendants are reaped after the direct child exits. `taskkill /T`

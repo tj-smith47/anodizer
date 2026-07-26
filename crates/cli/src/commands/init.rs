@@ -793,7 +793,7 @@ fn find_version_files_block(config_text: &str) -> Option<BlockInsertion> {
     })
 }
 
-/// Deserialize `new_text` through the typed [`Config`] and confirm every path in
+/// Deserialize `new_text` through the typed `Config` and confirm every path in
 /// `added` is present in the top-level `version_files`. This is the safety net
 /// behind the line-based writer: if the edit produced YAML that does not parse
 /// (or parses but dropped an enrolled path), this errors so the caller can bail

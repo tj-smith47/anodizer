@@ -189,7 +189,7 @@ workspaces:
     /// outcomes are valid "missing config" failure modes — pin the family
     /// rather than the exact message.
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();
         let err = run(ResolveTagOpts {
@@ -208,7 +208,7 @@ workspaces:
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn unmatched_tag_bails_with_named_tag() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = write_simple_config(tmp.path());
@@ -224,7 +224,7 @@ workspaces:
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn simple_tag_resolves_to_root_crate_text_form() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = write_simple_config(tmp.path());
@@ -237,7 +237,7 @@ workspaces:
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn longer_prefix_wins_for_workspace_crate() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = write_workspace_config(tmp.path());
@@ -251,7 +251,7 @@ workspaces:
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn json_output_succeeds() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = write_simple_config(tmp.path());
@@ -266,7 +266,7 @@ workspaces:
     /// Tag prefix matches but remainder is non-numeric (e.g. "v-foo") —
     /// the version-shape gate must reject and bail with no-crate-matches.
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn non_version_remainder_does_not_match() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = write_simple_config(tmp.path());

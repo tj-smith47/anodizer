@@ -56,7 +56,7 @@ where
 }
 
 /// Like [`retry_http_blocking`], but stops once the next backoff would push
-/// total wall-time past `deadline` (from [`crate::Context::retry_deadline`]), so
+/// total wall-time past `deadline` (from [`crate::context::Context::retry_deadline`]), so
 /// a long upload storm exits resumable before the outer job timeout instead of
 /// running the full attempt ladder. `deadline: None` is the unbounded form.
 pub fn retry_http_blocking_deadline<F, M>(
@@ -244,7 +244,7 @@ where
 
 /// Deadline-bounded sibling of [`retry_http_async`], the async counterpart of
 /// [`retry_http_blocking_deadline`], so async upload publishers (GitLab/Gitea
-/// release-asset uploads) honor the [`crate::Context::retry_deadline`] budget.
+/// release-asset uploads) honor the [`crate::context::Context::retry_deadline`] budget.
 /// `deadline: None` is the unbounded form.
 pub async fn retry_http_async_deadline<F, Fut, M>(
     rlog: RetryLog<'_>,

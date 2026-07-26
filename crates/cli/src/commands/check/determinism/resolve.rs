@@ -198,9 +198,9 @@ pub(super) fn crate_declares_docker(
 ///
 /// The `Context` is seeded the SAME way the child `anodize release --snapshot`
 /// builds its config-resolution surface for this crate — snapshot/nightly
-/// options, process + config `env` ([`helpers::setup_env`]), git + version vars
-/// ([`helpers::resolve_git_context`]), the snapshot version suffix
-/// ([`release::apply_snapshot_template_vars`]), and time/runtime/metadata vars —
+/// options, process + config `env` (`helpers::setup_env`), git + version vars
+/// (`helpers::resolve_git_context`), the snapshot version suffix
+/// (`release::apply_snapshot_template_vars`), and time/runtime/metadata vars —
 /// so a `dockerfile` / `build_args` template referencing `.Env.*`, `.Version`,
 /// `.Commit`, etc. resolves IDENTICALLY to the release build rather than
 /// silently rendering empty under an under-seeded context.

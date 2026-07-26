@@ -359,7 +359,7 @@ const CARGO_BUILD_INTERMEDIATE_DIRS: &[&str] = &["deps", "build", "incremental",
 /// (`target/<triple>/release/`) once its binary has been produced, lowering
 /// peak disk for multi-target builds that share one `target/` tree.
 ///
-/// Removes only [`CARGO_BUILD_INTERMEDIATE_DIRS`] (`deps`, `build`,
+/// Removes only `CARGO_BUILD_INTERMEDIATE_DIRS` (`deps`, `build`,
 /// `incremental`, `.fingerprint`). The final binary and every other file
 /// directly under `profile_dir` are left untouched, so neither a shipped
 /// artifact nor a determinism-hashed binary can change.

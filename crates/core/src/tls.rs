@@ -1,4 +1,4 @@
-//! Process-wide rustls [`CryptoProvider`] selection.
+//! Process-wide rustls `CryptoProvider` selection.
 //!
 //! anodizer builds every TLS path it owns directly on `ring` (a pure-Rust,
 //! hermetically cross-compilable provider — no C/cmake/asm toolchain, which

@@ -26,7 +26,7 @@ pub fn resolve_snapshot_sde(repo: &Path) -> Result<i64> {
 }
 
 /// Env-injectable form of [`resolve_snapshot_sde`]. Production wires up
-/// [`ProcessEnvSource`]; tests inject a [`MapEnvSource`](crate::MapEnvSource)
+/// `ProcessEnvSource`; tests inject a [`MapEnvSource`](crate::MapEnvSource)
 /// to drive the `ANODIZE_SOURCE_DATE_EPOCH` branch without mutating the
 /// process env.
 pub fn resolve_snapshot_sde_with_env<E: EnvSource + ?Sized>(repo: &Path, env: &E) -> Result<i64> {

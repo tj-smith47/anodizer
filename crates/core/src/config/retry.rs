@@ -56,7 +56,7 @@ pub struct RetryConfig {
     /// ladder. Unset (field default `None`) resolves to a 15-minute budget
     /// ([`crate::retry::DEFAULT_MAX_ELAPSED`]); set it to raise or lower that
     /// ceiling. A publisher honors this budget by threading
-    /// [`crate::Context::retry_deadline`] into its retry ladder; those whose
+    /// [`crate::context::Context::retry_deadline`] into its retry ladder; those whose
     /// surrounding CI job has a hard timeout should keep it below that timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_elapsed: Option<HumanDuration>,

@@ -707,7 +707,6 @@ fn run_json(
 mod tests {
     use super::*;
     use anodizer_core::config::CrateConfig;
-    use serial_test::serial;
 
     fn default_opts(config: Option<&Path>) -> ChangelogOpts {
         ChangelogOpts {
@@ -768,7 +767,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn missing_config_returns_err() {
         let tmp = tempfile::tempdir().unwrap();
         let bogus = tmp.path().join("missing.yaml");
@@ -777,7 +775,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn write_with_release_notes_format_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let bogus = tmp.path().join("missing.yaml");
@@ -789,7 +786,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn write_with_json_format_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let bogus = tmp.path().join("missing.yaml");
@@ -803,7 +799,6 @@ mod tests {
     /// The `--write` guard fires before config loading, so a missing config
     /// never masks the format error.
     #[test]
-    #[serial]
     fn write_guard_precedes_config_load() {
         let tmp = tempfile::tempdir().unwrap();
         let bogus = tmp.path().join("missing.yaml");
@@ -907,7 +902,6 @@ mod tests {
     /// REAL production path (`select_crates` → `detect_repo_shape`) to ONE
     /// workspace-root entry keyed by `project_name`, NOT N per-crate entries.
     #[test]
-    #[serial]
     fn select_crates_flat_aggregate_collapses_to_one_root_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_crates(vec![

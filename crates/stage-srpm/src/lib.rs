@@ -1671,7 +1671,7 @@ crates:
     /// artifact with the canonical `format`/`ext` metadata.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_invokes_rpmbuild_and_registers_artifact() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1719,7 +1719,7 @@ crates:
     /// spec copied into `SPECS/`. No `--sign` when no signature is configured.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_argv_shape_unsigned() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1758,7 +1758,7 @@ crates:
     /// They must be absent when SDE is unset (production wall-clock default).
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_pins_buildtime_to_sde_when_set() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1792,7 +1792,7 @@ crates:
     /// preserving rpmbuild's default (non-harness production) behavior.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_omits_sde_macros_without_sde() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1820,7 +1820,7 @@ crates:
     /// under the (here unchanged, clean-version) source name.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_stages_spec_and_source_into_rpmbuild_tree() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1862,7 +1862,7 @@ crates:
     /// registers NO artifact.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_tool_failure_surfaces_stderr() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1898,7 +1898,7 @@ crates:
     /// artifact.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_missing_output_bails() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1924,7 +1924,7 @@ crates:
     /// exported as `GPG_PASSPHRASE` to the rpmbuild process.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_signing_wires_sign_and_gpg_name() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -1969,7 +1969,7 @@ crates:
     /// it as `GPG_PASSPHRASE`.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_signing_falls_back_to_srpm_passphrase_env() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
@@ -2012,7 +2012,7 @@ crates:
     /// globally skips signing does not attempt to GPG-sign the SRPM.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_skip_sign_clears_signature() {
         let fx = SrpmFixture::new();
         let archive = "myapp-1.0.0-source.tar.gz";
@@ -2073,7 +2073,7 @@ crates:
     /// copied output file and the registered artifact.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_custom_filename_template_gets_suffix() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "2.3.4", "myapp-2.3.4-source.tar.gz");
@@ -2111,7 +2111,7 @@ crates:
     /// rpm-safe-version filename render through the live stage.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_prerelease_version_sanitized_in_output_name() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "0.5.0-rc.1", "myapp-0.5.0-rc.1-source.tar.gz");
@@ -2156,7 +2156,7 @@ crates:
     /// resolves rather than reaching the artifact as a literal template string.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_renders_package_name_template() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("acme", "1.0.0", "acme-1.0.0-source.tar.gz");
@@ -2190,7 +2190,7 @@ crates:
     /// `Summary`), then driven through rpmbuild — the auto-gen path is bypassed.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_live_run_renders_user_spec_file() {
         let fx = SrpmFixture::new();
         let spec_template = fx.dist.join("template.spec");
@@ -2234,7 +2234,7 @@ crates:
     /// reports the filename it would have produced.
     #[cfg(all(test, unix))]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_srpm_dry_run_does_not_invoke_rpmbuild() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");

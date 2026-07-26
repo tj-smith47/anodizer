@@ -394,7 +394,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn preflight_errors_on_nonzero_version_exit() {
         // A present-but-broken CLI (exits nonzero on --version) must also be
         // rejected — repaired/installed wording, not the not-found wording.
@@ -418,7 +418,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn run_kms_cli_passes_argv_and_returns_stdout() {
         let tools = FakeToolDir::new();
         tools.tool("aws").stdout("SIGNED-OUTPUT").install();
@@ -445,7 +445,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn run_kms_cli_surfaces_stderr_on_failure() {
         let tools = FakeToolDir::new();
         tools
@@ -479,7 +479,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_aws_strips_scheme_decodes_b64_ciphertext() {
         // aws kms encrypt returns JSON {"CiphertextBlob": "<base64>"}; the
         // helper must parse it and base64-decode to raw bytes. The key id
@@ -521,7 +521,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_aws_errors_on_malformed_json() {
         // Non-JSON tool output must produce a parse error, not a panic.
         let tools = FakeToolDir::new();
@@ -538,7 +538,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_aws_errors_when_ciphertext_field_missing() {
         // Valid JSON but no CiphertextBlob field — the contract requires it.
         let tools = FakeToolDir::new();
@@ -568,7 +568,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_gcp_strips_scheme_passes_resource_returns_raw_stdout() {
         // gcloud writes raw ciphertext bytes straight to stdout; the helper
         // returns them unchanged. --key must receive the gcpkms://-stripped
@@ -623,7 +623,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_azure_parses_vault_and_key_builds_argv() {
         // azurekeyvault://VAULT/keys/NAME[/version] — the helper splits the
         // path, base64url-encodes the plaintext into --value, and decodes
@@ -676,7 +676,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn encrypt_azure_surfaces_cli_failure_stderr() {
         let tools = FakeToolDir::new();
         tools

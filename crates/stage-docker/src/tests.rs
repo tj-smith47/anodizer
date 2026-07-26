@@ -2550,7 +2550,7 @@ fn test_resolve_registry_owner_top_level_when_no_per_crate() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn test_resolve_registry_owner_falls_back_to_remote() {
     // Tier 3: no per-crate AND no top-level owner -> the single git-remote
     // probe resolves the owner. Run inside a throwaway repo with a GitHub
@@ -2574,7 +2574,7 @@ fn test_resolve_registry_owner_falls_back_to_remote() {
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn test_resolve_registry_owner_none_when_no_owner_and_no_remote() {
     // Tier 3 with a remote-less repo -> None (caller then leaves images empty).
     use anodizer_core::config::Config;

@@ -76,7 +76,7 @@ pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
 
 /// Valid `--skip` values for the `release` command: every root hook lane
 /// token ([`ROOT_HOOK_LANE_SKIPS`]) PLUS every pipeline stage/phase token
-/// ([`NON_PUBLISHER_RELEASE_SKIPS`]) PLUS every publisher token (derived
+/// (`NON_PUBLISHER_RELEASE_SKIPS`) PLUS every publisher token (derived
 /// from [`PublisherKind`]).
 ///
 /// Skip tokens are stage names plus publisher names. Every publisher's skip
@@ -129,7 +129,7 @@ pub struct ReleaseToken {
 
 /// The full canonical `--skip` / `--publishers` vocabulary as structured
 /// entries, derived entirely from [`ROOT_HOOK_LANE_SKIPS`],
-/// [`NON_PUBLISHER_RELEASE_SKIPS`] and [`PublisherKind::iter`] — no
+/// `NON_PUBLISHER_RELEASE_SKIPS` and [`PublisherKind::iter`] — no
 /// hand-maintained list. Adding a publisher variant, a hook lane, or a
 /// non-publisher stage token updates this automatically.
 ///
@@ -164,7 +164,7 @@ const NON_LANE_BUILD_SKIPS: &[&str] = &["validate", "sign", "notarize"];
 
 /// Valid `--skip` values for the `build` command: every root hook lane token
 /// ([`ROOT_HOOK_LANE_SKIPS`]) PLUS the build-specific gates
-/// ([`NON_LANE_BUILD_SKIPS`]).
+/// (`NON_LANE_BUILD_SKIPS`).
 ///
 /// The lane half is shared verbatim with [`VALID_RELEASE_SKIPS`] so a caller
 /// holding one skip list can hand it to either command.

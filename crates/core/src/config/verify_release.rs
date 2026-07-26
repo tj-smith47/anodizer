@@ -8,18 +8,18 @@
 //!
 //! Three independently-toggleable checks:
 //!
-//! - **asset-existence** ([`Self::assert_assets`]) — every produced artifact
+//! - **asset-existence** (`Self::assert_assets`) — every produced artifact
 //!   has a matching UPLOADED asset on the published release. Catches the
 //!   partial uploads GitHub silently tolerates.
-//! - **install smoke-test** ([`Self::install_smoke`]) — installs each Linux
+//! - **install smoke-test** (`Self::install_smoke`) — installs each Linux
 //!   package (`.deb` / `.rpm` / `.apk`) in a pinned container and runs
 //!   `<bin> --version`. Skipped with a notice when Docker is unavailable.
-//! - **libc ceiling** ([`Self::glibc_ceiling`]) — fails if any glibc-linked
+//! - **libc ceiling** (`Self::glibc_ceiling`) — fails if any glibc-linked
 //!   `.deb` requires a glibc newer than the configured floor. musl binaries
 //!   have no glibc requirement and are skipped — which is the whole point:
 //!   musl hides a glibc-floor regression that this check is meant to surface.
 //!
-//! The block is off unless [`Self::enabled`] is `true`. Defaults mirror the
+//! The block is off unless `Self::enabled` is `true`. Defaults mirror the
 //! [`PostPublishPollConfig`](super::PostPublishPollConfig) style:
 //! `#[serde(default, deny_unknown_fields)]`, opt-in `enabled`, sane derived
 //! defaults for everything else.

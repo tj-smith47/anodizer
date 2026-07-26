@@ -30,7 +30,7 @@ pub struct SubmitterAdvisory {
 ///
 /// Covers all three publish axes — `crates[].publish`,
 /// `workspaces[].crates[].publish`, and `defaults.publish` (via
-/// [`for_each_crate_publish`]) — plus the top-level `aur_sources:` list.
+/// `for_each_crate_publish`) — plus the top-level `aur_sources:` list.
 ///
 /// Pure: this returns the advisories without emitting them. The CLI surfaces
 /// them through `StageLogger::verbose` (the `--verbose`-gated register), so

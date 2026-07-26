@@ -521,7 +521,7 @@ pub(crate) fn crate_has_binary_target(crate_path: &str) -> bool {
     false
 }
 
-/// Read a crate's Cargo.toml and return the first `crate-type` from [lib],
+/// Read a crate's Cargo.toml and return the first `crate-type` from `[lib]`,
 /// if present (e.g. "cdylib", "staticlib", "rlib").
 pub(crate) fn detect_crate_type(crate_path: &str) -> Option<String> {
     let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");

@@ -62,8 +62,17 @@
 # without `#[cfg(unix)]` (helper is unix-only: it shells to `git`) or
 # `#[serial_test::serial(cwd)]` (the shared restore-race group) and neither
 # class above caught it. This class enforces, per allow-listed helper, that
-# every `#[test]` fn calling it carries BOTH attributes. See
+# every `#[test]` fn calling it carries `#[serial_test::serial(cwd)]`, plus
+# `#[cfg(unix)]` for the helpers that are unix-only. See
 # `report_cwd_helper_pairing` below for the state machine.
+#
+# Detection limit, stated plainly: this class matches a helper by NAME at the
+# call site, so it catches a REGRESSION of a fixed site (someone deleting the
+# attribute from a known caller, or adding a new caller of a known helper). It
+# does not catch the general defect where a cwd swap sits several frames down
+# inside production code the test merely calls — nothing here reads call
+# graphs. Widening coverage means adding the new entry point to the arrays
+# below.
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -135,7 +144,22 @@ CWD_SWAP_HELPERS=(
     with_tagged_dirty_repo_cwd
 )
 
+# Portable cwd-swap helpers: same serial(cwd) obligation, no #[cfg(unix)].
+# These shell only to `git`, which the test env has on every platform, so
+# demanding #[cfg(unix)] would delete real Windows coverage.
+#
+# `with_hermetic_git_cwd` wraps `HermeticRepoCwd::empty` in a closure-taking
+# fn, so its callers never name the constructor and are invisible to a
+# constructor-only allow-list.
+CWD_SWAP_HELPERS_PORTABLE=(
+    HermeticRepoCwd::empty
+    HermeticRepoCwd::committed
+    with_hermetic_git_cwd
+)
+
 helper_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS[*]}")"
+portable_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS_PORTABLE[*]}")"
+all_helper_alt="${helper_alt}|${portable_alt}"
 
 # Per-file awk state machine over crates/cli/src/commands/helpers.rs (or any
 # future file reaching one of CWD_SWAP_HELPERS): tracks the attribute block
@@ -178,9 +202,13 @@ helper_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS[*]}")"
 # adding that name to CWD_SWAP_HELPERS.
 report_cwd_helper_pairing() {
     local helper_alt="$1"
-    shift
-    awk -v helper_alt="$helper_alt" '
-        BEGIN { n_helpers = split(helper_alt, helpers, "|") }
+    local portable_alt="$2"
+    shift 2
+    awk -v helper_alt="$helper_alt" -v portable_alt="$portable_alt" '
+        BEGIN {
+            n_helpers = split(helper_alt, helpers, "|")
+            n_portable = split(portable_alt, portable, "|")
+        }
 
         # A dynamic `\<name\(`-style regex built via -v is NOT usable here:
         # gawk C-escape-processes -v assignments, silently stripping the
@@ -189,9 +217,9 @@ report_cwd_helper_pairing() {
         # + literal-paren matching is done in plain string ops instead.
         function is_word_char(c) { return c ~ /[A-Za-z0-9_]/ }
 
-        function line_calls_helper(line,    i, name, off, pos, before) {
-            for (i = 1; i <= n_helpers; i++) {
-                name = helpers[i]
+        function line_calls_any(line, names, n,    i, name, off, pos, before) {
+            for (i = 1; i <= n; i++) {
+                name = names[i]
                 off = 0
                 while (1) {
                     pos = index(substr(line, off + 1), name "(")
@@ -207,9 +235,11 @@ report_cwd_helper_pairing() {
 
         function finalize() {
             if (have_fn && fn_is_test) file_tracked_test_fns++
-            if (have_fn && fn_is_test && fn_calls_helper && !(fn_has_cfg_unix && fn_has_serial_cwd)) {
+            needs_unix = fn_calls_helper
+            calls_any  = fn_calls_helper || fn_calls_portable
+            if (have_fn && fn_is_test && calls_any && !((!needs_unix || fn_has_cfg_unix) && fn_has_serial_cwd)) {
                 missing = ""
-                if (!fn_has_cfg_unix)   missing = missing " #[cfg(unix)]"
+                if (needs_unix && !fn_has_cfg_unix) missing = missing " #[cfg(unix)]"
                 if (!fn_has_serial_cwd) missing = missing " #[serial_test::serial(cwd)]"
                 printf("%s:%d: fn %s calls a cwd-swap helper but is missing:%s\n", fn_file, fn_line, fn_name, missing)
                 bad = 1
@@ -235,6 +265,7 @@ report_cwd_helper_pairing() {
             pend_test = 0; pend_cfg_unix = 0; pend_serial_cwd = 0
             have_fn = 0; fn_name = ""; fn_line = 0; fn_file = ""
             fn_is_test = 0; fn_has_cfg_unix = 0; fn_has_serial_cwd = 0; fn_calls_helper = 0
+            fn_calls_portable = 0
         }
 
         # Counted AFTER the FNR==1 reset so a `#[test]` on the first line of a
@@ -273,6 +304,7 @@ report_cwd_helper_pairing() {
             fn_has_cfg_unix = pend_cfg_unix
             fn_has_serial_cwd = pend_serial_cwd
             fn_calls_helper = 0
+            fn_calls_portable = 0
             pend_test = 0; pend_cfg_unix = 0; pend_serial_cwd = 0
             next
         }
@@ -281,7 +313,8 @@ report_cwd_helper_pairing() {
             # a real code line breaks any not-yet-consumed attribute block …
             pend_test = 0; pend_cfg_unix = 0; pend_serial_cwd = 0
             # … and, inside a tracked fn body, may itself be a helper call.
-            if (have_fn && line_calls_helper(line)) fn_calls_helper = 1
+            if (have_fn && line_calls_any(line, helpers, n_helpers)) fn_calls_helper = 1
+            if (have_fn && line_calls_any(line, portable, n_portable)) fn_calls_portable = 1
         }
 
         END {
@@ -297,11 +330,11 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
     violations="$(report "${FILES[@]}" || true)"
 fi
 
-mapfile -t HELPER_FILES < <(grep -rlE "(${helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
+mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
 
 helper_violations=""
 if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
-    helper_violations="$(report_cwd_helper_pairing "$helper_alt" "${HELPER_FILES[@]}" || true)"
+    helper_violations="$(report_cwd_helper_pairing "$helper_alt" "$portable_alt" "${HELPER_FILES[@]}" || true)"
 fi
 
 # awk exits non-zero on a finding; re-derive pass/fail from emptiness so
@@ -344,16 +377,20 @@ if [[ -n "$helper_violations" ]]; then
     echo
     echo "$helper_violations"
     echo
-    echo "Each finding above is a #[test] fn that calls one of the allow-listed"
-    echo "cwd-swap helpers (CWD_SWAP_HELPERS: ${CWD_SWAP_HELPERS[*]}) without"
-    echo "BOTH #[cfg(unix)] (the helper shells to git and is unix-only) and"
-    echo "#[serial_test::serial(cwd)] (joins the shared restore-race group all"
-    echo "other cwd swappers in this binary use). Add whichever attribute is"
-    echo "missing to the fn's attribute block."
+    echo "Each finding above is a #[test] fn that calls an allow-listed cwd-swap"
+    echo "helper without the attributes that helper requires. Add whichever"
+    echo "attribute the finding names to the fn's attribute block."
+    echo
+    echo "Every caller of ANY of these needs #[serial_test::serial(cwd)] — the"
+    echo "shared restore-race group all cwd swappers in this binary use. An"
+    echo "unkeyed #[serial] does NOT serialise against it."
+    echo
+    echo "unix-only (also need #[cfg(unix)]): ${CWD_SWAP_HELPERS[*]}"
+    echo "portable (serial(cwd) only):        ${CWD_SWAP_HELPERS_PORTABLE[*]}"
 fi
 
 if [[ -n "$violations" || -n "$helper_violations" ]]; then
     exit 1
 fi
 
-echo "audit-test-isolation: all ${#FILES[@]} env/cwd-mutating files justify each call with // env-ok: / // cwd-ok:; all ${#HELPER_FILES[@]} cwd-swap-helper files pair every caller with #[cfg(unix)] + serial(cwd)."
+echo "audit-test-isolation: all ${#FILES[@]} env/cwd-mutating files justify each call with // env-ok: / // cwd-ok:; all ${#HELPER_FILES[@]} cwd-swap-helper files pair every caller with serial(cwd) (+ #[cfg(unix)] for the unix-only helpers)."

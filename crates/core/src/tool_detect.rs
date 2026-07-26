@@ -102,7 +102,7 @@ fn version_flag(name: &str) -> &'static str {
 }
 
 /// Probe `<name> --version` (or the tool's own version flag, see
-/// [`version_flag`]) and report the tri-state outcome.
+/// `version_flag`) and report the tri-state outcome.
 ///
 /// A missing-on-`PATH` binary (spawn `NotFound`) is folded together with a
 /// ran-but-exited-non-zero probe into [`ToolProbe::Unavailable`] — the one
@@ -124,7 +124,7 @@ pub fn runs(name: &str) -> ToolProbe {
     }
 }
 
-/// How many leading output lines [`extract_version_line`] scans for a
+/// How many leading output lines `extract_version_line` scans for a
 /// version-looking line. Bounded so a chatty tool cannot make the probe
 /// scan megabytes; comfortably clears cosign's ASCII banner (~10 lines
 /// before `GitVersion:`).
@@ -147,11 +147,11 @@ fn extract_version_line(stdout: &str, stderr: &str) -> Option<String> {
     versionish(stdout).or_else(|| versionish(stderr))
 }
 
-/// Run the tool's version probe (see [`version_flag`]) and return a
+/// Run the tool's version probe (see `version_flag`) and return a
 /// version-looking output line.
 ///
 /// `Ok(Some(line))` — tool ran, exited zero, and one of the leading
-///   output lines looks like a version (see [`extract_version_line`]).
+///   output lines looks like a version (see `extract_version_line`).
 /// `Ok(None)` — tool ran but exited non-zero, or produced no
 ///   version-looking line; no version string to report.
 /// `Err(_)` — tool could not be spawned. Distinct from `Ok(None)` so

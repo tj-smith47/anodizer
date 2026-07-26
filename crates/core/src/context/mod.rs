@@ -115,7 +115,7 @@ pub struct Context {
     /// `succeeded`. The slot is single-shot: any unread value is
     /// cleared at the start of every `run` call.
     pub pending_outcome: Option<crate::PublisherOutcome>,
-    /// Partial [`PublishEvidence`] published by `Publisher::run` BEFORE it
+    /// Partial `PublishEvidence` published by `Publisher::run` BEFORE it
     /// returned `Err`, so a publisher that did irreversible work for the
     /// first N items and then failed on item N+1 can still hand the
     /// rollback path the authoritative record of what actually went live.
@@ -130,7 +130,7 @@ pub struct Context {
     pub pending_evidence: Option<crate::PublishEvidence>,
     /// Distinct set of crate names the build stage actually built — i.e.
     /// those that had at least one in-scope build (or `copy_from`) job after
-    /// target resolution. `None` until [`BuildStage`] runs (e.g. merge mode,
+    /// target resolution. `None` until `BuildStage` runs (e.g. merge mode,
     /// which pre-loads artifacts and never invokes the build stage).
     ///
     /// Read by the binary-artifact guard to distinguish "configured a
@@ -142,7 +142,7 @@ pub struct Context {
     /// Injectable environment-variable source. Defaults to
     /// [`ProcessEnvSource`] (reads `std::env::var`). Tests inject a
     /// [`MapEnvSource`](crate::MapEnvSource) via
-    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env)
+    /// `TestContextBuilder::env`
     /// so deterministic branches can be exercised without mutating the
     /// process env. Read through [`Context::env_var`]; replace via
     /// [`Context::set_env_source`].
@@ -275,7 +275,7 @@ impl Context {
     ///
     /// Production reads `std::env::var(name).ok()`. Tests inject a
     /// [`MapEnvSource`](crate::MapEnvSource) via
-    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env)
+    /// `TestContextBuilder::env`
     /// so deterministic branches can be exercised without mutating the
     /// process env.
     pub fn env_var(&self, name: &str) -> Option<String> {
@@ -286,7 +286,7 @@ impl Context {
     ///
     /// Production migration code uses this when wrapping an
     /// already-constructed context; tests reach this indirectly through
-    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env).
+    /// `TestContextBuilder::env`.
     pub fn set_env_source<S: EnvSource + 'static>(&mut self, src: S) {
         self.env_source = Arc::new(src);
         self.refresh_secret_env();
@@ -381,7 +381,7 @@ impl Context {
     /// overrides).
     ///
     /// Routes through `self.env_source` — not a raw `std::env::vars()` read
-    /// — so [`TestContextBuilder::sealed_env`](crate::test_helpers::TestContextBuilder::sealed_env)'s
+    /// — so `TestContextBuilder::sealed_env`'s
     /// documented "never the ambient process environment" promise also
     /// covers log/announce redaction, not just [`Context::env_var`] point
     /// lookups. A hermetic test that seals its env must not have an

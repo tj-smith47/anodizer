@@ -12,7 +12,7 @@ use super::*;
 ///
 /// Returns a plain `Value` rather than [`schemars::Schema`] deliberately:
 /// serializing a `Schema` re-imposes schemars 1.x's keyword ordering (via its
-/// internal `OrderedKeywordWrapper`), which would undo [`canonicalize_schema`].
+/// internal `OrderedKeywordWrapper`), which would undo `canonicalize_schema`.
 /// Serializing the `Value` directly preserves the canonical order.
 #[must_use]
 pub fn config_schema() -> serde_json::Value {

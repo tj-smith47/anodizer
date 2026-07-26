@@ -19,7 +19,7 @@ use anodizer_core::tool_detect::on_path;
 /// then `unibin.IDs` to `[unibin.ID]`. Anodizer's per-crate workspace model
 /// complicates this — `Binary` artifacts default their `id` metadata to the
 /// binary name (= crate name in the common case), not to `project_name`. To
-/// match the "ids: [<project>]" idiom while keeping multi-crate workspaces
+/// match the `ids: [<project>]` idiom while keeping multi-crate workspaces
 /// working, the resolved default is:
 ///
 ///   1. `ub.id` if explicitly set (verbatim);

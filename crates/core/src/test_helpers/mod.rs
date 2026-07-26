@@ -72,11 +72,17 @@ use std::process::Command;
 /// in different serial groups they run concurrently and one captures the
 /// other's soon-to-be-deleted tempdir as its restore target, so the restore
 /// fails `NotFound`. The workspace-canonical key is
-/// `#[serial_test::serial(cwd)]`; a binary whose cwd tests already co-vary with
-/// PATH/env under a broader unnamed `#[serial]` (e.g. the `FakeToolDir` tests
-/// in `stage-notarize`) keeps that one key for all of them. The rule is
-/// one-key-per-binary, enforced for raw `set_current_dir` call sites by
-/// `.claude/scripts/audit-test-isolation.sh`.
+/// `#[serial_test::serial(cwd)]`.
+///
+/// The key must be NAMED. An unkeyed `#[serial]` takes serial_test's unkeyed
+/// lock, which is independent of every keyed one — so a plain `#[serial]` test
+/// runs CONCURRENTLY with `#[serial(cwd)]` while reading as protected. A test
+/// that contends on two resources names both (`#[serial(cwd, path_env)]`);
+/// serial_test sorts the keys, so acquiring several cannot deadlock.
+///
+/// Enforced by `.claude/scripts/audit-serial-groups.sh` (every `#[serial]`
+/// names a group) and, for raw `set_current_dir` call sites and the cwd-swap
+/// helpers, by `.claude/scripts/audit-test-isolation.sh`.
 ///
 /// # Example
 ///

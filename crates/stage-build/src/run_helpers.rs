@@ -419,7 +419,7 @@ fn resolved_profile_dir(bin_path: &Path, crate_path: &str) -> Option<PathBuf> {
 /// `Context` read for hermetic behavior). The harness builds into a throwaway
 /// `.det-tmp/target/`; a plain local `--snapshot` build uses the user's
 /// persistent `target/` and MUST keep its cargo cache, so this is a no-op
-/// there — `pending` is empty and [`note_build_complete`] never prunes.
+/// there — `pending` is empty and `note_build_complete` never prunes.
 struct IntermediateReaper {
     /// Remaining job count keyed by the resolved profile dir each job's binary
     /// lands in (via [`resolved_profile_dir`] over the job's PLANNED

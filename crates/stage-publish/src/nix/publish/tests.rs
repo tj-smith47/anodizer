@@ -1538,7 +1538,7 @@ mod subprocess {
     }
 
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn run_formatter_runs_configured_alejandra_with_file_arg() {
         let tools = FakeToolDir::new();
         tools.tool("alejandra").install();
@@ -1562,7 +1562,7 @@ mod subprocess {
     }
 
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn run_formatter_nonzero_exit_bails_even_in_lenient_mode() {
         // No --strict set: the bail must fire regardless, so an
         // unformatted derivation is never pushed. The stub answers the
@@ -1595,7 +1595,7 @@ mod subprocess {
     }
 
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn run_formatter_missing_binary_bails_with_install_remedy() {
         // A FakeToolDir that installs NO formatter: `alejandra` is a
         // recognized name but absent from PATH, so the presence probe
@@ -1679,7 +1679,7 @@ mod subprocess {
     }
 
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_nix_formatter_absent_errors_and_pushes_nothing() {
         // A configured formatter that is absent from PATH must abort the
         // crate's nix publish BEFORE flake write / commit / push — nothing
@@ -1864,7 +1864,7 @@ mod subprocess {
     }
 
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_nix_runs_configured_formatter_on_generated_file() {
         // A configured formatter is invoked against the written derivation
         // before commit; the fake formatter records its argv so we can

@@ -16,7 +16,7 @@
 //!    [`anodizer_core::git::worktree::Worktree`] rooted at `commit`.
 //! 2. Builds an isolated env: per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
 //!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` inherited
-//!    from the host; plus an identity-only allow-list — see [`env`].
+//!    from the host; plus an identity-only allow-list — see [`mod@env`].
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`) inside the worktree with that env.
 //! 4. Walks `<worktree>/dist` AND `<worktree>/.det-tmp/target/`,
@@ -386,7 +386,7 @@ pub struct Harness {
     /// `git worktree add --detach <tmp> <commit>`.
     pub commit: String,
     /// Resolved stage set under test — the operator's `--stages=` subset
-    /// when given, otherwise [`super::commands::check::determinism::default_stages_for_host`]'s
+    /// when given, otherwise `super::commands::check::determinism::default_stages_for_host`'s
     /// OS-native partition. Surfaced into the report's `stages_under_test`
     /// field and drives what the child release subprocess builds.
     pub stages: Vec<StageId>,
