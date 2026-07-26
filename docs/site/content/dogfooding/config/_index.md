@@ -106,14 +106,14 @@ config is rendered.
 | `{{ .Metadata }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`Metadata` binding) |
 | `{{ .IsMerging }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`IsMerging` binding) |
 | `{{ .IsRelease }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`IsRelease` binding) |
-| String / path / version / env / filter helpers | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`tolower`, `toupper`, `dir`, `base`, `abs`, etc.) |
-| `sha*`, `blake2*`, `blake3`, `crc32`, `md5` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`register_hash_fn!` macro) |
-| `readFile`, `mustReadFile` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`readFile` / `mustReadFile` registrations) |
-| `time`, `.Now.Format` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`time` function + `Now` binding) |
-| `mdv2escape` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`mdv2escape` filter) |
-| `urlPathEscape` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`urlPathEscape` filter) |
-| `in` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`in` filter) |
-| `reReplaceAll` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`reReplaceAll` filter) |
+| String / path / version / env / filter helpers | ✅ Verified | [`crates/core/src/template/base_tera/text.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/text.rs) (`tolower`, `toupper`, etc.) and [`crates/core/src/template/base_tera/path.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/path.rs) (`dir`, `base`, `abs`) |
+| `sha*`, `blake2*`, `blake3`, `crc32`, `md5` | ✅ Verified | [`crates/core/src/template/base_tera/hash.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/hash.rs) (`register_hash_fn!` macro) |
+| `readFile`, `mustReadFile` | ✅ Verified | [`crates/core/src/template/base_tera/env_file.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/env_file.rs) (`readFile` / `mustReadFile` registrations) |
+| `time`, `.Now.Format` | ✅ Verified | [`crates/core/src/template/base_tera/datetime.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/datetime.rs) (`time` function + `Now` binding) |
+| `mdv2escape` | ✅ Verified | [`crates/core/src/template/base_tera/text.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/text.rs) (`mdv2escape` filter) |
+| `urlPathEscape` | ✅ Verified | [`crates/core/src/template/base_tera/path.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/path.rs) (`urlPathEscape` filter) |
+| `in` | ✅ Verified | [`crates/core/src/template/base_tera/collection.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/collection.rs) (`in` filter) |
+| `reReplaceAll` | ✅ Verified | [`crates/core/src/template/base_tera/text.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera/text.rs) (`reReplaceAll` filter) |
 
 ## Monorepo
 
