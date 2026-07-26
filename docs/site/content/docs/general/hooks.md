@@ -102,6 +102,37 @@ stops at the build stage and never reaches the post-pipeline tail. That is
 exactly why teardown belongs in `always` — a shard that staged something in
 `before` gets to clean it up.
 
+## Root hooks in a workspace
+
+The four root blocks are one **global** lane. Each fires **once per
+invocation** — never once per crate — including a per-crate publish
+(`anodizer release --publish-only` over a `dist/<crate>/` tree), where the
+root `after` block fires once after the last crate rather than once per
+crate.
+
+Per-crate hooks are a separate surface with per-crate cardinality:
+
+```yaml
+after:                              # once per run, after the last crate
+  hooks: ["./notify.sh released"]
+
+crates:
+  - name: core
+    after:                          # once per crate, inside core's scope
+      hooks: ["./post-core.sh"]
+  - name: cli
+    after:
+      hooks: ["./post-cli.sh"]
+```
+
+```
+release --publish-only   before → [core → post-core.sh] → [cli → post-cli.sh]
+                                → notify.sh released → always
+```
+
+A per-crate block renders against that crate's own `{{ Version }}` /
+`{{ Tag }}`; a root block renders against the run's.
+
 ## A failing `always` hook
 
 | Run outcome | A failing `always` hook does |

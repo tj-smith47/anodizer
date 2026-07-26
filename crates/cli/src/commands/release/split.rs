@@ -718,7 +718,7 @@ pub fn run_merge(
     let result = p.run(ctx, log);
 
     if result.is_ok() {
-        super::run_post_pipeline(ctx, config, dry_run, log)?;
+        super::run_post_pipeline(ctx, config, dry_run, super::RootAfterHooks::Fire, log)?;
     }
 
     // See `release::gate_required_failures` for rationale: per-publisher
@@ -745,7 +745,7 @@ fn run_merge_legacy_tail(
     let p = pipeline::build_merge_pipeline();
     let result = p.run(ctx, log);
     if result.is_ok() {
-        super::run_post_pipeline(ctx, config, dry_run, log)?;
+        super::run_post_pipeline(ctx, config, dry_run, super::RootAfterHooks::Fire, log)?;
     }
     // See `release::gate_required_failures` — required-publisher
     // failures must surface as non-zero exit even on the legacy merge

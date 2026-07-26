@@ -1,5 +1,6 @@
 use super::*;
 use crate::commands::helpers;
+use crate::commands::release::RootAfterHooks;
 use crate::pipeline;
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
@@ -439,11 +440,17 @@ pub(super) fn merge_workspace_skip(into: &mut Vec<String>, ws_skip: &[String]) {
 
 /// Inner body of the publish-only pipeline for a single dist root.
 /// Called by both `run()` (flat layout) and `run_per_crate()` (per-crate layout).
+///
+/// `root_after` decides whether this dist's post-pipeline closes the root
+/// `after:` lane: the flat layout runs this body once and fires them here,
+/// while the per-crate loop runs it per crate and defers the lane to one
+/// firing after the last crate.
 pub(super) fn run_one_crate_dist(
     ctx: &mut Context,
     config: &Config,
     log: &StageLogger,
     opts: &RunOpts,
+    root_after: RootAfterHooks,
     dist: PathBuf,
 ) -> Result<()> {
     // ── Load preserved-dist context ────────────────────────────────────
@@ -653,7 +660,7 @@ pub(super) fn run_one_crate_dist(
     let result = p.run(ctx, log);
 
     if result.is_ok() {
-        super::super::run_post_pipeline(ctx, config, opts.dry_run, log)?;
+        super::super::run_post_pipeline(ctx, config, opts.dry_run, root_after, log)?;
 
         // run_post_pipeline writes the canonical un-suffixed
         // artifacts.json from the merged registry. The per-shard

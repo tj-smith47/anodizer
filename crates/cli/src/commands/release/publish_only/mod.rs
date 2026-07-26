@@ -35,6 +35,7 @@ use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::commands::release::RootAfterHooks;
 use anodizer_core::artifact::ArtifactRegistry;
 use anodizer_core::config::{Config, WorkspaceConfig};
 use anodizer_core::context::Context;
@@ -158,13 +159,18 @@ pub(super) fn run(
     log.status("running in publish-only mode (load preserved dist + sign + publish)...");
 
     let dist = config.dist.clone();
-    run_one_crate_dist(ctx, config, log, &opts, dist)
+    // One dist root, one post-pipeline: the root `after:` lane closes here.
+    run_one_crate_dist(ctx, config, log, &opts, RootAfterHooks::Fire, dist)
 }
 
 /// Iterate per-crate subdirs in topo order, running the publish-only pipeline
 /// once per crate. The artifact registry is reset between crates so each
 /// pipeline sees only that crate's preserved artifacts. (Credentials were
 /// already gated upstream by the config-derived environment preflight.)
+///
+/// Per-crate `before:` / `after:` hooks fire inside each iteration; the ROOT
+/// `after:` hooks fire once after the last crate, matching the once-per-
+/// invocation cardinality of the root `before:` / `always:` blocks.
 ///
 /// `crate_order` is already topo-sorted by the caller (see `mod.rs`).
 pub(super) fn run_per_crate(
@@ -322,7 +328,14 @@ pub(super) fn run_per_crate(
         // after its version/tag template vars are anchored so the hooks render
         // against THIS crate's `Version` / `Tag`, and before its pipeline runs.
         run_per_crate_lifecycle_hooks(ctx, crate_name, HookKind::Before, opts.dry_run, log)?;
-        run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
+        run_one_crate_dist(
+            ctx,
+            config,
+            log,
+            &per_crate_opts,
+            RootAfterHooks::Defer,
+            crate_dist,
+        )?;
         // Per-crate `after:` hooks fire at the END of this crate's scope, once
         // its publish dispatch has completed (still scoped to this crate's vars).
         run_per_crate_lifecycle_hooks(ctx, crate_name, HookKind::After, opts.dry_run, log)?;
@@ -331,7 +344,14 @@ pub(super) fn run_per_crate(
     // restores at function exit — but it documents the restore point
     // for a reader.
     drop(guard);
-    Ok(())
+    // The root `after:` hooks close the run's global hook lane, so they fire
+    // ONCE here rather than once per crate inside the loop's post-pipeline —
+    // the same cardinality the root `before:` / `always:` blocks have. They
+    // run after the overlay guard restored the pre-loop context, so they
+    // render against the run's own template vars instead of whichever crate
+    // happened to iterate last. A crate that failed short-circuits above:
+    // `after:` is the success lane.
+    super::run_post_pipeline_after_hooks_only(ctx, config, opts.dry_run, log)
 }
 
 mod per_crate;

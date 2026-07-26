@@ -971,6 +971,121 @@ fn run_per_crate_pipeline_marks_publish_attempted() {
     );
 }
 
+/// The root `after:` block is a GLOBAL hook lane: root `before:` and root
+/// `always:` each fire exactly once per invocation, so root `after:` does
+/// too. Publish-only's per-crate loop runs the post-pipeline once per
+/// crate, and the root block used to fire from inside it — a workspace's
+/// root `after:` hook ran N times for N crates, which nothing in the config
+/// surface announces.
+///
+/// Pinned in all three config modes, each through its real dispatch path:
+/// single-crate takes the flat-dist `run`, and both workspace modes take
+/// `run_per_crate` over two seeded crate subdirs (the only shape that can
+/// multiply the lane). The hook appends one line per firing, so the
+/// assertion counts firings rather than merely proving the block parsed.
+///
+/// `RunOpts::dry_run` is false while the `Context` stays dry-run: on these
+/// paths `RunOpts::dry_run` gates only the hook runner, and every stage
+/// reads `ctx.options.dry_run`, so the hooks really execute without any
+/// stage reaching the network.
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn root_after_hooks_fire_once_per_run_in_every_config_mode() {
+    use anodizer_core::config::{
+        Config, CrateConfig, HookEntry, HooksConfig, StructuredHook, WorkspaceConfig,
+    };
+
+    for (label, crate_specs) in [
+        ("single-crate", vec![("app", "v{{ Version }}")]),
+        (
+            "lockstep",
+            vec![("a", "v{{ Version }}"), ("b", "v{{ Version }}")],
+        ),
+        (
+            "per-crate",
+            vec![("a", "a-v{{ Version }}"), ("b", "b-v{{ Version }}")],
+        ),
+    ] {
+        let flat = crate_specs.len() == 1;
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("after-firings.txt");
+        let dist = tmp.path().join("dist");
+        if flat {
+            seed_valid_preserved_dist(tmp.path(), "dist");
+        } else {
+            for (name, _) in &crate_specs {
+                seed_valid_preserved_dist(&dist, name);
+            }
+        }
+
+        let crates: Vec<CrateConfig> = crate_specs
+            .iter()
+            .map(|(name, tag_template)| CrateConfig {
+                name: (*name).to_string(),
+                tag_template: Some((*tag_template).to_string()),
+                ..Default::default()
+            })
+            .collect();
+        let after = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!("printf 'fired\\n' >> {}", out.display()),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let config = if flat {
+            Config {
+                dist: dist.clone(),
+                after,
+                crates,
+                ..Default::default()
+            }
+        } else {
+            Config {
+                dist: dist.clone(),
+                after,
+                workspaces: Some(vec![WorkspaceConfig {
+                    name: "ws".to_string(),
+                    crates,
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }
+        };
+
+        let mut ctx = preserved_dist_ctx(&config);
+        // The changelog stage reads git history from the PROCESS cwd, which
+        // a concurrently-running test may have swapped out from under it.
+        // Hook cardinality is independent of it, so skip it and keep this
+        // test hermetic.
+        ctx.options.skip_stages = vec!["changelog".to_string()];
+        let log = anodizer_core::log::StageLogger::new(
+            "root-after-cardinality-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: false };
+        let result = if flat {
+            run(&mut ctx, &config, &log, opts)
+        } else {
+            let order: Vec<String> = crate_specs
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect();
+            run_per_crate(&mut ctx, &config, &log, opts, dist, order)
+        };
+        result.unwrap_or_else(|e| panic!("{label}: publish-only must succeed: {e:#}"));
+
+        let fired = std::fs::read_to_string(&out).unwrap_or_default();
+        assert_eq!(
+            fired.lines().count(),
+            1,
+            "{label}: the root after: hook must fire exactly once per invocation \
+             (pairing 1:1 with root before: / always:), got {fired:?}"
+        );
+    }
+}
+
 /// Build a crate config with a GitHub release block so a per-crate
 /// dry-run iteration drives the release stage's `ReleaseURL`
 /// derivation end-to-end.

@@ -337,11 +337,28 @@ pub(crate) fn select_custom_publishers(
         .collect()
 }
 
+/// Whether a post-pipeline run closes the root `after:` lane.
+///
+/// The root hook blocks are one global lane: `before:` and `always:` each
+/// fire once per invocation, so `after:` fires once too. A caller that runs
+/// the post-pipeline more than once per invocation — the per-crate
+/// publish-only loop, which runs it for every crate's preserved dist —
+/// defers the lane and fires it once itself after the last crate, so a
+/// workspace's root `after:` hook is not multiplied by the crate count.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootAfterHooks {
+    /// Fire the root `after:` hooks at the end of this post-pipeline.
+    Fire,
+    /// Leave the root `after:` hooks to the caller.
+    Defer,
+}
+
 /// Post-pipeline tasks: metadata writing, publishers, after hooks.
 pub(crate) fn run_post_pipeline(
     ctx: &mut Context,
     config: &Config,
     dry_run: bool,
+    root_after: RootAfterHooks,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     // One collapsible section so the post-pipeline work (metadata write,
@@ -399,13 +416,18 @@ pub(crate) fn run_post_pipeline(
         }
     }
 
-    run_post_pipeline_after_hooks_only(ctx, config, dry_run, log)
+    match root_after {
+        RootAfterHooks::Fire => run_post_pipeline_after_hooks_only(ctx, config, dry_run, log),
+        RootAfterHooks::Defer => Ok(()),
+    }
 }
 
 /// Run only the user-defined `after:` hooks. Extracted so
 /// `--announce-only` can fire them post-announce without re-running
 /// custom publishers / milestones / metadata writes (which already
-/// fired during the prior end-to-end run).
+/// fired during the prior end-to-end run), and so the per-crate
+/// publish-only loop — which runs the post-pipeline once per crate under
+/// [`RootAfterHooks::Defer`] — can close the root lane exactly once.
 ///
 /// Canonical key is `after.hooks:`. The legacy
 /// `after.post:` spelling is folded into `hooks:` at config-parse

@@ -419,7 +419,7 @@ pub(crate) fn dispatch_release_modes(
     let result = p.run(ctx, log);
 
     if result.is_ok() {
-        run_post_pipeline(ctx, config, opts.dry_run, log)?;
+        run_post_pipeline(ctx, config, opts.dry_run, RootAfterHooks::Fire, log)?;
     }
 
     if result.is_ok() {
