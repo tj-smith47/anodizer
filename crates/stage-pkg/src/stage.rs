@@ -38,7 +38,7 @@ pub(crate) fn default_name_template() -> String {
     )
 }
 
-/// Rendered per-binary field values resolved from a [`PkgConfig`].
+/// Rendered per-binary field values resolved from a [`PkgConfig`](anodizer_core::config::PkgConfig).
 ///
 /// Produced by [`render_pkg_fields`] for one (config, target) pairing
 /// after `Os`/`Arch`/`Target` template vars are set, so every template

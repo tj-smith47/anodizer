@@ -446,7 +446,7 @@ pub fn first_channel_rejected_for_prerelease_snap(channels: &[String]) -> Option
 /// classified here, NOT as a content-dedup rejection. It reports that the
 /// Store's uniqueness-check step ITSELF errored server-side — it does not
 /// assert a duplicate was found. The Store names a genuine duplicate with a
-/// distinct, explicit message (see [`is_content_dedup_rejection`]); when it
+/// distinct, explicit message (see `is_content_dedup_rejection`); when it
 /// instead says the check "errored", the failure is a transient backend
 /// fault and a later attempt can succeed. (Empirically: a `.snap` carrying a
 /// freshly-bumped version cannot be byte-identical to any prior release's

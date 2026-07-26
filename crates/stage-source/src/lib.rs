@@ -1,9 +1,9 @@
 //! `stage-source` — emit a `git archive` source tarball and accompanying SBOMs.
 //!
 //! The crate is organised as:
-//! - [`archive`] — `git archive` invocation and extra-files staging.
-//! - [`sbom`] — Cargo.lock parsing plus CycloneDX / SPDX renderers.
-//! - [`run`] — the [`SourceStage`] orchestrator that drives both halves.
+//! - `archive` — `git archive` invocation and extra-files staging.
+//! - `sbom` — Cargo.lock parsing plus CycloneDX / SPDX renderers.
+//! - `run` — the [`SourceStage`] orchestrator that drives both halves.
 
 mod archive;
 mod run;

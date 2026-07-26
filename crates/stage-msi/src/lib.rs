@@ -2,9 +2,9 @@
 //!
 //! Split into focused submodules:
 //!
-//! - [`wix`] — WiX version detection + CLI command construction + arch mapping.
-//! - [`template`] — `.wxs` rendering and the stage's template-variable plumbing.
-//! - [`build`] — per-crate build orchestration, dry-run, artifacts, and hooks.
+//! - `wix` — WiX version detection + CLI command construction + arch mapping.
+//! - `template` — `.wxs` rendering and the stage's template-variable plumbing.
+//! - `build` — per-crate build orchestration, dry-run, artifacts, and hooks.
 //!
 //! The [`MsiStage`] entry point and its [`Stage`] impl live here; the
 //! submodules' public surface is re-exported below so external callers and

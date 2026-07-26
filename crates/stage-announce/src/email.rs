@@ -274,7 +274,7 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
 /// Tries `sendmail -t` first; falls back to `msmtp -t` if sendmail is not
 /// found. Both commands read recipients from the message headers via `-t`.
 ///
-/// The child is bounded by [`crate::http::ANNOUNCE_HTTP_TIMEOUT`] — the same
+/// The child is bounded by `crate::http::ANNOUNCE_HTTP_TIMEOUT` — the same
 /// per-call timeout the SMTP relay path uses. A `sendmail -t` blocked on an
 /// unreachable MX is killed (not abandoned) at that deadline so it can neither
 /// hang the announce worker nor leak as a zombie; the SMTP-relay timeout and

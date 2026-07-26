@@ -1,6 +1,6 @@
 //! SLSA build-provenance / attestation stage for anodizer.
 //!
-//! Runs between [`ChecksumStage`] and [`SignStage`] in the release pipeline so
+//! Runs between `ChecksumStage` and `SignStage` in the release pipeline so
 //! every selected artifact already carries the sha256 that `stage-checksum`
 //! computed, and so the `emit`-mode in-toto statement (written as an
 //! `UploadableFile` artifact) is signed by the existing `signs:` loop and

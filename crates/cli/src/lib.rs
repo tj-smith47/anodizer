@@ -888,7 +888,7 @@ pub enum ChangelogFormat {
 /// Bare `anodize tag` keeps its existing autotag behavior (handled
 /// by the `Tag` variant directly). `anodize tag rollback` opts into
 /// the failure-recovery flow described in
-/// [`commands::tag::rollback`].
+/// `commands::tag::rollback` (binary-only module, so not linkable from here).
 #[derive(Subcommand)]
 pub enum TagSub {
     /// Withdraw a release: unwind the publishers the run recorded, delete
@@ -1042,7 +1042,7 @@ pub struct CheckDeterminismArgs {
     /// producer.
     ///
     /// Without `--stages`, the harness builds the full host-OS partition
-    /// ([`crate::commands::check::determinism`]'s `default_stages_for_host`),
+    /// (`commands::check::determinism`'s `default_stages_for_host`),
     /// and a host-default stage whose tool is absent normally warn-skips so dev
     /// boxes stay usable. CI provisions every OS-native tool and must treat a
     /// missing one as a hard failure: a silent skip is the exact false coverage

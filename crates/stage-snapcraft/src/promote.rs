@@ -17,7 +17,7 @@
 //! * [`PromoteSelector::Version`] → the revision the store lists at that
 //!   version (`snapcraft list-revisions`).
 //! * [`PromoteSelector::FromRun`] → the revision the prior run recorded in its
-//!   snapcraft [`PublishEvidence`] — no store round-trip.
+//!   snapcraft [`PublishEvidence`](anodizer_core::publish_evidence::PublishEvidence) — no store round-trip.
 //! * [`PromoteSelector::Newest`] → the highest revision currently in the
 //!   `from` channel (`snapcraft list-revisions`).
 
@@ -279,7 +279,7 @@ fn resolve_revisions(
 }
 
 /// Pull every recorded snapcraft revision for `snap_name` out of a prior run's
-/// report, reading the snapcraft [`PublishEvidence`] the publish stage wrote.
+/// report, reading the snapcraft [`PublishEvidence`](anodizer_core::publish_evidence::PublishEvidence) the publish stage wrote.
 /// A dual-arch snap records one entry per architecture, so this returns each
 /// arch's revision (order-stable, de-duplicated) — releasing all of them is
 /// what fully promotes a multi-arch snap via `--from-run`.

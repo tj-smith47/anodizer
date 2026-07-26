@@ -1,9 +1,9 @@
 //! Announce stage — broadcasts a release across configured providers.
 //!
 //! Per-provider modules (`bluesky`, `discord`, …) own their wire formats and
-//! send loops; [`AnnounceStage`] in [`run`] is a fan-out dispatcher that walks
+//! send loops; [`AnnounceStage`] in `run` is a fan-out dispatcher that walks
 //! the `announce.<provider>` config blocks, renders messages via the shared
-//! [`helpers`], and collects errors so one provider failure doesn't block the
+//! `helpers`, and collects errors so one provider failure doesn't block the
 //! others.
 
 // Provider modules — already split, untouched by this carve.

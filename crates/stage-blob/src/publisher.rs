@@ -74,7 +74,7 @@ pub(crate) fn blob_target_url(t: &BlobTarget) -> String {
 }
 
 /// Encode the per-target tuples into the typed
-/// [`PublishEvidenceExtra::Blob`] variant. Mirrors the cloudsmith
+/// [`anodizer_core::PublishEvidenceExtra::Blob`] variant. Mirrors the cloudsmith
 /// pattern (typed `Cloudsmith` variant).
 pub(crate) fn encode_blob_targets(targets: &[BlobTarget]) -> anodizer_core::PublishEvidenceExtra {
     anodizer_core::PublishEvidenceExtra::Blob(anodizer_core::publish_evidence::BlobExtra {
@@ -129,14 +129,15 @@ impl Default for BlobPublisher {
     }
 }
 
-/// The warn message [`BlobPublisher::rollback`] emits for one recorded
-/// object key when structured `blob_targets` evidence is absent
+/// The warn message [`BlobPublisher`]'s [`anodizer_core::Publisher::rollback`]
+/// emits for one recorded object key when structured `blob_targets` evidence
+/// is absent
 /// (`anodizer tag rollback` against a run written before the structured-target
 /// capture landed). Exposed as a helper so tests can pin the wording
 /// without intercepting stderr.
 ///
 /// The PRIMARY rollback path issues a real
-/// [`object_store::ObjectStore::delete`] against each captured
+/// `ObjectStore::delete` against each captured
 /// [`BlobTarget`]; this helper is reached only when `extra.blob_targets`
 /// is absent or empty.
 pub(crate) fn blob_manual_cleanup_msg(target: &str) -> String {
@@ -238,7 +239,7 @@ impl anodizer_core::Publisher for BlobPublisher {
     /// `required` destination Blocks the release (blob is an irreversible
     /// upload that gates the one-way-door publishers); a failure to an
     /// optional one Warns. Pass when blob is deselected or no destination is
-    /// configured. See [`crate::preflight`] for the round-trip details.
+    /// configured. See `crate::preflight` for the round-trip details.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         crate::preflight::run_preflight(ctx)
     }

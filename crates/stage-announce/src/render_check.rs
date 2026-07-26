@@ -20,7 +20,7 @@ use crate::run::announce_should_run;
 ///
 /// No-op in snapshot / nightly (where no announcer dispatches) and when no
 /// `announce:` config is present. Mirrors the real announce path's gating
-/// ([`announce_should_run`] for `skip`/`if`/`gate_on`) so it never flags an
+/// (`announce_should_run` for `skip`/`if`/`gate_on`) so it never flags an
 /// announcer the live run would skip. Renders the SAME template fields each
 /// announcer's `send` renders, reading zero credentials/env, so it runs on a CI
 /// box without announce secrets. On any render failure it `bail!`s once,

@@ -6,7 +6,7 @@
 //!
 //! - **asset existence + content** — every produced artifact has a matching
 //!   uploaded asset on the published release, and every present asset's
-//!   stored size/digest matches the local bytes ([`asset_check`]). The
+//!   stored size/digest matches the local bytes (`asset_check`). The
 //!   produced set is derived for free from `release_uploadable_kinds()` +
 //!   the artifact registry (no new config); the published set is fetched
 //!   live via [`anodizer_stage_release::fetch_published_assets`]. The
@@ -23,13 +23,13 @@
 //!   blob objects answer a `HEAD` through the upload's own store backend,
 //!   and uploaded snaps are live in the Snap Store's public channel map —
 //!   which also catches a manual-review hold that parked the revision
-//!   outside every channel ([`landing`]).
+//!   outside every channel (`landing`).
 //! - **install smoke-test** — each Linux package is installed in a pinned
-//!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
+//!   container and `<bin> --version` is run (`smoke`). Skipped with a
 //!   notice when Docker is unavailable.
 //! - **libc ceiling** — no glibc-linked binary shipped in a `.deb`, `.rpm`,
 //!   or `.apk` may require a glibc newer than the configured floor
-//!   ([`libc_check`]). musl binaries are skipped.
+//!   (`libc_check`). musl binaries are skipped.
 //!
 //! ## Failure semantics
 //!
@@ -103,8 +103,8 @@ const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 /// existence/content check consumes only github-release, each landing
 /// probe fires only when its publisher's recorded outcome is `Succeeded`
 /// (a `Failed` attempt is reported as an issue directly, without a probe —
-/// see [`landing`]), and the OS-package axes gate on
-/// [`os_package_publisher_selected`] — so a `--publishers npm` run still
+/// see `landing`), and the OS-package axes gate on
+/// `os_package_publisher_selected` — so a `--publishers npm` run still
 /// verifies the npm landing while skipping the GitHub asset check and the
 /// package matrix.
 pub fn verify_release_consumers() -> &'static [&'static str] {
@@ -391,7 +391,7 @@ impl Stage for VerifyReleaseStage {
 }
 
 /// Pre-submitter verify-release gate: the asset existence + content axis of
-/// this stage ([`verify_one_crate`]'s `github_selected` branch), runnable
+/// this stage (`verify_one_crate`'s `github_selected` branch), runnable
 /// standalone against an already-published release, without the landing /
 /// smoke / libc axes (those verify a specific successful publisher's own
 /// landing, not the asset surface every one-way-door publisher depends on).
@@ -403,7 +403,7 @@ impl Stage for VerifyReleaseStage {
 /// (disabled, dry-run/snapshot, or no crate has a release block) or ran
 /// clean; `Ok(false)` when it ran and found asset-content defects — including
 /// a fetch failure (e.g. no GitHub release exists for the tag), which
-/// [`verify_one_crate`] records as an issue rather than propagating; `Err`
+/// `verify_one_crate` records as an issue rather than propagating; `Err`
 /// only for an unrecoverable setup failure (e.g. the tokio runtime could not
 /// be created), which the dispatcher treats the same as `Ok(false)`: blocking
 /// rather than a pass.
@@ -417,18 +417,18 @@ impl Stage for VerifyReleaseStage {
 /// uploading leg rewrites it at upload time to fold in publish-time evidence
 /// (docker image digests) that only exists in the leg that ran those
 /// publishers, so this leg's locally recomputed manifest legitimately
-/// differs. [`AxisScope::assets_published_by_this_run`] carries that fact
-/// into [`verify_published_contents`], which exempts exactly the
+/// differs. `AxisScope::assets_published_by_this_run` carries that fact
+/// into `verify_published_contents`, which exempts exactly the
 /// combined-checksum assets (shared predicate:
 /// [`anodizer_core::artifact::is_combined_checksum_artifact`], the same
 /// selection the upload-time refresher rewrites) from the cross-leg byte
 /// comparison — presence is still enforced, and every other asset is still
 /// byte-checked.
 ///
-/// Deliberately reuses [`verify_one_crate`] rather than re-implementing the
+/// Deliberately reuses `verify_one_crate` rather than re-implementing the
 /// asset diff/content check: the same expected-vs-published/local-bytes
 /// comparison the terminal [`VerifyReleaseStage`] runs, called with an
-/// [`AxisScope`] that leaves the OS-package axes (libc-ceiling, install-smoke)
+/// `AxisScope` that leaves the OS-package axes (libc-ceiling, install-smoke)
 /// out of scope — those verify a specific publisher's own package landing,
 /// not the asset surface every irreversible publisher depends on being
 /// correct before it commits to an immutable registry.

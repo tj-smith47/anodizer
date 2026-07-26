@@ -1,7 +1,7 @@
 //! Strict in-memory snapcraft.yaml render guard for the prepublish phase.
 //!
 //! The snapcraft build is a build stage, not a publisher, so it is absent from
-//! [`anodizer_stage_publish::validate_publisher_schemas`]'s always-strict
+//! `anodizer_stage_publish::validate_publisher_schemas`'s always-strict
 //! prepublish dry-run. Without this validator a residual unrendered template
 //! delimiter in a snapcraft.yaml would only WARN under a normal (non-strict)
 //! release and still ship — the exact failure mode the residual-delimiter
@@ -23,7 +23,7 @@ use crate::yaml::snapcraft_snap_yamls_for_crate;
 
 /// Per-crate tag resolver, threaded so each crate's snapcraft.yaml renders
 /// against its OWN version (workspace per-crate independent-version mode).
-/// Mirrors [`anodizer_stage_publish`]'s `TagResolver`.
+/// Mirrors `anodizer_stage_publish`'s `TagResolver`.
 pub type TagResolver<'a> = &'a dyn Fn(&Context, &CrateConfig) -> Option<String>;
 
 /// Render every selected crate's snapcraft.yaml strictly, in-memory, returning
