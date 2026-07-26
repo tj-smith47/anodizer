@@ -399,6 +399,22 @@ pub struct ContentFromFile {
 /// is well past the point of cheap failure. Test patterns locally
 /// (`anodizer changelog --check` or any external regex tool) before
 /// committing config changes.
+///
+/// Every pattern is matched against the **raw commit subject**, with no
+/// conventional-commit parsing first. Filtering by type therefore has to
+/// spell the scope and the breaking marker out, or the pattern silently
+/// covers less than it looks like it does:
+///
+/// ```yaml
+/// filters:
+///   exclude:
+///     - "^docs(\\(.*\\))?!?:"   # docs: · docs(cli): · docs(cli)!:
+/// ```
+///
+/// A bare `^docs:` matches only the unscoped form, so `docs(cli): …` still
+/// reaches the changelog. Dropping the colon instead (`^docs`) over-matches
+/// in the other direction and swallows any subject that merely begins with
+/// those letters.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChangelogFilters {

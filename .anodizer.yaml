@@ -963,17 +963,21 @@ changelog:
       - "Merge branch"
       - "Merge remote-tracking branch"
   groups:
+    # Same optional-scope form as the exclude patterns above, for the same
+    # reason in reverse: a bare "^feat" also claims "feature-flag rework", and
+    # "^(fix|refactor)" claims "fixture cleanup". Requiring the type separator
+    # keeps a group from absorbing prose that merely starts with its letters.
     - title: Features
-      regexp: "^feat"
+      regexp: "^feat(\\(.*\\))?!?:"
       order: 0
     - title: Security
-      regexp: "^sec"
+      regexp: "^sec(\\(.*\\))?!?:"
       order: 1
     - title: Bug Fixes
-      regexp: "^(fix|refactor)"
+      regexp: "^(fix|refactor)(\\(.*\\))?!?:"
       order: 2
     - title: Performance
-      regexp: "^perf"
+      regexp: "^perf(\\(.*\\))?!?:"
       order: 3
     - title: Others
       order: 999

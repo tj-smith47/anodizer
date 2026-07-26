@@ -3607,7 +3607,7 @@
       "additionalProperties": false
     },
     "ChangelogFilters": {
-      "description": "Regex-based commit filters for the changelog stage.\n\nPatterns are NOT compile-validated at config-load — a malformed regex only surfaces when the changelog stage runs, which on a release pipeline is well past the point of cheap failure. Test patterns locally (`anodizer changelog --check` or any external regex tool) before committing config changes.",
+      "description": "Regex-based commit filters for the changelog stage.\n\nPatterns are NOT compile-validated at config-load — a malformed regex only surfaces when the changelog stage runs, which on a release pipeline is well past the point of cheap failure. Test patterns locally (`anodizer changelog --check` or any external regex tool) before committing config changes.\n\nEvery pattern is matched against the **raw commit subject**, with no conventional-commit parsing first. Filtering by type therefore has to spell the scope and the breaking marker out, or the pattern silently covers less than it looks like it does:\n\n```yaml\nfilters:\n  exclude:\n    - \"^docs(\\\\(.*\\\\))?!?:\"   # docs: · docs(cli): · docs(cli)!:\n```\n\nA bare `^docs:` matches only the unscoped form, so `docs(cli): …` still reaches the changelog. Dropping the colon instead (`^docs`) over-matches in the other direction and swallows any subject that merely begins with those letters.",
       "type": "object",
       "properties": {
         "exclude": {
