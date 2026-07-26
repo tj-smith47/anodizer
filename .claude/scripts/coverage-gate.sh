@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Fail when workspace line coverage drops below the floor.
 # Usage: coverage-gate.sh <cobertura.xml> [floor]
-# Floor precedence: arg > COVERAGE_FLOOR env > 92 (the single source of
-# truth for the floor — callers must not restate the number).
+# Floor precedence: arg > COVERAGE_FLOOR env > 92.5 (the single source of
+# truth for the floor — callers must not restate the number). The floor only
+# ever ratchets UP: a run that measures below it is a regression to fix, never
+# a reason to move the number down.
 # Delegates percent extraction to coverage-percent.sh so the gate and the
 # badge can never disagree about the measured value. The comparison uses
 # the script's --raw (full-precision) output: the rounded badge form would
@@ -10,7 +12,7 @@
 set -euo pipefail
 
 XML="${1:?Usage: coverage-gate.sh <cobertura.xml> [floor]}"
-FLOOR="${2:-${COVERAGE_FLOOR:-92}}"
+FLOOR="${2:-${COVERAGE_FLOOR:-92.5}}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RAW="$(bash "$SCRIPT_DIR/coverage-percent.sh" --raw "$XML")"
