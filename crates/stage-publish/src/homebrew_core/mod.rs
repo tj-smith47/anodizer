@@ -14,12 +14,19 @@
 //!   pulls) the bump drives.
 //! - [`locate`] — formula-file location (explicit `path:` override or
 //!   sharded/flat layout fallback).
-//! - [`publisher`] — orchestration + the `Publisher` trait impl.
+//! - [`resolve`] — bump-input resolution (token ladder, formula name,
+//!   formula repository, download URL, commit identity/message).
+//! - [`publish`] — the per-entry bump loop that lands the rewrite as a
+//!   direct commit or a fork-based pull request.
+//! - [`publisher`] — the `Publisher` trait impl (requirements, reconcile,
+//!   run, rollback, preflight).
 
 pub(crate) mod api;
 pub(crate) mod formula;
 mod locate;
+pub(crate) mod publish;
 pub mod publisher;
+pub(crate) mod resolve;
 
 #[cfg(test)]
 mod tests;

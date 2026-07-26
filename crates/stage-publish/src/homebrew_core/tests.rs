@@ -19,10 +19,11 @@ use base64::Engine as _;
 use super::formula::{
     FormulaRewrite, flat_formula_path, formula_is_current, rewrite_formula, sharded_formula_path,
 };
-use super::publisher::{
-    HomebrewCorePublisher, TOKEN_ENV_VARS, bump_branch, publish_to_homebrew_core,
-    resolve_commit_message, resolve_download_url, resolve_formula_name, resolve_token,
-    resolve_upstream,
+use super::publish::publish_to_homebrew_core;
+use super::publisher::HomebrewCorePublisher;
+use super::resolve::{
+    TOKEN_ENV_VARS, bump_branch, resolve_commit_message, resolve_download_url,
+    resolve_formula_name, resolve_token, resolve_upstream,
 };
 
 const OLD_URL: &str = "https://github.com/acme/my-tool/archive/refs/tags/v1.0.0.tar.gz";
