@@ -820,7 +820,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
 
     // A target-restricted build produces archives for only its own platforms:
     // a `--targets=` determinism shard OR a host-only `--single-target` snapshot
-    // (the winserver/mbp local validation flow). A windows-only restriction
+    // (the cross-OS local validation flow). A windows-only restriction
     // yields windows archives (so `produced` above is non-empty) but no
     // Linux/Darwin — the platforms a nix derivation `src` fetches. There is
     // nothing to cross-check, so self-skip here rather than tripping the publish
@@ -2140,8 +2140,8 @@ mod tests {
         );
     }
 
-    /// `--single-target` false-failure guard: the winserver/mbp local
-    /// validation flow sets `single_target` (NOT `partial_target`). A
+    /// `--single-target` false-failure guard: the cross-OS local validation
+    /// flow sets `single_target` (NOT `partial_target`). A
     /// windows-only single-target snapshot with nix configured produces only a
     /// windows archive — nix packages nothing there — so the emission validator
     /// MUST self-skip rather than false-fail with the "no Linux/Darwin archive"

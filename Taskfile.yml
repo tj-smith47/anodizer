@@ -34,13 +34,19 @@ tasks:
       - cargo build --release
 
   check:
-    desc: Run cargo check on default workspace members
+    # Two passes, because one hides the other's failure. `--workspace` alone
+    # builds lib targets under default features, which is the only way to catch
+    # a feature-gated item used without its gate — `--all-targets` pulls in the
+    # crate's own dev-dependencies and unifies the feature back on, so the break
+    # compiles clean there and fails only for a downstream consumer.
+    desc: "Fast type-check: default features, then all targets"
     deps: [_check:tmp-headroom]
     cmds:
+      - cargo check --workspace
       - cargo check --all-targets
 
   check:determinism:
-    desc: "Byte-verify this host's OS-native release artifacts reproduce — CI-exact (--require-tools, host target matrix, preserve-dist)."
+    desc: "Byte-verify this host's native release artifacts reproduce (CI-exact)."
     deps: [_check:tmp-headroom]
     cmds:
       # Mirror anodizer-action's per-shard determinism command
@@ -66,7 +72,11 @@ tasks:
           --require-tools --runs=2 --targets="$csv" --preserve-dist=./preserved-dist
 
   check:native-object-determinism:
-    desc: "Guard: aws-lc-sys/ring/zstd-sys/lzma-sys/blake3 stay byte-identical under clang-cl across rebuilds, ignoring the benign COFF TimeDateStamp (mirrors the CI native-object-determinism job). Windows-only — clang-cl C-codegen determinism has no equivalent on other hosts."
+    # aws-lc-sys / ring / zstd-sys / lzma-sys / blake3 must stay byte-identical
+    # under clang-cl across rebuilds, ignoring the benign COFF TimeDateStamp.
+    # Windows-only: clang-cl C-codegen determinism has no equivalent elsewhere,
+    # so this no-ops on other hosts rather than failing them.
+    desc: "Guard: native C objects rebuild byte-identically under clang-cl (Windows-only)."
     cmds:
       - |
         set -eu
@@ -96,7 +106,7 @@ tasks:
     # publish/snapcraft-publish/blob/announce, so this is "everything this
     # host can build, minus publish/announce". `task prepush` aliases this so
     # there's one source of truth for the flag set.
-    desc: "FULL pre-push: REAL build of all host-buildable targets + archive/sign/checksum + emission-validate (binstall/nix/version-sync). Slower than `task snapshot`."
+    desc: "REAL build of every host-buildable target, through emission-validate. Slow."
     deps: [_check:tmp-headroom]
     cmds:
       - cargo run -p anodizer --release -- release --snapshot --clean --host-targets --summary-json=dist/snapshot-summary.json
@@ -106,7 +116,7 @@ tasks:
     # box alone: a REAL build of every host-buildable target + emission-validate
     # (release:snapshot) and the workspace suite on every reachable OS (test:os).
     # Run it before a release push in addition to `task gate` (the CI-job mirror).
-    desc: "Cross-platform evidence: FULL real build + emission-validate (release:snapshot) AND the workspace suite on every reachable OS (test:os). Complements task gate."
+    desc: "Cross-platform evidence: real build + the suite on every reachable OS. Complements gate."
     cmds:
       - task: release:snapshot
       - task: test:os
@@ -151,7 +161,13 @@ tasks:
       - cargo nextest run --workspace --no-fail-fast --lib
 
   test:os:
-    desc: "Run the workspace suite on every REACHABLE OS host (this box + winserver + mbp); offline hosts SKIP loudly; fail if any reachable host fails. Ships HEAD via git bundle (proves the un-pushed commit)."
+    # Ships HEAD as a git bundle, so it proves the un-pushed commit rather than
+    # whatever origin holds. The local leg always runs; the Windows and macOS
+    # legs run only when TEST_OS_WINDOWS_HOST / TEST_OS_MACOS_HOST name an ssh
+    # target, so a contributor with neither still gets a useful local gate.
+    # Unconfigured and unreachable legs skip loudly; a reachable leg that fails
+    # fails the task.
+    desc: "Run the suite locally plus on any configured Windows/macOS ssh hosts."
     # The local leg runs the workspace suite via test-os-suite.sh (nextest where
     # present, else cargo test); guard tmpfs headroom like every other cargo
     # task so a standalone `task test:os` can't OOM the linker.
@@ -187,7 +203,7 @@ tasks:
     # dry-run (compiles nothing) — kept fast on purpose. For the thorough
     # pre-push check (a REAL build of every host-buildable target +
     # emission-validate), use `task prepush` / `task release:snapshot`.
-    desc: "SLIM commit gate: dry-run pipeline, single target, no publish (fast). For the full pre-push real build use `task prepush`."
+    desc: "Slim commit gate: dry-run pipeline, single target, no publish. Fast."
     deps: [build]
     cmds:
       - ./target/release/anodizer release --snapshot --single-target --clean --dry-run
@@ -205,17 +221,19 @@ tasks:
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
-    desc: Run workspace test coverage, enforce the coverage floor, and publish the badge update to origin/badges. Switches branches via the badge script; CI only.
+    # Switches branches via the badge script — CI only, never on a dev box.
+    # Composes coverage:gate rather than respelling the llvm-cov invocation: two
+    # copies of the same measurement command drift, and a badge measured with
+    # different flags than the gate is a badge that lies about the gate.
+    desc: "Measure coverage, enforce the floor, publish the badge to origin/badges."
     cmds:
-      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml
-      - bash .claude/scripts/coverage-percent.sh cobertura.xml
-      # Gate before publishing so CI fails loudly instead of quietly
-      # shipping a lower badge. Floor lives in coverage-gate.sh only.
-      - bash .claude/scripts/coverage-gate.sh cobertura.xml
+      - task: coverage:gate
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
   coverage:gate:
-    desc: "Coverage floor gate: run the instrumented suite quietly (full output in target/coverage-gate.log), then fail below the floor (default in coverage-gate.sh; override via COVERAGE_FLOOR)."
+    # Full output lands in target/coverage-gate.log. The floor lives in
+    # coverage-gate.sh and nowhere else; override per-run with COVERAGE_FLOOR.
+    desc: "Run the instrumented suite and fail below the coverage floor."
     deps: [_check:tmp-headroom]
     cmds:
       # The instrumented run spews thousands of compile/test lines; keep the
@@ -241,15 +259,22 @@ tasks:
       - cargo audit
 
   audit:workflows:
-    desc: "Guard: GitHub workflow files pass actionlint + the job-timeout, gate-mirror, and cross-file lockstep audits (mirrors the CI actionlint job)."
+    # Mirrors ci.yml's `actionlint` job, which runs actionlint plus four audit
+    # scripts. Keep this list equal to that job's steps: JOB_MIRROR maps whole
+    # jobs to whole tasks, so a step present in the job and absent here is drift
+    # the gate-mirror audit cannot see, and CI goes red after a green gate.
+    desc: "Guard: workflows pass actionlint and the four workflow audits (mirrors the CI actionlint job)."
     cmds:
       - actionlint -color
       - task: audit:job-timeouts
       - task: audit:gate-mirror
       - task: audit:workflow-lockstep
+      - task: audit:doc-source-links
 
   audit:workflow-lockstep:
-    desc: "Guard: hand-synced workflow copies (shard roster, publish secret env, trigger gate, release/nightly mutex, bootstrap artifact, post-release gate) stay in lockstep."
+    # Covers the shard roster, publish secret env, trigger gate, release/nightly
+    # mutex, bootstrap artifact, and post-release gate.
+    desc: "Guard: hand-synced copies across workflow files stay in lockstep."
     cmds:
       - .claude/scripts/audit-workflow-lockstep.sh
 
@@ -279,7 +304,7 @@ tasks:
       - .claude/scripts/audit-job-timeouts.sh
 
   audit:repo-identity:
-    desc: "Guard: owner/repo slug + GitHub token resolve through their one canonical path (no ad-hoc remote re-parse / unfiltered token read)."
+    desc: "Guard: owner/repo slug and GitHub token resolve through one canonical path."
     cmds:
       - .claude/scripts/audit-repo-identity.sh
 
@@ -297,6 +322,21 @@ tasks:
     desc: "Guard: no source file carries more than 1000 lines of PRODUCTION code (test code never counts)."
     cmds:
       - .claude/scripts/audit-god-files.sh
+
+  audit:code:
+    # The convention guards, as one unit. They exist to hold a line no compiler
+    # checks, so every gate that can run them must run all of them — a guard
+    # wired into one entry point and not another is enforcement by luck.
+    desc: "Guard bundle: source and doc conventions."
+    cmds:
+      - task: audit:log
+      - task: audit:log-labels
+      - task: audit:test-isolation
+      - task: audit:test-spawn
+      - task: audit:repo-identity
+      - task: audit:doc-links
+      - task: audit:god-files
+      - task: audit:serial-groups
 
   audit:serial-groups:
     desc: "Guard: every #[serial] names its group (an unkeyed #[serial] does not serialise against any keyed one)."
@@ -319,7 +359,7 @@ tasks:
     # `<email>` / `<label>` is parsed as an HTML tag and swallows the text
     # after it, a bare URL renders as unclickable plain text, and a redundant
     # explicit target hides the fact that the short form already resolved.
-    desc: "Guard: every rustdoc intra-doc link resolves (dead links on docs.rs / the docs site are invisible without this)."
+    desc: "Guard: every rustdoc link resolves and renders (dead links are otherwise invisible)."
     deps: [_check:tmp-headroom]
     env:
       RUSTDOCFLAGS: >-
@@ -338,18 +378,8 @@ tasks:
       - task: clippy
       - task: build
       - task: snapshot
-      - task: audit:log
-      - task: audit:log-labels
-      - task: audit:test-isolation
-      - task: audit:test-spawn
-      - task: audit:job-timeouts
-      - task: audit:repo-identity
-      - task: audit:gate-mirror
-      - task: audit:workflow-lockstep
-      - task: audit:doc-source-links
-      - task: audit:doc-links
-      - task: audit:god-files
-      - task: audit:serial-groups
+      - task: audit:code
+      - task: audit:workflows
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
@@ -368,7 +398,7 @@ tasks:
     # local equivalent here (enforced by audit:gate-mirror). Slow by design
     # (the instrumented coverage run dominates); the snapshot step is the same
     # dry-run CI runs. `task ci` remains the fast inner-loop subset.
-    desc: "FULL local gate — mirrors EVERY blocking CI job (fmt, clippy, cargo-audit, test, package, docs-check, validate-readme, check-config, native-object-determinism, snapshot, coverage, actionlint). Slow; the pre-push floor."
+    desc: "Pre-push floor: every blocking CI job, mirrored locally. Slow."
     cmds:
       - task: ci                              # fmt:check, clippy, test, docs:check, package
       - task: audit:deps                      # cargo-audit
@@ -377,10 +407,11 @@ tasks:
       - task: check:native-object-determinism # native-object-determinism (windows-only; no-ops elsewhere)
       - task: snapshot                        # snapshot (dry-run)
       - task: audit:workflows                 # actionlint
+      - task: audit:code                      # convention guards (no CI job yet)
       - task: coverage:gate                   # coverage floor
 
   commit:
-    desc: "Lint (regenerates docs), restage only the user's intended files, then commit. Usage: task commit -- -m 'my message'"
+    desc: "Lint, restage only your intended files, commit. Usage: task commit -- -m 'msg'"
     preconditions:
       - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with git add before running task commit."
@@ -398,7 +429,7 @@ tasks:
       - git commit {{.CLI_ARGS}}
 
   push:
-    desc: "Full-gate push: runs task gate (every blocking CI job mirrored locally), then pushes. Usage: task push [-- <git push args>] (defaults to origin master)."
+    desc: "Run task gate, then push. Usage: task push [-- <git push args>] (default: origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.

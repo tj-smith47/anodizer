@@ -31,7 +31,7 @@ CLAUDE.local.md
 !.claude/scripts/audit-god-files.sh
 !.claude/scripts/audit-serial-groups.sh
 !.claude/scripts/test-os.sh
-!.claude/scripts/test-os-winserver.ps1
+!.claude/scripts/test-os-windows.ps1
 !.claude/scripts/test-os-suite.sh
 # Coverage artifact emitted by `task coverage:check`.
 cobertura.xml

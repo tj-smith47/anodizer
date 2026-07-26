@@ -726,8 +726,16 @@ pub(crate) fn archive_one_config(
                 let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
                 let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                // Duplicate archive name detection: prevent silent overwrites
-                if archive_path.exists() {
+                // Duplicate archive name detection: prevent silent overwrites.
+                // Real runs only — a dry-run writes nothing, so a file left by
+                // an earlier run is not a collision this run can cause. The
+                // check is also incapable of doing its stated job under
+                // dry-run: it detects a two-artifacts-one-name template by
+                // seeing the FIRST artifact on disk, and in dry-run no artifact
+                // is ever written, so it can fire on nothing but stale state.
+                // Leaving it unguarded made `task snapshot` fail after any real
+                // build populated dist/ — the gate refusing on prior output.
+                if !dry_run && archive_path.exists() {
                     bail!(
                         "archive named '{}' already exists. Check your archive name template.",
                         archive_filename
