@@ -5,7 +5,7 @@ use tera::TeraResult;
 
 use crate::env_source::{EnvSource, ProcessEnvSource};
 use crate::template_preprocess::{
-    preprocess, protect_shell_param_length, restore_shell_param_length,
+    check_balanced_parens, preprocess, protect_shell_param_length, restore_shell_param_length,
 };
 
 use super::base_tera::{BASE_TERA, translate_go_time_format};
@@ -156,6 +156,9 @@ pub fn render_with_env(
     vars: &TemplateVars,
     host_env: &dyn EnvSource,
 ) -> Result<String> {
+    // Runs against the source text so the diagnostic quotes what the author
+    // wrote, not a half-rewritten intermediate.
+    check_balanced_parens(template)?;
     // Shield bash `${#…}` from Tera's `{#` comment-open before parsing, so it
     // reaches the rendered output literally (GoReleaser's Go templates have no
     // such collision); the inverse restore runs on the rendered string below.

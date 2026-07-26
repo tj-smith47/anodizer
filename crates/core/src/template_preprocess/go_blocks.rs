@@ -6,7 +6,7 @@
 //! (`try_rewrite_control_block`) used by the positional pass.
 
 use super::dots_dollars::strip_dollar_vars;
-use super::positional::{try_rewrite_piped, try_rewrite_standalone};
+use super::positional::{rewrite_subexprs_only, try_rewrite_piped, try_rewrite_standalone};
 use super::static_regex;
 use super::tokens::{Token, significant_tokens, token_to_str, tokenize_block};
 use regex::Regex;
@@ -240,6 +240,8 @@ pub(super) fn extract_block_parts(block: &str) -> (&str, &str, &str) {
 /// - `{% if contains Version "rc" %}` → `{% if contains(s=Version, substr="rc") %}`
 /// - `{% if replace Tag "v" "" %}` → `{% if replace(s=Tag, old="v", new="") %}`
 /// - ` if Version | replace "v" "" ` → ` if Version | replace(from="v", to="") `
+/// - `{% if contains (tolower Os) "win" %}` →
+///   `{% if contains(s=(tolower(s=Os)), substr="win") %}`
 ///
 /// The approach: identify the block keyword (`if`, `elif`, etc.),
 /// then attempt positional rewriting on the expression that follows it.
@@ -275,25 +277,17 @@ pub(super) fn try_rewrite_control_block(inner: &str) -> Option<String> {
     // The expression portion is everything after the keyword.
     let expr_tokens: Vec<Token> = tokens[keyword_end_idx..].to_vec();
 
-    // Try standalone rewrite on the expression.
-    if let Some(rewritten) = try_rewrite_standalone(&expr_tokens) {
-        let prefix: String = tokens[..keyword_end_idx]
-            .iter()
-            .map(|t| token_to_str(t))
-            .collect();
-        return Some(format!("{}{}", prefix, rewritten));
-    }
+    // Standalone, then piped, then anything that merely carries a Go
+    // sub-expression (`{% if (isEnvSet "CI") %}`).
+    let rewritten = try_rewrite_standalone(&expr_tokens)
+        .or_else(|| try_rewrite_piped(&expr_tokens))
+        .or_else(|| rewrite_subexprs_only(&expr_tokens))?;
 
-    // Try piped rewrite on the expression.
-    if let Some(rewritten) = try_rewrite_piped(&expr_tokens) {
-        let prefix: String = tokens[..keyword_end_idx]
-            .iter()
-            .map(|t| token_to_str(t))
-            .collect();
-        return Some(format!("{}{}", prefix, rewritten));
-    }
-
-    None
+    let prefix: String = tokens[..keyword_end_idx]
+        .iter()
+        .map(|t| token_to_str(t))
+        .collect();
+    Some(format!("{}{}", prefix, rewritten))
 }
 
 #[cfg(test)]

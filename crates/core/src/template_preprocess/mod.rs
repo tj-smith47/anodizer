@@ -13,6 +13,7 @@
 //   `{{ .Now.Format "2006-01-02" }}` → `{{ Now | now_format(format="2006-01-02") }}`
 //   `{{ list.0 }}` → `{{ list[0] }}`
 
+use anyhow::{Result, bail};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -30,10 +31,11 @@ mod tests;
 
 use builtins::{preprocess_go_builtins, preprocess_list_subexpr};
 use dots_dollars::{preprocess_strip_dots, rewrite_numeric_index_segments};
-use go_blocks::preprocess_go_blocks;
+use go_blocks::{extract_block_parts, preprocess_go_blocks};
 use methods::preprocess_method_calls;
 use positional::{preprocess_map_syntax, preprocess_positional_syntax};
 pub(crate) use shell_guard::{protect_shell_param_length, restore_shell_param_length};
+use tokens::{ParenImbalance, paren_imbalance};
 
 /// Compile a regex from a static literal. Panics with a diagnostic if the
 /// literal fails to parse — only called from `LazyLock::new(…)` initializers,
@@ -50,6 +52,75 @@ fn static_regex(pattern: &str) -> Regex {
 /// `(?s)` lets `.` cross newlines: a multiline expression block (`{{\n x }}`)
 /// is valid tera and must receive every pass, not skip preprocessing.
 static GO_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"(?s)\{\{.*?\}\}|\{%.*?%\}"));
+
+/// Maximum bytes of a block quoted back in an imbalance diagnostic, so one
+/// runaway expression cannot spill an entire template into an error message.
+const MAX_BLOCK_SNIPPET: usize = 160;
+
+/// Reject a template whose `{{ … }}` / `{% … %}` blocks have unbalanced
+/// parentheses, before any pass tries to make sense of them.
+///
+/// A Go sub-expression argument (`{{ trimprefix (base Path) "v" }}`) is
+/// rewritten by descending into the balanced group; an unclosed group has no
+/// meaning in either Go or Tera, and the engine's own parse error points at the
+/// wrong token. Catching it here names the real problem.
+///
+/// Text between `{% raw %}` and `{% endraw %}` is skipped: it is emitted
+/// literally, so a template that deliberately quotes broken syntax must keep
+/// rendering.
+pub(crate) fn check_balanced_parens(template: &str) -> Result<()> {
+    let mut in_raw = false;
+    for m in GO_BLOCK_RE.find_iter(template) {
+        let block = m.as_str();
+        let (_, inner, _) = extract_block_parts(block);
+        match inner.trim() {
+            "raw" => {
+                in_raw = true;
+                continue;
+            }
+            "endraw" => {
+                in_raw = false;
+                continue;
+            }
+            _ => {}
+        }
+        if in_raw {
+            continue;
+        }
+        let Some(imbalance) = paren_imbalance(inner) else {
+            continue;
+        };
+        const PAREN_HINT: &str = "A sub-expression argument must open and close \
+             inside the same block — for example `trimprefix (base Path) \"v\"`.";
+        let detail = match imbalance {
+            ParenImbalance::Unclosed(1) => format!("1 unclosed `(`. {PAREN_HINT}"),
+            ParenImbalance::Unclosed(n) => format!("{n} unclosed `(`. {PAREN_HINT}"),
+            ParenImbalance::UnmatchedClose => format!("a `)` with no matching `(`. {PAREN_HINT}"),
+            ParenImbalance::UnterminatedString => "an unterminated string literal, so the rest \
+                 of the block — including any `)` — reads as string contents. A literal closes \
+                 at the next matching quote; a backslash does not escape it."
+                .to_string(),
+        };
+        bail!(
+            "unbalanced expression in template {}: {detail}",
+            quote_block(block)
+        );
+    }
+    Ok(())
+}
+
+/// Quote a block for a diagnostic, truncating on a char boundary so a very long
+/// expression (or a multibyte one) can neither flood nor panic the message.
+fn quote_block(block: &str) -> String {
+    if block.len() <= MAX_BLOCK_SNIPPET {
+        return format!("`{block}`");
+    }
+    let mut end = MAX_BLOCK_SNIPPET;
+    while end > 0 && !block.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("`{}…`", &block[..end])
+}
 
 /// Preprocess a template: convert Go-style syntax to Tera-native syntax.
 ///

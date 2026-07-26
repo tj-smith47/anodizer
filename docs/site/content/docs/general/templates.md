@@ -95,7 +95,16 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
 - **`$` variables** — `$myvar` Go locals are accepted.
 - **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
 - **`len`** — `{{ len .Tags }}` becomes `{{ Tags | length }}`.
-- **Positional function calls** — every helper in the [Functions and filters](#functions-and-filters) tables accepts its Go-style positional form (`{{ trimprefix Tag "v" }}`, `{{ sha256 ArtifactPath }}`, `{{ envOrDefault "CI" "no" }}`) and is mapped to Tera's named-argument form. The variadic builtins `map` `list` `printf` `print` `println` collect their trailing arguments into an array parameter; `slice X 0 7` becomes the piped filter `X | slice(start=0, end=7)`. A subexpression argument (`{{ trimprefix (base Path) "v" }}`) is not rewritten — pipe it instead.
+- **Positional function calls** — every helper in the [Functions and filters](#functions-and-filters) tables accepts its Go-style positional form (`{{ trimprefix Tag "v" }}`, `{{ sha256 ArtifactPath }}`, `{{ envOrDefault "CI" "no" }}`) and is mapped to Tera's named-argument form. The variadic builtins `map` `list` `printf` `print` `println` collect their trailing arguments into an array parameter; `slice X 0 7` becomes the piped filter `X | slice(start=0, end=7)`.
+- **Subexpression arguments** — a parenthesized Go call used as an argument is rewritten too, at any nesting depth, in every argument slot (including the variadic tail) and inside `{% if %}` / `{% for %}` conditions:
+
+  ```text
+  {{ trimprefix (base Path) "v" }}          → {{ trimprefix(s=(base(s=Path)), prefix="v") }}
+  {{ trimprefix (base (dir Path)) "v" }}    → {{ trimprefix(s=(base(s=(dir(s=Path)))), prefix="v") }}
+  {{ printf "%s-%s" (tolower Os) Arch }}    → {{ printf(format="%s-%s", args=[(tolower(s=Os)), Arch]) }}
+  ```
+
+  A parenthesis inside a string literal is string contents, never nesting, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups — rather than the engine's parse error, which points at the following token.
 - **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
 
 ```yaml
@@ -343,6 +352,7 @@ Examples below use the Tera-native no-dot idiom.
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
 | `list` | fn | `{{ list(items=[Os, Arch]) \| join(sep="-") }}` | `linux-amd64` |
+| `list` (rendered bare) | fn | `{{ list(items=["a", "b"]) }}` | `["a", "b"]` — see the note below |
 | `map` | fn | `{% set M = map(pairs=["a", 1]) %}{{ M.a }}` | `1` |
 | `index` | fn | `{{ index(collection=Parts, key=0) }}` | element at index |
 | `indexOrDefault` | fn | `{{ indexOrDefault(map=M, key="k", default="-") }}` | value or default |
@@ -350,6 +360,34 @@ Examples below use the Tera-native no-dot idiom.
 | `filter` | filter / fn | `{{ filter(items=Lines, regexp="^v") }}` | matching lines |
 | `reverseFilter` | filter / fn | `{{ reverseFilter(items=Lines, regexp="^#") }}` | non-matching lines |
 | `englishJoin` | filter / fn | `{{ englishJoin(items=Names) }}` | `a, b, and c` |
+
+#### Rendering an array directly
+
+A helper that returns an array — `list`, `split`, `filter`, `reverseFilter`, or a
+structured field — stringifies as a quoted, comma-separated array when it is
+interpolated without a joining filter. GoReleaser's Go templates print the same
+value as `[a b]`, so a config migrated verbatim produces different text:
+
+```text
+{{ list "a" "b" }}          → ["a", "b"]     (anodizer)
+{{ list "a" "b" }}          → [a b]          (GoReleaser)
+```
+
+The divergence is deliberate. `list` returns a real collection, which is what
+every non-degenerate use needs — `{{ if in (list "a" "b") Os }}`,
+`{% for x in list("a", "b") %}` — and producing Go's spacing would mean
+returning a pre-formatted *string* instead, breaking both. Rendering it as a
+collection also keeps it identical to every other array in the engine;
+special-casing `list` alone would leave `{{ list "a" "b" }}` and
+`{{ split "a.b" "." }}` printing two different shapes.
+
+Choose the separator explicitly whenever the value lands in consumer-visible
+text (a changelog entry, a release note, an announcement body):
+
+```yaml
+message_template: "built for {{ list(items=[Os, Arch]) | join(sep=\" \") }}"   # a b
+message_template: "built for {{ englishJoin(items=[Os, Arch]) }}"              # a and b
+```
 
 ### Semver
 

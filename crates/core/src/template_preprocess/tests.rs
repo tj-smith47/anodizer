@@ -315,11 +315,15 @@ fn test_preprocess_in_piped() {
 fn test_preprocess_list_subexpr_escaped_double_quotes_error_loudly() {
     // Under the engine's raw string rule `"hello \"` closes at the quote
     // right after the backslash — `\"` never embedded a quote, so this
-    // template was never valid. The pass must leave it unrewritten and let
-    // the engine error loudly, never silently reinterpret the boundaries.
+    // template was never valid. The sub-expression is passed through
+    // byte-for-byte (only the enclosing `in` call is rewritten), so the engine
+    // errors loudly instead of the pass silently reinterpreting the boundaries.
     use crate::template::{TemplateVars, render};
     let input = r#"{{ in (list "hello \"world\"" "plain") "plain" }}"#;
-    assert_eq!(preprocess(input), input);
+    assert_eq!(
+        preprocess(input),
+        r#"{{ in(items=(list "hello \"world\"" "plain"), value="plain") }}"#
+    );
     assert!(render(input, &TemplateVars::new()).is_err());
 }
 
@@ -824,11 +828,12 @@ fn test_go_style_full_pipeline_eq_and_map() {
     // Pass 2b rewrites `eq (index m "a") "1"` to `(index m "a") == "1"`.
     // Parens around `index m "a"` are kept (no comparison operator inside).
     // Pass 2c rewrites `map "a" "1"` to `map(pairs=["a", "1"])`.
-    // Note: `index m "a"` inside parens is NOT rewritten by Pass 3
-    // (positional rewriter only handles top-level standalone/piped forms).
+    // Pass 3 then descends into the surviving sub-expression, so the `index`
+    // call inside the parens reaches its named-arg form too.
     assert_eq!(
         result,
-        "{% set m = map(pairs=[\"a\", \"1\"]) %}{% if (index m \"a\") == \"1\" %}yes{% endif %}"
+        "{% set m = map(pairs=[\"a\", \"1\"]) %}\
+         {% if (index(collection=m, key=\"a\")) == \"1\" %}yes{% endif %}"
     );
 }
 
@@ -1282,4 +1287,255 @@ fn test_control_block_uses_extended_roster() {
         preprocess("{{ if isEnvSet \"CI\" }}yes{{ end }}"),
         "{% if isEnvSet(name=\"CI\") %}yes{% endif %}"
     );
+}
+
+// ---- Sub-expression arguments ----
+
+#[test]
+fn test_subexpr_argument_in_standalone_call() {
+    assert_eq!(
+        preprocess("{{ trimprefix (base .Path) \"v\" }}"),
+        "{{ trimprefix(s=(base(s=Path)), prefix=\"v\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ indexOrDefault (map \"k\" \"v\") \"k\" \"d\" }}"),
+        "{{ indexOrDefault(map=(map(pairs=[\"k\", \"v\"])), key=\"k\", default=\"d\") }}"
+    );
+}
+
+#[test]
+fn test_subexpr_argument_nests() {
+    assert_eq!(
+        preprocess("{{ trimprefix (base (dir .Path)) \"v\" }}"),
+        "{{ trimprefix(s=(base(s=(dir(s=Path)))), prefix=\"v\") }}"
+    );
+    assert_eq!(
+        preprocess("{{ toupper (trimprefix (base (dir .Path)) \"v\") }}"),
+        "{{ toupper(s=(trimprefix(s=(base(s=(dir(s=Path)))), prefix=\"v\"))) }}"
+    );
+}
+
+/// The variadic builtins collect their trailing args into an array, so a
+/// sub-expression in the final (unbounded) position has no arity to match
+/// against — it must still be rewritten in place.
+#[test]
+fn test_subexpr_in_variadic_tail() {
+    assert_eq!(
+        preprocess("{{ printf \"%s-%s\" (tolower .Os) (base .Path) }}"),
+        "{{ printf(format=\"%s-%s\", args=[(tolower(s=Os)), (base(s=Path))]) }}"
+    );
+    assert_eq!(
+        preprocess("{{ print (tolower .Os) }}"),
+        "{{ print(args=[(tolower(s=Os))]) }}"
+    );
+    assert_eq!(
+        preprocess("{{ println (tolower .Os) }}"),
+        "{{ println(args=[(tolower(s=Os))]) }}"
+    );
+    assert_eq!(
+        preprocess("{{ list (tolower \"A\") (toupper \"b\") }}"),
+        "{{ list(items=[(tolower(s=\"A\")), (toupper(s=\"b\"))]) }}"
+    );
+}
+
+/// `slice` becomes a piped filter, so its item argument is the pipe input.
+#[test]
+fn test_subexpr_as_slice_item() {
+    assert_eq!(
+        preprocess("{{ slice (base .Path) 0 7 }}"),
+        "{{ (base(s=Path)) | slice(start=0, end=7) }}"
+    );
+}
+
+#[test]
+fn test_subexpr_in_piped_call() {
+    // After the pipe (the filter's own argument).
+    assert_eq!(
+        preprocess("{{ .Version | replace (base .Path) \"-\" }}"),
+        "{{ Version | replace(from=(base(s=Path)), to=\"-\") }}"
+    );
+    // Before the pipe (the piped expression itself).
+    assert_eq!(
+        preprocess("{{ (base .Path) | trimprefix \"v\" }}"),
+        "{{ (base(s=Path)) | trimprefix(prefix=\"v\") }}"
+    );
+    // Before the pipe, with no rewritable filter after it.
+    assert_eq!(
+        preprocess("{{ (base .Path) | upper }}"),
+        "{{ (base(s=Path)) | upper }}"
+    );
+}
+
+#[test]
+fn test_subexpr_in_control_block() {
+    assert_eq!(
+        preprocess("{% if contains (tolower .Os) \"win\" %}W{% endif %}"),
+        "{% if contains(s=(tolower(s=Os)), substr=\"win\") %}W{% endif %}"
+    );
+    // The Go statement form reaches the same rewrite through Pass 0.
+    assert_eq!(
+        preprocess("{{ if contains (tolower .Os) \"win\" }}W{{ end }}"),
+        "{% if contains(s=(tolower(s=Os)), substr=\"win\") %}W{% endif %}"
+    );
+    // A sub-expression that is the whole condition.
+    assert_eq!(
+        preprocess("{% elif (isEnvSet \"CI\") %}C{% endif %}"),
+        "{% elif (isEnvSet(name=\"CI\")) %}C{% endif %}"
+    );
+}
+
+/// A sub-expression standing alone in a block has no enclosing call to trigger
+/// an arity match, so the fallback pass is what rewrites it.
+#[test]
+fn test_subexpr_standing_alone() {
+    assert_eq!(preprocess("{{ (tolower .Os) }}"), "{{ (tolower(s=Os)) }}");
+    assert_eq!(
+        preprocess("{{ (tolower .Os) ~ \"-\" ~ (base .Path) }}"),
+        "{{ (tolower(s=Os)) ~ \"-\" ~ (base(s=Path)) }}"
+    );
+}
+
+/// A parenthesis inside a string literal is string contents, never nesting.
+#[test]
+fn test_parens_inside_string_literals_do_not_nest() {
+    assert_eq!(
+        preprocess("{{ trimprefix (base \"x/(v9)\") \"(v\" }}"),
+        "{{ trimprefix(s=(base(s=\"x/(v9)\")), prefix=\"(v\") }}"
+    );
+    // Under the raw string rule the backslash does not escape the quote, so
+    // `"a\"` is a complete literal and the `)` that follows still closes the
+    // group.
+    assert_eq!(
+        preprocess("{{ toupper (trimprefix \"a\\\" \"a\") }}"),
+        "{{ toupper(s=(trimprefix(s=\"a\\\", prefix=\"a\"))) }}"
+    );
+}
+
+/// Tera's own named-arg call syntax must stay untouched: a `(` glued to an
+/// identifier opens a call, not a Go sub-expression.
+#[test]
+fn test_named_arg_calls_are_not_treated_as_subexpressions() {
+    for template in [
+        "{{ trimprefix(s=Path, prefix=\"v\") }}",
+        "{{ Version | replace(from=\"v\", to=\"\") }}",
+        "{{ trimprefix(s=base(s=Path), prefix=\"v\") }}",
+        "{{ printf(format=\"%s\", args=[tolower(s=Os)]) }}",
+    ] {
+        assert_eq!(preprocess(template), template);
+    }
+}
+
+/// Every rostered builtin accepts a sub-expression in its first positional
+/// slot. Derived from the roster tables so a builtin added later is covered
+/// without editing this test.
+#[test]
+fn test_every_rostered_builtin_accepts_a_subexpr_argument() {
+    use super::positional::positional_specs;
+
+    for (name, params) in positional_specs() {
+        let filler = vec!["\"x\""; params.len() - 1];
+        let mut call = format!("{{{{ {name} (tolower \"A\")");
+        for arg in &filler {
+            call.push(' ');
+            call.push_str(arg);
+        }
+        call.push_str(" }}");
+
+        let mut expected_params = vec![format!("{}=(tolower(s=\"A\"))", params[0])];
+        for (param, arg) in params[1..].iter().zip(filler.iter()) {
+            expected_params.push(format!("{param}={arg}"));
+        }
+        let expected = format!("{{{{ {name}({}) }}}}", expected_params.join(", "));
+
+        assert_eq!(preprocess(&call), expected, "builtin `{name}`");
+    }
+}
+
+// ---- Unbalanced expressions fail loudly ----
+
+#[test]
+fn test_unclosed_subexpr_is_reported_not_rewritten() {
+    let input = "{{ trimprefix (base \"dist/v1\" \"v\" }}";
+    // No rewrite may consume the rest of the block.
+    assert_eq!(preprocess(input), input);
+
+    let err = super::check_balanced_parens(input)
+        .expect_err("an unclosed group must be rejected")
+        .to_string();
+    assert!(err.contains("1 unclosed `(`"), "{err}");
+    assert!(err.contains(input), "{err}");
+    assert!(
+        err.contains("trimprefix (base Path)"),
+        "hint missing: {err}"
+    );
+}
+
+#[test]
+fn test_unmatched_close_paren_is_reported() {
+    let err = super::check_balanced_parens("{{ trimprefix base \"v\") }}")
+        .expect_err("a stray `)` must be rejected")
+        .to_string();
+    assert!(err.contains("no matching `(`"), "{err}");
+}
+
+#[test]
+fn test_multiple_unclosed_groups_are_counted() {
+    let err = super::check_balanced_parens("{{ toupper (trimprefix (base .Path \"v\" }}")
+        .expect_err("two unclosed groups must be rejected")
+        .to_string();
+    assert!(err.contains("2 unclosed `(`"), "{err}");
+}
+
+/// An odd quote count swallows the closing paren, so the literal is named as
+/// the cause rather than the paren count it produces.
+#[test]
+fn test_unterminated_string_literal_is_named_as_the_cause() {
+    let err = super::check_balanced_parens("{{ base (trimprefix \"a\\\"b/v1\" \"a\") }}")
+        .expect_err("an unterminated literal must be rejected")
+        .to_string();
+    assert!(err.contains("unterminated string literal"), "{err}");
+}
+
+#[test]
+fn test_balanced_expressions_pass_the_check() {
+    for template in [
+        "{{ Version }}",
+        "{{ trimprefix (base .Path) \"v\" }}",
+        "{{ trimprefix (base (dir .Path)) \"v\" }}",
+        "{{ trimprefix (base \"x/(v9)\") \"(v\" }}",
+        "{{ replace(s=Version, old=\"(\", new=\"\") }}",
+        "{{ \"a b\" }}",
+        "{% if contains (tolower .Os) \"win\" %}W{% endif %}",
+    ] {
+        assert!(
+            super::check_balanced_parens(template).is_ok(),
+            "rejected a balanced template: {template}"
+        );
+    }
+}
+
+/// Raw-escaped text is emitted literally, so quoting broken syntax inside it
+/// must keep rendering.
+#[test]
+fn test_raw_blocks_are_exempt_from_the_balance_check() {
+    let raw = "{% raw %}{{ trimprefix (base \"x\" }}{% endraw %}";
+    assert!(
+        super::check_balanced_parens(raw).is_ok(),
+        "raw block rejected"
+    );
+    // The exemption ends at `endraw`.
+    let after = "{% raw %}ok{% endraw %}{{ trimprefix (base \"x\" }}";
+    assert!(super::check_balanced_parens(after).is_err());
+}
+
+/// The diagnostic quotes the offending block, so a very long or multibyte
+/// expression must neither flood the message nor split a codepoint.
+#[test]
+fn test_imbalance_diagnostic_is_bounded_and_utf8_safe() {
+    let long = format!("{{{{ trimprefix (base \"{}\" }}}}", "日本語".repeat(80));
+    let err = super::check_balanced_parens(&long)
+        .expect_err("still unbalanced")
+        .to_string();
+    assert!(std::str::from_utf8(err.as_bytes()).is_ok());
+    assert!(err.contains('…'), "long block must be truncated: {err}");
 }
