@@ -47,13 +47,7 @@ fi
 # no longer holds an unkeyed attribute (it was converted — drop the entry) or if
 # any unlisted one appears. That blocks every NEW unkeyed attribute while the
 # remaining conversions land.
-SERIAL_PENDING=(
-    # crates/core/src/template/** was under concurrent edit when the rest of the
-    # tree was converted. Both are cwd readers (the tests' own comments say so)
-    # and want #[serial(cwd)].
-    "crates/core/src/template/tests.rs:3339"
-    "crates/core/src/template/tests.rs:3757"
-)
+SERIAL_PENDING=()
 
 all_unkeyed="$(grep -rnE "$UNKEYED_RE" crates/ --include='*.rs' || true)"
 
