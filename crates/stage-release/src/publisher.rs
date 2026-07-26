@@ -389,13 +389,15 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
         acc = preflight_merge(
             acc,
             repo_push_check(
-                &owner,
-                &repo,
-                &token,
-                &policy,
-                ctx.retry_deadline(),
+                &anodizer_core::git::GithubRepoProbe {
+                    owner: &owner,
+                    repo: &repo,
+                    token: Some(&token),
+                    policy: &policy,
+                    deadline: ctx.retry_deadline(),
+                    strict: ctx.preflight_is_strict(),
+                },
                 ctx.config.github_urls.as_ref(),
-                ctx.preflight_is_strict(),
                 ctx.env_source(),
                 &ctx.logger("preflight"),
             ),
@@ -409,21 +411,15 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
 /// the probe must contact the same host the release backend will
 /// (`github_urls.api` on GHES), not hardcoded github.com.
 /// See [`repo_push_check_at`] for the status/permission mapping.
-#[allow(clippy::too_many_arguments)]
 fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
-    owner: &str,
-    repo: &str,
-    token: &str,
-    policy: &anodizer_core::retry::RetryPolicy,
-    deadline: Option<std::time::Instant>,
+    probe: &anodizer_core::git::GithubRepoProbe<'_>,
     github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
-    strict: bool,
     env: &E,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
-    let url = format!("{base}/repos/{owner}/{repo}");
-    repo_push_check_at(&url, owner, repo, token, policy, deadline, strict, log)
+    let url = format!("{base}/repos/{}/{}", probe.owner, probe.repo);
+    repo_push_check_at(&url, probe, log)
 }
 
 /// `url`-taking core of [`repo_push_check`] so a unit test can drive the
@@ -443,25 +439,16 @@ fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
 ///   strict preflight)
 /// * 5xx / transport failure / unexpected status ⇒ Warning (Blocker under
 ///   strict preflight)
-#[allow(clippy::too_many_arguments)]
 fn repo_push_check_at(
     url: &str,
-    owner: &str,
-    repo: &str,
-    token: &str,
-    policy: &anodizer_core::retry::RetryPolicy,
-    deadline: Option<std::time::Instant>,
-    strict: bool,
+    probe: &anodizer_core::git::GithubRepoProbe<'_>,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
+    let (owner, repo) = (probe.owner, probe.repo);
     anodizer_core::git::github_repo_push_check(
         url,
-        owner,
-        repo,
-        Some(token),
-        policy,
-        deadline,
+        probe,
         anodizer_core::git::RepoAccessOutcomes {
             push_denied: PreflightCheck::Blocker(format!(
                 "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
@@ -474,7 +461,6 @@ fn repo_push_check_at(
                  cannot create the release"
             )),
         },
-        strict,
         log,
     )
 }
@@ -936,6 +922,22 @@ mod publisher_tests {
         }
     }
 
+    /// A non-strict `acme/widget` probe carrying `token` and no wall-clock
+    /// budget — the shape every status/permission-mapping test drives.
+    fn probe<'a>(
+        token: &'a str,
+        policy: &'a anodizer_core::retry::RetryPolicy,
+    ) -> anodizer_core::git::GithubRepoProbe<'a> {
+        anodizer_core::git::GithubRepoProbe {
+            owner: "acme",
+            repo: "widget",
+            token: Some(token),
+            policy,
+            deadline: None,
+            strict: false,
+        }
+    }
+
     fn http(status_line: &str, body: &str) -> &'static str {
         Box::leak(
             format!(
@@ -953,16 +955,7 @@ mod publisher_tests {
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
         assert!(matches!(
-            repo_push_check_at(
-                &url,
-                "acme",
-                "widget",
-                "tok",
-                &one_attempt_policy(),
-                None,
-                false,
-                tlog()
-            ),
+            repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()),
             PreflightCheck::Pass
         ));
     }
@@ -973,16 +966,7 @@ mod publisher_tests {
         let (addr, _c) =
             spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":false}}"#)]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(
-            &url,
-            "acme",
-            "widget",
-            "tok",
-            &one_attempt_policy(),
-            None,
-            false,
-            tlog(),
-        ) {
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
             PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
             _ => panic!("expected Blocker when permissions.push is false"),
         }
@@ -999,17 +983,7 @@ mod publisher_tests {
         let env = anodizer_core::MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
         assert!(matches!(
-            repo_push_check(
-                "acme",
-                "widget",
-                "tok",
-                &one_attempt_policy(),
-                None,
-                None,
-                false,
-                &env,
-                tlog()
-            ),
+            repo_push_check(&probe("tok", &one_attempt_policy()), None, &env, tlog()),
             PreflightCheck::Pass
         ));
         assert_eq!(
@@ -1033,13 +1007,8 @@ mod publisher_tests {
         };
         assert!(matches!(
             repo_push_check(
-                "acme",
-                "widget",
-                "tok",
-                &one_attempt_policy(),
-                None,
+                &probe("tok", &one_attempt_policy()),
                 Some(&urls),
-                false,
                 &anodizer_core::MapEnvSource::new(),
                 tlog(),
             ),
@@ -1058,16 +1027,7 @@ mod publisher_tests {
         // A 401 with no rate-limit header ⇒ the token cannot access the repo.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("401 Unauthorized", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(
-            &url,
-            "acme",
-            "widget",
-            "bad",
-            &one_attempt_policy(),
-            None,
-            false,
-            tlog(),
-        ) {
+        match repo_push_check_at(&url, &probe("bad", &one_attempt_policy()), tlog()) {
             PreflightCheck::Blocker(m) => assert!(m.contains("acme/widget"), "{m}"),
             _ => panic!("expected Blocker on a 401"),
         }
@@ -1095,16 +1055,7 @@ mod publisher_tests {
             "",
         )]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(
-            &url,
-            "acme",
-            "widget",
-            "tok",
-            &one_attempt_policy(),
-            None,
-            false,
-            tlog(),
-        ) {
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
             PreflightCheck::Warning(m) => assert!(m.contains("rate-limited"), "{m}"),
             other => panic!("rate-limited 403 must degrade to Warning, not {other:?}"),
         }
@@ -1118,16 +1069,7 @@ mod publisher_tests {
         // whose token is fine.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
-        match repo_push_check_at(
-            &url,
-            "acme",
-            "widget",
-            "tok",
-            &one_attempt_policy(),
-            None,
-            false,
-            tlog(),
-        ) {
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
             PreflightCheck::Warning(m) => assert!(m.contains("acme/widget"), "{m}"),
             other => panic!("inconclusive 5xx must degrade to Warning, not {other:?}"),
         }

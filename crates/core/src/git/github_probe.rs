@@ -129,6 +129,29 @@ pub struct RepoAccessOutcomes {
     pub missing_or_denied: PreflightCheck,
 }
 
+/// One GitHub repo push-probe: the coordinates, the credential, the retry
+/// budget (attempt ladder plus the invocation's wall-clock deadline) the
+/// probe must stay inside, and the strictness the outcome is graded under.
+///
+/// Bundled rather than passed loose because every preflight caller threads
+/// the identical set through a base-resolving outer layer down to a
+/// `url`-taking inner one, and each field is read by the outcome messages.
+#[derive(Clone, Copy)]
+pub struct GithubRepoProbe<'a> {
+    /// Repository owner (user or org) as it appears in the API path.
+    pub owner: &'a str,
+    /// Repository name as it appears in the API path.
+    pub repo: &'a str,
+    /// Bearer credential; `None` (or an empty string) probes unauthenticated.
+    pub token: Option<&'a str>,
+    /// Attempt ladder for the retriable arms (5xx / transport failures).
+    pub policy: &'a RetryPolicy,
+    /// The invocation's wall-clock budget; retries stop once it is spent.
+    pub deadline: Option<std::time::Instant>,
+    /// Strict preflight promotes every indeterminate outcome to a blocker.
+    pub strict: bool,
+}
+
 /// Probe `GET {url}` and map the outcome onto a [`PreflightCheck`].
 ///
 /// Builds the probe client, runs [`github_repo_probe`], and classifies:
@@ -136,25 +159,31 @@ pub struct RepoAccessOutcomes {
 /// * 200 + `permissions.push == true` ⇒ `Pass`
 /// * 200 + `permissions.push == false` ⇒ `outcomes.push_denied`
 /// * 200 + `permissions` absent / unparsable body ⇒ indeterminate —
-///   `Warning`, or `Blocker` when `strict`
+///   `Warning`, or `Blocker` when `probe.strict`
 /// * 404, or 401 / 403 without a rate-limit signal ⇒ `outcomes.missing_or_denied`
 /// * 429, or 401 / 403 carrying a rate-limit header ⇒ indeterminate (a
 ///   transient GitHub rate limit must not abort a release that would
-///   otherwise succeed) — `Warning`, or `Blocker` when `strict`
+///   otherwise succeed) — `Warning`, or `Blocker` when `probe.strict`
 /// * 5xx / transport failure / unexpected status ⇒ indeterminate — `Warning`,
-///   or `Blocker` when `strict`
-#[allow(clippy::too_many_arguments)]
+///   or `Blocker` when `probe.strict`
+///
+/// `url` stays a separate argument from `probe`: it is the one input that
+/// differs between a caller's base-resolving layer and its `url`-taking
+/// layer, which a unit test points at a local responder.
 pub fn github_repo_push_check(
     url: &str,
-    owner: &str,
-    repo: &str,
-    token: Option<&str>,
-    policy: &RetryPolicy,
-    deadline: Option<std::time::Instant>,
+    probe: &GithubRepoProbe<'_>,
     outcomes: RepoAccessOutcomes,
-    strict: bool,
     log: &StageLogger,
 ) -> PreflightCheck {
+    let GithubRepoProbe {
+        owner,
+        repo,
+        token,
+        policy,
+        deadline,
+        strict,
+    } = *probe;
     let client = match crate::http::blocking_client(REPO_PROBE_TIMEOUT) {
         Ok(c) => c,
         Err(e) => {

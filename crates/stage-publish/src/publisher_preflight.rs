@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use anodizer_core::PreflightCheck;
 use anodizer_core::context::Context;
+use anodizer_core::git::GithubRepoProbe;
 use anodizer_core::http::blocking_client;
 use anodizer_core::redact::redact_bearer_tokens;
 
@@ -424,24 +425,6 @@ pub(crate) fn reachability_outcome(
     }
 }
 
-/// One GitHub repo push-probe: the coordinates, the credential, and the
-/// retry budget (attempt ladder plus the invocation's wall-clock deadline)
-/// the probe must stay inside.
-///
-/// Bundled rather than passed loose because both the base-resolving
-/// [`github_repo_check`] and the `url`-taking [`github_repo_check_at`] need
-/// the identical set, and every field is read by the outcome messages.
-#[derive(Clone, Copy)]
-pub(crate) struct GithubRepoProbe<'a> {
-    pub owner: &'a str,
-    pub repo: &'a str,
-    pub token: Option<&'a str>,
-    pub policy: &'a RetryPolicy,
-    pub deadline: Option<std::time::Instant>,
-    /// Strict preflight promotes every indeterminate outcome to a blocker.
-    pub strict: bool,
-}
-
 /// Probe `GET {api_base}/repos/{owner}/{repo}` to prove the target
 /// index/fork repo exists and `token` can push to it, resolving the base
 /// through [`anodizer_core::http::github_api_base`] — the same resolver the
@@ -481,21 +464,10 @@ pub(crate) fn github_repo_check_at(
     probe: &GithubRepoProbe<'_>,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
-    let GithubRepoProbe {
-        owner,
-        repo,
-        token,
-        policy,
-        deadline,
-        strict,
-    } = *probe;
+    let (owner, repo) = (probe.owner, probe.repo);
     anodizer_core::git::github_repo_push_check(
         url,
-        owner,
-        repo,
-        token,
-        policy,
-        deadline,
+        probe,
         anodizer_core::git::RepoAccessOutcomes {
             // A tap/index the token cannot push to only degrades this one
             // publisher, so warn rather than block the whole release.
@@ -506,7 +478,6 @@ pub(crate) fn github_repo_check_at(
                 "index/fork repo {owner}/{repo} not found or token lacks read access"
             )),
         },
-        strict,
         log,
     )
 }
