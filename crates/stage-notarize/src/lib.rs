@@ -2,11 +2,11 @@
 //!
 //! Split into focused submodules:
 //!
-//! - [`secret`] — checksum refresh, skip/id gating, base64 secret
+//! - `secret` — checksum refresh, skip/id gating, base64 secret
 //!   materialization + arg redaction.
-//! - [`retry`] — notarytool / rcodesign invocation with bounded transient
+//! - `retry` — notarytool / rcodesign invocation with bounded transient
 //!   retry and output checking.
-//! - [`run`] — the cross-platform (rcodesign) and native (codesign + xcrun
+//! - `run` — the cross-platform (rcodesign) and native (codesign + xcrun
 //!   notarytool) per-config run paths.
 //!
 //! The [`NotarizeStage`] entry point and its [`Stage`] impl live here.

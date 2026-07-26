@@ -54,7 +54,7 @@ pub fn dmg_tool() -> Option<DmgTool> {
 /// - `size_mb`: explicit image size in whole MiB for `hdiutil` (ignored by
 ///   `genisoimage`/`mkisofs`, which grow their output dynamically). `None`
 ///   leaves `hdiutil` to auto-size from `-srcfolder` — see
-///   [`hdiutil_image_size_mb`] for why an explicit size is passed in production.
+///   `hdiutil_image_size_mb` for why an explicit size is passed in production.
 pub fn dmg_command(
     tool: DmgTool,
     vol_name: &str,

@@ -2,11 +2,11 @@
 //!
 //! Layout:
 //!
-//! - [`hashing`] — hash function wrappers (`sha1_file` … `md5_file`),
+//! - `hashing` — hash function wrappers (`sha1_file` … `md5_file`),
 //!   algorithm metadata (`SUPPORTED_ALGORITHMS`, `validate_algorithm`),
 //!   the dispatch entry point (`hash_file`), and the sidecar line
 //!   formatter (`format_checksum_line`).
-//! - [`run`] — `ChecksumStage` (pipeline integration) and
+//! - `run` — `ChecksumStage` (pipeline integration) and
 //!   `refresh_combined_checksums` (post-sign rewrite hook).
 
 mod hashing;

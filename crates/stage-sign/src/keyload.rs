@@ -49,7 +49,7 @@ pub enum CosignKeyLoad {
 /// Offline-verify that the cosign private key referenced by `key_ref` (e.g.
 /// `env://COSIGN_KEY`) loads with the resolved `COSIGN_PASSWORD`.
 ///
-/// Delegates to [`verify_cosign_key_loads_with_env`] with a
+/// Delegates to `verify_cosign_key_loads_with_env` with a
 /// [`ProcessEnvSource`], so the relevant secrets are resolved from the real
 /// process environment (the same secrets the preflight job already injects)
 /// and forwarded explicitly onto the spawned `cosign` command.

@@ -17,9 +17,9 @@ use anodizer_core::env_expand::expand_with_preserve;
 /// filter strings, in match-arm order.
 ///
 /// This is the single source of truth shared between the runtime resolver
-/// ([`should_sign_artifact`]) and the config-time validator
+/// (`should_sign_artifact`) and the config-time validator
 /// (`anodizer check config`). The `valid_filters_match_resolver` drift-guard
-/// test asserts every entry here is accepted by [`should_sign_artifact`] and
+/// test asserts every entry here is accepted by `should_sign_artifact` and
 /// that the resolver rejects anything not listed, so the two cannot diverge.
 pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
     "none",
@@ -116,7 +116,7 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
 
 /// File extensions an Authenticode (`artifacts: windows`) signer can sign.
 ///
-/// The `"windows"` kind pre-filter ([`should_sign_artifact`]) admits
+/// The `"windows"` kind pre-filter (`should_sign_artifact`) admits
 /// Binary/Installer/Library — but a Linux ELF is also `Binary`, so the
 /// final say is this extension check against the artifact's on-disk path.
 pub(crate) const WINDOWS_SIGNABLE_EXTENSIONS: &[&str] = &["exe", "msi", "dll"];

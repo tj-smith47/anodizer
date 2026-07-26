@@ -119,7 +119,7 @@ pub fn binary_signs_skipped(ctx: &Context) -> bool {
 /// bytes are exactly the bytes its `.sig` signs.
 ///
 /// Re-runs the SAME per-config signing the sign stage would (via
-/// [`process_sign_configs`] restricted to combined-checksum artifacts, reusing
+/// `process_sign_configs` restricted to combined-checksum artifacts, reusing
 /// the identical key-loading and signer invocation), overwriting each stale
 /// `.sig`/`.pem` in place. In per-crate / lockstep layouts every crate's own
 /// combined checksum is re-signed, because the match loop scans the whole
