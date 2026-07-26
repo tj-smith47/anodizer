@@ -111,7 +111,7 @@ fn hook_cmd_summary(cmd: &str) -> String {
     }
 }
 
-/// How [`run_hooks_inner`] surfaces the per-entry "ran <label> hook" result.
+/// How [`run_hooks_inner`] surfaces the per-entry `ran <label> hook` result.
 /// All three modes log exactly one line per executed entry; they differ only
 /// in level and wording so a caller that prints its own single summary line
 /// does not produce a second default-visible line for the same hook.

@@ -43,7 +43,7 @@ impl Stage for PrePublishGuardStage {
 }
 
 /// Resolver-injected guard body. Production passes
-/// [`resolve_crate_tag`](anodizer_core::crate_scope::resolve_crate_tag)
+/// [`resolve_crate_tag`]
 /// (git-backed); tests inject a closure that derives each crate's version
 /// without a git fixture, exactly as `stage-publish`'s schema validators do.
 fn run_guard(

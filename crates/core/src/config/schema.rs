@@ -174,14 +174,119 @@ fn sort_object_by_key(map: &mut serde_json::Map<String, serde_json::Value>) {
 /// blank-line paragraph breaks (`\n\n`). Reproduces the single-spaced,
 /// paragraph-separated form earlier schemars releases emitted, so the published
 /// schema's tooltips render as clean prose in editors.
-fn collapse_description(s: &str) -> String {
+///
+/// Fenced code blocks are exempt and keep their line breaks verbatim. A YAML
+/// example is made of its newlines: collapsing them yields one unreadable run-on
+/// line in every editor tooltip that renders the published schema, and in the
+/// generated config reference.
+#[must_use]
+pub fn collapse_description(s: &str) -> String {
+    let mut segments: Vec<String> = Vec::new();
+    let mut prose: Vec<&str> = Vec::new();
+    let mut fenced: Vec<&str> = Vec::new();
+    let mut in_fence = false;
+
+    let push_prose = |prose: &mut Vec<&str>, segments: &mut Vec<String>| {
+        if prose.is_empty() {
+            return;
+        }
+        let text = collapse_prose(&prose.join("\n"));
+        prose.clear();
+        if !text.is_empty() {
+            segments.push(text);
+        }
+    };
+
+    for line in s.split('\n') {
+        if line.trim_start().starts_with("```") {
+            if in_fence {
+                fenced.push(line);
+                segments.push(fenced.join("\n"));
+                fenced.clear();
+            } else {
+                push_prose(&mut prose, &mut segments);
+                fenced.push(line);
+            }
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            fenced.push(line);
+        } else {
+            prose.push(line);
+        }
+    }
+    // An unterminated fence is a malformed doc comment, not a reason to drop
+    // its lines: fall back to treating them as prose so nothing is swallowed.
+    prose.append(&mut fenced);
+    push_prose(&mut prose, &mut segments);
+
+    segments.join("\n\n")
+}
+
+/// Collapse a fence-free run of doc text: hard-wrapped lines within a paragraph
+/// join with single spaces, blank-line paragraph breaks survive.
+fn collapse_prose(s: &str) -> String {
     s.split("\n\n")
         .map(|para| {
             para.split('\n')
                 .map(str::trim)
                 .collect::<Vec<_>>()
                 .join(" ")
+                .trim()
+                .to_string()
         })
+        .filter(|para| !para.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_description;
+
+    #[test]
+    fn collapse_description_joins_hard_wrapped_lines_and_keeps_paragraphs() {
+        assert_eq!(
+            collapse_description("a doc comment\nwrapped by rustfmt\n\nsecond paragraph"),
+            "a doc comment wrapped by rustfmt\n\nsecond paragraph"
+        );
+    }
+
+    #[test]
+    fn collapse_description_preserves_fenced_block_line_breaks() {
+        let doc = "YAML examples:\n\n```yaml\nheader: \"inline\"\nheader:\n  from_file: ./H.md\n```\n\nBoth are rendered.";
+        assert_eq!(
+            collapse_description(doc),
+            "YAML examples:\n\n```yaml\nheader: \"inline\"\nheader:\n  from_file: ./H.md\n```\n\nBoth are rendered."
+        );
+    }
+
+    #[test]
+    fn collapse_description_still_collapses_prose_around_a_fence() {
+        let doc = "lead-in prose\nwrapped\n\n```yaml\na: 1\n```\n\ntrailing prose\nwrapped too";
+        assert_eq!(
+            collapse_description(doc),
+            "lead-in prose wrapped\n\n```yaml\na: 1\n```\n\ntrailing prose wrapped too"
+        );
+    }
+
+    #[test]
+    fn collapse_description_keeps_indentation_inside_a_fence() {
+        let doc = "```yaml\ncompletions:\n  generate: \"x\"\n  shells: [bash]\n```";
+        assert_eq!(
+            collapse_description(doc),
+            "```yaml\ncompletions:\n  generate: \"x\"\n  shells: [bash]\n```"
+        );
+    }
+
+    #[test]
+    fn collapse_description_treats_an_unterminated_fence_as_prose() {
+        // Malformed doc comment: dropping the lines would silently lose text,
+        // so they fall through to the prose path instead.
+        assert_eq!(
+            collapse_description("intro\n\n```yaml\na: 1\nb: 2"),
+            "intro\n\n```yaml a: 1 b: 2"
+        );
+    }
 }

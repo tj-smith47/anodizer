@@ -42,7 +42,7 @@ pub struct ChocolateyConfig {
     pub description: Option<String>,
     /// SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0").
     /// Not emitted as a nuspec element — Chocolatey CLI does not support the
-    /// NuGet `<license>` element (it warns CHCU0002: "use <licenseUrl>
+    /// NuGet `<license>` element (it warns CHCU0002: "use `<licenseUrl>`
     /// instead") — it gates the `<licenseUrl>` derivation: a single
     /// identifier derives a LICENSE blob URL; a compound expression has no
     /// single canonical file, so set `license_url` explicitly.
@@ -78,7 +78,7 @@ pub struct ChocolateyConfig {
     pub dependencies: Option<Vec<ChocolateyDependency>>,
     /// Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var.
     pub api_key: Option<String>,
-    /// Push source URL (default: "https://push.chocolatey.org/").
+    /// Push source URL (default: `https://push.chocolatey.org/`).
     pub source_repo: Option<String>,
     /// Skip pushing to the Chocolatey community repository. Bool, string, or
     /// template expression (e.g. `"{{ IsSnapshot }}"`). Accepts the legacy

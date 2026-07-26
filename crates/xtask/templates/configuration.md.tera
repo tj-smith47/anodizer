@@ -17,7 +17,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `{{ field.name }}` | {{ field.field_type }} | {{ field.default }} | {{ field.description }} |
 {% endfor -%}
 {% for section in nested_sections %}
-## `{{ section.name }}`
+## `{{ section.name }}` {{ section.anchor_attr }}
 {%- if section.description %}
 {{ section.description }}
 {%- endif %}

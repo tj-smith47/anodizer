@@ -213,7 +213,7 @@ impl Config {
             .unwrap_or(&[])
     }
 
-    /// First maintainer as "Name <email>" or just "Name" (publisher convention).
+    /// First maintainer as `Name <email>` or just `Name` (publisher convention).
     /// Returns None when no maintainers are configured.
     pub fn meta_first_maintainer(&self) -> Option<&str> {
         self.meta_maintainers().first().map(|s| s.as_str())
@@ -270,7 +270,7 @@ impl Config {
             .unwrap_or(&[])
     }
 
-    /// First maintainer for `crate_name` as "Name <email>" or just "Name".
+    /// First maintainer for `crate_name` as `Name <email>` or just `Name`.
     pub fn meta_first_maintainer_for(&self, crate_name: &str) -> Option<&str> {
         self.meta_maintainers_for(crate_name)
             .first()

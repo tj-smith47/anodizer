@@ -315,10 +315,19 @@ tasks:
     # public item linking to a private one. It resolves locally and passes the
     # broken-link check, then renders as dead text on docs.rs, where the target
     # is not published.
+    # The other three catch prose that only breaks once rendered: an unclosed
+    # `<email>` / `<label>` is parsed as an HTML tag and swallows the text
+    # after it, a bare URL renders as unclickable plain text, and a redundant
+    # explicit target hides the fact that the short form already resolved.
     desc: "Guard: every rustdoc intra-doc link resolves (dead links on docs.rs / the docs site are invisible without this)."
     deps: [_check:tmp-headroom]
     env:
-      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links
+      RUSTDOCFLAGS: >-
+        -D rustdoc::broken_intra_doc_links
+        -D rustdoc::private_intra_doc_links
+        -D rustdoc::invalid_html_tags
+        -D rustdoc::bare_urls
+        -D rustdoc::redundant_explicit_links
     cmds:
       - cargo doc --workspace --no-deps --document-private-items
 

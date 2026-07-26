@@ -681,16 +681,19 @@ impl ChecksumConfig {
 /// from a URL. Used for release header/footer values.
 ///
 /// YAML examples:
-///   header: "inline text"
-///   header:
-///     from_file: ./RELEASE_HEADER.md
-///   header:
-///     from_url: https://example.com/header.md
-///   header:
-///     from_url: https://example.com/header.md
-///     headers:
-///       X-API-Token: "{{ Env.API_TOKEN }}"
-///       Accept: "text/markdown"
+///
+/// ```yaml
+/// header: "inline text"
+/// header:
+///   from_file: ./RELEASE_HEADER.md
+/// header:
+///   from_url: https://example.com/header.md
+/// header:
+///   from_url: https://example.com/header.md
+///   headers:
+///     X-API-Token: "{{ Env.API_TOKEN }}"
+///     Accept: "text/markdown"
+/// ```
 ///
 /// Both `from_file` path and `from_url` URL are template-rendered before use.
 /// Header values are template-rendered.

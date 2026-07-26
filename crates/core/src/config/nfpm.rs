@@ -26,7 +26,7 @@ pub struct NfpmConfig {
     pub vendor: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
-    /// Package maintainer in "Name <email>" format.
+    /// Package maintainer in `Name <email>` format.
     pub maintainer: Option<String>,
     /// Package description (multiline supported).
     pub description: Option<String>,

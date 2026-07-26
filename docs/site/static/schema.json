@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "after": {
-      "description": "Hooks run after the release pipeline completes SUCCESSFULLY.\n\nA failed run never reaches them — route failure handling through `on_error:`, and teardown that must happen either way through `always:`.\n\nUse `--skip=after` to bypass — one token covers this block and every `crates[].after:` block.\n\n```yaml after: hooks: - cmd: ./notify-release-succeeded.sh ```",
+      "description": "Hooks run after the release pipeline completes SUCCESSFULLY.\n\nA failed run never reaches them — route failure handling through `on_error:`, and teardown that must happen either way through `always:`.\n\nUse `--skip=after` to bypass — one token covers this block and every `crates[].after:` block.\n\n```yaml\nafter:\n  hooks:\n    - cmd: ./notify-release-succeeded.sh\n```",
       "default": null,
       "anyOf": [
         {
@@ -17,7 +17,7 @@
       ]
     },
     "always": {
-      "description": "Hooks run LAST on every terminal path — the release's `finally`.\n\nOrdering: on success they run after `after:`; on failure they run after `on_error:`. They also fire on the one exit neither of those reaches — a `before:` hook that failed before the pipeline started. Use them for teardown that has to happen either way: removing a staging directory, releasing a lock, stopping a sidecar container.\n\nThey fire once per `anodizer release` / `anodizer build` invocation, pairing 1:1 with `before:` — including on each `--split` shard and on `--merge`, which are separate invocations that each run `before:` of their own.\n\nUse `--skip=always` to bypass. Skipping the `finally` lane is supported on purpose — `--skip=before` already suppresses the lane it pairs with — but the consequence is that teardown does not run, so anything the run staged stays staged.\n\nThe run's outcome is exposed as template vars (`{{ .Success }}`, `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`), so a hook can branch on the outcome and read the error text without interpolating untrusted text into the shell command. `ANODIZER_ERROR` is empty on success.\n\nA failing `always:` hook never masks a release failure: on the failure path it is logged as a warning and the original pipeline error is still what the run exits with. On the success path there is no error to mask, so the hook's own failure fails the run — the same contract `after:` has.\n\n```yaml always: hooks: - cmd: ./teardown-staging.sh ```",
+      "description": "Hooks run LAST on every terminal path — the release's `finally`.\n\nOrdering: on success they run after `after:`; on failure they run after `on_error:`. They also fire on the one exit neither of those reaches — a `before:` hook that failed before the pipeline started. Use them for teardown that has to happen either way: removing a staging directory, releasing a lock, stopping a sidecar container.\n\nThey fire once per `anodizer release` / `anodizer build` invocation, pairing 1:1 with `before:` — including on each `--split` shard and on `--merge`, which are separate invocations that each run `before:` of their own.\n\nUse `--skip=always` to bypass. Skipping the `finally` lane is supported on purpose — `--skip=before` already suppresses the lane it pairs with — but the consequence is that teardown does not run, so anything the run staged stays staged.\n\nThe run's outcome is exposed as template vars (`{{ .Success }}`, `{{ .Error }}`) and as `ANODIZER_*` env vars (`ANODIZER_SUCCESS`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`), so a hook can branch on the outcome and read the error text without interpolating untrusted text into the shell command. `ANODIZER_ERROR` is empty on success.\n\nA failing `always:` hook never masks a release failure: on the failure path it is logged as a warning and the original pipeline error is still what the run exits with. On the success path there is no error to mask, so the hook's own failure fails the run — the same contract `after:` has.\n\n```yaml\nalways:\n  hooks:\n    - cmd: ./teardown-staging.sh\n```",
       "default": null,
       "anyOf": [
         {
@@ -427,7 +427,7 @@
       }
     },
     "on_error": {
-      "description": "Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...). The pipeline holds on failure: published state is left exactly where the failed run put it, so `{{ .RolledBack }}` is always `false`. Recover by re-running the identical command (publishers reconcile against what already shipped and skip it), or withdraw the release deliberately with `anodizer tag rollback`.\n\nNotification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.\n\nUse `--skip=on-error` to bypass — one token covers this block and every `publish.on_error:` block.\n\n```yaml on_error: hooks: - cmd: ./notify-release-failed.sh ```",
+      "description": "Hooks run when the release pipeline fails at ANY stage (build, sign, publish, ...). The pipeline holds on failure: published state is left exactly where the failed run put it, so `{{ .RolledBack }}` is always `false`. Recover by re-running the identical command (publishers reconcile against what already shipped and skip it), or withdraw the release deliberately with `anodizer tag rollback`.\n\nNotification / cleanup hooks: a hook's own failure is logged as a warning and never masks the pipeline error. The failure context is exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`) and as `ANODIZER_*` env vars (`ANODIZER_ERROR`, `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so hooks can consume the error text without shell interpolation.\n\nUse `--skip=on-error` to bypass — one token covers this block and every `publish.on_error:` block.\n\n```yaml\non_error:\n  hooks:\n    - cmd: ./notify-release-failed.sh\n```",
       "default": null,
       "anyOf": [
         {
@@ -667,7 +667,7 @@
       "minimum": 0
     },
     "version_files": {
-      "description": "Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.\n\n```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ```",
+      "description": "Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.\n\n```yaml\nversion_files:\n  - charts/cfgd/Chart.yaml\n  - docs/installation.md\n```",
       "default": null,
       "type": [
         "array",
@@ -1042,7 +1042,7 @@
       "additionalProperties": false
     },
     "AppImageConfig": {
-      "description": "AppImage packaging configuration.\n\nDrives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.\n\nYAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: \"gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync\" runtime_harvest: command: \"{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}\" dir: runtime/ ```",
+      "description": "AppImage packaging configuration.\n\nDrives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.\n\nYAML:\n\n```yaml\nappimages:\n  - id: helix\n    ids: [helix-bin]\n    desktop: contrib/Helix.desktop\n    icon: contrib/helix.png\n    appdir_extra:\n      - src: runtime/\n        dst: usr/lib/helix/runtime\n    update_information: \"gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync\"\n    runtime_harvest:\n      command: \"{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}\"\n      dir: runtime/\n```",
       "type": "object",
       "properties": {
         "appdir_extra": {
@@ -1512,7 +1512,7 @@
           }
         },
         "exclude": {
-          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml artifactories: - target: \"https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}\" exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml\nartifactories:\n  - target: \"https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}\"\n    exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -1721,7 +1721,7 @@
       ]
     },
     "AttestationConfig": {
-      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).\n\nYAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```",
+      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).\n\nYAML:\n\n```yaml\nattestations:\n  enabled: true\n  mode: subjects          # or: emit ; default = subjects\n  artifacts: [archive, binary, checksum]\n```",
       "type": "object",
       "properties": {
         "artifacts": {
@@ -2370,7 +2370,7 @@
       "additionalProperties": false
     },
     "AuthenticodeConfig": {
-      "description": "Authenticode (Windows PE/MSI/DLL) signing backend for a [`SignConfig`].\n\nUnlike the generic cosign/gpg `signs:` path — which produces a *detached* `.sig` next to the artifact — Authenticode signing **embeds** the signature into the PE/MSI container, mutating the artifact in place. Downstream checksums and archives then pick up the signed bytes; no separate signature artifact is registered.\n\nEverything is derived so the opt-in is minimal — `authenticode: {}` plus a `WINDOWS_CERT_FILE` (and optional `WINDOWS_CERT_PASSWORD`) env var is enough:\n\n```yaml signs: - authenticode: {}   # signs every .exe/.msi/.dll via osslsigncode/signtool ```\n\nA fully-specified config overrides the derived defaults:\n\n```yaml signs: - id: authenticode authenticode: cert_file: \"{{ .Env.MY_CERT }}\"     # or cert_env: MY_CERT_PATH password_env: MY_CERT_PASSWORD timestamp_url: \"http://timestamp.sectigo.com\" name: \"Acme Corp\" url: \"https://acme.example\" tool: osslsigncode artifacts: windows required: true ```",
+      "description": "Authenticode (Windows PE/MSI/DLL) signing backend for a [`SignConfig`].\n\nUnlike the generic cosign/gpg `signs:` path — which produces a *detached* `.sig` next to the artifact — Authenticode signing **embeds** the signature into the PE/MSI container, mutating the artifact in place. Downstream checksums and archives then pick up the signed bytes; no separate signature artifact is registered.\n\nEverything is derived so the opt-in is minimal — `authenticode: {}` plus a `WINDOWS_CERT_FILE` (and optional `WINDOWS_CERT_PASSWORD`) env var is enough:\n\n```yaml\nsigns:\n  - authenticode: {}   # signs every .exe/.msi/.dll via osslsigncode/signtool\n```\n\nA fully-specified config overrides the derived defaults:\n\n```yaml\nsigns:\n  - id: authenticode\n    authenticode:\n      cert_file: \"{{ .Env.MY_CERT }}\"     # or cert_env: MY_CERT_PATH\n      password_env: MY_CERT_PASSWORD\n      timestamp_url: \"http://timestamp.sectigo.com\"\n      name: \"Acme Corp\"\n      url: \"https://acme.example\"\n      tool: osslsigncode\n      artifacts: windows\n      required: true\n```",
       "type": "object",
       "properties": {
         "artifacts": {
@@ -2476,7 +2476,7 @@
           ]
         },
         "enabled": {
-          "description": "When true, write `[package.metadata.binstall]` into the crate's Cargo.toml so `cargo binstall` can install prebuilt release archives.\n\n# Auto-derivation\n\nWith `enabled: true` and **no** `pkg_url` and **no** `overrides`, anodize fills in correct per-target metadata automatically: for every configured build target it emits an `overrides.<rust-triple>` whose `pkg_url` is the GitHub release download URL for that target's archive, with the asset name rendered through the *same* `archive.name_template` the archive stage uses (so the URL can never drift from the asset the release uploads) and the version positions expressed as cargo-binstall's own `{ version }` token. The matching `pkg_fmt` (`tar.gz`→`tgz`, `zip`→`zip`, …) is set per target.\n\n```yaml binstall: enabled: true   # nothing else required ```",
+          "description": "When true, write `[package.metadata.binstall]` into the crate's Cargo.toml so `cargo binstall` can install prebuilt release archives.\n\n# Auto-derivation\n\nWith `enabled: true` and **no** `pkg_url` and **no** `overrides`, anodize fills in correct per-target metadata automatically: for every configured build target it emits an `overrides.<rust-triple>` whose `pkg_url` is the GitHub release download URL for that target's archive, with the asset name rendered through the *same* `archive.name_template` the archive stage uses (so the URL can never drift from the asset the release uploads) and the version positions expressed as cargo-binstall's own `{ version }` token. The matching `pkg_fmt` (`tar.gz`→`tgz`, `zip`→`zip`, …) is set per target.\n\n```yaml\nbinstall:\n  enabled: true   # nothing else required\n```",
           "default": null,
           "type": [
             "boolean",
@@ -2603,7 +2603,7 @@
           ]
         },
         "exclude": {
-          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS blob target only (other destinations are unaffected). Use it to keep heavy sidecars off a mirror — e.g. checksums, signatures, and SBOMs — while archives still upload. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml blobs: - provider: s3 bucket: my-mirror exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS blob target only (other destinations are unaffected). Use it to keep heavy sidecars off a mirror — e.g. checksums, signatures, and SBOMs — while archives still upload. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml\nblobs:\n  - provider: s3\n    bucket: my-mirror\n    exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -3886,7 +3886,7 @@
           ]
         },
         "license": {
-          "description": "SPDX license expression (e.g. \"MIT\", \"Apache-2.0\", \"MIT OR Apache-2.0\"). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (it warns CHCU0002: \"use <licenseUrl> instead\") — it gates the `<licenseUrl>` derivation: a single identifier derives a LICENSE blob URL; a compound expression has no single canonical file, so set `license_url` explicitly.",
+          "description": "SPDX license expression (e.g. \"MIT\", \"Apache-2.0\", \"MIT OR Apache-2.0\"). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (it warns CHCU0002: \"use `<licenseUrl>` instead\") — it gates the `<licenseUrl>` derivation: a single identifier derives a LICENSE blob URL; a compound expression has no single canonical file, so set `license_url` explicitly.",
           "default": null,
           "type": [
             "string",
@@ -4021,7 +4021,7 @@
           ]
         },
         "source_repo": {
-          "description": "Push source URL (default: \"https://push.chocolatey.org/\").",
+          "description": "Push source URL (default: `https://push.chocolatey.org/`).",
           "default": null,
           "type": [
             "string",
@@ -4133,7 +4133,7 @@
           }
         },
         "exclude": {
-          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.\n\n```yaml cloudsmiths: - organization: my-org repository: my-repo exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.\n\n```yaml\ncloudsmiths:\n  - organization: my-org\n    repository: my-repo\n    exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -4173,7 +4173,7 @@
           ]
         },
         "keep_versions": {
-          "description": "Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.\n\nThis is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.\n\nAll package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.\n\nPruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.\n\nPrimarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).\n\n```yaml cloudsmiths: - organization: acme repository: tools keep_versions: 3   # keep the 3 newest releases, prune older ones ```",
+          "description": "Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.\n\nThis is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.\n\nAll package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.\n\nPruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.\n\nPrimarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).\n\n```yaml\ncloudsmiths:\n  - organization: acme\n    repository: tools\n    keep_versions: 3   # keep the 3 newest releases, prune older ones\n```",
           "type": [
             "integer",
             "null"
@@ -4343,7 +4343,7 @@
       "additionalProperties": false
     },
     "CompletionsConfig": {
-      "description": "Shell-completion generation for an archive entry.\n\nExactly one of `generate` / `from_build_out` / `copy` must be set (validated at deserialize time). Setting none is a no-op; setting more than one is a config error.\n\nYAML examples: ```yaml completions: generate: \"{{ ArtifactPath }} completions {{ Shell }}\"   # mode A shells: [bash, zsh, fish, powershell, nushell, elvish] dst: \"completions/\" # mode B: from_build_out: \"**/out/{{ Binary }}.{bash,fish}\" # mode C: copy: \"contrib/completion/*\" ```\n\n`{{ Binary }}` resolves to the host-native binary's recorded name; when no host artifact exists (modes B/C on a pure cross build) it falls back to the crate name. If your binary name differs from the crate name, spell it literally in the glob rather than relying on `{{ Binary }}` in that case.",
+      "description": "Shell-completion generation for an archive entry.\n\nExactly one of `generate` / `from_build_out` / `copy` must be set (validated at deserialize time). Setting none is a no-op; setting more than one is a config error.\n\nYAML examples:\n\n```yaml\ncompletions:\n  generate: \"{{ ArtifactPath }} completions {{ Shell }}\"   # mode A\n  shells: [bash, zsh, fish, powershell, nushell, elvish]\n  dst: \"completions/\"\n# mode B: from_build_out: \"**/out/{{ Binary }}.{bash,fish}\"\n# mode C: copy: \"contrib/completion/*\"\n```\n\n`{{ Binary }}` resolves to the host-native binary's recorded name; when no host artifact exists (modes B/C on a pure cross build) it falls back to the crate name. If your binary name differs from the crate name, spell it literally in the glob rather than relying on `{{ Binary }}` in that case.",
       "type": "object",
       "properties": {
         "copy": {
@@ -4434,7 +4434,7 @@
       "additionalProperties": false
     },
     "ContentSource": {
-      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered.",
+      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples:\n\n```yaml\nheader: \"inline text\"\nheader:\n  from_file: ./RELEASE_HEADER.md\nheader:\n  from_url: https://example.com/header.md\nheader:\n  from_url: https://example.com/header.md\n  headers:\n    X-API-Token: \"{{ Env.API_TOKEN }}\"\n    Accept: \"text/markdown\"\n```\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered.",
       "anyOf": [
         {
           "type": "string"
@@ -5286,7 +5286,7 @@
           ]
         },
         "server": {
-          "description": "Discourse forum URL (e.g. \"https://forum.example.com\").",
+          "description": "Discourse forum URL (e.g. `https://forum.example.com`).",
           "default": null,
           "type": [
             "string",
@@ -6181,7 +6181,7 @@
       ]
     },
     "EnvFilesConfig": {
-      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form**: paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
+      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE.\n\n  ```yaml\n  env_files:\n    - .env\n    - .release.env\n  ```\n\n- **Struct form**: paths to files containing provider tokens.\n\n  ```yaml\n  env_files:\n    github_token: ~/.config/goreleaser/github_token\n    gitlab_token: ~/.config/goreleaser/gitlab_token\n    gitea_token: ~/.config/goreleaser/gitea_token\n  ```",
       "anyOf": [
         {
           "description": "List of `.env` file paths to load (KEY=VALUE format).",
@@ -6490,7 +6490,7 @@
           ]
         },
         "exclude": {
-          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.\n\n```yaml gemfury: - account: my-account exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.\n\n```yaml\ngemfury:\n  - account: my-account\n    exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -7815,11 +7815,11 @@
       ]
     },
     "HomebrewCoreConfig": {
-      "description": "homebrew-core formula-bump publisher configuration.\n\nBumps an EXISTING formula in `Homebrew/homebrew-core` (or any formula repository override) purely through the GitHub API — no clone, no `brew` invocation. The formula file's `url` (or `tag:`/`revision:` pair), `sha256`, and `version` stanzas are rewritten to the new release, the change is committed to a branch, and a pull request is opened against the formula repository. Each `homebrew_cores[]` entry bumps one formula.\n\nEvery field is optional: the formula name defaults to the crate name, the target repository defaults to `Homebrew/homebrew-core`, the formula path defaults to the sharded core layout (`Formula/<letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb`), and the download URL defaults to the GitHub source tarball for the release tag.\n\n```yaml homebrew_cores: - name: my-tool ```",
+      "description": "homebrew-core formula-bump publisher configuration.\n\nBumps an EXISTING formula in `Homebrew/homebrew-core` (or any formula repository override) purely through the GitHub API — no clone, no `brew` invocation. The formula file's `url` (or `tag:`/`revision:` pair), `sha256`, and `version` stanzas are rewritten to the new release, the change is committed to a branch, and a pull request is opened against the formula repository. Each `homebrew_cores[]` entry bumps one formula.\n\nEvery field is optional: the formula name defaults to the crate name, the target repository defaults to `Homebrew/homebrew-core`, the formula path defaults to the sharded core layout (`Formula/<letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb`), and the download URL defaults to the GitHub source tarball for the release tag.\n\n```yaml\nhomebrew_cores:\n  - name: my-tool\n```",
       "type": "object",
       "properties": {
         "commit_author": {
-          "description": "Commit author for the formula-bump commit, with optional signing. Its `use_github_app_token` is the canonical homebrew-core knob: when set, the `author`/`committer` fields are omitted from the contents-API commit so GitHub attributes it to the token's own account — the `<app-slug>[bot]` identity a GitHub App workflow needs to satisfy homebrew-core's DCO/CLA policy. Otherwise the resolved `name`/`email` (config → local git identity → the anodizer default) author the commit.\n\nNote: `signing` has no effect here — formula bumps commit through the GitHub contents API, which GitHub signs server-side; the git `-c commit.gpgsign` path the tap/winget/krew publishers use does not apply.\n\n```yaml homebrew_cores: - commit_author: use_github_app_token: true ```",
+          "description": "Commit author for the formula-bump commit, with optional signing. Its `use_github_app_token` is the canonical homebrew-core knob: when set, the `author`/`committer` fields are omitted from the contents-API commit so GitHub attributes it to the token's own account — the `<app-slug>[bot]` identity a GitHub App workflow needs to satisfy homebrew-core's DCO/CLA policy. Otherwise the resolved `name`/`email` (config → local git identity → the anodizer default) author the commit.\n\nNote: `signing` has no effect here — formula bumps commit through the GitHub contents API, which GitHub signs server-side; the git `-c commit.gpgsign` path the tap/winget/krew publishers use does not apply.\n\n```yaml\nhomebrew_cores:\n  - commit_author:\n      use_github_app_token: true\n```",
           "default": null,
           "anyOf": [
             {
@@ -7902,7 +7902,7 @@
           ]
         },
         "repository": {
-          "description": "Target formula repository. Defaults to `Homebrew/homebrew-core`. Carries the auth token override (`repository.token`), the base branch (`repository.branch`, default: the repo's default branch), and PR settings (`repository.pull_request.draft` / `.body`).\n\n```yaml homebrew_cores: - repository: { owner: my-org, name: my-formulas } ```",
+          "description": "Target formula repository. Defaults to `Homebrew/homebrew-core`. Carries the auth token override (`repository.token`), the base branch (`repository.branch`, default: the repo's default branch), and PR settings (`repository.pull_request.draft` / `.body`).\n\n```yaml\nhomebrew_cores:\n  - repository: { owner: my-org, name: my-formulas }\n```",
           "default": null,
           "anyOf": [
             {
@@ -7996,7 +7996,7 @@
       "additionalProperties": false
     },
     "HomebrewLivecheck": {
-      "description": "`livecheck` stanza configuration for a Homebrew formula.\n\nDefault (the struct absent from config): the formula emits a `livecheck { skip \"Auto-generated on release.\" }` block — correct for a binary tap whose archive URL/sha256 are rewritten every release. To opt into active version polling, set `skip: false` and a `strategy:` (and optionally `url:` / `regex:`):\n\n```yaml livecheck: strategy: github_latest ```\n\nrenders:\n\n```ruby livecheck do url :stable strategy :github_latest end ```",
+      "description": "`livecheck` stanza configuration for a Homebrew formula.\n\nDefault (the struct absent from config): the formula emits a `livecheck { skip \"Auto-generated on release.\" }` block — correct for a binary tap whose archive URL/sha256 are rewritten every release. To opt into active version polling, set `skip: false` and a `strategy:` (and optionally `url:` / `regex:`):\n\n```yaml\nlivecheck:\n  strategy: github_latest\n```\n\nrenders:\n\n```ruby\nlivecheck do\n  url :stable\n  strategy :github_latest\nend\n```",
       "type": "object",
       "properties": {
         "regex": {
@@ -8102,7 +8102,7 @@
       "additionalProperties": false
     },
     "IncludeSpec": {
-      "description": "An include specification: either a plain path string or a structured from_file/from_url.\n\nYAML examples: ```yaml includes: - ./defaults.yaml                           # plain string (backward compat) - from_file: path: ./config/release.yaml              # structured file path - from_url: url: https://example.com/config.yaml     # URL fetch headers: x-api-token: \"${MYCOMPANY_TOKEN}\"       # env var expansion in headers ```",
+      "description": "An include specification: either a plain path string or a structured from_file/from_url.\n\nYAML examples:\n\n```yaml\nincludes:\n  - ./defaults.yaml                           # plain string (backward compat)\n  - from_file:\n      path: ./config/release.yaml              # structured file path\n  - from_url:\n      url: https://example.com/config.yaml     # URL fetch\n      headers:\n        x-api-token: \"${MYCOMPANY_TOKEN}\"       # env var expansion in headers\n```",
       "anyOf": [
         {
           "description": "Plain string path (backward compatible): \"path/to/file.yaml\"",
@@ -9036,7 +9036,7 @@
       "additionalProperties": false
     },
     "ManpagesConfig": {
-      "description": "Man-page generation for an archive entry.\n\nSame three mutually-exclusive modes as [`CompletionsConfig`], minus the per-shell `shells` axis (man pages are shell-agnostic).\n\nYAML examples: ```yaml manpages: generate: \"{{ ArtifactPath }} --man\"     # mode A dst: \"man/man1/\" # mode B: from_build_out: \"**/out/{{ Binary }}.1\" # mode C: copy: \"man/*.1\" ```",
+      "description": "Man-page generation for an archive entry.\n\nSame three mutually-exclusive modes as [`CompletionsConfig`], minus the per-shell `shells` axis (man pages are shell-agnostic).\n\nYAML examples:\n\n```yaml\nmanpages:\n  generate: \"{{ ArtifactPath }} --man\"     # mode A\n  dst: \"man/man1/\"\n# mode B: from_build_out: \"**/out/{{ Binary }}.1\"\n# mode C: copy: \"man/*.1\"\n```",
       "type": "object",
       "properties": {
         "copy": {
@@ -9098,7 +9098,7 @@
           ]
         },
         "server": {
-          "description": "Mastodon instance URL (e.g. \"https://mastodon.social\").",
+          "description": "Mastodon instance URL (e.g. `https://mastodon.social`).",
           "default": null,
           "type": [
             "string",
@@ -10110,7 +10110,7 @@
           ]
         },
         "maintainer": {
-          "description": "Package maintainer in \"Name <email>\" format.",
+          "description": "Package maintainer in `Name <email>` format.",
           "default": null,
           "type": [
             "string",
@@ -10126,7 +10126,7 @@
           ]
         },
         "msix": {
-          "description": "MSIX-specific configuration (Windows app packages).\n\nOnly consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.\n\n```yaml msix: publisher: \"CN=My Company, O=My Company, C=US\" properties: logo: assets/logo.png applications: - id: MyApp executable: myapp.exe ```",
+          "description": "MSIX-specific configuration (Windows app packages).\n\nOnly consumed when `formats` includes `msix`. nfpm requires `publisher`, `properties.logo`, and at least one `applications` entry; everything else has derived defaults.\n\n```yaml\nmsix:\n  publisher: \"CN=My Company, O=My Company, C=US\"\n  properties:\n    logo: assets/logo.png\n  applications:\n    - id: MyApp\n      executable: myapp.exe\n```",
           "default": null,
           "anyOf": [
             {
@@ -12191,7 +12191,7 @@
           ]
         },
         "message_template": {
-          "description": "HTML message template for the update. Default includes <br/> and <a> tags with ReleaseURL.",
+          "description": "HTML message template for the update. Default includes `<br/>` and `<a>` tags with ReleaseURL.",
           "default": null,
           "type": [
             "string",
@@ -12516,7 +12516,7 @@
           ]
         },
         "on_error": {
-          "description": "Hooks that fire once per FAILED publisher. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RolledBack }}` — always `false` during a release, which never withdraws anything on its own; withdrawal is `anodizer tag rollback` — and `{{ .RunReport }}`, the path of this run's already-written `dist/run-<id>/report.json` (per-publisher outcomes including rollback results; empty in snapshot/dry-run or when the report could not be persisted). The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`, `ANODIZER_RUN_REPORT`. A hook's own failure is logged as a warning and never changes the release outcome.\n\nSecurity: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the text is sent literally rather than Tera-rendered. The outbound notification body is secret-redacted by default, so a secret reference smuggled into the error body is masked (sent as `$NAME`) even without `--raw`; `--raw` stays recommended because it avoids re-rendering already-final text and keeps untrusted content out of the shell-parsed `cmd` string:\n\n```yaml publish: on_error: - cmd: 'anodizer notify --raw \"anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR\"' ```",
+          "description": "Hooks that fire once per FAILED publisher. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RolledBack }}` — always `false` during a release, which never withdraws anything on its own; withdrawal is `anodizer tag rollback` — and `{{ .RunReport }}`, the path of this run's already-written `dist/run-<id>/report.json` (per-publisher outcomes including rollback results; empty in snapshot/dry-run or when the report could not be persisted). The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`, `ANODIZER_RUN_REPORT`. A hook's own failure is logged as a warning and never changes the release outcome.\n\nSecurity: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the text is sent literally rather than Tera-rendered. The outbound notification body is secret-redacted by default, so a secret reference smuggled into the error body is masked (sent as `$NAME`) even without `--raw`; `--raw` stays recommended because it avoids re-rendering already-final text and keeps untrusted content out of the shell-parsed `cmd` string:\n\n```yaml\npublish:\n  on_error:\n    - cmd: 'anodizer notify --raw \"anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR\"'\n```",
           "default": null,
           "type": [
             "array",
@@ -12527,7 +12527,7 @@
           }
         },
         "on_rollback": {
-          "description": "Hooks that fire once per publisher `anodizer tag rollback` REVERTED — including a publisher that itself `Succeeded` and is being withdrawn because the whole release is (the case `on_error`, which fires solely for a failed publisher, never reaches). A publisher whose rollback was attempted but could not complete fires this too, with `{{ .RollbackFailed }}` set to `true` so the hook can escalate the orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}` (`true` when the revert itself failed), `{{ .Error }}` (the rollback failure message, empty on a clean revert), and `{{ .Reason }}` (the trigger cause, distinct from `{{ .Error }}` — empty here, because the unwind replays state a prior process persisted). The same values are exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and `ANODIZER_ROLLBACK_REASON`. A hook's own failure is logged as a warning and never changes the release outcome or aborts the remaining rollbacks. It is independent of `on_error`: a publisher that both failed and was rolled back fires both.\n\n```yaml publish: on_rollback: - cmd: 'anodizer notify --raw \"anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)\"' ```",
+          "description": "Hooks that fire once per publisher `anodizer tag rollback` REVERTED — including a publisher that itself `Succeeded` and is being withdrawn because the whole release is (the case `on_error`, which fires solely for a failed publisher, never reaches). A publisher whose rollback was attempted but could not complete fires this too, with `{{ .RollbackFailed }}` set to `true` so the hook can escalate the orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}` (`true` when the revert itself failed), `{{ .Error }}` (the rollback failure message, empty on a clean revert), and `{{ .Reason }}` (the trigger cause, distinct from `{{ .Error }}` — empty here, because the unwind replays state a prior process persisted). The same values are exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and `ANODIZER_ROLLBACK_REASON`. A hook's own failure is logged as a warning and never changes the release outcome or aborts the remaining rollbacks. It is independent of `on_error`: a publisher that both failed and was rolled back fires both.\n\n```yaml\npublish:\n  on_rollback:\n    - cmd: 'anodizer notify --raw \"anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)\"'\n```",
           "default": null,
           "type": [
             "array",
@@ -12945,7 +12945,7 @@
       ]
     },
     "PypiConfig": {
-      "description": "PyPI publisher configuration.\n\nPublishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (glibc floor for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.\n\n```yaml pypis: - name: my-tool requires_python: \">=3.7\" sdist: true sdist_manifest: \"pypi/\" ```",
+      "description": "PyPI publisher configuration.\n\nPublishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (glibc floor for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.\n\n```yaml\npypis:\n  - name: my-tool\n    requires_python: \">=3.7\"\n    sdist: true\n    sdist_manifest: \"pypi/\"\n```",
       "type": "object",
       "properties": {
         "amd64_variant": {
@@ -13056,7 +13056,7 @@
           ]
         },
         "index_url": {
-          "description": "Templated twine upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:\n\n```yaml pypis: - index_url: \"https://test.pypi.org/legacy/\" ```\n\nThis is the twine *upload* target, not a `{owner, name}` source repository — the name `index_url` keeps it distinct from the reserved `repository` meaning every git-based publisher uses. The legacy `repository:` spelling is still accepted via serde alias.",
+          "description": "Templated twine upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:\n\n```yaml\npypis:\n  - index_url: \"https://test.pypi.org/legacy/\"\n```\n\nThis is the twine *upload* target, not a `{owner, name}` source repository — the name `index_url` keeps it distinct from the reserved `repository` meaning every git-based publisher uses. The legacy `repository:` spelling is still accepted via serde alias.",
           "default": null,
           "type": [
             "string",
@@ -13091,7 +13091,7 @@
           ]
         },
         "platform_tag_overrides": {
-          "description": "Per-target-triple wheel platform-tag overrides: `<target triple>` → explicit wheel platform tag. When a built target has an entry, its tag is used *verbatim* — binary inspection (the glibc floor for `manylinux`, the Mach-O deployment target for `macosx`) is skipped for that target. Every target without an entry keeps the auto-detected tag.\n\nThe escape hatch for toolchains whose emitted glibc floor is stricter than the compatibility a project wants to advertise — e.g. pinning `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a `maturin`/PyO3 build environment rather than shipping the higher floor the binary's symbols imply.\n\n```yaml pypis: - platform_tag_overrides: aarch64-unknown-linux-gnu: manylinux_2_28_aarch64 ```",
+          "description": "Per-target-triple wheel platform-tag overrides: `<target triple>` → explicit wheel platform tag. When a built target has an entry, its tag is used *verbatim* — binary inspection (the glibc floor for `manylinux`, the Mach-O deployment target for `macosx`) is skipped for that target. Every target without an entry keeps the auto-detected tag.\n\nThe escape hatch for toolchains whose emitted glibc floor is stricter than the compatibility a project wants to advertise — e.g. pinning `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a `maturin`/PyO3 build environment rather than shipping the higher floor the binary's symbols imply.\n\n```yaml\npypis:\n  - platform_tag_overrides:\n      aarch64-unknown-linux-gnu: manylinux_2_28_aarch64\n```",
           "default": null,
           "type": [
             "object",
@@ -13102,7 +13102,7 @@
           }
         },
         "project_urls": {
-          "description": "Arbitrary `Project-URL` label → URL map, one `Project-URL: <label>, <url>` METADATA header each (the PyPI sidebar links). Emitted in addition to the `Homepage` link derived from `homepage`; use this for `Repository`, `Documentation`, `Changelog`, `Funding`, etc. Rendered in sorted label order for a byte-stable wheel.\n\n```yaml pypis: - project_urls: Repository: \"https://github.com/me/my-tool\" Documentation: \"https://docs.example.com\" ```",
+          "description": "Arbitrary `Project-URL` label → URL map, one `Project-URL: <label>, <url>` METADATA header each (the PyPI sidebar links). Emitted in addition to the `Homepage` link derived from `homepage`; use this for `Repository`, `Documentation`, `Changelog`, `Funding`, etc. Rendered in sorted label order for a byte-stable wheel.\n\n```yaml\npypis:\n  - project_urls:\n      Repository: \"https://github.com/me/my-tool\"\n      Documentation: \"https://docs.example.com\"\n```",
           "default": null,
           "type": [
             "object",
@@ -13136,7 +13136,7 @@
           ]
         },
         "sdist": {
-          "description": "Also build and upload a source distribution via `maturin sdist`. Default `false`. Requires `sdist_manifest` to point at the directory containing the project's `pyproject.toml`, and `maturin` on `PATH`.\n\n```yaml pypis: - sdist: true sdist_manifest: \"pypi/\" ```",
+          "description": "Also build and upload a source distribution via `maturin sdist`. Default `false`. Requires `sdist_manifest` to point at the directory containing the project's `pyproject.toml`, and `maturin` on `PATH`.\n\n```yaml\npypis:\n  - sdist: true\n    sdist_manifest: \"pypi/\"\n```",
           "default": false,
           "type": "boolean"
         },
@@ -13273,7 +13273,7 @@
           ]
         },
         "exclude": {
-          "description": "Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml release: github: { owner: my-org, name: my-repo } exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml\nrelease:\n  github: { owner: my-org, name: my-repo }\n  exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -13431,7 +13431,7 @@
           ]
         },
         "provider": {
-          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml release: provider: github github: owner: my-org name: my-app ```",
+          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml\nrelease:\n  provider: github\n  github:\n    owner: my-org\n    name: my-app\n```",
           "anyOf": [
             {
               "$ref": "#/definitions/ForceTokenKind"
@@ -14003,7 +14003,7 @@
           "type": "string"
         },
         "token": {
-          "description": "Auth token override for this repository, instead of the default one. Useful when the release repository requires a different token than the one used to build from — for instance, when publishing to a repository in another organization. Supports templates (environment variables). Unset falls back to the pipeline token.\n\n```yaml release: github: owner: my-org name: my-repo token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\" ```",
+          "description": "Auth token override for this repository, instead of the default one. Useful when the release repository requires a different token than the one used to build from — for instance, when publishing to a repository in another organization. Supports templates (environment variables). Unset falls back to the pipeline token.\n\n```yaml\nrelease:\n  github:\n    owner: my-org\n    name: my-repo\n    token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\"\n```",
           "type": [
             "string",
             "null"
@@ -14370,7 +14370,7 @@
       "additionalProperties": false
     },
     "SignVerifyConfig": {
-      "description": "Post-sign verification settings shared by [`SignConfig`] and [`DockerSignConfig`].\n\nAfter each signature is produced, the sign stage re-verifies it with the matching verifier (`cosign verify-blob` for detached cosign signatures, `cosign verify` for registry-attached docker signatures, `gpg --verify` for gpg) so \"the signer exited 0\" is upgraded to \"the signature actually verifies\". Everything is derived when possible:\n\n- **keyed cosign** — the public key is derived once per run via `cosign public-key --key <ref>`; nothing to configure. - **keyless cosign** — the certificate identity/issuer are derived from the ambient GitHub Actions OIDC environment (`GITHUB_SERVER_URL`/`GITHUB_WORKFLOW_REF`); outside GitHub Actions, supply them here or verification skips with a named reason. - **gpg** — verified against the same keyring that signed.\n\n```yaml signs: - cmd: cosign args: [\"sign-blob\", \"--bundle={{ Signature }}\", \"--yes\", \"{{ Artifact }}\"] verify: certificate_identity: \"https://github.com/acme/app/.github/workflows/release.yml@refs/tags/v1.0.0\" certificate_oidc_issuer: \"https://token.actions.githubusercontent.com\" ```",
+      "description": "Post-sign verification settings shared by [`SignConfig`] and [`DockerSignConfig`].\n\nAfter each signature is produced, the sign stage re-verifies it with the matching verifier (`cosign verify-blob` for detached cosign signatures, `cosign verify` for registry-attached docker signatures, `gpg --verify` for gpg) so \"the signer exited 0\" is upgraded to \"the signature actually verifies\". Everything is derived when possible:\n\n- **keyed cosign** — the public key is derived once per run via `cosign public-key --key <ref>`; nothing to configure. - **keyless cosign** — the certificate identity/issuer are derived from the ambient GitHub Actions OIDC environment (`GITHUB_SERVER_URL`/`GITHUB_WORKFLOW_REF`); outside GitHub Actions, supply them here or verification skips with a named reason. - **gpg** — verified against the same keyring that signed.\n\n```yaml\nsigns:\n  - cmd: cosign\n    args: [\"sign-blob\", \"--bundle={{ Signature }}\", \"--yes\", \"{{ Artifact }}\"]\n    verify:\n      certificate_identity: \"https://github.com/acme/app/.github/workflows/release.yml@refs/tags/v1.0.0\"\n      certificate_oidc_issuer: \"https://token.actions.githubusercontent.com\"\n```",
       "type": "object",
       "properties": {
         "certificate_identity": {
@@ -16229,7 +16229,7 @@
           }
         },
         "exclude": {
-          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml uploads: - name: mirror target: \"https://mirror.example.com/{{ .ArtifactName }}\" exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml\nuploads:\n  - name: mirror\n    target: \"https://mirror.example.com/{{ .ArtifactName }}\"\n    exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"]\n```",
           "type": [
             "array",
             "null"
@@ -16548,7 +16548,7 @@
       "additionalProperties": false
     },
     "WaitForWorkspaceDepsConfig": {
-      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodize workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodize's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to land), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to land before the next dependent in the same run starts).\n\n```yaml publish: cargo: wait_for_workspace_deps: enabled: true poll_interval: 5s max_wait: 5m ```",
+      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodize workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodize's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to land), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to land before the next dependent in the same run starts).\n\n```yaml\npublish:\n  cargo:\n    wait_for_workspace_deps:\n      enabled: true\n      poll_interval: 5s\n      max_wait: 5m\n```",
       "type": "object",
       "properties": {
         "enabled": {
@@ -16718,7 +16718,7 @@
           ]
         },
         "default_locale": {
-          "description": "Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.\n\n```yaml winget: default_locale: \"pt-BR\" ```",
+          "description": "Locale stamped into the WinGet manifests: the version manifest's `DefaultLocale`, the installer manifest's `InstallerLocale`, the locale manifest's `PackageLocale`, and the locale manifest's `.locale.<locale>.yaml` file name. Supports templates. Default: `en-US`.\n\n```yaml\nwinget:\n  default_locale: \"pt-BR\"\n```",
           "default": null,
           "type": [
             "string",
@@ -16745,7 +16745,7 @@
           ]
         },
         "documentations": {
-          "description": "Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.\n\nExample: ```yaml documentations: - label: \"User Guide\" url: \"https://github.com/owner/repo/blob/master/GUIDE.md\" ```",
+          "description": "Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.\n\nExample:\n\n```yaml\ndocumentations:\n  - label: \"User Guide\"\n    url: \"https://github.com/owner/repo/blob/master/GUIDE.md\"\n```",
           "default": null,
           "type": [
             "array",
@@ -17024,7 +17024,7 @@
       "type": "object",
       "properties": {
         "architectures": {
-          "description": "Architecture scope: attach this dependency only to installers whose architecture matches one of these WinGet architecture names (`x64`, `arm64`, `x86`). When unset or empty the dependency applies to every installer (the default — preserves the manifest-wide behavior).\n\nUse this when a runtime dependency is architecture-specific: e.g. an `x64` build needs the x64 VC++ runtime while the native `arm64` build needs the arm64 one, so each must be scoped to its own installer rather than attached to all of them.\n\nExample: ```yaml dependencies: - package_identifier: \"Microsoft.VCRedist.2015+.x64\" architectures: [\"x64\"] - package_identifier: \"Microsoft.VCRedist.2015+.arm64\" architectures: [\"arm64\"] # unscoped — applies to every installer: - package_identifier: \"Acme.CommonRuntime\" ```",
+          "description": "Architecture scope: attach this dependency only to installers whose architecture matches one of these WinGet architecture names (`x64`, `arm64`, `x86`). When unset or empty the dependency applies to every installer (the default — preserves the manifest-wide behavior).\n\nUse this when a runtime dependency is architecture-specific: e.g. an `x64` build needs the x64 VC++ runtime while the native `arm64` build needs the arm64 one, so each must be scoped to its own installer rather than attached to all of them.\n\nExample:\n\n```yaml\ndependencies:\n  - package_identifier: \"Microsoft.VCRedist.2015+.x64\"\n    architectures: [\"x64\"]\n  - package_identifier: \"Microsoft.VCRedist.2015+.arm64\"\n    architectures: [\"arm64\"]\n  # unscoped — applies to every installer:\n  - package_identifier: \"Acme.CommonRuntime\"\n```",
           "default": null,
           "type": [
             "array",

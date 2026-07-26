@@ -158,7 +158,7 @@ pub struct DiscourseAnnounce {
     /// Enable Discourse announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
-    /// Discourse forum URL (e.g. "https://forum.example.com").
+    /// Discourse forum URL (e.g. `https://forum.example.com`).
     pub server: Option<String>,
     /// Category ID to post in (required, must be non-zero).
     pub category_id: Option<u64>,
@@ -190,7 +190,7 @@ pub struct OpenCollectiveAnnounce {
     pub slug: Option<String>,
     /// Title template for the update. Default: "{{ Tag }}"
     pub title_template: Option<String>,
-    /// HTML message template for the update. Default includes <br/> and <a> tags with ReleaseURL.
+    /// HTML message template for the update. Default includes `<br/>` and `<a>` tags with ReleaseURL.
     pub message_template: Option<String>,
 }
 
@@ -210,7 +210,7 @@ pub struct MastodonAnnounce {
     /// Enable Mastodon announcements. Requires `MASTODON_ACCESS_TOKEN` env var (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
-    /// Mastodon instance URL (e.g. "https://mastodon.social").
+    /// Mastodon instance URL (e.g. `https://mastodon.social`).
     pub server: Option<String>,
     /// Toot message template. Default: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
     pub message_template: Option<String>,

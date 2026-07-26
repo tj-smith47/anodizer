@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tera::{Context, Tera};
@@ -326,8 +327,32 @@ struct ConfigField {
 #[derive(serde::Serialize)]
 struct NestedSection {
     name: String,
+    /// The heading's explicit anchor attribute, pre-rendered as `{#anchor}`.
+    /// Built here rather than in the template because `{#` opens a Tera
+    /// comment — the template cannot spell the attribute literally.
+    anchor_attr: String,
     description: String,
     fields: Vec<ConfigField>,
+}
+
+/// The explicit heading anchor for a section named `name`, emitted as
+/// `## `name` {#anchor}`.
+///
+/// Written into the heading rather than left to zola's slugifier: `zola build`
+/// does not validate bare `#fragment` targets, so a generated link that
+/// disagreed with the slug would be a dead link nothing reports. Section names
+/// carry `[]` and `.` (`crates[].dockers_v2`), which is exactly where a
+/// slugifier's rules are easiest to guess wrong.
+fn section_anchor(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 /// Map a JSON Schema instance-type keyword to anodizer's human-readable type
@@ -348,14 +373,41 @@ fn format_instance_type(t: &str) -> String {
 
 /// Format a schema `default` value for markdown (em-dash for absent/null/empty,
 /// backtick-wrapped otherwise).
-fn format_default(val: Option<&Value>) -> String {
+///
+/// A composite default too wide to inline links to the section documenting its
+/// type instead. `McpConfig`'s default serializes to 239 characters of JSON,
+/// which widens the Default column past the point where the Description column
+/// is readable — and every byte of it restates the per-field defaults the `mcp`
+/// section lists one screen below.
+///
+/// Width is the whole criterion, so a narrow composite stays literal:
+/// `preflight`'s `{"strict":false}` answers the reader's question in place, and
+/// replacing it with a link would cost a page jump to learn less. Same for the
+/// empty composites `[]` / `{}` — "no entries" is the answer, not a pointer to
+/// field defaults that do not apply until the reader adds one.
+fn format_default(val: Option<&Value>, section: Option<&str>) -> String {
     match val {
         None | Some(Value::Null) => "\u{2014}".into(),
         Some(Value::String(s)) if s.is_empty() => "\u{2014}".into(),
         Some(Value::String(s)) => format!("`{s}`"),
-        Some(v) => format!("`{v}`"),
+        Some(v) => {
+            let inline = format!("`{v}`");
+            match section {
+                Some(anchor) if inline.len() > MAX_INLINE_DEFAULT => {
+                    format!("[per field](#{anchor})")
+                }
+                _ => inline,
+            }
+        }
     }
 }
+
+/// Longest Default cell rendered literally before it is replaced by a link to
+/// the type's section. Sized against the columns beside it: field names and type
+/// names both run to roughly 20 characters, so a default past this width is the
+/// column that decides the table's total width, and the Description column pays
+/// for it.
+const MAX_INLINE_DEFAULT: usize = 48;
 
 /// The definition name a `#/definitions/<Name>` `$ref` string targets.
 fn ref_name(reference: &str) -> Option<String> {
@@ -543,28 +595,15 @@ fn resolve_ref_type_name(schema: &Value) -> Option<String> {
     None
 }
 
-/// Normalize a schema `description` for rendering: collapse each paragraph's
-/// internal whitespace (including the rustdoc doc-comment's hard line wraps,
-/// which schemars 1.x preserves verbatim) to single spaces, while preserving
-/// blank-line paragraph breaks (`\n\n`). This reproduces the single-spaced,
-/// paragraph-separated form that earlier schemars releases emitted, so the
-/// rendered reference text is independent of the doc-comment's source wrapping.
+/// Normalize a schema `description` for rendering, then unwrap the rustdoc
+/// link syntax this markdown pipeline cannot resolve.
+///
+/// The normalization itself is [`anodizer_core::config::collapse_description`] —
+/// the same function that normalizes the published `schema.json`, so the
+/// generated config reference and the editor tooltips cannot drift apart on how
+/// a doc comment's wrapping, paragraphs, or fenced examples are treated.
 fn collapse_description(s: &str) -> String {
-    let collapsed = s
-        .split("\n\n")
-        .map(|para| {
-            // Join the paragraph's hard-wrapped lines with single spaces,
-            // trimming each line's own leading/trailing whitespace, but leave
-            // intra-line whitespace (e.g. aligned spaces inside a fenced code
-            // example) untouched.
-            para.split('\n')
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    unwrap_rustdoc_links(&collapsed)
+    unwrap_rustdoc_links(&anodizer_core::config::collapse_description(s))
 }
 
 /// Unwrap rustdoc intra-doc links — `` [`Path::to::item`] `` and
@@ -638,22 +677,80 @@ fn is_rust_path_target(target: &str) -> bool {
 /// `<br><br>` and any residual newline a space (a bare newline inside a cell
 /// terminates the table row), with `|` escaped so a description containing a
 /// pipe does not break the markdown table column.
+///
+/// A fenced code block cannot survive in a table cell — markdown ends the row
+/// at the first newline. Its lines become one `<code>` span each, joined by
+/// `<br>`, so a YAML example stays line-per-line instead of collapsing into an
+/// unreadable single run.
 fn schema_description(schema: &Value) -> String {
     schema
         .as_object()
         .and_then(|o| o.get("description"))
         .and_then(Value::as_str)
         .map(collapse_description)
+        .map(|d| flatten_fences_for_cell(&d))
         .unwrap_or_default()
         .replace("\n\n", "<br><br>")
         .replace('\n', " ")
         .replace('|', "\\|")
 }
 
+/// Rewrite every fenced code block into `<br>`-joined `<code>` spans, leaving
+/// prose untouched. Runs before the newline flattening in [`schema_description`]
+/// so the fence's own line structure survives into the cell.
+fn flatten_fences_for_cell(s: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut cell: Vec<String> = Vec::new();
+    let mut in_fence = false;
+
+    for line in s.split('\n') {
+        if line.trim_start().starts_with("```") {
+            if in_fence {
+                out.push(cell.join("<br>"));
+                cell.clear();
+            }
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            if !line.trim().is_empty() {
+                cell.push(format!("<code>{}</code>", html_escape_cell(line)));
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !cell.is_empty() {
+        out.push(cell.join("<br>"));
+    }
+    out.join("\n")
+}
+
+/// Escape the characters that would be read as markup inside a `<code>` span in
+/// a table cell. `<` alone is enough to swallow the rest of the row when a doc
+/// example contains something like `Name <email>`.
+fn html_escape_cell(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Extract `ConfigField` entries from a properties map, sorted by field name.
 /// `defs` is the schema's definitions map, consulted to inline scalar newtype
-/// `$ref`s to their underlying type.
-fn extract_fields(props: &Map<String, Value>, defs: &Map<String, Value>) -> Vec<ConfigField> {
+/// `$ref`s to their underlying type. `section_anchors` maps a definition name to
+/// the anchor of the section documenting it, so a composite default can point at
+/// that section instead of inlining its serialization.
+///
+/// The map is keyed by DEFINITION name, not field name: a nested `repository`
+/// field resolves to `McpRepository`, which has no section, while a top-level
+/// `changelog` field resolves to `ChangelogConfig`, which does. Keying by field
+/// name would link any same-named nested field to an unrelated top-level
+/// section.
+fn extract_fields(
+    props: &Map<String, Value>,
+    defs: &Map<String, Value>,
+    section_anchors: &HashMap<String, String>,
+) -> Vec<ConfigField> {
     let mut fields: Vec<ConfigField> = props
         .iter()
         .map(|(name, schema)| {
@@ -665,10 +762,13 @@ fn extract_fields(props: &Map<String, Value>, defs: &Map<String, Value>) -> Vec<
                     description: String::new(),
                 };
             }
+            let anchor = resolve_ref_type_name(schema)
+                .and_then(|def| section_anchors.get(&def))
+                .map(String::as_str);
             ConfigField {
                 name: name.clone(),
                 field_type: resolve_type_name(schema, defs),
-                default: format_default(schema.as_object().and_then(|o| o.get("default"))),
+                default: format_default(schema.as_object().and_then(|o| o.get("default")), anchor),
                 description: schema_description(schema),
             }
         })
@@ -721,6 +821,7 @@ fn build_nested_section(
     defs: &Map<String, Value>,
     def_name: &str,
     section_name: &str,
+    section_anchors: &HashMap<String, String>,
 ) -> Option<NestedSection> {
     let def_schema = defs.get(def_name)?.as_object()?;
     let def_props = match def_schema.get("properties").and_then(Value::as_object) {
@@ -734,9 +835,70 @@ fn build_nested_section(
         .unwrap_or_default();
     Some(NestedSection {
         name: section_name.to_string(),
+        anchor_attr: format!("{{#{}}}", section_anchor(section_name)),
         description,
-        fields: extract_fields(def_props, defs),
+        fields: extract_fields(def_props, defs, section_anchors),
     })
+}
+
+/// Definition name → anchor of the section that documents it, for every section
+/// the reference will emit.
+///
+/// Resolved in its own pass before any field is rendered: a field's Default cell
+/// links to the section for its type, and sections are themselves built from
+/// fields, so the mapping cannot be a by-product of building them. Mirrors the
+/// two section passes in `generate_config_reference` exactly — auto-discovered
+/// top-level sections first, then [`SECOND_LEVEL_SECTIONS`] — so a definition
+/// reachable both ways resolves to the same anchor the heading gets.
+fn collect_section_anchors(
+    root_props: &Map<String, Value>,
+    defs: &Map<String, Value>,
+) -> HashMap<String, String> {
+    let mut anchors: HashMap<String, String> = HashMap::new();
+
+    let documentable = |def_name: &str| {
+        defs.get(def_name)
+            .and_then(Value::as_object)
+            .and_then(|d| d.get("properties"))
+            .and_then(Value::as_object)
+            .is_some_and(|p| !p.is_empty())
+    };
+
+    let mut sorted_props: Vec<(&String, &Value)> = root_props.iter().collect();
+    sorted_props.sort_by(|a, b| a.0.cmp(b.0));
+    for (field_name, schema) in sorted_props {
+        if schema.as_bool().is_some() {
+            continue;
+        }
+        let Some(def_name) = resolve_ref_type_name(schema) else {
+            continue;
+        };
+        if documentable(&def_name) {
+            anchors
+                .entry(def_name)
+                .or_insert_with(|| section_anchor(field_name));
+        }
+    }
+
+    for (section_name, parent_def, field_name) in SECOND_LEVEL_SECTIONS {
+        let Some(def_name) = defs
+            .get(*parent_def)
+            .and_then(Value::as_object)
+            .and_then(|o| o.get("properties"))
+            .and_then(Value::as_object)
+            .and_then(|p| p.get(*field_name))
+            .and_then(resolve_ref_type_name)
+        else {
+            continue;
+        };
+        if documentable(&def_name) {
+            anchors
+                .entry(def_name)
+                .or_insert_with(|| section_anchor(section_name));
+        }
+    }
+
+    anchors
 }
 
 /// The `properties` map of an object schema, or an error if absent.
@@ -759,8 +921,13 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
 
     let root_props = object_properties(&root, "Config schema")?;
 
+    // Resolve every section's anchor first: a field's Default cell links to the
+    // section documenting its type, so the mapping has to exist before any field
+    // is rendered.
+    let section_anchors = collect_section_anchors(root_props, defs);
+
     // Build top-level field list
-    let top_level_fields = extract_fields(root_props, defs);
+    let top_level_fields = extract_fields(root_props, defs, &section_anchors);
 
     // Build nested sections: for every top-level field that references a
     // definition, expand that definition's properties into a section. Iterate
@@ -779,7 +946,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
         let Some(def_name) = resolve_ref_type_name(schema) else {
             continue;
         };
-        if let Some(section) = build_nested_section(defs, &def_name, field_name) {
+        if let Some(section) = build_nested_section(defs, &def_name, field_name, &section_anchors) {
             nested_sections.push(section);
         }
     }
@@ -800,7 +967,8 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
         let Some(def_name) = resolve_ref_type_name(field_obj) else {
             continue;
         };
-        if let Some(section) = build_nested_section(defs, &def_name, section_name) {
+        if let Some(section) = build_nested_section(defs, &def_name, section_name, &section_anchors)
+        {
             nested_sections.push(section);
         }
     }
@@ -826,6 +994,97 @@ mod tests {
             .filter(|s| !s.is_hide_set())
             .flat_map(|sub| collect_command(sub, &[]))
             .collect()
+    }
+
+    /// Load the xtask templates the same way `run` does, so a test renders
+    /// through the real template rather than a stand-in.
+    fn load_templates() -> Tera {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut tera = Tera::default();
+        tera.load_from_glob(dir.join("*.tera").to_str().unwrap())
+            .expect("templates load");
+        tera
+    }
+
+    #[test]
+    fn section_anchor_slugifies_qualified_section_names() {
+        assert_eq!(section_anchor("mcp"), "mcp");
+        assert_eq!(section_anchor("verify_release"), "verify-release");
+        assert_eq!(
+            section_anchor("crates[].publish.homebrew_cask"),
+            "crates-publish-homebrew-cask"
+        );
+    }
+
+    #[test]
+    fn format_default_inlines_a_narrow_composite_even_with_a_section() {
+        let v = serde_json::json!({"strict": false});
+        assert_eq!(
+            format_default(Some(&v), Some("preflight")),
+            "`{\"strict\":false}`"
+        );
+    }
+
+    #[test]
+    fn format_default_links_a_wide_composite_to_its_section() {
+        let v = serde_json::json!({
+            "enabled": false, "assert_assets": true,
+            "assert_landing": true, "install_smoke": null
+        });
+        assert!(format!("`{v}`").len() > MAX_INLINE_DEFAULT);
+        assert_eq!(
+            format_default(Some(&v), Some("verify-release")),
+            "[per field](#verify-release)"
+        );
+    }
+
+    #[test]
+    fn format_default_inlines_a_wide_composite_with_no_section_to_link() {
+        // Nothing to point at, so the serialization is still the best answer
+        // available — never an empty cell.
+        let v = serde_json::json!({
+            "enabled": false, "assert_assets": true,
+            "assert_landing": true, "install_smoke": null
+        });
+        assert_eq!(format_default(Some(&v), None), format!("`{v}`"));
+    }
+
+    #[test]
+    fn format_default_keeps_empty_composites_literal() {
+        assert_eq!(
+            format_default(Some(&serde_json::json!([])), Some("x")),
+            "`[]`"
+        );
+        assert_eq!(
+            format_default(Some(&serde_json::json!({})), Some("x")),
+            "`{}`"
+        );
+    }
+
+    #[test]
+    fn every_generated_default_link_resolves_to_an_emitted_anchor() {
+        // The whole point of emitting explicit `{#anchor}` attributes: zola
+        // does not validate bare `#fragment` targets, so a link that missed
+        // would be dead with nothing reporting it.
+        let md = generate_config_reference(&load_templates()).expect("render");
+        let anchors: std::collections::HashSet<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("## "))
+            .filter_map(|l| l.rsplit_once("{#"))
+            .filter_map(|(_, rest)| rest.strip_suffix('}'))
+            .collect();
+        assert!(!anchors.is_empty(), "no section anchors were emitted");
+
+        let mut linked = 0;
+        for rest in md.split_terminator("[per field](#").skip(1) {
+            let target = rest.split(')').next().expect("link target");
+            assert!(
+                anchors.contains(target),
+                "dead Default-column link to #{target}"
+            );
+            linked += 1;
+        }
+        assert!(linked > 0, "no composite default was linked to a section");
     }
 
     #[test]
