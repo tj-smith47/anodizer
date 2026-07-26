@@ -302,7 +302,10 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
-    timeout-minutes: 45
+    # Provisions the runtime-probed toolchain (coverage-tools) and therefore
+    # actually executes the ~780 probe sites a bare runner skips; the run is
+    # strictly longer than when those tests no-oped.
+    timeout-minutes: 75
     permissions:
       contents: write
     steps:
@@ -318,6 +321,7 @@ jobs:
           tools: cargo-llvm-cov,cargo-nextest
           linux-packaging-tools: "true"
           nfpm: "true"
+          coverage-tools: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run coverage and update badge

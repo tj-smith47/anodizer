@@ -56,6 +56,18 @@ inputs:
       rather than skipping when the tool is absent, so it must be present.
       Linux-only."
     default: "false"
+  coverage-tools:
+    description: >-
+      "true to install the runtime-probed toolchain that coverage measurement
+      would otherwise silently skip. Tests probe for these and skip-with-pass
+      when absent, so a job without them measures LESS code than a developer
+      box and its percentage is not comparable to one: snapcraft, cosign, rpm/
+      rpmbuild, syft, upx, flatpak-builder and osslsigncode together gate ~780
+      probe sites. docker, gpg and dpkg are already on the hosted runner.
+      pkgbuild/hdiutil (macOS) and signtool (Windows) cannot be provisioned on a
+      Linux runner and remain skip-with-pass here; they are exercised on the
+      determinism shards. Linux-only."
+    default: "false"
 
 runs:
   using: composite
@@ -124,3 +136,87 @@ runs:
         chmod +x "${dir}/nfpm"
         printf '%s\n' "$dir" >> "$GITHUB_PATH"
         "${dir}/nfpm" --version
+
+    # Tools the suite runtime-probes and skips on when absent. Without them a
+    # coverage run reports a percentage measured over a strictly smaller body of
+    # code than a developer box measures, so a floor calibrated on one lies about
+    # the other. Checksums are fetched from each project's own published manifest
+    # rather than hardcoded, so there is no digest to drift (same rationale as
+    # nfpm above).
+    - name: Install coverage-probed tools (apt + snap)
+      if: ${{ inputs.coverage-tools == 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          rpm upx-ucl flatpak-builder osslsigncode
+        # upx ships as `upx-ucl` on Debian/Ubuntu; the probes look for `upx`.
+        if ! command -v upx >/dev/null && command -v upx-ucl >/dev/null; then
+          sudo ln -sf "$(command -v upx-ucl)" /usr/local/bin/upx
+        fi
+        sudo snap install snapcraft --classic
+        for t in rpm rpmbuild upx flatpak-builder osslsigncode snapcraft; do
+          command -v "$t" >/dev/null || { echo "::error::$t missing after install"; exit 1; }
+        done
+
+    - name: Install cosign and syft
+      if: ${{ inputs.coverage-tools == 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP:-/tmp}/covtools"
+        mkdir -p "$dir"
+        case "$RUNNER_ARCH" in
+          X64)   arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported arch: $RUNNER_ARCH"; exit 1 ;;
+        esac
+
+        cv=2.4.3
+        cbase="https://github.com/sigstore/cosign/releases/download/v${cv}"
+        curl -sSfL "${cbase}/cosign-linux-${arch}" -o "${dir}/cosign"
+        curl -sSfL "${cbase}/cosign_checksums.txt" -o "${dir}/cosign_checksums.txt"
+        expected=$(grep " cosign-linux-${arch}\$" "${dir}/cosign_checksums.txt" | awk '{print $1}')
+        echo "${expected}  ${dir}/cosign" | sha256sum -c -
+        chmod +x "${dir}/cosign"
+
+        sv=1.18.1
+        sbase="https://github.com/anchore/syft/releases/download/v${sv}"
+        star="syft_${sv}_linux_${arch}.tar.gz"
+        curl -sSfL "${sbase}/${star}" -o "${dir}/${star}"
+        curl -sSfL "${sbase}/syft_${sv}_checksums.txt" -o "${dir}/syft_checksums.txt"
+        expected=$(grep " ${star}\$" "${dir}/syft_checksums.txt" | awk '{print $1}')
+        echo "${expected}  ${dir}/${star}" | sha256sum -c -
+        tar -xzf "${dir}/${star}" -C "$dir" syft
+        chmod +x "${dir}/syft"
+
+        printf '%s\n' "$dir" >> "$GITHUB_PATH"
+        "${dir}/cosign" version
+        "${dir}/syft" --version
+
+    # zig publishes its own shasum in index.json, so the digest is resolved at
+    # run time from upstream rather than pinned here.
+    - name: Install zig
+      if: ${{ inputs.coverage-tools == 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver=0.13.0
+        dir="${RUNNER_TEMP:-/tmp}/zig"
+        mkdir -p "$dir"
+        case "$RUNNER_ARCH" in
+          X64)   zarch=x86_64 ;;
+          ARM64) zarch=aarch64 ;;
+          *) echo "::error::unsupported arch for zig: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        idx="${dir}/index.json"
+        curl -sSfL "https://ziglang.org/download/index.json" -o "$idx"
+        url=$(jq -r --arg v "$ver" --arg a "${zarch}-linux" '.[$v][$a].tarball' "$idx")
+        sha=$(jq -r --arg v "$ver" --arg a "${zarch}-linux" '.[$v][$a].shasum'  "$idx")
+        [ "$url" != "null" ] || { echo "::error::zig $ver/${zarch}-linux not in index.json"; exit 1; }
+        curl -sSfL "$url" -o "${dir}/zig.tar.xz"
+        echo "${sha}  ${dir}/zig.tar.xz" | sha256sum -c -
+        tar -xJf "${dir}/zig.tar.xz" -C "$dir" --strip-components=1
+        printf '%s\n' "$dir" >> "$GITHUB_PATH"
+        "${dir}/zig" version
