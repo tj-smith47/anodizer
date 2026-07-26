@@ -13,7 +13,8 @@ use super::*;
 /// idempotent across retries while surfacing same-version drift instead of
 /// silently skipping a re-release that would install stale content.
 ///
-/// The sparse-index GET routes through [`retry_http_blocking_deadline`] so
+/// The sparse-index GET routes through
+/// [`retry_http_blocking_deadline`](anodizer_core::retry::retry_http_blocking_deadline) so
 /// transient 5xx / 429 / network failures retry per the user's top-level
 /// `retry:` policy and stop once `deadline` is spent; 404 is detected via the
 /// helper's `HttpError(404)` Break path and mapped to `Ok(None)` so a
@@ -240,7 +241,9 @@ pub(crate) fn local_crate_cksum(
 /// byte-match the index cksum, to prove (or disprove) that the mismatch is
 /// only the `.cargo_vcs_info.json` commit stamp.
 ///
-/// Routes through [`retry_http_blocking_bytes_deadline`] (not the text-bodied
+/// Routes through
+/// [`retry_http_blocking_bytes_deadline`](anodizer_core::retry::retry_http_blocking_bytes_deadline)
+/// (not the text-bodied
 /// `retry_http_blocking`): a `.crate` is a gzip tarball, and `resp.text()`'s
 /// lossy UTF-8 pass would corrupt it silently. `deadline` is the invocation's
 /// wall-clock retry budget, shared with the index probe that sent the guard

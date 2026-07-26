@@ -55,7 +55,8 @@ pub(crate) struct AurOurTarget {
     /// out of any persisted shape of [`anodizer_core::PublishEvidence`].
     /// When `decode_aur_our_targets` re-hydrates from a previously
     /// serialized evidence blob this field comes back as `None` and
-    /// [`AurOurPublisher::rollback`] re-resolves it from
+    /// `AurOurPublisher`'s [`Publisher::rollback`](anodizer_core::Publisher::rollback)
+    /// re-resolves it from
     /// `ctx.config.crates[*].publish.aur.private_key` by matching
     /// `git_url`.
     ///

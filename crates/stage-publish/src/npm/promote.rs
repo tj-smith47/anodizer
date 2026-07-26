@@ -368,7 +368,8 @@ fn fallback_crate_name(ctx: &Context) -> String {
 }
 
 /// Pull every recorded `(package, version, registry, token_env_var)` from a
-/// prior run's npm [`PublishEvidence`] — the authoritative family a promotion
+/// prior run's npm [`PublishEvidence`](anodizer_core::PublishEvidence) — the
+/// authoritative family a promotion
 /// re-tags. `token_env_var` is retained per-target so a multi-registry family
 /// authenticates each package against its own registry's token.
 fn recorded_npm_targets(report: &PublishReport) -> Vec<(String, String, String, String)> {

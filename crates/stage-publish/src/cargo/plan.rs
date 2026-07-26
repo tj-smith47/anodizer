@@ -227,7 +227,8 @@ pub(crate) fn resolve_default_targets(ctx: &Context) -> Vec<String> {
 /// The emitter is idempotent (it re-writes only the keys it owns and preserves
 /// user-authored ones), so invoking it here when the build stage already ran in
 /// the full pipeline is a safe no-op-equivalent rewrite, not a double-write
-/// divergence. Per-crate template vars are re-scoped via [`with_crate_scope`]
+/// divergence. Per-crate template vars are re-scoped via
+/// [`with_crate_scope`](anodizer_core::crate_scope::with_crate_scope)
 /// exactly as the build stage does, so the emitted overrides are byte-identical
 /// across the two paths in single-crate, workspace-lockstep, and workspace
 /// per-crate modes.

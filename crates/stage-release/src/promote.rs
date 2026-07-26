@@ -394,7 +394,7 @@ fn patch_body(to_stable: bool) -> serde_json::Value {
 }
 
 /// Pull the recorded release tag for `owner/repo` out of a prior run's
-/// github-release [`PublishEvidence`].
+/// github-release [`PublishEvidence`](anodizer_core::PublishEvidence).
 fn recorded_tag(report: &PublishReport, owner: &str, repo: &str) -> Option<String> {
     report
         .results

@@ -153,7 +153,7 @@ pub(crate) fn pr_exists_update_status_message(label: &str, head: &str) -> String
 // ---------------------------------------------------------------------------
 
 /// Pull-request payload, shared by [`create_pr_via_gh_cli`] and
-/// [`create_pr_via_api`].
+/// [`create_pr_via_api_with_env`].
 ///
 /// All fields are borrowed; the struct is short-lived and lives on the
 /// caller's stack frame.

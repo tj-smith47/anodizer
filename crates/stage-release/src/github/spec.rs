@@ -12,7 +12,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use octocrab::repos::releases::MakeLatest;
 
-/// Runtime / context infrastructure for [`run_github_backend`].
+/// Runtime / context infrastructure for [`run_github_backend`](crate::github::backend::run_github_backend).
 ///
 /// Bundles the four "ambient" handles every backend call needs: the
 /// shared tokio runtime, the global anodizer [`Context`], the per-stage
@@ -25,7 +25,7 @@ pub(crate) struct BackendEnv<'a> {
     pub token: &'a Option<String>,
 }
 
-/// Per-release attributes consumed by [`run_github_backend`].
+/// Per-release attributes consumed by [`run_github_backend`](crate::github::backend::run_github_backend).
 ///
 /// Mirrors `GitlabReleaseSpec` / `GiteaReleaseSpec` from the sibling
 /// `gitlab.rs` / `gitea.rs` backends. Field names line up with
@@ -44,7 +44,7 @@ pub(crate) struct GithubReleaseSpec<'a> {
     pub discussion_category: &'a Option<String>,
 }
 
-/// Cluster controlling upload + retention semantics for [`run_github_backend`].
+/// Cluster controlling upload + retention semantics for [`run_github_backend`](crate::github::backend::run_github_backend).
 #[derive(Clone)]
 pub(crate) struct UploadOpts {
     pub skip_upload: bool,
@@ -72,7 +72,7 @@ pub(crate) struct UploadOpts {
 }
 
 /// Outcome for the upload-asset 422 `already_exists` decision branch.
-/// Extracted from the body of [`run_github_backend`] so the logic can be
+/// Extracted from the body of [`run_github_backend`](crate::github::backend::run_github_backend) so the logic can be
 /// unit-tested without standing up a fake octocrab.
 ///
 /// 422 upload-conflict decision rule:
@@ -241,7 +241,7 @@ pub(crate) fn nightly_releases_to_prune(
         .collect()
 }
 
-/// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
+/// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`](anodizer_core::retry::RetryPolicy).
 ///
 /// Returns `(max_upload_attempts, initial_retry_delay, max_retry_delay)` in
 /// the order the upload loop binds them. The single point of translation
@@ -249,7 +249,7 @@ pub(crate) fn nightly_releases_to_prune(
 /// in one place (and so tests can pin the formula against the backend without
 /// re-deriving it inline).
 ///
-/// `max_upload_attempts` mirrors [`RetryPolicy::max_attempts`] directly:
+/// `max_upload_attempts` mirrors [`RetryPolicy::max_attempts`](anodizer_core::retry::RetryPolicy::max_attempts) directly:
 /// the `>= 1` invariant is enforced by [`anodizer_core::config::RetryConfig::to_policy`]
 /// (clamps `attempts: 0` -> `1`) and `retry_async` / `retry_sync` (defensive
 /// clamp at the loop boundary). No additional clamp is needed at the call

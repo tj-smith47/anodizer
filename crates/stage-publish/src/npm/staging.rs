@@ -33,7 +33,7 @@ pub struct StagedTarball {
 /// `package/` directory, then tar+gzip it. Every file is written with a fixed
 /// mode/mtime so repeated runs produce byte-identical tarballs.
 ///
-/// `provenance_override` is forwarded to [`render_package_json`] so the live
+/// `provenance_override` is forwarded to `render_package_json` so the live
 /// publish can downgrade `publishConfig.provenance` on a runner that cannot
 /// mint an npm attestation.
 pub fn assemble_postinstall_tarball(

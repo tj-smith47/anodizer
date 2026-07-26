@@ -14,8 +14,8 @@
 use anyhow::{Context as _, Result};
 
 /// Installer type the routed Windows artifact carries, mapped from the
-/// chocolatey `use:` selector (`archive` → [`Zip`], `msi` → [`Msi`],
-/// `nsis` → [`NsisExe`]).
+/// chocolatey `use:` selector (`archive` → [`FileType::Zip`], `msi` →
+/// [`FileType::Msi`], `nsis` → [`FileType::NsisExe`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     /// Archive (`.zip`/`.tar.gz`): unpacked into `tools/` via

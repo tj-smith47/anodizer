@@ -27,24 +27,25 @@
 //! operator `on_rollback` hooks never observe a half-deleted
 //! release/tag pair.
 //!
-//! A 404 response buckets as [`ReleaseDeleteOutcome::AlreadyAbsent`]
+//! A 404 response buckets as `ReleaseDeleteOutcome::AlreadyAbsent`
 //! so re-running `anodizer tag rollback` after a partial success does
 //! not surface false failures.
 //!
 //! # ID capture
 //!
-//! [`crate::run::ReleaseStage`]'s body is unchanged per the
+//! [`crate::ReleaseStage`]'s body is unchanged per the
 //! release-resilience contract. To learn each release's numeric ID
 //! (required for `DELETE /releases/{id}`) the publisher queries
 //! [`anodizer_core::github_client::GitHubClient::get_release_by_tag`]
 //! once per configured (owner, repo, tag) target after `ReleaseStage::run`
 //! returns. The same client is reused for both delete operations during
-//! rollback. Tests inject a [`MockGitHubClient`](anodizer_core::github_client::MockGitHubClient)
+//! rollback. Tests inject a `MockGitHubClient` (gated behind anodizer-core's
+//! `test-helpers` feature, so it is absent from the default doc build)
 //! via [`GithubReleasePublisher::with_client`].
 //!
 //! # Credential handling
 //!
-//! [`GithubReleaseTarget`] stores `(owner, repo, tag, release_id)` only.
+//! `GithubReleaseTarget` stores `(owner, repo, tag, release_id)` only.
 //! Auth tokens are resolved from the live process environment at
 //! `run` / `rollback` time and never persisted into evidence —
 //! `dist/run-<id>/report.json` and the announce-time release-body
@@ -189,8 +190,8 @@ impl GithubReleasePublisher {
         }
     }
 
-    /// Construct with a caller-provided client. Used by tests to inject a
-    /// [`MockGitHubClient`](anodizer_core::github_client::MockGitHubClient).
+    /// Construct with a caller-provided client — the seam tests use to inject
+    /// anodizer-core's `test-helpers`-gated `MockGitHubClient`.
     pub fn with_client(client: Arc<dyn GitHubClient + Send + Sync>) -> Self {
         Self {
             client,
@@ -663,7 +664,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     /// creation AFTER one-way-door publishers (cargo / chocolatey / …) may have
     /// already fired. Probe every configured release repo for push access
     /// BEFORE the tag is cut. Pass (no network) when no release is
-    /// configured/selected. See [`github_release_preflight`].
+    /// configured/selected. See `github_release_preflight`.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(github_release_preflight(ctx))
     }

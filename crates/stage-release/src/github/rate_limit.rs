@@ -80,8 +80,9 @@ pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &st
     check_github_rate_limit_with_env(client, token, threshold, &ProcessEnvSource).await;
 }
 
-/// Env-injectable form of [`check_github_rate_limit`]. The production
-/// entry point delegates to this via [`ProcessEnvSource`]; tests inject
+/// Production entry point for the pre-upload rate-limit probe, with the
+/// environment reader injected. Release-path callers pass
+/// [`ProcessEnvSource`](anodizer_core::ProcessEnvSource); tests inject
 /// a [`MapEnvSource`](anodizer_core::MapEnvSource) so the responder
 /// address is read from the map instead of the process env.
 ///

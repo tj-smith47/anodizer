@@ -9,7 +9,7 @@
 //! * **Rollback scope**: PR close (`pull_request:write`). Rollback closes
 //!   the PR(s) this run opened; a `direct_commit` bump is warn-only.
 //!
-//! Evidence: one [`HomebrewCoreTargetSnapshot`] per bumped formula — the
+//! Evidence: one `HomebrewCoreTargetSnapshot` per bumped formula — the
 //! upstream, head owner, branch, and PR URL — so `anodizer tag rollback`
 //! can find and close the open PR.
 

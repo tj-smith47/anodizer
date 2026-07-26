@@ -15,7 +15,7 @@
 //! address manually. The `rollback` method itself is warn-only and does
 //! not call out to the gallery.
 //!
-//! CREDENTIAL HANDLING: [`ChocolateyTarget`] stores no auth material.
+//! CREDENTIAL HANDLING: `ChocolateyTarget` stores no auth material.
 //! The chocolatey API key (resolved from `publish.chocolatey.api_key`
 //! or the `CHOCOLATEY_API_KEY` env var at publish time) is irrelevant
 //! to rollback — the manual withdraw flow runs through the community

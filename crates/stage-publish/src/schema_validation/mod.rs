@@ -11,9 +11,9 @@
 //!
 //! This module is the shared foundation for closing that gap. It vendors the
 //! registry schemas (offline, pinned — see `schemas/SOURCES.md`), exposes a
-//! [`validate_json`] helper that runs any instance against any JSON Schema and
-//! reports each violation as a field-named [`SchemaFinding`], and defines the
-//! [`PublisherSchemaValidator`] trait each publisher implements to render and
+//! `validate_json` helper that runs any instance against any JSON Schema and
+//! reports each violation as a field-named `SchemaFinding`, and defines the
+//! `PublisherSchemaValidator` trait each publisher implements to render and
 //! check its own artifacts. [`validate_publisher_schemas`] drives every
 //! registered validator and fails the emission-validate pass loud (in every
 //! mode — snapshot, dry-run, nightly, and real releases), naming the
@@ -307,7 +307,8 @@ fn missing_required_tool_finding(
 /// the global context already carries, so behavior is identical.
 ///
 /// `crate_cfg` is looked up from the crate universe by name; `resolve_tag` is
-/// the per-crate tag source (production [`resolve_crate_tag`]; tests a fixed
+/// the per-crate tag source (production
+/// [`resolve_crate_tag`](anodizer_core::crate_scope::resolve_crate_tag); tests a fixed
 /// closure). Fails loud when the crate is absent or has no resolvable tag —
 /// the same fail-loud contract the live path carries.
 pub(crate) fn with_validated_crate_scope<T>(
@@ -373,7 +374,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
 /// Render and schema-validate every registered publisher's artifacts for the
 /// in-scope crates, failing loud on the first run that produces any violations.
 ///
-/// Drives every validator from [`validators`], aggregates all findings, and —
+/// Drives every validator from `validators`, aggregates all findings, and —
 /// if any exist — aborts with a multi-line message listing each violation by
 /// publisher, field, and expectation. With no registered validators this is a
 /// no-op that returns `Ok(())`.

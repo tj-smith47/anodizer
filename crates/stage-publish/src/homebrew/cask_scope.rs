@@ -52,7 +52,8 @@ pub(super) enum CaskArtifactScope<'a> {
 
 impl CaskArtifactScope<'_> {
     /// The artifacts of `kind` in this scope, with the universal-binary
-    /// filter ([`Artifact::only_replacing_unibins`]) applied — identical to
+    /// filter ([`Artifact::only_replacing_unibins`](anodizer_core::artifact::Artifact::only_replacing_unibins))
+    /// applied — identical to
     /// what the per-crate and top-level single-artifact lookups use, so a
     /// `universal_binaries.replace: false` release keeps both the universal
     /// and per-arch entries.

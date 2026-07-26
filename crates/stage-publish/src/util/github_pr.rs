@@ -27,7 +27,7 @@
 //!
 //! Bearer-auth convention: both helpers send `Authorization: Bearer
 //! <token>` (modern preferred form). The legacy `Authorization: token
-//! <pat>` form in [`crate::util::pr::create_pr_via_api`] is retained
+//! <pat>` form in `pr::create_pr_via_api_with_env` is retained
 //! for backward-compatibility but new GitHub-API helpers in this
 //! crate should consistently use `Bearer`.
 

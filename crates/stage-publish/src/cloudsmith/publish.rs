@@ -10,7 +10,8 @@ use super::*;
 /// Returns the list of [`CloudsmithTarget`]s actually uploaded this run, with
 /// the `slug` (Cloudsmith's per-package permanent identifier) populated when
 /// the step-3 `packages/upload/<format>/` response surfaced one. The returned
-/// list drives `PublishEvidence::extra.cloudsmith_targets` so [`rollback`]
+/// list drives `PublishEvidence::extra.cloudsmith_targets` so
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
 /// can issue real `DELETE /v1/packages/<org>/<repo>/<slug>/` calls; targets
 /// whose slug couldn't be parsed degrade to the warn-only manual-cleanup
 /// path (see [`cloudsmith_manual_cleanup_msg`]).

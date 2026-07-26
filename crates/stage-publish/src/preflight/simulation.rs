@@ -522,12 +522,14 @@ pub(super) fn first_nonempty_line(stderr: &str) -> String {
 /// resilience concerns into the report:
 ///
 /// 1. Rollback scope availability — every publisher whose
-///    [`Publisher::rollback_scope_needed`] returns `Some(label)` is checked
+///    [`Publisher::rollback_scope_needed`](anodizer_core::Publisher::rollback_scope_needed)
+///    returns `Some(label)` is checked
 ///    against the env var named in `label`. Missing scope becomes a
 ///    warning by default and a blocker under `--strict`; that scope backs
 ///    `anodizer tag rollback`'s replay unwind (`execute_rollback_step`), not
 ///    an automatic in-process rollback.
-/// 2. Publisher self-check — each publisher's [`Publisher::preflight`]
+/// 2. Publisher self-check — each publisher's
+///    [`Publisher::preflight`](anodizer_core::Publisher::preflight)
 ///    return value is folded into the report (`Warning` -> warnings,
 ///    `Blocker` -> blockers, `Err` -> blockers tagged as preflight error).
 ///    All publishers currently return `Pass`; the wiring is here so

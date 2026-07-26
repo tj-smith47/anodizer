@@ -1,5 +1,5 @@
 //! `GemFuryPublisher` — Manager-group `Publisher` impl wrapping
-//! [`publish_to_gemfury`](super::publish::publish_to_gemfury).
+//! [`publish_to_gemfury`].
 //!
 //! Classification:
 //! * **Group**: Manager — Fury repositories are mutable state in a
@@ -11,7 +11,8 @@
 //! * **Rollback scope**: `FURY_API_TOKEN delete` — the env var the
 //!   rollback path consults to re-authenticate against the API.
 //!
-//! Evidence: one [`GemFuryTargetSnapshot`] per artifact actually pushed
+//! Evidence: one [`GemFuryTargetSnapshot`](anodizer_core::publish_evidence::GemFuryTargetSnapshot)
+//! per artifact actually pushed
 //! (skip / dry-run / `if` falsy / idempotent paths produce no entry).
 
 use std::time::Duration;
@@ -48,7 +49,7 @@ fn decode_gemfury_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<Ge
 }
 
 /// Encode the per-target structs into the typed
-/// [`PublishEvidenceExtra::GemFury`] variant.
+/// [`PublishEvidenceExtra::GemFury`](anodizer_core::PublishEvidenceExtra::GemFury) variant.
 fn encode_gemfury_targets(targets: &[GemFuryTarget]) -> anodizer_core::PublishEvidenceExtra {
     let snapshots: Vec<GemFurySnapshot> = targets
         .iter()
@@ -69,7 +70,8 @@ fn encode_gemfury_targets(targets: &[GemFuryTarget]) -> anodizer_core::PublishEv
 
 /// Delete a set of landed GemFury targets via the per-version API.
 ///
-/// Shared by [`GemFuryPublisher::rollback`] (post-publish rollback from
+/// Shared by `GemFuryPublisher`'s
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback) (post-publish rollback from
 /// recorded evidence) and the in-run partial-push cleanup, so a failure
 /// after some artifacts landed undoes exactly what this run placed. Best
 /// effort: a delete that fails (or a missing token) is warned, not raised —

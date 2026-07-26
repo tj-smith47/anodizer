@@ -33,7 +33,7 @@ pub struct GemFuryTarget {
     /// GemFury account name.
     pub account: String,
     /// Fury-visible package name (e.g. `mytool`), derived from the artifact
-    /// filename via [`fury_package_name`]. The rollback DELETE keys on this,
+    /// filename via `fury_package_name`. The rollback DELETE keys on this,
     /// so it must match the name Fury exposes — NOT the full artifact filename.
     pub package: String,
     /// Published version (semver string).
@@ -61,7 +61,8 @@ pub(crate) const PUSH_BASE: &str = "https://push.fury.io";
 /// Base URL for the API (used by version probe + delete).
 pub(crate) const API_BASE: &str = "https://api.fury.io";
 
-/// Resolve the push base URL from an injected [`EnvSource`]. Defaults to
+/// Resolve the push base URL from an injected [`EnvSource`](anodizer_core::EnvSource).
+/// Defaults to
 /// [`PUSH_BASE`]; `ANODIZE_GEMFURY_PUSH_BASE` overrides it so tests can point
 /// the push at a local responder. Threading the read through an `EnvSource`
 /// (rather than `std::env::var`) lets a test inject the base via a
@@ -75,7 +76,8 @@ pub(crate) fn push_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> S
 }
 
 /// Resolve the API base URL (version probe + delete) from an injected
-/// [`EnvSource`]. Defaults to [`API_BASE`]; `ANODIZE_GEMFURY_API_BASE`
+/// [`EnvSource`](anodizer_core::EnvSource). Defaults to [`API_BASE`];
+/// `ANODIZE_GEMFURY_API_BASE`
 /// overrides it for tests. See [`push_base_from`] for why the read is
 /// `EnvSource`-routed rather than a bare `std::env::var`.
 pub(crate) fn api_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
@@ -760,7 +762,8 @@ pub fn publish_to_gemfury(
 }
 
 /// Issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`
-/// against the Fury API. Used by [`crate::gemfury::publisher::GemFuryPublisher::rollback`].
+/// against the Fury API — the call `GemFuryPublisher`'s
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback) issues per target.
 /// Returns Ok on 2xx; bubbles a 4xx/5xx error chain with a redacted body.
 #[allow(clippy::too_many_arguments)]
 pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(

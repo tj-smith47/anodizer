@@ -9,15 +9,15 @@
 //! branch. At rollback time the helper re-clones, runs
 //! `git revert HEAD --no-edit`, and pushes back to the same branch.
 //!
-//! The publish path itself (in [`super::publish_formula`] /
-//! [`super::publish_top`]) is unchanged: those entry-points still
+//! The publish path itself (in `super::publish_formula` /
+//! `super::publish_top`) is unchanged: those entry-points still
 //! clone into a `tempfile::tempdir()` and drop the clone at the end
 //! of the call. This publisher captures the re-clone parameters from
 //! the live config *before* `publish_to_homebrew` runs, then records
 //! them after a successful push so a later `anodizer tag rollback` has
 //! everything it needs without depending on the ephemeral tempdir.
 //!
-//! CREDENTIAL HANDLING: [`HomebrewTarget`] stores `token_env_var` —
+//! CREDENTIAL HANDLING: `HomebrewTarget` stores `token_env_var` —
 //! the NAME of the env var to consult at rollback time — not the
 //! resolved token VALUE. The actual token is read from the live env
 //! at yank time so persisted evidence (`dist/run-<id>/report.json`,

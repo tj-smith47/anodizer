@@ -1,5 +1,5 @@
 //! `McpPublisher` — Manager-group `Publisher` impl wrapping the
-//! top-level [`publish_to_mcp`](super::publish_to_mcp) entrypoint.
+//! top-level `publish_to_mcp` entrypoint.
 //!
 //! MCP is structurally different from krew: krew opens a PR against a
 //! GitHub repo (`krew-index`) and the natural rollback is `gh pr close`.
@@ -13,7 +13,7 @@
 //! and rollback continues without propagating an error, so sibling publishers
 //! can still roll back.
 //!
-//! CREDENTIAL HANDLING: [`McpTarget`] stores no auth material. The
+//! CREDENTIAL HANDLING: `McpTarget` stores no auth material. The
 //! registry token is re-rendered from `ctx.config.mcp.auth.token` at
 //! rollback time via the same template engine the publish path uses. The
 //! `auth_method` field captures which provider to use (enum, no secret);

@@ -124,11 +124,11 @@ pub struct CaskParams<'a> {
     pub caveats: Option<&'a str>,
     /// Pre-rendered `zap` stanza Ruby (full `zap launchctl: [...], quit: [...]`
     /// block) — empty string when no `zap` config is present.  Built via
-    /// [`render_zap_block`].
+    /// `render_zap_block`.
     pub zap_block: &'a str,
     /// Pre-rendered `uninstall` stanza Ruby (full `uninstall launchctl: [...]`
     /// block) — empty string when no `uninstall` config is present.  Built
-    /// via [`render_uninstall_block`].
+    /// via `render_uninstall_block`.
     pub uninstall_block: &'a str,
     /// Custom Ruby code block.
     pub custom_block: Option<&'a str>,
@@ -161,7 +161,8 @@ pub struct CaskParams<'a> {
     /// Uninstall postflight hook Ruby code.
     pub uninstall_postflight: Option<&'a str>,
     /// Pre-rendered Ruby continuation for the `url` line — empty string when
-    /// no [`HomebrewCaskURL`] sub-fields (`verified`, `using`, `cookies`,
+    /// no [`HomebrewCaskURL`](anodizer_core::config::HomebrewCaskURL) sub-fields
+    /// (`verified`, `using`, `cookies`,
     /// `referer`, `headers`, `user_agent`, `data`) are configured. When
     /// non-empty, starts with `,\n      verified: "..."` so it splices
     /// directly after the closing `"` of `url "..."`.

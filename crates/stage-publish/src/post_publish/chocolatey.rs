@@ -38,7 +38,7 @@
 //!   ("the maintainer will see a message, but no one else will see or be
 //!   able to install the package"), so the public scraper only sees
 //!   `404`. The OData-side `PackageStatus=Rejected` signal is already
-//!   handled by [`crate::chocolatey::publish`] during the publish step
+//!   handled by `crate::chocolatey::publish` during the publish step
 //!   itself, so we don't need to re-detect rejection here.
 
 use std::time::{Duration, Instant};
@@ -58,7 +58,7 @@ use anodizer_core::config::PostPublishPollConfig;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Grace window after which the `404` diagnostic detail switches from
-/// "page not yet indexed" to "still not indexed after <duration>" so a
+/// "page not yet indexed" to "still not indexed after `<duration>`" so a
 /// debug operator reading verbose logs can tell at a glance how long
 /// the page has been missing. The status remains `Pending` in either
 /// case — moderation queues routinely sit for days, so a chronic `404`

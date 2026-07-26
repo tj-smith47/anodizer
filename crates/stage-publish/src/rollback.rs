@@ -4,7 +4,7 @@
 //! `<dist>/run-<id>/rollback.json` (a prior pass's state) over
 //! `<dist>/run-<id>/report.json` (the original end-of-pipeline snapshot) —
 //! and re-invokes each `Publisher`'s rollback for every
-//! [`rollback_candidates`] row, writing the updated state back to
+//! `rollback_candidates` row, writing the updated state back to
 //! `<dist>/run-<id>/rollback.json`. Re-invoking `run` against the same
 //! `run_id` is idempotent: a `RolledBack` entry from a prior pass matches
 //! no candidate arm, while a `RollbackFailed` or `RollbackSkippedNoScope`
@@ -49,7 +49,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Load the prior run state for `run_id` and re-attempt rollback for every
-/// candidate row (see [`rollback_candidates`]). Returns the updated
+/// candidate row (see `rollback_candidates`). Returns the updated
 /// [`PublishReport`] and writes it to `<dist>/run-<id>/rollback.json`.
 ///
 /// Errors only when the prior state file is missing or unparseable;
@@ -300,7 +300,7 @@ fn rollback_path(ctx: &Context, run_id: &str) -> PathBuf {
 ///   semantics treat it as a parent reference).
 ///
 /// Defense-in-depth: this function is also called from
-/// [`run_with_publishers`] so a future programmatic caller bypassing an
+/// `run_with_publishers` so a future programmatic caller bypassing an
 /// upstream parser still gets the same rule.
 pub fn validate_run_id(run_id: &str) -> Result<()> {
     // Single recovery-hint string reused across every error branch so the

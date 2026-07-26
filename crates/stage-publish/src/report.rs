@@ -61,7 +61,7 @@ pub fn derive_run_id(ctx: &Context) -> String {
 /// Resolve `<dist>/run-<id>/` for a derived `run_id` — formatted with
 /// [`anodizer_core::dist::RUN_DIR_PREFIX`], the same constant the
 /// run-summary scanner matches on. Shared by [`report_path_for`],
-/// [`run_summary::summary_path`], [`rollback`], and the writer in
+/// [`summary_path`](crate::run_summary::summary_path), [`rollback`], and the writer in
 /// [`write_report_to_run_dir`]. Anchors on
 /// `ctx.config.dist`, which per-crate workspace mode re-anchors onto
 /// `dist/<crate>/`, so the helper composes correctly across every config mode.

@@ -9,14 +9,14 @@
 //! (direct commit only for personal formula repos that opt in).
 //!
 //! Submodules:
-//! - [`formula`] — pure formula-text rewrite + path layout helpers.
-//! - [`api`] — the minimal GitHub REST surface (contents / refs / forks /
+//! - `formula` — pure formula-text rewrite + path layout helpers.
+//! - `api` — the minimal GitHub REST surface (contents / refs / forks /
 //!   pulls) the bump drives.
-//! - [`locate`] — formula-file location (explicit `path:` override or
+//! - `locate` — formula-file location (explicit `path:` override or
 //!   sharded/flat layout fallback).
-//! - [`resolve`] — bump-input resolution (token ladder, formula name,
+//! - `resolve` — bump-input resolution (token ladder, formula name,
 //!   formula repository, download URL, commit identity/message).
-//! - [`publish`] — the per-entry bump loop that lands the rewrite as a
+//! - `publish` — the per-entry bump loop that lands the rewrite as a
 //!   direct commit or a fork-based pull request.
 //! - [`publisher`] — the `Publisher` trait impl (requirements, reconcile,
 //!   run, rollback, preflight).

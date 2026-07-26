@@ -7,7 +7,7 @@
 //! recorded so a `anodizer tag rollback` re-clones, runs `git revert HEAD
 //! --no-edit`, and pushes the revert back to the same branch.
 //!
-//! CREDENTIAL HANDLING: [`NixTarget`] stores `token_env_var` — the
+//! CREDENTIAL HANDLING: `NixTarget` stores `token_env_var` — the
 //! NAME of the env var — not the resolved token VALUE. The token is
 //! read from the live env at rollback time so persisted evidence
 //! carries no secret material. Same rule applies to the homebrew /

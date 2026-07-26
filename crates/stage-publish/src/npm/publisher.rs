@@ -1,5 +1,5 @@
 //! `NpmPublisher` — Submitter-group `Publisher` impl wrapping
-//! [`publish_to_npm`](super::publish::publish_to_npm).
+//! [`publish_to_npm`].
 //!
 //! Classification:
 //! * **Group**: Submitter — a published npm version number is a burned slot:
@@ -18,7 +18,8 @@
 //!   unpublish` is a best-effort rollback capability (like cargo's `yank`),
 //!   not a reason to treat the slot as reclaimable for a re-cut.
 //!
-//! Evidence: one [`NpmTargetSnapshot`] per published package (per-platform
+//! Evidence: one [`NpmTargetSnapshot`](anodizer_core::publish_evidence::NpmTargetSnapshot)
+//! per published package (per-platform
 //! packages + the metapackage in optional-deps mode). Skip / dry-run /
 //! no-binaries paths produce no evidence.
 

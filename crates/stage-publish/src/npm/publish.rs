@@ -24,7 +24,7 @@
 //! The credential is chosen **per published package** under
 //! [`anodizer_core::config::NpmAuthMode`] (`cfg.auth`):
 //!   * `auto` (default): the registry is probed for each package's existence
-//!     ([`probe_package_existence`]). An EXISTING package prefers OIDC when an
+//!     (`probe_package_existence`). An EXISTING package prefers OIDC when an
 //!     OIDC context is present (else the token); a BRAND-NEW package always uses
 //!     the token (Trusted Publishing cannot create a non-existent package) and
 //!     errors specifically if only OIDC is available. In `optional-deps` mode
@@ -33,7 +33,7 @@
 //!     When OIDC is chosen for an existing package and the publish FAILS, `auto`
 //!     retries with the token (if available) and warns loudly that Trusted
 //!     Publishing was not exercised — the release succeeds via the token but the
-//!     operator sees the TP gap ([`publish_with_oidc_fallback`]).
+//!     operator sees the TP gap (`publish_with_oidc_fallback`).
 //!   * `token`: always the token (errors if none) — the historical behaviour.
 //!   * `oidc`: always OIDC (errors if no OIDC context) — strict Trusted
 //!     Publishing, NO token fallback (a failed exchange fails the release loud).

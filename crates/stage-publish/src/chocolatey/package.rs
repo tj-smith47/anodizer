@@ -341,7 +341,7 @@ pub(super) fn compute_nupkg_hash(path: &std::path::Path, algorithm: &str) -> Res
 /// Retry policy comes from the user's top-level `retry:` block (defaults:
 /// 10 attempts × 10s base × 5m cap — strictly more permissive than the
 /// historical hardcoded 3-attempt loop). 5xx + 429 + transport errors retry
-/// via [`retry_sync`]; 4xx fast-fails *except* the
+/// via [`retry_sync`](anodizer_core::retry::retry_sync); 4xx fast-fails *except* the
 /// Cloudflare/IIS "403/502/503/504 with HTML body" edge-challenge pattern,
 /// which is forcibly retried by wrapping the failure in
 /// [`anodizer_core::retry::Retriable`] so the classifier returns `true`

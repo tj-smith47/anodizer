@@ -15,7 +15,7 @@ use super::*;
 pub(super) struct ChocoMetadata {
     pub(super) description: String,
     /// Resolved SPDX expression. Not emitted as a nuspec element — Chocolatey
-    /// CLI flags any NuGet `<license>` element as CHCU0002 ("use <licenseUrl>
+    /// CLI flags any NuGet `<license>` element as CHCU0002 ("use `<licenseUrl>`
     /// instead") — it gates the `<licenseUrl>` derivation (single identifier
     /// → derivable LICENSE blob; compound → no single canonical file).
     pub(super) license: String,

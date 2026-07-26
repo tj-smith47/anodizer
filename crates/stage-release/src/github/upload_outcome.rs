@@ -37,7 +37,7 @@ pub(crate) enum UploadAttemptOutcome {
     AlreadyExists,
     /// GitHub returned a 403/429 whose body matches the secondary
     /// rate-limit signature (see
-    /// [`is_secondary_rate_limit`](super::secondary_rate_limit::is_secondary_rate_limit)).
+    /// [`is_secondary_rate_limit`]).
     /// The loop honours `Retry-After` (clamped) and sleeps before
     /// retrying, NOT the normal exponential backoff.
     SecondaryRateLimited,

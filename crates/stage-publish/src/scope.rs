@@ -71,7 +71,7 @@ pub(crate) fn warn_scope_unavailable_msg(prefix: &str, publisher: &str, label: &
 ///
 /// Delegates to [`scope_available_with_env`] against
 /// [`anodizer_core::ProcessEnvSource`]; rollback / preflight call
-/// sites that already hold a [`Context`] route through
+/// sites that already hold a [`Context`](anodizer_core::context::Context) route through
 /// [`scope_available_with_env`] directly so the lookup honors any
 /// injected [`MapEnvSource`](anodizer_core::MapEnvSource).
 #[allow(dead_code)]
@@ -81,7 +81,7 @@ pub(crate) fn scope_available(label: &str) -> bool {
 
 /// Env-injectable form of [`scope_available`]. Production call sites
 /// in `rollback.rs` / `preflight.rs` thread the
-/// active [`Context`]'s env source through here so a unit test can
+/// active [`Context`](anodizer_core::context::Context)'s env source through here so a unit test can
 /// drive the available/unavailable branches without mutating the
 /// process env.
 pub(crate) fn scope_available_with_env<E: anodizer_core::EnvSource + ?Sized>(

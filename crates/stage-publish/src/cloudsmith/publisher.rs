@@ -34,7 +34,8 @@ simple_publisher!(
 /// One Cloudsmith upload target as recorded in evidence. Operator-readable
 /// `(org, repo, filename)` tuples drive the rollback warn line; the optional
 /// `slug` (Cloudsmith's per-package permanent identifier, returned by the
-/// step-3 `packages/upload/<format>/` response) lets [`rollback`] issue a
+/// step-3 `packages/upload/<format>/` response) lets
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback) issue a
 /// real `DELETE /v1/packages/<org>/<repo>/<slug>/` instead of a warn-only
 /// manual-cleanup checklist.
 ///
@@ -47,7 +48,8 @@ simple_publisher!(
 pub(crate) type CloudsmithTarget = anodizer_core::publish_evidence::CloudsmithTargetSnapshot;
 
 /// Encode the per-target tuples into the typed
-/// [`PublishEvidenceExtra::Cloudsmith`] variant.
+/// [`PublishEvidenceExtra::Cloudsmith`](anodizer_core::PublishEvidenceExtra::Cloudsmith)
+/// variant.
 pub(crate) fn encode_cloudsmith_targets(
     targets: &[CloudsmithTarget],
 ) -> anodizer_core::PublishEvidenceExtra {
@@ -79,7 +81,8 @@ pub(crate) fn decode_cloudsmith_targets(
 ///
 /// The PRIMARY rollback path issues a real
 /// `DELETE /v1/packages/<org>/<repo>/<slug>/` against the Cloudsmith API
-/// (see [`<CloudsmithPublisher as anodizer_core::Publisher>::rollback`]);
+/// (see `CloudsmithPublisher`'s
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback));
 /// this helper is reached only when `target.slug` is `None`.
 pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String {
     format!(

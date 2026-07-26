@@ -135,7 +135,8 @@ pub(crate) fn octocrab_retry_cause(status: u16) -> String {
 
 /// Borrow-based retriability probe for [`octocrab::Error`].
 ///
-/// Mirrors [`classify_octocrab_error`]'s rules but consumes only a reference
+/// Mirrors the sibling `retry_classify::classify_octocrab_error`'s rules
+/// but consumes only a reference
 /// so the original error can be returned to the caller unchanged. Returns
 /// `(status_code, retriable)` where `status_code` is `0` for transport-layer
 /// failures with no HTTP response attached.

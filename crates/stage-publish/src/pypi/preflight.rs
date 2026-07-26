@@ -77,7 +77,7 @@ pub(crate) fn simple_index_lists_version(url: &str, normalized_name: &str, versi
 /// not be consulted (a caller making a destructive rollback decision must FAIL
 /// CLOSED on this, exactly like [`crate::cargo::published_on_crates_io`]).
 ///
-/// Reuses [`version_probe`] to pick the version-precise JSON API for the
+/// Reuses `version_probe` to pick the version-precise JSON API for the
 /// public PyPI hosts and the PEP 503 simple-index page for any other
 /// PyPI-protocol repository, so the rollback guard and the publisher's own
 /// duplicate-version detection can never disagree about what "already on the

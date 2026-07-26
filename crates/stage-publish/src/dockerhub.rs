@@ -127,7 +127,8 @@ pub fn resolve_full_description(
 
 /// Resolve the short description for a DockerHub entry. Returns
 /// `entry.description` when set non-empty; otherwise falls back to the
-/// top-level `metadata.description` via [`Config::meta_description`].
+/// top-level `metadata.description` via
+/// [`Config::meta_description`](anodizer_core::config::Config::meta_description).
 /// Returns `None` when both sources are unset/empty so the caller can
 /// short-circuit the PATCH and avoid clobbering an existing remote
 /// description with the empty string.
@@ -149,7 +150,8 @@ fn effective_description(
 }
 
 /// The config half of the username ladder: `entry.username`, non-empty.
-/// [`DockerhubPublisher::requirements`] derives its env projection from
+/// `DockerhubPublisher`'s [`Publisher::requirements`](anodizer_core::Publisher::requirements)
+/// derives its env projection from
 /// this same accessor, so the static requirement and the runtime ladder
 /// key on one field read.
 fn configured_username(entry: &anodizer_core::config::DockerHubConfig) -> Option<&str> {
@@ -197,7 +199,8 @@ fn resolve_dockerhub_username(
 /// Returns one [`DockerhubTarget`] per repository the PATCH actually
 /// mutated. Each target carries the pre-PATCH `description` and
 /// `full_description` snapshot (captured via a GET that runs
-/// immediately before the mutation) so the [`Publisher::rollback`]
+/// immediately before the mutation) so the
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
 /// path can re-authenticate and restore the prior values. Dry-run,
 /// skipped entries, and configurations that short-circuit the PATCH
 /// (empty descriptions) produce no targets.
@@ -560,13 +563,14 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 
 /// Re-authenticate to DockerHub and PATCH a single target back to its
 /// snapshotted `description` / `full_description`. Used exclusively by
-/// [`DockerhubPublisher::rollback`].
+/// `DockerhubPublisher`'s [`Publisher::rollback`](anodizer_core::Publisher::rollback).
 ///
 /// Credentials are re-resolved at rollback time from the injected env
 /// source — production wires up [`anodizer_core::ProcessEnvSource`];
 /// tests inject a [`anodizer_core::MapEnvSource`] so the missing-env
 /// branch can be exercised without mutating the process env. The
-/// password value never crosses [`PublishEvidence::extra`]. A target
+/// password value never crosses
+/// [`PublishEvidence::extra`](anodizer_core::PublishEvidence::extra). A target
 /// whose snapshot was entirely `None` (rare — neither field was
 /// readable at publish time) is a no-op: there is nothing to restore.
 fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(

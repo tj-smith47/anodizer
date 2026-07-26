@@ -12,7 +12,8 @@ use super::*;
 ///
 /// `policy` is the user-configured `Config.retry` block (or its default of 10
 /// attempts × 10s base × 5m cap) — every HTTP call inside this function and
-/// the asset-upload sibling routes through [`retry_http_async`] using this
+/// the asset-upload sibling routes through
+/// [`retry_http_async_deadline`] using this
 /// policy so 5xx / 429 / network-error responses are retried with backoff
 /// instead of failing fast.
 ///
@@ -64,7 +65,7 @@ pub(crate) async fn gitlab_create_release(
     // class here — instead, fast-fail on 4xx is unwanted for the GET probe;
     // we accept 403/404 as a legitimate "not found" signal. The simplest
     // correct shape is a manual classify: route 5xx + transport errors
-    // through retry_http_async (success_class=Strict makes 4xx a Break),
+    // through retry_http_async_deadline (success_class=Strict makes 4xx a Break),
     // catch the Break for 403/404, and treat it as the "create" branch.
     //
     // Concretely: try the GET; if it 4xx-fast-fails with 403/404, fall

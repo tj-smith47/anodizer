@@ -170,7 +170,8 @@ pub(crate) struct UploadEntryRequest<'a> {
 /// (Artifactory appends Debian matrix params there) before the bytes move —
 /// an identity closure (`|url, _| Ok(url.to_string())`) opts out. Each upload
 /// goes through
-/// [`crate::artifactory::upload_single_artifact`], which carries the
+/// [`upload_single_artifact_prepared`](crate::artifactory::upload_single_artifact_prepared),
+/// which carries the
 /// idempotency probe, retry budget, and checksum/custom-header application.
 /// One serially-prepared upload: the artifact, its fully rendered target URL,
 /// and its rendered custom-header set. Prepared in the serial pre-pass (all

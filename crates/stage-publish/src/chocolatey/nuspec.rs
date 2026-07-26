@@ -33,8 +33,8 @@ pub struct NuspecParams<'a> {
     pub description: &'a str,
     /// `<licenseUrl>` value — Chocolatey's only supported license metadata:
     /// its `LicenseMetadataRule` flags any NuGet `<license>` element as
-    /// CHCU0002 ("<license> elements are not supported in Chocolatey CLI,
-    /// use <licenseUrl> instead"), so the SPDX expression is never emitted
+    /// CHCU0002 ("`<license>` elements are not supported in Chocolatey CLI,
+    /// use `<licenseUrl>` instead"), so the SPDX expression is never emitted
     /// as an element. When `None`, no `<licenseUrl>` is emitted — anodizer
     /// never synthesizes an `opensource.org/licenses/<spdx>` URL, which 404s
     /// for compound SPDX expressions (the canonical Rust `MIT OR

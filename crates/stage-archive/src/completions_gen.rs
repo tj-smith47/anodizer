@@ -106,7 +106,8 @@ pub(crate) fn generate_archive_aux_files(
 
 /// Wrap each staged file as a `ResolvedExtraFile` whose archive destination is
 /// `<dst>/<filename>`. The `dst` directory is normalised to always end in `/`
-/// so [`resolve_file_specs`]-style joining places the file inside it rather
+/// so [`resolve_file_specs`](crate::resolve_file_specs)-style joining places
+/// the file inside it rather
 /// than renaming.
 fn append_entries(out: &mut Vec<ResolvedExtraFile>, files: Vec<PathBuf>, dst: &str) {
     let dst_dir = if dst.is_empty() || dst.ends_with('/') {

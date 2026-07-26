@@ -19,7 +19,7 @@ pub(crate) type ArtifactoryTarget = anodizer_core::publish_evidence::Artifactory
 
 /// Re-walk the configured artifactory entries to produce the list of fully
 /// rendered upload URLs that [`publish_to_artifactory`] would PUT to. Used by
-/// the [`Publisher`] wrapper to populate
+/// the [`Publisher`](anodizer_core::Publisher) wrapper to populate
 /// [`anodizer_core::PublishEvidence::artifact_paths`] (URLs) and
 /// [`anodizer_core::PublishEvidence::extra`] (entry-name tags) so a
 /// subsequent rollback can DELETE each URL using the same credential
@@ -92,7 +92,8 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
 }
 
 /// Encode the per-target `(entry, url)` pairs into the typed
-/// [`PublishEvidenceExtra::Artifactory`] variant. Mirrors the wire
+/// [`PublishEvidenceExtra::Artifactory`](anodizer_core::PublishEvidenceExtra::Artifactory)
+/// variant. Mirrors the wire
 /// shape `{ "artifactory_targets": [...] }` that shipped pre-typed.
 pub(crate) fn encode_artifactory_targets(
     targets: &[ArtifactoryTarget],
@@ -150,7 +151,7 @@ pub(crate) fn resolve_rollback_credentials(
 }
 
 /// Outcome of one DELETE attempt against a single artifactory URL.
-/// Returned by [`delete_one_artifactory_target`] so the per-URL response
+/// Produced by [`classify_delete_status`] so the per-URL response
 /// can be aggregated into the summary line.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DeleteOutcome {

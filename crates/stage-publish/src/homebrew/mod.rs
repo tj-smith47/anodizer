@@ -1,15 +1,15 @@
 //! Homebrew formula + cask publisher.
 //!
 //! Module layout:
-//! - [`formula`] — Tera template + `FormulaOptions` + `generate_formula*`.
-//! - [`cask`] — cask Tera template + `CaskParams` + `generate_cask*`.
-//! - [`cask_scope`] — artifact-scope resolution + `generate_cask_from_context`.
-//! - [`commit_msg`] — shared commit-message renderer (used by aur, scoop,
+//! - `formula` — Tera template + `FormulaOptions` + `generate_formula*`.
+//! - `cask` — cask Tera template + `CaskParams` + `generate_cask*`.
+//! - `cask_scope` — artifact-scope resolution + `generate_cask_from_context`.
+//! - `commit_msg` — shared commit-message renderer (used by aur, scoop,
 //!   krew, nix, aur_source publishers as well).
-//! - [`publish_formula`] — `publish_to_homebrew` (per-crate formula + optional
+//! - `publish_formula` — `publish_to_homebrew` (per-crate formula + optional
 //!   same-tap cask).
-//! - [`publish_cask`] — `publish_cask` (standalone per-crate cask).
-//! - [`publish_top`] — `publish_top_level_homebrew_casks` (top-level
+//! - `publish_cask` — `publish_cask` (standalone per-crate cask).
+//! - `publish_top` — `publish_top_level_homebrew_casks` (top-level
 //!   `homebrew_casks:` config).
 
 mod cask;

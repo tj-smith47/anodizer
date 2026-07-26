@@ -18,7 +18,7 @@
 //!   re-uploaded, even after deletion — PyPI uploads are a one-way door
 //!   (like cargo and npm). Rollback is warn-only.
 //!
-//! Evidence: one [`PypiFileSnapshot`] per file offered to the index —
+//! Evidence: one `PypiFileSnapshot` per file offered to the index —
 //! uploaded files and `skip_existing` idempotent skips both appear (the
 //! skip flagged), so the run report shows exactly what is live.
 
@@ -72,7 +72,8 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
 }
 
 /// Resolve the credential sent as the `__token__` Basic-auth password, per the
-/// entry's [`PypiAuthMode`]: an explicit/env token, or a freshly-minted
+/// entry's [`PypiAuthMode`](anodizer_core::config::PypiAuthMode): an explicit/env
+/// token, or a freshly-minted
 /// Trusted-Publishing token from the ambient GitHub Actions OIDC identity.
 pub(crate) fn resolve_upload_credential(
     ctx: &Context,
@@ -146,7 +147,7 @@ pub(crate) fn entry_crate_name(ctx: &Context, cfg: &PypiConfig) -> String {
     static_entry_crate_name(&ctx.config, cfg)
 }
 
-/// Context-free form of [`entry_crate_name`] for failure-recovery tooling
+/// Context-free form of `entry_crate_name` for failure-recovery tooling
 /// (`tag rollback`'s burn probe): resolve the crate a `pypis:` entry versions
 /// from the config alone — its first non-empty `ids` entry, else the primary
 /// crate name, else the project name. No render context is consulted, so it
@@ -166,7 +167,7 @@ pub fn static_entry_crate_name(config: &anodizer_core::config::Config, cfg: &Pyp
 /// Returns `None` when `cfg.name` is templated — outside a release run there
 /// is nothing to render it with, and a destructive rollback that cannot name
 /// the immutable project it would orphan must fail closed rather than probe a
-/// guessed name. Mirrors [`resolve_name`] without a render context, the same
+/// guessed name. Mirrors `resolve_name` without a render context, the same
 /// way winget's `static_package_identifier` mirrors its publisher's id
 /// resolution.
 ///

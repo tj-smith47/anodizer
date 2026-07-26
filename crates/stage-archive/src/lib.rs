@@ -2,7 +2,7 @@
 //! tar/zip/gz archives.
 //!
 //! Public surface:
-//! - [`ArchiveStage`] — the [`Stage`] driver.
+//! - [`ArchiveStage`] — the [`Stage`](anodizer_core::stage::Stage) driver.
 //! - [`formats_for_target`] / [`format_for_target`] — apply OS-based format overrides.
 //! - File-spec resolution: [`ResolvedExtraFile`], [`resolve_file_specs`].
 //! - Format primitives: [`copy_binary`], [`create_gz`], [`create_tar`],

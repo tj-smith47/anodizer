@@ -41,7 +41,8 @@ pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) ->
 /// Cloudsmith API base URL (used for files/create and packages/upload/*).
 pub(crate) const CLOUDSMITH_API_BASE: &str = "https://api.cloudsmith.io/v1";
 
-/// Resolve the Cloudsmith API base URL from an injected [`EnvSource`].
+/// Resolve the Cloudsmith API base URL from an injected
+/// [`EnvSource`](anodizer_core::EnvSource).
 /// Defaults to [`CLOUDSMITH_API_BASE`]; `ANODIZE_CLOUDSMITH_API_BASE` overrides
 /// it so tests can point the 3-step upload flow (files/create → S3 presigned →
 /// packages/upload) at a local responder without a real network call. Threading

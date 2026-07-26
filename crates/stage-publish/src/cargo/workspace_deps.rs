@@ -62,7 +62,7 @@ pub(crate) fn expand_with_transitive_deps(
 /// for.
 ///
 /// Returns an empty Vec if the manifest can't be read or parsed; the
-/// caller logs the case via [`wait_for_workspace_deps`] so the gate
+/// caller logs the case via [`wait_for_workspace_deps_to_appear`] so the gate
 /// degrades to a no-op instead of erroring out a publish that would
 /// otherwise have succeeded. `root_cache` shares the parsed workspace-root
 /// `[workspace.dependencies]` map across the per-crate calls of one run.

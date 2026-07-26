@@ -609,7 +609,7 @@ pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightRe
 /// publisher-state / rollback-scope tests, none of which configure real
 /// workspace crates, so spawning `cargo publish --dry-run` would only produce
 /// spurious "package ID did not match" noise. Tests that target the simulation
-/// drive [`run_cargo_publish_simulation_with`] directly with an injected index
+/// drive `run_cargo_publish_simulation_with` directly with an injected index
 /// query + runner.
 pub fn run_preflight_with_factory(
     ctx: &mut Context,

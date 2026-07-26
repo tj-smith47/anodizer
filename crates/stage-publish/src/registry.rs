@@ -306,8 +306,8 @@ pub fn selected_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 /// assets to object storage and records a `Succeeded` `blob` row directly into
 /// `ctx.publish_report`. Because that row carries structured
 /// `blob_targets` evidence, its rollback is a real
-/// [`object_store::ObjectStore`] `delete`. The rollback path
-/// ([`crate::rollback::run_with_publishers`])
+/// `object_store::ObjectStore` `delete`. The rollback path
+/// (`crate::rollback::run_with_publishers`)
 /// resolves a report row to a publisher by name; without this list it could not
 /// find a `blob` publisher (it is deliberately absent from
 /// [`configured_publishers`] to avoid a second upload), so a teardown after a
@@ -364,7 +364,8 @@ pub fn all_publishers() -> Vec<Box<dyn Publisher>> {
 /// their own pipeline stages and are deliberately NOT registered here; a
 /// parallel trait registration would double-publish, see the doc comment on
 /// [`configured_publishers`]). The `is_publish_stage` predicate and this match
-/// must agree — the [`tests`] cross-check enforces it.
+/// must agree — the `every_trait_publisher_kind_has_registry_entry_and_nightly_value`
+/// cross-check enforces it.
 fn new_trait_publisher(kind: PublisherKind) -> Option<Box<dyn Publisher>> {
     let publisher: Box<dyn Publisher> = match kind {
         PublisherKind::Cargo => Box::new(crate::cargo::CargoPublisher::new()),
@@ -790,7 +791,7 @@ pub fn validate_publisher_allowlist_configured(
 /// - `blob` — any crate has a `blobs:` block,
 /// - `snapcraft-publish` — any crate has a `snapcrafts:` block,
 /// - `docker` — any crate has a `dockers_v2:` or `docker_manifests:` block
-///   (the same predicate [`anodizer_stage_docker`]'s `DockerStage::run` uses
+///   (the same predicate `anodizer_stage_docker`'s `DockerStage::run` uses
 ///   to decide whether it has work),
 /// - `docker-sign` — the top-level `docker_signs:` block is non-empty.
 ///

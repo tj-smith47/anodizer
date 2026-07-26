@@ -21,7 +21,7 @@ pub(crate) fn auth_header(use_job_token: bool) -> &'static str {
 ///    still fall back to `PRIVATE-TOKEN`.
 ///
 /// Production wires up [`ProcessEnvSource`] via
-/// [`anodizer_core::Context::env_source`]; tests inject a
+/// [`anodizer_core::context::Context::env_source`]; tests inject a
 /// [`anodizer_core::MapEnvSource`] so the `CI_JOB_TOKEN` branches can
 /// be driven without mutating the process env.
 pub(crate) fn resolve_use_job_token_with_env<E: EnvSource + ?Sized>(

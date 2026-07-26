@@ -4,7 +4,7 @@
 //! (or POSTs) the release artifacts to a templated target URL with optional
 //! basic-auth, mTLS, a checksum header, and custom headers. It shares the
 //! whole HTTP-upload core with the Artifactory publisher
-//! ([`crate::http_upload::upload_artifact_set`] + the per-artifact helpers in
+//! (`crate::http_upload::upload_artifact_set` + the per-artifact helpers in
 //! [`crate::artifactory`]); the only behavioural difference from Artifactory
 //! is the absence of the JFrog Debian matrix-param append — a generic
 //! endpoint receives the rendered URL verbatim.

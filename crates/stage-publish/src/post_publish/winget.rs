@@ -248,7 +248,7 @@ fn locate_pr(
 }
 
 /// Pick the manifest PR to poll out of a relevance-ordered search response —
-/// no IO. Removal-titled items are skipped (a "Remove <id> <version>" PR is
+/// no IO. Removal-titled items are skipped (a "Remove `<id>` `<version>`" PR is
 /// not the submission being tracked); the first remaining item wins. The
 /// search-issues response gives us `pull_request.url` (the API URL) —
 /// preferred over `html_url` since the poll loop hits the API on it
@@ -277,7 +277,7 @@ fn select_pr_api_url(v: &Value, api_base_url: &str, upstream_slug: &str) -> Opti
     ))
 }
 
-/// Whether a PR title marks a version REMOVAL ("Remove <id> <version>",
+/// Whether a PR title marks a version REMOVAL ("Remove `<id>` `<version>`",
 /// case-insensitive) rather than an add/update submission.
 fn is_removal_title(title: &str) -> bool {
     title
@@ -396,7 +396,7 @@ fn is_rejection_label(label: &str) -> bool {
 
 /// Build the burn probe's GitHub search query. `search_in_title` keeps the
 /// precise `in:title` qualifier for the default PR-title template ("New
-/// version: <id> version <version>" always carries both tokens); a custom
+/// version: `<id>` version `<version>`" always carries both tokens); a custom
 /// `commit_msg_template` can produce any title, so the qualifier is dropped
 /// and the id+version tokens match title OR body instead.
 fn burn_search_query(

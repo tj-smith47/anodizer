@@ -198,7 +198,7 @@ fn plan_dry_run(
 
 /// Build a [`SchemaPlan`] resolving the bound crate's version inside the
 /// per-crate scope for a versioned vendor entry, so the `<VER>` stamped into
-/// the filename/`versions` key is THIS crate's tag — never crate[0]'s in
+/// the filename/`versions` key is THIS crate's tag — never `crate[0]`'s in
 /// workspace per-crate independent-version mode.
 pub(super) fn plan_schema_scoped(
     ctx: &mut Context,

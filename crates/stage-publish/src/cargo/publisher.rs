@@ -508,7 +508,8 @@ impl anodizer_core::Publisher for CargoPublisher {
 /// expose it in the process list. A `None` / empty `token` yields no env pair,
 /// so the yank inherits the ambient environment (byte-identical to the historic
 /// `Command::new("cargo").args(...)` behaviour). Split out from
-/// [`CargoPublisher::rollback`] so the argv + env construction is unit-testable
+/// `CargoPublisher`'s [`Publisher::rollback`](anodizer_core::Publisher::rollback)
+/// so the argv + env construction is unit-testable
 /// without a live registry.
 pub(crate) fn build_yank_invocation(
     t: &CargoYankTarget,
@@ -541,7 +542,7 @@ pub(crate) fn build_yank_invocation(
 pub(crate) type CargoYankTarget = anodizer_core::publish_evidence::CargoYankTargetSnapshot;
 
 /// Encode the recorded yank targets into the typed
-/// [`PublishEvidenceExtra::Cargo`] variant.
+/// [`PublishEvidenceExtra::Cargo`](anodizer_core::PublishEvidenceExtra::Cargo) variant.
 pub(crate) fn encode_cargo_yank_targets(
     targets: &[CargoYankTarget],
 ) -> anodizer_core::PublishEvidenceExtra {

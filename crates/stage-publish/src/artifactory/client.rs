@@ -194,7 +194,8 @@ pub(crate) fn validate_artifactory_deb_slugs(
 ///   are overridable via config and accept a comma-separated list (Artifactory
 ///   indexes the same `.deb` into every listed distribution/component).
 /// - `architecture` is derived from the artifact's build target
-///   ([`debian_arch_from_target`]); an explicit `deb_architecture` override
+///   ([`debian_arch_from_target`](anodizer_core::target::debian_arch_from_target));
+///   an explicit `deb_architecture` override
 ///   wins. When the target is absent and no override is set, the
 ///   `deb.architecture` param is omitted (Artifactory then reads it from the
 ///   package's own control file).

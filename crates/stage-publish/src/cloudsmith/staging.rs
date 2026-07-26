@@ -1,7 +1,8 @@
 use super::*;
 
 /// Retry an HTTP request builder, threading classification through the
-/// shared [`retry_http_blocking`] helper. `build_send` is called per attempt
+/// shared [`retry_http_blocking`](anodizer_core::retry::retry_http_blocking) helper.
+/// `build_send` is called per attempt
 /// so multipart bodies can be rebuilt. 5xx/429 + transport errors retry;
 /// 4xx fast-fails. Returns `(status, body)` on success.
 pub(crate) fn retry_request<F>(

@@ -5,7 +5,7 @@
 //! `required`, and `rollback_scope_needed` methods are all constant returns.
 //! The only per-publisher bodies are `run`, `rollback`, and `preflight`.
 //!
-//! The [`simple_publisher!`] macro emits the boilerplate so each publisher
+//! The `simple_publisher!` macro emits the boilerplate so each publisher
 //! file carries only the methods that vary. Per-publisher impls add `run`,
 //! `rollback`, and `preflight` in their own `impl Publisher for X { ... }`
 //! block. Rust permits the constant-returning methods to live in a separate

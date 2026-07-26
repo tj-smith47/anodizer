@@ -521,7 +521,7 @@ pub(crate) fn render_top_level_homebrew_casks(
 }
 
 /// Render and push every entry in `homebrew_casks:`. See
-/// [`TopLevelCaskRunResult`] for the returned counts.
+/// `TopLevelCaskRunResult` for the returned counts.
 pub fn publish_top_level_homebrew_casks(
     ctx: &mut Context,
     log: &StageLogger,

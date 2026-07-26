@@ -316,7 +316,7 @@ pub(crate) struct UploadHeaders<'a> {
     pub(crate) checksum_header: &'a str,
 }
 
-/// HTTP basic-auth credentials for [`upload_single_artifact`]. Either both
+/// HTTP basic-auth credentials for [`upload_single_artifact_prepared`]. Either both
 /// fields are non-empty (auth applied) or both are empty (anonymous).
 #[derive(Clone, Copy)]
 pub(crate) struct UploadAuth<'a> {
@@ -395,7 +395,7 @@ fn probe_artifact_presence(
     }
 }
 
-/// Outcome of [`upload_single_artifact`]: whether bytes were PUT or the
+/// Outcome of [`upload_single_artifact_prepared`]: whether bytes were PUT or the
 /// upload was an idempotent no-op.
 #[derive(Debug)]
 pub(crate) enum UploadOutcome {
@@ -410,7 +410,8 @@ pub(crate) enum UploadOutcome {
 /// *differing* artifact at the same path hard-errors (immutable-version
 /// drift). When `overwrite` is true, the artifact is PUT unconditionally.
 ///
-/// Drives the per-attempt request through [`retry_http_blocking`], which
+/// Drives the per-attempt request through
+/// [`retry_http_blocking`](anodizer_core::retry::retry_http_blocking), which
 /// applies the shared `retry_sync` machinery: transport errors, 5xx
 /// responses, and 429s retry per the user's `retry:` config (mirrors
 /// per-artifact upload); 4xx responses
@@ -481,7 +482,7 @@ pub(crate) fn render_custom_headers(
 /// path is free of the non-`Sync` `ctx` and can run on a worker thread).
 ///
 /// Carries the idempotency probe, content-drift bail, and retry budget. See
-/// [`upload_single_artifact`] for the `ctx`-rendering wrapper.
+/// the test-gated `upload_single_artifact` for the `ctx`-rendering wrapper.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_single_artifact_prepared(
     client: &reqwest::blocking::Client,

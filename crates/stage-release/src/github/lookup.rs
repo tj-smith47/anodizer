@@ -167,7 +167,7 @@ fn assets_of_release(rel: octocrab::models::repos::Release) -> Vec<PublishedAsse
 /// local bytes to catch corrupted or stale uploads. It reuses the hardened
 /// release backend's repo-resolution ([`resolve_release_repo`]),
 /// tag-resolution
-/// ([`resolve_release_tag`](crate::release_body::resolve_release_tag)), and
+/// (`resolve_release_tag`), and
 /// octocrab client/retry path so there is one source of truth for "how do we
 /// talk to the GitHub Releases API".
 ///

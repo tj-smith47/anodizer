@@ -79,8 +79,8 @@ pub fn static_entry_crate_name(config: &anodizer_core::config::Config) -> String
 
 /// Static (context-free) published package name for the rollback burn probe:
 /// the postinstall package name, or the optional-deps metapackage name —
-/// resolved without a render context ([`manifest::resolve_name`] /
-/// [`optional_deps::resolve_metapackage`]). Returns `None` when that name is a
+/// resolved without a render context (`manifest::resolve_name` /
+/// `optional_deps::resolve_metapackage`). Returns `None` when that name is a
 /// template expression: outside a release run there is nothing to render it
 /// with, and a destructive rollback that cannot name the immutable package it
 /// would orphan must fail closed rather than probe a guessed name (same

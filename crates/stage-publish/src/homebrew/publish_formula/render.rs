@@ -242,12 +242,14 @@ pub(super) fn render_install_and_test_blocks(
 /// The OS filter mirrors the nix aggregator's Linux/Darwin-only system mapping:
 /// a windows, iOS/tvOS/watchOS, or any other non-macOS/Linux archive must never
 /// reach a formula's url/sha256, or `brew install` on macOS/Linux would fetch an
-/// un-installable artifact. macOS eligibility uses [`is_macos`] (genuine
-/// `*-apple-darwin` only), NOT the broad [`is_darwin`]="apple" — the latter also
+/// un-installable artifact. macOS eligibility uses
+/// [`is_macos`](anodizer_core::target::is_macos) (genuine `*-apple-darwin` only),
+/// NOT the broad [`is_darwin`](anodizer_core::target::is_darwin)="apple" — the latter also
 /// admits `aarch64-apple-ios`/`-tvos`/`-watchos`, which are buildable targets
 /// but carry no `brew`-installable binary and would otherwise land in the
 /// formula's untyped `# platform:` url block (a 404-class install). It also makes
-/// [`crate_has_homebrew_archives`] report a non-eligible-only artifact set as
+/// [`crate_has_homebrew_archives`](super::publish::crate_has_homebrew_archives)
+/// report a non-eligible-only artifact set as
 /// absence (`false`), so a determinism shard that produced only windows/iOS
 /// archives self-skips instead of emitting a broken-url formula.
 pub(super) fn homebrew_matching_artifacts<'a>(

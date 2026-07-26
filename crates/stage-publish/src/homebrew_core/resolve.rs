@@ -103,7 +103,8 @@ pub(super) fn is_homebrew_core(owner: &str, repo: &str) -> bool {
 /// Derive the source-repo `(owner, repo)` for the default tarball URL: the
 /// `ids:`-scoped (else primary) crate's `release.github`, then the top-level
 /// `release.github`, then the origin remote — the latter two via the
-/// canonical [`resolve_github_slug`] (config override → remote, applied once),
+/// canonical [`resolve_github_slug`](anodizer_core::git::resolve_github_slug)
+/// (config override → remote, applied once),
 /// so the repo identity is never re-parsed ad hoc.
 fn source_repo_coords(ctx: &Context, cfg: &HomebrewCoreConfig) -> Option<(String, String)> {
     let universe = ctx.config.crate_universe();
