@@ -192,6 +192,17 @@ tasks:
     cmds:
       - cargo xtask validate-readme
 
+  docs:site:
+    desc: Build the docsite with zola, failing on any unresolved shortcode or broken link.
+    # zola expands `{{ name(k=v) }}` in prose as a SHORTCODE call before markdown
+    # is parsed, so a template example whose arguments are all literals aborts the
+    # build on an unknown name — code fences and backticks give no protection.
+    # Deploy Docs only fires after a Release that actually cut a version, so
+    # without this target such a break stays invisible until release day.
+    dir: docs/site
+    cmds:
+      - zola build
+
   package:
     desc: Dry-run package all publishable crates
     deps: [_check:tmp-headroom]

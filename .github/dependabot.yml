@@ -31,7 +31,14 @@ updates:
       - dependency-name: "hmac"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # `directory: "/"` reaches .github/workflows plus a ROOT-level action.yml —
+    # it never descends into .github/actions/<name>/action.yml, so every pin in
+    # a composite action goes untracked and silently rots (setup-rust sat on
+    # install-action v2.83.4 while the workflows had moved to v2.85.2). Only the
+    # plural `directories` key accepts globs, hence the pair.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     commit-message:
