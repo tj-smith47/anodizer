@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-27
+
+### Features
+
+* ee2635f3a376 keep nightly off 'latest' and scope its publishers ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.24.0] - 2026-07-26
 
 ### Features
@@ -778,7 +784,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/tj-smith47/anodizer/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/tj-smith47/anodizer/compare/v0.22.1...v0.22.2
