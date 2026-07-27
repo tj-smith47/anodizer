@@ -1,5 +1,6 @@
 +++
 title = "CI/CD Integration"
+weight = 80
 description = "Wire anodizer into GitHub Actions (or GitLab CI). Start with the quick-start GitHub Actions job, reach for the full hardened topology when you publish to one-way-door registries, and pick a workspace shape from the strategy decision tree."
 sort_by = "weight"
 template = "section.html"
