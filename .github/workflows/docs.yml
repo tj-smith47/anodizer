@@ -86,10 +86,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # cache-targets stays ON: this job compiles xtask, and falls back to a
+      # full release build whenever the release binary can't be fetched below.
+      # The previous "false" was justified by a comment claiming the job "only
+      # runs codegen tasks and never reuses target/ build outputs", which stopped
+      # being true once it started shelling out to ./target/release/anodizer.
       - name: Set up docs toolchain
         uses: ./.github/actions/setup-docs
         with:
-          cache-targets: "false"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Zola
@@ -97,13 +101,34 @@ jobs:
         with:
           tool: zola
 
+      # This workflow only deploys off a Release that actually published, so the
+      # binary these docs describe is already built, signed and attached to that
+      # release — rebuilding the workspace here would recompile an artifact we
+      # are being handed, the same reasoning that makes release.yml publish the
+      # shards' preserved dist instead of rebuilding it. Falls back to a source
+      # build for the workflow_dispatch path, where no release triggered us.
+      - name: "Fetch the released binary (fallback: build from source)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/release
+          tag=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          asset="anodizer-${tag#v}-linux-amd64.tar.gz"
+          if [ -n "$tag" ] && gh release download "$tag" --pattern "$asset" --dir "$RUNNER_TEMP" 2>/dev/null; then
+            tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP"
+            install -m 0755 "$(find "$RUNNER_TEMP" -type f -name anodizer -perm -u+x | head -n1)" target/release/anodizer
+            echo "reusing released binary from $tag: $(./target/release/anodizer --version)"
+          else
+            echo "no reusable release asset (tag='${tag:-none}') — building from source"
+            task build
+          fi
+
       - name: Generate reference docs
         run: task docs
 
       - name: Generate JSON Schema
-        run: |
-          task build
-          ./target/release/anodizer jsonschema > docs/site/static/schema.json
+        run: ./target/release/anodizer jsonschema > docs/site/static/schema.json
 
       - name: Build site
         run: cd docs/site && zola build

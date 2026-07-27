@@ -175,15 +175,20 @@ tasks:
     cmds:
       - bash .claude/scripts/test-os.sh
 
+  # gen-docs reads the clap tree and the schema in-process (`anodizer_cli::build_cli()`
+  # via xtask's path dependency on crates/cli), so it never executes the binary — a
+  # `deps: [build]` here bought nothing and actively overwrote target/release/anodizer,
+  # clobbering a binary a caller had put there deliberately (docs.yml reuses the
+  # released one rather than recompiling an artifact the release already produced).
   docs:
     desc: Generate reference docs (CLI + configuration)
-    deps: [build]
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo xtask gen-docs
 
   docs:check:
     desc: Verify generated docs are up-to-date
-    deps: [build]
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo xtask gen-docs --check
 
