@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-07-27
+
+### Bug Fixes
+
+* fffc776b75d0 retry a dropped connection on every publisher git push ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.25.0] - 2026-07-27
 
 ### Features
@@ -784,7 +790,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/tj-smith47/anodizer/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/tj-smith47/anodizer/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/tj-smith47/anodizer/compare/v0.22.2...v0.23.0
