@@ -452,7 +452,14 @@ impl anodizer_core::Publisher for AurOurPublisher {
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let (reverted, failed) = run_revert_targets_parallel(&prepared, "aur", None, &log);
+        let (reverted, failed) = run_revert_targets_parallel(
+            &prepared,
+            "aur",
+            None,
+            &ctx.retry_policy(),
+            ctx.retry_deadline(),
+            &log,
+        );
         log.status(&format!(
             "aur rollback reverted {} repo(s), {} failure(s)",
             reverted, failed

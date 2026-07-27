@@ -13,7 +13,7 @@
 use anodizer_core::PublisherOutcome;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryLog, RetryStep, retry_steps_sync};
+use anodizer_core::retry::{RetryLog, RetryPolicy, RetryStep, retry_steps_sync};
 use anodizer_core::run::run_capture_timeout;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::path::Path;
@@ -21,7 +21,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::branch::fetch_default_branch_with_env;
-use super::cmd::{run_cmd_in, run_cmd_in_timeout};
+use super::cmd::{PushLadder, run_cmd_in, run_cmd_in_timeout, run_git_push_retrying};
 use anodizer_core::http::github_api_base;
 
 /// Wall-clock bound on `gh pr create` — a lightweight PR submission against the
@@ -41,6 +41,21 @@ const GIT_FETCH_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(300);
 /// the failure warns (the PR simply isn't updated in place). Sized as a remote
 /// push.
 const GIT_FORCE_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Retry ladder for the two auxiliary branch pushes below.
+///
+/// Deliberately fixed rather than resolved from the run's `retry:` block: both
+/// pushes are best-effort repairs of an ALREADY-open PR, they report failure as
+/// a warn rather than failing the publisher, and neither has a `&Context` in
+/// scope without threading one through every PR-mode publisher. Three attempts
+/// matches the `gh pr create` ladder in the same function, so a transient drop
+/// is absorbed at both seams on the same terms; a rejected push still fast-fails
+/// on the first attempt via the shared retriability classification.
+const PR_BRANCH_PUSH_RETRY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    base_delay: Duration::from_secs(2),
+    max_delay: Duration::from_secs(30),
+};
 
 /// Sync a fork with its upstream base repository.
 ///
@@ -278,9 +293,8 @@ fn create_pr_via_gh_cli(
                         if update_existing_pr {
                             // Force-push to the existing branch so the open PR
                             // picks up the new manifest without a new PR.
-                            if let Err(e) = run_cmd_in_timeout(
+                            if let Err(e) = run_git_push_retrying(
                                 repo_path,
-                                "git",
                                 &["push", "--force-with-lease", "origin", branch_name],
                                 &format!(
                                     "{label}: git push --force-with-lease (update existing PR)"
@@ -288,6 +302,10 @@ fn create_pr_via_gh_cli(
                                 None,
                                 log,
                                 GIT_FORCE_PUSH_TIMEOUT,
+                                PushLadder {
+                                    policy: &PR_BRANCH_PUSH_RETRY,
+                                    deadline: None,
+                                },
                             ) {
                                 log.warn(&format!(
                                     "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
@@ -696,11 +714,17 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
             upstream_owner, upstream_name
         );
         sync_fork(repo_path, &upstream_url, &base_branch, label, log);
-        if let Err(e) = run_cmd_in(
+        if let Err(e) = run_git_push_retrying(
             repo_path,
-            "git",
             &["push", "--force-with-lease", "origin", branch_name],
             &format!("{label}: git push (post-sync)"),
+            None,
+            log,
+            GIT_FORCE_PUSH_TIMEOUT,
+            PushLadder {
+                policy: &PR_BRANCH_PUSH_RETRY,
+                deadline: None,
+            },
         ) {
             log.warn(&format!(
                 "failed to force-push {label} fork after rebase; PR may have conflicts: {e}"

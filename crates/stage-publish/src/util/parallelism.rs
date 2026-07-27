@@ -12,8 +12,10 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::RetryPolicy;
 use std::sync::Mutex;
 use std::thread::ScopedJoinHandle;
+use std::time::Instant;
 
 use super::git_revert::{RevertTarget, run_git_revert_and_push};
 
@@ -82,6 +84,8 @@ pub(crate) fn run_revert_targets_parallel(
     targets: &[RevertTarget],
     publisher: &str,
     env_var_hint: Option<&str>,
+    retry: &RetryPolicy,
+    deadline: Option<Instant>,
     log: &StageLogger,
 ) -> (usize, usize) {
     let counts = Mutex::new((0usize, 0usize));
@@ -97,7 +101,7 @@ pub(crate) fn run_revert_targets_parallel(
                         "reverting and pushing {} for {} ({})",
                         target.target, publisher, target.repo_url
                     ));
-                    match run_git_revert_and_push(target, &log) {
+                    match run_git_revert_and_push(target, retry, deadline, &log) {
                         Ok(()) => {
                             let mut c = lock_recover(counts, &log, publisher);
                             c.0 += 1;
@@ -237,8 +241,17 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
         .first()
         .and_then(|t| t.token_env_var())
         .unwrap_or(default_env_hint);
-    let (reverted, failed) =
-        run_revert_targets_parallel(&prepared, publisher, Some(env_hint), &log);
+    // Resolved on the dispatching thread: the wall-clock budget is anchored in
+    // a thread-local the fan-out's worker threads cannot see, so reading it
+    // inside a worker would silently restart the budget per target.
+    let (reverted, failed) = run_revert_targets_parallel(
+        &prepared,
+        publisher,
+        Some(env_hint),
+        &ctx.retry_policy(),
+        ctx.retry_deadline(),
+        &log,
+    );
     log.status(&format!(
         "{publisher} rollback reverted {reverted} {reverted_noun}(s), {failed} failure(s)"
     ));
@@ -259,6 +272,14 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Single-attempt ladder: the fan-out tests drive local bare remotes with
+    /// deterministic outcomes, so a retry would only add wall-clock.
+    const TEST_PUSH_RETRY: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    };
     use anodizer_core::log::{StageLogger, Verbosity};
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -344,7 +365,8 @@ mod tests {
     #[test]
     fn run_revert_targets_parallel_handles_empty_slice() {
         let log = StageLogger::new("test", Verbosity::Normal);
-        let (ok, err) = run_revert_targets_parallel(&[], "homebrew", Some("X"), &log);
+        let (ok, err) =
+            run_revert_targets_parallel(&[], "homebrew", Some("X"), &TEST_PUSH_RETRY, None, &log);
         assert_eq!(ok, 0);
         assert_eq!(err, 0);
     }
@@ -364,7 +386,14 @@ mod tests {
             .map(|(i, (url, _, _))| target(&format!("t{i}"), url))
             .collect();
 
-        let (ok, err) = run_revert_targets_parallel(&targets, "homebrew", Some("HB"), &log);
+        let (ok, err) = run_revert_targets_parallel(
+            &targets,
+            "homebrew",
+            Some("HB"),
+            &TEST_PUSH_RETRY,
+            None,
+            &log,
+        );
         assert_eq!(ok, 3, "all three targets should report success");
         assert_eq!(err, 0, "no failures expected on clean bare remotes");
 
@@ -418,7 +447,14 @@ mod tests {
             target("bad", "/this/path/must/not/exist/anywhere/zzz.git"),
         ];
 
-        let (ok, err) = run_revert_targets_parallel(&targets, "scoop", Some("SCOOP_KEY"), &log);
+        let (ok, err) = run_revert_targets_parallel(
+            &targets,
+            "scoop",
+            Some("SCOOP_KEY"),
+            &TEST_PUSH_RETRY,
+            None,
+            &log,
+        );
         assert_eq!(ok, 1, "the good target must still complete");
         assert_eq!(err, 1, "the bad target must register as a failure");
 
@@ -459,7 +495,8 @@ mod tests {
             .map(|(i, (url, _, _))| target(&format!("c{i}"), url))
             .collect();
 
-        let (ok, err) = run_revert_targets_parallel(&targets, "nix", None, &log);
+        let (ok, err) =
+            run_revert_targets_parallel(&targets, "nix", None, &TEST_PUSH_RETRY, None, &log);
         assert_eq!(ok, n, "every chunk's targets must be processed");
         assert_eq!(err, 0);
     }

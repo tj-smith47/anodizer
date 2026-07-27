@@ -22,11 +22,12 @@
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::clone::{clone_repo_ssh, clone_repo_with_auth};
+use super::cmd::{PushLadder, run_git_push_retrying};
 use anodizer_core::log::StageLogger;
-use anodizer_core::run::run_capture_timeout;
+use anodizer_core::retry::RetryPolicy;
 
 /// Wall-clock bound on the rollback `git push` of a revert commit. The push hits
 /// the publisher remote, so a wedged connection must not hang the rollback
@@ -89,7 +90,12 @@ pub(crate) struct RevertTarget {
 ///
 /// Success path on a clean repo: a single new commit lands on the
 /// branch, formatted by `git revert` as `Revert "<subject>"`.
-pub(crate) fn run_git_revert_and_push(target: &RevertTarget, log: &StageLogger) -> Result<()> {
+pub(crate) fn run_git_revert_and_push(
+    target: &RevertTarget,
+    retry: &RetryPolicy,
+    deadline: Option<Instant>,
+    log: &StageLogger,
+) -> Result<()> {
     let tmp_dir = tempfile::tempdir().context("git_revert: create temp dir")?;
     let repo_path = tmp_dir.path();
 
@@ -120,7 +126,7 @@ pub(crate) fn run_git_revert_and_push(target: &RevertTarget, log: &StageLogger) 
     }
 
     revert_head_in(repo_path)?;
-    push_after_revert(repo_path, target.branch.as_deref(), log)?;
+    push_after_revert(repo_path, target.branch.as_deref(), retry, deadline, log)?;
     Ok(())
 }
 
@@ -188,39 +194,48 @@ fn revert_head_in(path: &Path) -> Result<()> {
 /// `branch = Some("master")` pushes to `origin master`. `branch = None`
 /// pushes `HEAD` to its current upstream — same shape `commit_and_push_
 /// with_opts` uses for publishers that don't pin a branch.
-fn push_after_revert(path: &Path, branch: Option<&str>, log: &StageLogger) -> Result<()> {
+fn push_after_revert(
+    path: &Path,
+    branch: Option<&str>,
+    retry: &RetryPolicy,
+    deadline: Option<Instant>,
+    log: &StageLogger,
+) -> Result<()> {
     let args: Vec<&str> = match branch {
         Some(b) => vec!["push", "origin", b],
         None => vec!["push", "origin", "HEAD"],
     };
-    let mut cmd = Command::new("git");
-    cmd.args(&args)
-        .current_dir(path)
-        .env("GIT_TERMINAL_PROMPT", "0");
-    // Bounded: the rollback push hits the remote, so a stalled connection must
-    // not hang the rollback. A deadline kill surfaces as a Retriable error.
-    let output = run_capture_timeout(
-        &mut cmd,
-        log,
+    // Bounded and retried on the same terms as the forward publish push: a
+    // rollback that gives up on one dropped connection leaves the publisher
+    // holding the version it was asked to withdraw, which is the failure mode
+    // rollback exists to prevent.
+    run_git_push_retrying(
+        path,
+        &args,
         "git_revert: git push",
+        None,
+        log,
         GIT_REVERT_PUSH_TIMEOUT,
+        PushLadder {
+            policy: retry,
+            deadline,
+        },
     )
-    .with_context(|| format!("git_revert: git push in {}", path.display()))?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git_revert: git push failed in {} (exit {})\nstderr: {}",
-            path.display(),
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    Ok(())
+    .with_context(|| format!("git_revert: git push in {}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use anodizer_core::log::{StageLogger, Verbosity};
+
+    /// Single-attempt ladder: these tests drive local bare remotes whose
+    /// failures are deterministic, so a retry would only add wall-clock.
+    const TEST_PUSH_RETRY: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: Duration::from_millis(0),
+        max_delay: Duration::from_millis(0),
+    };
     use serial_test::serial;
     use std::process::Command;
 
@@ -311,7 +326,7 @@ mod tests {
         // The helper re-clones, reverts HEAD, pushes back to the bare
         // remote. We then verify a fresh clone has HEAD as a revert
         // commit (subject starts with `Revert`).
-        run_git_revert_and_push(&target, &log).expect("revert+push ok");
+        run_git_revert_and_push(&target, &TEST_PUSH_RETRY, None, &log).expect("revert+push ok");
 
         let verify_dir = tempfile::tempdir().expect("verify tempdir");
         let ok = anodizer_core::test_helpers::output_with_spawn_retry(

@@ -4,12 +4,15 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::cmd::{run_cmd_in, run_cmd_in_envs, run_cmd_in_timeout};
+use super::cmd::{
+    PushLadder, run_cmd_in, run_cmd_in_envs, run_cmd_in_timeout, run_git_push_retrying,
+};
 
 /// Wall-clock bound on `git push` to a publisher's remote repo (a tap, AUR,
 /// winget-pkgs, krew-index, ...). A wedged push to the remote would otherwise
@@ -45,7 +48,7 @@ impl CommitOutcome {
 }
 
 /// Optional overrides for the git commit step.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct CommitOptions {
     /// Git commit author name, applied as `GIT_AUTHOR_NAME` /
     /// `GIT_COMMITTER_NAME` on the commit child so it overrides both an
@@ -67,6 +70,32 @@ pub(crate) struct CommitOptions {
     /// (already configured in the repo's local git config by the Actions
     /// checkout step).
     pub use_github_app_token: bool,
+    /// Retry ladder applied to the `git push` at the end of
+    /// [`commit_and_push_with_opts`], resolved from the run's `retry:` block
+    /// so one operator-facing knob governs registry writes and git-remote
+    /// writes alike.
+    pub push_retry: RetryPolicy,
+    /// Wall-clock ceiling shared with the rest of the enclosing publisher
+    /// invocation, so a wedged remote cannot spend the whole budget on the
+    /// push after an auth exchange already spent part of it. `None` outside a
+    /// publisher scope (a direct unit-test call) means attempt-count only.
+    pub push_deadline: Option<Instant>,
+}
+
+impl Default for CommitOptions {
+    fn default() -> Self {
+        Self {
+            author_name: None,
+            author_email: None,
+            signing: None,
+            use_github_app_token: false,
+            // The same ladder an unset `retry:` block resolves to, so a
+            // direct construction behaves like the configured default rather
+            // than silently opting out of retries.
+            push_retry: anodizer_core::config::RetryConfig::default().to_policy(),
+            push_deadline: None,
+        }
+    }
 }
 
 /// Default commit author name used when no author is configured.
@@ -185,6 +214,8 @@ pub(crate) fn resolve_commit_opts(
         author_email: Some(email),
         signing,
         use_github_app_token,
+        push_retry: ctx.retry_policy(),
+        push_deadline: ctx.retry_deadline(),
     })
 }
 
@@ -416,14 +447,17 @@ pub(crate) fn commit_and_push_with_opts(
         (Some(branch_name), None) => vec!["push", "-u", "origin", branch_name],
         (None, _) => vec!["push"],
     };
-    run_cmd_in_timeout(
+    run_git_push_retrying(
         repo_path,
-        "git",
         &push_args,
         &format!("{label}: git push"),
         None,
         log,
         GIT_PUSH_TIMEOUT,
+        PushLadder {
+            policy: &opts.push_retry,
+            deadline: opts.push_deadline,
+        },
     )?;
     Ok(CommitOutcome::Pushed)
 }
@@ -500,6 +534,7 @@ mod tests {
             author_email: Some("test@test.com".to_string()),
             signing: None,
             use_github_app_token: false,
+            ..Default::default()
         };
         let outcome = commit_and_push_with_opts(
             &local_dir,
@@ -568,6 +603,7 @@ mod tests {
             author_email: Some("test@test.com".to_string()),
             signing: None,
             use_github_app_token: false,
+            ..Default::default()
         };
         let outcome = commit_and_push_with_opts(
             &local_dir,
@@ -606,6 +642,7 @@ mod tests {
             author_email: Some("test@test.com".to_string()),
             signing: None,
             use_github_app_token: false,
+            ..Default::default()
         };
 
         // First push creates the versioned branch on the remote.
@@ -744,6 +781,7 @@ mod tests {
             author_email: Some("eng@example.invalid".to_string()),
             signing: None,
             use_github_app_token: false,
+            ..Default::default()
         };
         let outcome = commit_and_push_with_opts(
             &local_dir,
@@ -807,6 +845,7 @@ mod tests {
             author_email: Some("eng@example.invalid".to_string()),
             signing: None,
             use_github_app_token: true,
+            ..Default::default()
         };
         commit_and_push_with_opts(
             &local_dir,
