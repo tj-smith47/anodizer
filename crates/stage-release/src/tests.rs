@@ -6090,3 +6090,106 @@ fn resolve_release_token_empty_falls_back() {
     let cfg = release_cfg_with_token(Some(""));
     assert_eq!(crate::resolve_release_token(&ctx, &cfg), None);
 }
+
+// ---------------------------------------------------------------------------
+// nightly prerelease / make_latest defaults
+// ---------------------------------------------------------------------------
+
+fn nightly_flags(
+    nightly_cfg: Option<anodizer_core::config::NightlyConfig>,
+    release_cfg: ReleaseConfig,
+    is_nightly: bool,
+) -> super::flags::ResolvedReleaseFlags {
+    let mut ctx = TestContextBuilder::new().nightly(is_nightly).build();
+    ctx.config.nightly = nightly_cfg;
+    super::flags::resolve_release_flags(&ctx, &release_cfg, "anodizer", "nightly")
+        .expect("flags resolve")
+}
+
+#[test]
+fn nightly_defaults_to_prerelease_and_never_latest() {
+    // The whole point: `release.prerelease` unset is false and
+    // `release.make_latest` unset is GitHub's default (latest), so a nightly
+    // that fell through to them would take over the stable release slot.
+    let f = nightly_flags(
+        Some(anodizer_core::config::NightlyConfig::default()),
+        ReleaseConfig::default(),
+        true,
+    );
+    assert!(f.prerelease, "nightly must default to prerelease");
+    assert!(
+        matches!(
+            f.make_latest,
+            Some(octocrab::repos::releases::MakeLatest::False)
+        ),
+        "nightly must never be marked latest"
+    );
+}
+
+#[test]
+fn nightly_defaults_hold_with_no_nightly_block_at_all() {
+    let f = nightly_flags(None, ReleaseConfig::default(), true);
+    assert!(f.prerelease);
+    assert!(matches!(
+        f.make_latest,
+        Some(octocrab::repos::releases::MakeLatest::False)
+    ));
+}
+
+#[test]
+fn nightly_does_not_inherit_release_prerelease_false() {
+    // release.prerelease = false explicitly; the nightly must still be a
+    // prerelease, because that field describes the stable release.
+    let mut release_cfg = ReleaseConfig::default();
+    release_cfg.prerelease = Some(PrereleaseConfig::Bool(false));
+    release_cfg.make_latest = Some(MakeLatestConfig::Bool(true));
+    let f = nightly_flags(
+        Some(anodizer_core::config::NightlyConfig::default()),
+        release_cfg,
+        true,
+    );
+    assert!(f.prerelease);
+    assert!(matches!(
+        f.make_latest,
+        Some(octocrab::repos::releases::MakeLatest::False)
+    ));
+}
+
+#[test]
+fn explicit_nightly_overrides_win_over_the_defaults() {
+    let nightly_cfg = anodizer_core::config::NightlyConfig {
+        prerelease: Some(false),
+        make_latest: Some(MakeLatestConfig::Bool(true)),
+        ..Default::default()
+    };
+    let f = nightly_flags(Some(nightly_cfg), ReleaseConfig::default(), true);
+    assert!(!f.prerelease, "explicit nightly.prerelease=false must win");
+    assert!(
+        matches!(
+            f.make_latest,
+            Some(octocrab::repos::releases::MakeLatest::True)
+        ),
+        "explicit nightly.make_latest=true must win"
+    );
+}
+
+#[test]
+fn non_nightly_runs_still_read_the_release_block() {
+    // The nightly defaults must not leak into an ordinary release.
+    let mut release_cfg = ReleaseConfig::default();
+    release_cfg.prerelease = Some(PrereleaseConfig::Bool(false));
+    let f = nightly_flags(
+        Some(anodizer_core::config::NightlyConfig {
+            prerelease: Some(true),
+            make_latest: Some(MakeLatestConfig::Bool(false)),
+            ..Default::default()
+        }),
+        release_cfg,
+        false,
+    );
+    assert!(!f.prerelease, "non-nightly must read release.prerelease");
+    assert!(
+        f.make_latest.is_none(),
+        "unset release.make_latest stays unset"
+    );
+}

@@ -118,14 +118,32 @@ jobs:
       # --merge fuses the shard contexts (validated against matrix.json) and
       # resumes the pipeline from the post-build stages, publishing the
       # nightly prerelease.
+      #
+      # Scope, not credentials, is what makes this leg run on a hosted runner.
+      # A nightly's product is the single rolling prerelease that `nightly:`
+      # configures (tag_name/publish_release/keep_single_release) — every other
+      # publisher belongs to a real release. `--publishers github-release` is a
+      # whitelist rather than a `--skip` denylist so that adding a publisher to
+      # .anodizer.yaml later cannot silently widen the nightly's blast radius.
+      # `--skip` covers the two STAGES a whitelist cannot reach: blob targets an
+      # in-cluster MinIO endpoint no GitHub-hosted runner can resolve (release.yml
+      # runs its publish leg on arc-anodizer for exactly this reason), and a
+      # nightly that announced itself every morning is noise, not signal.
       - name: Publish the merged nightly (release --nightly --merge)
         uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: master
           auto-install: 'true'
+          # nfpm signs its .deb/.rpm/.apk output, so the merge leg needs the same
+          # key material release.yml hands its publish job; without it preflight
+          # fails on GPG_KEY_PATH / APK_PRIVATE_KEY_PATH before any stage runs.
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           # Same selection pin as the split legs: the merge validates shard
           # contexts against its own selection, so the two must agree.
-          args: release --nightly --merge --all --force
+          args: >-
+            release --nightly --merge --all --force
+            --publishers github-release --skip blob,announce
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}

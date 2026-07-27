@@ -302,7 +302,7 @@ fn prerelease_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Sc
 }
 
 /// Schema for make_latest: "auto" or boolean.
-fn make_latest_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+pub(super) fn make_latest_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     auto_or_bool_schema()
 }
 

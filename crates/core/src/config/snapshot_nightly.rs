@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{CommitAuthorConfig, ContentSource};
+use super::{CommitAuthorConfig, ContentSource, MakeLatestConfig};
 
 // ---------------------------------------------------------------------------
 // SnapshotConfig
@@ -73,6 +73,25 @@ pub struct NightlyConfig {
     /// Override `release.draft` for nightly runs only.
     /// `None` falls through to `release.draft`; `Some(v)` overrides it.
     pub draft: Option<bool>,
+    /// Mark the nightly release as a prerelease. Default: `true`.
+    ///
+    /// Unlike [`Self::draft`], `None` does NOT fall through to
+    /// `release.prerelease` — that field resolves to `false` for a nightly
+    /// (an unset config is `false`, and `prerelease: auto` cannot help
+    /// because the default `nightly` tag is not a parseable semver tag), so
+    /// falling through would publish every nightly as a stable release.
+    /// Set `false` to opt out.
+    pub prerelease: Option<bool>,
+    /// Override `release.make_latest` for nightly runs only. Default:
+    /// `false` — a rolling nightly must not displace the newest stable
+    /// release in the GitHub UI, in `releases/latest`, or for the install
+    /// scripts and `gh release download` invocations that resolve it.
+    ///
+    /// `None` does not fall through to `release.make_latest` for the same
+    /// reason as [`Self::prerelease`]: unset there means GitHub's own
+    /// default, which IS latest.
+    #[schemars(schema_with = "super::release::make_latest_schema")]
+    pub make_latest: Option<MakeLatestConfig>,
 }
 
 /// Retention policy for nightly releases on the publish repo.

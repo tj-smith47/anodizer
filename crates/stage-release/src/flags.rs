@@ -156,14 +156,36 @@ pub(crate) fn resolve_release_flags(
     } else {
         None
     };
+    // `prerelease` / `make_latest` do NOT fall through to `release.*` on a
+    // nightly run, because both of that block's unset values are wrong here:
+    // `release.prerelease` unset is `false` (and `auto` cannot rescue it — the
+    // default `nightly` tag is not parseable semver), while `release.make_latest`
+    // unset means GitHub's own default, which IS latest. Falling through would
+    // publish every nightly as the stable release. The nightly block's own
+    // fields override these defaults when set, matching `nightly.draft`.
+    let (prerelease, make_latest) = if ctx.is_nightly() {
+        let cfg = nightly_cfg;
+        (
+            cfg.and_then(|n| n.prerelease).unwrap_or(true),
+            match cfg.and_then(|n| n.make_latest.as_ref()) {
+                Some(m) => resolve_make_latest(&Some(m.clone()), |s| ctx.render_template(s))?,
+                None => Some(octocrab::repos::releases::MakeLatest::False),
+            },
+        )
+    } else {
+        (
+            should_mark_prerelease(&release_cfg.prerelease, tag),
+            resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?,
+        )
+    };
     Ok(ResolvedReleaseFlags {
         draft,
-        prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
+        prerelease,
         skip_upload,
         replace_existing_draft: release_cfg.resolved_replace_existing_draft(),
         replace_existing_artifacts: release_cfg.resolved_replace_existing_artifacts()
             || ctx.options.replace_existing_artifacts,
-        make_latest: resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?,
+        make_latest,
         target_commitish,
         discussion_category_name: release_cfg.discussion_category_name.clone(),
         include_meta: release_cfg.resolved_include_meta(),

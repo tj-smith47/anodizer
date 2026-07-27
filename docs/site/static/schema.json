@@ -11252,11 +11252,34 @@
             "null"
           ]
         },
+        "make_latest": {
+          "description": "Override `release.make_latest` for nightly runs only. Default: `false` — a rolling nightly must not displace the newest stable release in the GitHub UI, in `releases/latest`, or for the install scripts and `gh release download` invocations that resolve it.\n\n`None` does not fall through to `release.make_latest` for the same reason as [`Self::prerelease`]: unset there means GitHub's own default, which IS latest.",
+          "default": null,
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
         "name_template": {
           "description": "Template for the release name. Default: `\"{{ ProjectName }}-nightly\"`.",
           "default": null,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "prerelease": {
+          "description": "Mark the nightly release as a prerelease. Default: `true`.\n\nUnlike [`Self::draft`], `None` does NOT fall through to `release.prerelease` — that field resolves to `false` for a nightly (an unset config is `false`, and `prerelease: auto` cannot help because the default `nightly` tag is not a parseable semver tag), so falling through would publish every nightly as a stable release. Set `false` to opt out.",
+          "default": null,
+          "type": [
+            "boolean",
             "null"
           ]
         },
