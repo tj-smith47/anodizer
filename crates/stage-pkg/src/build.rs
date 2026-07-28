@@ -37,6 +37,40 @@ fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -
     Ok(())
 }
 
+/// Collect every path under `root` the way `find .` emits them: `.`-relative,
+/// with `root` itself present as the `.` entry, directories included alongside
+/// the files they contain.
+///
+/// Returned unsorted; the caller sorts, which reproduces `LC_ALL=C sort` for
+/// the UTF-8 names a payload carries. A non-UTF-8 name is rejected rather than
+/// lossily transcoded — a mangled name in the archive would surface as a
+/// corrupt install, not an error.
+pub(crate) fn collect_find_paths(root: &std::path::Path) -> Result<Vec<String>> {
+    fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) -> Result<()> {
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("read pkgroot dir {}", dir.display()))?
+        {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().with_context(|| {
+                format!(
+                    "payload path {} is not valid UTF-8; cpio cannot archive it reproducibly",
+                    entry.path().display()
+                )
+            })?;
+            let rel = format!("{prefix}/{name}");
+            if entry.file_type()?.is_dir() {
+                walk(&entry.path(), &rel, out)?;
+            }
+            out.push(rel);
+        }
+        Ok(())
+    }
+    let mut out = vec![".".to_string()];
+    walk(root, ".", &mut out)?;
+    Ok(out)
+}
+
 /// Count regular files and total byte size under `root` (recursive).
 ///
 /// Feeds `PackageInfo`'s `installKBytes`/`numberOfFiles`, mirroring what
@@ -72,13 +106,13 @@ fn xml_escape(s: &str) -> String {
 /// Build a byte-reproducible gzipped `cpio` (odc) archive of `src_root`'s
 /// contents into `dest`.
 ///
-/// Drives `find . | LC_ALL=C sort | cpio -o --format odc -R 0:0` from inside
-/// `src_root` via a single `sh -c` invocation, failing if any stage does
-/// (`set -o pipefail`), capturing the raw cpio on stdout. The cwd-relative
-/// `find .` keeps archived paths rooted at `.` exactly as `pkgbuild` emits
-/// them. Byte-stability guards make the Payload identical across CI runners
-/// and match native pkgbuild:
-/// - `LC_ALL=C sort` fixes entry order (raw readdir order varies by host).
+/// Feeds `cpio -o --format odc -R 0:0` a sorted, `.`-relative name list on
+/// stdin from inside `src_root`, capturing the raw cpio on stdout. The
+/// `.`-relative names keep archived paths rooted at `.` exactly as `pkgbuild`
+/// emits them. Byte-stability guards make the Payload identical across CI
+/// runners and match native pkgbuild:
+/// - the name list is sorted in-process, fixing entry order (raw readdir order
+///   varies by host).
 /// - `-R 0:0` forces uid/gid to root, removing the runner's ownership.
 /// - [`normalize_odc_cpio`] zeroes the per-entry `dev`/`ino` header fields,
 ///   which the odc format encodes from the live filesystem and which differ
@@ -93,14 +127,41 @@ fn cpio_gzip_archive(
     dest: &std::path::Path,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    let pipeline = "set -o pipefail; find . | LC_ALL=C sort | \
-         cpio -o --format odc -R 0:0 2>/dev/null";
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(pipeline)
+    // The name list is built and sorted here rather than piped in from
+    // `find | LC_ALL=C sort`: guarding that pipeline needed `set -o pipefail`,
+    // a bashism, and /bin/sh is dash on Debian and Ubuntu — there the shell
+    // aborted on the unknown option and cpio never ran at all. Driving cpio
+    // directly also makes its exit status the only one to check, which is what
+    // pipefail was there to approximate.
+    let mut names = collect_find_paths(src_root)?;
+    names.sort();
+    let mut name_list = String::new();
+    for name in &names {
+        name_list.push_str(name);
+        name_list.push('\n');
+    }
+
+    let mut child = Command::new("cpio")
+        .args(["-o", "--format", "odc", "-R", "0:0"])
         .current_dir(src_root)
-        .output()
-        .with_context(|| format!("execute cpio pipeline for {}", src_root.display()))?;
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("execute cpio for {}", src_root.display()))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("cpio stdin was not piped despite being requested")?;
+        stdin
+            .write_all(name_list.as_bytes())
+            .with_context(|| format!("write cpio name list for {}", src_root.display()))?;
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("await cpio for {}", src_root.display()))?;
     if !output.status.success() {
         log.check_output(output, "cpio")?;
         return Ok(());

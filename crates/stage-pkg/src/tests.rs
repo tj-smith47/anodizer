@@ -2202,3 +2202,56 @@ fn test_two_configs_same_crate_distinct_names_pass() {
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
     assert_eq!(pkgs.len(), 2, "expected one PKG per distinct-named config");
 }
+
+// -- collect_find_paths tests --
+
+/// The sorted name list is what cpio archives, so it must reproduce
+/// `find . | LC_ALL=C sort` exactly — a divergence in entry order or
+/// membership changes the Payload bytes and breaks .pkg determinism.
+#[cfg(unix)]
+#[test]
+fn test_collect_find_paths_matches_find_pipe_sort() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("usr/local/bin")).unwrap();
+    fs::create_dir_all(root.join("usr/share/doc")).unwrap();
+    // An empty directory still gets an archive entry; dropping it would change
+    // the installed tree.
+    fs::create_dir_all(root.join("empty-dir")).unwrap();
+    fs::write(root.join("usr/local/bin/tool"), b"bin").unwrap();
+    fs::write(root.join("usr/share/doc/README"), b"doc").unwrap();
+    // A space sorts below every alphanumeric under LC_ALL=C, so this pins the
+    // collation rather than merely the set of names.
+    fs::write(root.join("usr/share/doc/a b"), b"space").unwrap();
+    fs::write(root.join("top.txt"), b"top").unwrap();
+
+    let mut mine = collect_find_paths(root).unwrap();
+    mine.sort();
+
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("find . | LC_ALL=C sort")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "find|sort failed: {out:?}");
+    let expected: Vec<String> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(mine, expected);
+}
+
+/// The root itself must be present as `.` — pkgbuild emits it, and its absence
+/// drops the payload root's pinned mtime from the archive.
+#[cfg(unix)]
+#[test]
+fn test_collect_find_paths_includes_dot_root() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("f"), b"x").unwrap();
+    let mut paths = collect_find_paths(dir.path()).unwrap();
+    paths.sort();
+    assert_eq!(paths, vec![".".to_string(), "./f".to_string()]);
+}
