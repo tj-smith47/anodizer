@@ -558,6 +558,89 @@ pub(crate) fn prepare_wxs_build_context(
     Ok((tmp_dir, rendered_wxs_path))
 }
 
+/// First msitools release whose `wixl` parser knows the WiX `<Environment>`
+/// element. Older builds abort mid-parse with
+/// `unhandled child Component node Environment`.
+const WIXL_ENVIRONMENT_MIN_VERSION: (u64, u64) = (0, 105);
+
+/// Parse the leading `major.minor` out of a version line, ignoring any
+/// trailing patch/suffix. `None` when the major component is not numeric.
+///
+/// Each component is read up to its first non-digit rather than trimmed from
+/// the end: distro builds report `0.106+repack-2`, whose minor component
+/// carries a trailing digit that a trim would keep, leaving `106+repack-2`
+/// unparseable and the version silently reading as `0.0`.
+fn parse_major_minor(version: &str) -> Option<(u64, u64)> {
+    let leading_number = |s: &str| {
+        s.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .ok()
+    };
+    let digits = version.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = digits.split('.');
+    let major = leading_number(parts.next()?)?;
+    let minor = parts.next().and_then(leading_number).unwrap_or(0);
+    Some((major, minor))
+}
+
+/// The remedy message for a `wixl` too old to parse `<Environment>`, or
+/// `None` when `reported` is new enough (or too malformed to judge).
+///
+/// wixl's own diagnostic is `wix.vala:232: unhandled child Component node
+/// Environment` with no version, no file and no remedy, and every stock
+/// Ubuntu 24.04 hits it because that release ships msitools 0.103. Trading it
+/// for a message that names the element, the version and the fix is the
+/// difference between a five-minute fix and an afternoon in a Vala backtrace.
+///
+/// An unparseable version yields `None`: a wixl that cannot report itself
+/// still gets to attempt the build rather than being failed on a guess.
+fn wixl_environment_rejection(reported: &str, wxs_path: &std::path::Path) -> Option<String> {
+    let found = parse_major_minor(reported)?;
+    if found >= WIXL_ENVIRONMENT_MIN_VERSION {
+        return None;
+    }
+    let (min_major, min_minor) = WIXL_ENVIRONMENT_MIN_VERSION;
+    Some(format!(
+        "wixl {reported} cannot build this MSI: the .wxs uses the WiX \
+         <Environment> element (the standard way to put the install dir on \
+         PATH), which msitools only understands from {min_major}.{min_minor} \
+         onward — older builds abort with 'unhandled child Component node \
+         Environment'. Install msitools >= {min_major}.{min_minor} (Ubuntu \
+         24.04 ships 0.103; 25.10 and later ship 0.106), or remove the \
+         <Environment> element from {}",
+        wxs_path.display()
+    ))
+}
+
+/// Reject a `<Environment>`-bearing `.wxs` on a `wixl` too old to parse it,
+/// before the build runs.
+fn check_wixl_supports_environment(
+    wix_version: WixVersion,
+    rendered_wxs_path: &std::path::Path,
+) -> Result<()> {
+    if wix_version != WixVersion::Wixl {
+        return Ok(());
+    }
+    let wxs = match fs::read_to_string(rendered_wxs_path) {
+        Ok(contents) => contents,
+        // Unreadable here means the build is about to fail on it anyway, with
+        // a better-placed error than this check could give.
+        Err(_) => return Ok(()),
+    };
+    if !wxs.contains("<Environment") {
+        return Ok(());
+    }
+    let Ok(Some(reported)) = anodizer_core::tool_detect::tool_version("wixl") else {
+        return Ok(());
+    };
+    match wixl_environment_rejection(&reported, rendered_wxs_path) {
+        Some(message) => anyhow::bail!(message),
+        None => Ok(()),
+    }
+}
+
 /// Compose and execute the WiX build commands (primary + optional link
 /// step for v3), then apply `mod_timestamp:` to the resulting `.msi`. The
 /// `-d BindTimestamp=<ts>` flag is appended for v4 builds; v3 logs the
@@ -582,6 +665,8 @@ fn execute_msi_build(
             rendered_extensions.join(", ")
         ));
     }
+
+    check_wixl_supports_environment(wix_version, rendered_wxs_path)?;
 
     // Keep the candle `.wixobj` in the rendered-wxs tempdir, out of dist/.
     let intermediate_dir = rendered_wxs_path
@@ -745,4 +830,102 @@ pub(super) fn run_msi_post_hook(
             msi_id_for_log, crate_name
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{
+        WIXL_ENVIRONMENT_MIN_VERSION, check_wixl_supports_environment, parse_major_minor,
+        wixl_environment_rejection,
+    };
+    use crate::wix::WixVersion;
+
+    #[test]
+    fn parse_major_minor_reads_a_bare_wixl_version() {
+        assert_eq!(parse_major_minor("0.106"), Some((0, 106)));
+        assert_eq!(parse_major_minor("0.103"), Some((0, 103)));
+    }
+
+    #[test]
+    fn parse_major_minor_tolerates_prefixes_and_suffixes() {
+        // Distro builds report things like `0.106+repack-2`, and some tools
+        // lead with their own name before the number.
+        assert_eq!(parse_major_minor("0.106+repack-2"), Some((0, 106)));
+        assert_eq!(parse_major_minor("wixl 0.105"), Some((0, 105)));
+        assert_eq!(parse_major_minor("1"), Some((1, 0)));
+    }
+
+    #[test]
+    fn parse_major_minor_rejects_a_digitless_version() {
+        assert_eq!(parse_major_minor("unknown"), None);
+        assert_eq!(parse_major_minor(""), None);
+    }
+
+    #[test]
+    fn rejection_names_the_version_element_and_remedy_below_the_floor() {
+        let message = wixl_environment_rejection("0.103", Path::new("/tmp/pkg.wxs"))
+            .expect("0.103 predates <Environment> support and must be rejected");
+        // The three things wixl's own diagnostic omits.
+        assert!(message.contains("0.103"), "names the offending version");
+        assert!(message.contains("<Environment>"), "names the element");
+        assert!(message.contains("/tmp/pkg.wxs"), "names the file");
+        assert!(message.contains("0.105"), "names the version to install");
+    }
+
+    #[test]
+    fn rejection_is_none_at_and_above_the_floor() {
+        let (major, minor) = WIXL_ENVIRONMENT_MIN_VERSION;
+        let floor = format!("{major}.{minor}");
+        assert_eq!(
+            wixl_environment_rejection(&floor, Path::new("/tmp/pkg.wxs")),
+            None,
+            "the floor version itself carries the element and must pass"
+        );
+        assert_eq!(
+            wixl_environment_rejection("0.106", Path::new("/tmp/pkg.wxs")),
+            None
+        );
+    }
+
+    #[test]
+    fn rejection_is_none_when_the_version_cannot_be_parsed() {
+        // A wixl that cannot report itself still gets to attempt the build;
+        // failing it on a guess would break toolchains that would have worked.
+        assert_eq!(
+            wixl_environment_rejection("unknown", Path::new("/tmp/pkg.wxs")),
+            None
+        );
+    }
+
+    #[test]
+    fn check_skips_non_wixl_toolchains_without_touching_the_wxs() {
+        // A real WiX toolchain handles <Environment> at every version, so the
+        // check must not run for it — the path here does not even exist.
+        let missing = Path::new("/nonexistent/pkg.wxs");
+        assert!(check_wixl_supports_environment(WixVersion::V3, missing).is_ok());
+        assert!(check_wixl_supports_environment(WixVersion::V4, missing).is_ok());
+    }
+
+    #[test]
+    fn check_passes_a_wxs_without_an_environment_element() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wxs = dir.path().join("pkg.wxs");
+        std::fs::write(
+            &wxs,
+            "<Wix><Product><Component><File Id=\"a\" /></Component></Product></Wix>",
+        )
+        .expect("write wxs");
+        // No <Environment> means no version constraint, whatever wixl is here.
+        assert!(check_wixl_supports_environment(WixVersion::Wixl, &wxs).is_ok());
+    }
+
+    #[test]
+    fn check_passes_an_unreadable_wxs_to_the_build_to_report() {
+        // The build fails on a missing .wxs with a better-placed error than
+        // this check could give, so it must not pre-empt it.
+        let missing = Path::new("/nonexistent/pkg.wxs");
+        assert!(check_wixl_supports_environment(WixVersion::Wixl, missing).is_ok());
+    }
 }
