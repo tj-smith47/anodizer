@@ -826,6 +826,80 @@ mod tests {
         assert_eq!(render_set.len(), 2, "keeps every crate as its own track");
     }
 
+    #[test]
+    fn release_notes_render_set_workspaces_block_stays_per_crate() {
+        // cfgd's exact shape: a `workspaces:` block of independent tracks with
+        // distinct tag prefixes. Must resolve PerCrate → single_track=false, so a
+        // multitrack release keeps each crate's own body and does NOT collapse
+        // every track into one aggregate. This is the highest-value guard: cfgd
+        // is the consumer that would ship a wrong body if the flag flipped.
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            project_name: "cfgd".to_string(),
+            crates: vec![crate_cfg("cfgd", "v{{ .Version }}")],
+            ..Default::default()
+        };
+        config.workspaces = Some(vec![
+            anodizer_core::config::WorkspaceConfig {
+                name: "csi".to_string(),
+                crates: vec![crate_cfg("cfgd-csi", "csi-v{{ .Version }}")],
+                ..Default::default()
+            },
+            anodizer_core::config::WorkspaceConfig {
+                name: "operator".to_string(),
+                crates: vec![crate_cfg("cfgd-operator", "operator-v{{ .Version }}")],
+                ..Default::default()
+            },
+        ]);
+
+        let (render_set, single_track) = resolve_changelog_render_set(dir.path(), &config).unwrap();
+
+        assert!(
+            !single_track,
+            "a workspaces: multitrack config must stay per-crate"
+        );
+        assert_eq!(render_set.len(), 3, "keeps every track as its own body");
+    }
+
+    #[test]
+    fn release_notes_render_set_empty_universe_is_single_track() {
+        // Bare-lockstep / config-less single crate: no declared crates. Synthesize
+        // one project-name aggregate at the root and flag single_track.
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "bare".to_string(),
+            ..Default::default()
+        };
+
+        let (render_set, single_track) = resolve_changelog_render_set(dir.path(), &config).unwrap();
+
+        assert!(single_track, "empty universe is a single-track aggregate");
+        assert_eq!(render_set.len(), 1);
+        assert_eq!(render_set[0].name, "bare");
+        assert!(render_set[0].path.is_empty());
+    }
+
+    #[test]
+    fn release_notes_render_set_single_crate_is_not_flagged() {
+        // A sole declared crate is already the whole-repo aggregate via its own
+        // scope, so it is not flagged single_track — its per-crate slice IS the
+        // body, and the release stage falls back to it correctly.
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "solo".to_string(),
+            crates: vec![crate_cfg("solo", "v{{ .Version }}")],
+            ..Default::default()
+        };
+
+        let (render_set, single_track) = resolve_changelog_render_set(dir.path(), &config).unwrap();
+
+        assert!(
+            !single_track,
+            "a single declared crate is not flagged single-track"
+        );
+        assert_eq!(render_set.len(), 1);
+    }
+
     fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
         CrateConfig {
             name: name.to_string(),
