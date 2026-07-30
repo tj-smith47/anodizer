@@ -128,12 +128,21 @@ impl Stage for super::ChangelogStage {
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
 
+        // Single-track workspaces (single-crate / lockstep / flat-aggregate) get
+        // ONE path-cleared aggregate render set resolved by the CLI from the repo
+        // shape — the SAME collapse the standalone `release-notes` / `json` /
+        // `keep-a-changelog` formats apply. Rendering it here (instead of the raw
+        // per-crate universe) makes the release body span the whole workspace, so
+        // a release whose commits missed the release crate's own directory no
+        // longer collapses to an empty body. `None` keeps the per-crate universe.
+        let aggregate_mode = ctx.options.changelog_aggregate_set.is_some();
         let crates: Vec<_> = ctx
-            .config
-            .crate_universe()
+            .options
+            .changelog_aggregate_set
+            .clone()
+            .unwrap_or_else(|| ctx.config.crate_universe().into_iter().cloned().collect())
             .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .cloned()
             .collect();
 
         let ai_cfg = changelog_cfg.as_ref().and_then(|c| c.ai.clone());
@@ -166,6 +175,15 @@ impl Stage for super::ChangelogStage {
                 .changelogs
                 .insert(crate_cfg.name.clone(), markdown.clone());
             combined_markdown.push_str(&markdown);
+        }
+
+        // In aggregate mode the render set is the single path-cleared entry that
+        // spans the whole workspace, so the combined body IS the release body for
+        // this single-track release. Expose it so the release stage and the
+        // `ReleaseNotes` var use it verbatim, independent of which crate carries
+        // the `release:` block. Per-crate mode leaves this `None`.
+        if aggregate_mode {
+            ctx.stage_outputs.release_body_changelog = Some(combined_markdown.clone());
         }
 
         let final_markdown = wrap_with_header_footer(

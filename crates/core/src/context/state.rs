@@ -12,6 +12,21 @@ pub struct StageOutputs {
     pub github_native_changelog: bool,
     /// Per-crate rendered changelog body, keyed by crate name.
     pub changelogs: HashMap<String, String>,
+    /// The single AGGREGATE changelog body for a single-track workspace
+    /// (single-crate / lockstep / flat-aggregate). Set by the changelog stage
+    /// when [`ContextOptions::changelog_aggregate_set`] resolved the workspace
+    /// to single-track; it spans every crate directory over the whole release
+    /// range, so it is the correct GitHub release body no matter which crate
+    /// carries the `release:` block.
+    ///
+    /// The release stage and [`Context::populate_release_notes_var`] PREFER
+    /// this over the per-crate `changelogs` map. Without it a lockstep release
+    /// whose commits happened to miss the release crate's own directory (e.g.
+    /// changes under `crates/core` but the `release:` block lives on the binary
+    /// crate at `crates/cli`) would collapse to an empty "No notable changes"
+    /// body. `None` for a per-crate workspace, where each crate's own slice is
+    /// the right body.
+    pub release_body_changelog: Option<String>,
     /// Rendered `changelog.header` value, populated by the changelog stage.
     /// The release stage uses it as a fallback when `release.header` is
     /// unset so YAML-configured changelog headers reach the GitHub release

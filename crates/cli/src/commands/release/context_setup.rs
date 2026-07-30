@@ -375,6 +375,7 @@ pub(crate) fn build_context_options(
     simulate_failure_publishers: Vec<String>,
     runtime_nondeterministic_allowlist: Vec<(String, String)>,
     project_root: Option<PathBuf>,
+    changelog_aggregate_set: Option<Vec<anodizer_core::config::CrateConfig>>,
 ) -> ContextOptions {
     ContextOptions {
         snapshot: opts.snapshot,
@@ -431,5 +432,6 @@ pub(crate) fn build_context_options(
         notify: false,
         allow_snapshot_publish: opts.allow_snapshot_publish,
         publisher_allowlist: opts.publishers.clone(),
+        changelog_aggregate_set,
     }
 }

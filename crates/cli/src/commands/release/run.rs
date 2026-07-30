@@ -100,6 +100,22 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
         project_root = resolve_project_root(&config_path, Some(&log));
 
+        // Resolve the single-track aggregate changelog render set ONCE, via the
+        // same shape predicate the standalone release-notes / json / kac formats
+        // use, so the pipeline's GitHub release body spans the whole workspace
+        // instead of the release crate's own path slice (the empty-notes
+        // collapse). `None` for a per-crate workspace, where each crate's own
+        // slice is the correct body. Covers both the full release and the
+        // `--publish-only` re-run: both prepend ChangelogStage and dispatch from
+        // this same context.
+        let (render_set, single_track) = crate::commands::changelog::resolve_changelog_render_set(
+            project_root
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+            &config,
+        )?;
+        let changelog_aggregate_set = single_track.then_some(render_set);
+
         let ctx_opts = build_context_options(
             &opts,
             skip_stages,
@@ -107,6 +123,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             simulate_failure_publishers,
             runtime_nondeterministic_allowlist,
             project_root,
+            changelog_aggregate_set,
         );
         ctx = Context::new(config.clone(), ctx_opts);
         // Install the pre-submitter verify-release gate once, at the single

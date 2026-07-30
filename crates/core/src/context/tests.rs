@@ -999,6 +999,30 @@ fn test_populate_release_notes_var_empty_when_no_changelogs() {
 }
 
 #[test]
+fn test_populate_release_notes_var_prefers_aggregate_body() {
+    // Single-track workspace: the aggregate body spans the whole workspace and
+    // must win over the release crate's per-crate slice, so `ReleaseNotes`
+    // matches the GitHub release body instead of collapsing to one crate's path.
+    let mut config = Config::default();
+    config.crates.push(crate::config::CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    });
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.stage_outputs
+        .changelogs
+        .insert("app".to_string(), "app-slice".to_string());
+    ctx.stage_outputs.release_body_changelog = Some("whole-workspace".to_string());
+    ctx.populate_release_notes_var();
+
+    assert_eq!(
+        ctx.template_vars().get("ReleaseNotes"),
+        Some(&"whole-workspace".to_string()),
+        "aggregate body must be preferred over the per-crate slice"
+    );
+}
+
+#[test]
 fn test_populate_release_notes_var_deterministic_with_multiple_crates() {
     let mut config = Config::default();
     config.crates.push(crate::config::CrateConfig {

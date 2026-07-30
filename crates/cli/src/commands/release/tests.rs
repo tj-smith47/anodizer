@@ -1599,7 +1599,15 @@ fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
 fn build_context_options_propagates_project_root() {
     let opts = base_release_opts();
     let root = std::path::PathBuf::from("/tmp/example-project");
-    let ctx_opts = build_context_options(&opts, vec![], vec![], vec![], vec![], Some(root.clone()));
+    let ctx_opts = build_context_options(
+        &opts,
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        Some(root.clone()),
+        None,
+    );
     assert_eq!(
         ctx_opts.project_root,
         Some(root),

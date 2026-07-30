@@ -153,12 +153,24 @@ fn release_one_crate(
 ) -> Result<()> {
     let crate_name = crate_cfg.name.clone();
 
+    // Prefer the single-track AGGREGATE body when the changelog stage produced
+    // one: for a lockstep / flat-aggregate / single-crate workspace the release
+    // spans every crate directory, so the per-crate slice keyed by this release
+    // crate's name would collapse to empty whenever the range's commits missed
+    // that crate's own path (the recurring "No notable changes" bug when the
+    // `release:` block lives on the binary crate at `crates/cli`). A per-crate
+    // workspace leaves the aggregate `None` and falls back to this crate's slice.
     let changelog_body = ctx
         .stage_outputs
-        .changelogs
-        .get(&crate_name)
-        .cloned()
-        .unwrap_or_default();
+        .release_body_changelog
+        .clone()
+        .unwrap_or_else(|| {
+            ctx.stage_outputs
+                .changelogs
+                .get(&crate_name)
+                .cloned()
+                .unwrap_or_default()
+        });
 
     crate::populate_checksums_var(ctx)?;
 

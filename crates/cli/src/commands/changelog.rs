@@ -473,17 +473,50 @@ fn run_refresh(
 ///   `workspaces[].crates` gets a release-notes track exactly like a
 ///   top-level one.
 fn materialize_release_notes_render_set(workspace_root: &Path, config: &mut Config) -> Result<()> {
+    config.crates = resolve_changelog_render_set(workspace_root, config)?.0;
+    Ok(())
+}
+
+/// Resolve the changelog render set for an unfiltered run, returning the crate
+/// list to render plus whether the workspace collapsed to a SINGLE-TRACK
+/// aggregate (`true` ⇒ one path-cleared entry spanning the whole workspace).
+///
+/// This is the ONE place the render-set decision is made, shared by the
+/// standalone `release-notes` command ([`materialize_release_notes_render_set`])
+/// and the release pipeline (which stashes the result on
+/// [`ContextOptions::changelog_aggregate_set`]). Keeping it single-sourced is
+/// what stops the pipeline's GitHub release body from drifting away from the
+/// `release-notes` / `json` / `keep-a-changelog` formats — the recurring cause
+/// of empty / inconsistent release notes.
+///
+/// Shape → result:
+/// - empty universe (bare-lockstep / config-less single crate) → ONE synthetic
+///   project-name aggregate at the workspace root; single-track;
+/// - multi-crate universe resolving single-track (Single / Lockstep /
+///   FlatAggregate via `select_crates`/`detect_repo_shape`) → collapse to ONE
+///   path-cleared crate whose body spans the workspace; single-track;
+/// - single declared crate → the crate itself (its own path already resolves to
+///   the whole-repo aggregate scope); NOT flagged single-track, since its own
+///   per-crate slice is already the aggregate;
+/// - otherwise (`PerCrate`) → the universe verbatim, each crate its own track;
+///   NOT single-track.
+pub(crate) fn resolve_changelog_render_set(
+    workspace_root: &Path,
+    config: &Config,
+) -> Result<(Vec<anodizer_core::config::CrateConfig>, bool)> {
     let universe: Vec<anodizer_core::config::CrateConfig> =
         config.crate_universe().into_iter().cloned().collect();
     if universe.is_empty() {
         let global_prefix = global_tag_prefix(config);
-        config.crates = vec![anodizer_core::config::CrateConfig {
-            name: config.project_name.clone(),
-            path: String::new(),
-            tag_template: Some(format!("{}{{{{ Version }}}}", global_prefix)),
-            ..Default::default()
-        }];
-        return Ok(());
+        return Ok((
+            vec![anodizer_core::config::CrateConfig {
+                name: config.project_name.clone(),
+                path: String::new(),
+                tag_template: Some(format!("{}{{{{ Version }}}}", global_prefix)),
+                ..Default::default()
+            }],
+            true,
+        ));
     }
     let single_track = if universe.len() > 1 {
         let empty = anodizer_core::config::ChangelogConfig::default();
@@ -496,11 +529,10 @@ fn materialize_release_notes_render_set(workspace_root: &Path, config: &mut Conf
     };
     if single_track && let Some(mut first) = universe.first().cloned() {
         first.path = String::new();
-        config.crates = vec![first];
+        Ok((vec![first], true))
     } else {
-        config.crates = universe;
+        Ok((universe, false))
     }
-    Ok(())
 }
 
 /// release-notes: the historical grouped-bullet GitHub-body markdown to stdout,
@@ -744,6 +776,54 @@ mod tests {
 
         let names: Vec<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["root", "member"]);
+    }
+
+    #[test]
+    fn release_notes_render_set_collapses_lockstep_to_one_aggregate() {
+        // Same-prefix flat crates (a single-track / flat-aggregate workspace):
+        // the render set collapses to ONE path-cleared aggregate spanning the
+        // whole workspace, and flags single_track — the signal that drives the
+        // pipeline's aggregate release body (the fix for the empty-notes
+        // collapse). Contrast the mixed-prefix case above, which stays per-crate.
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "proj".to_string(),
+            crates: vec![
+                crate_cfg("core", "v{{ .Version }}"),
+                crate_cfg("app", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+
+        let (render_set, single_track) = resolve_changelog_render_set(dir.path(), &config).unwrap();
+
+        assert!(single_track, "shared-prefix flat crates are single-track");
+        assert_eq!(render_set.len(), 1, "collapses to one aggregate entry");
+        assert!(
+            render_set[0].path.is_empty(),
+            "aggregate entry's path is cleared so its scope spans the whole workspace"
+        );
+    }
+
+    #[test]
+    fn release_notes_render_set_keeps_per_crate_distinct_prefixes() {
+        // Distinct-prefix flat crates are a PerCrate workspace: each crate is
+        // its own release track, so the render set stays the full universe and
+        // single_track is false (each crate's own slice is the right body).
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "proj".to_string(),
+            crates: vec![
+                crate_cfg("core", "core-v{{ .Version }}"),
+                crate_cfg("app", "app-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+
+        let (render_set, single_track) = resolve_changelog_render_set(dir.path(), &config).unwrap();
+
+        assert!(!single_track, "distinct-prefix flat crates are per-crate");
+        assert_eq!(render_set.len(), 2, "keeps every crate as its own track");
     }
 
     fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {

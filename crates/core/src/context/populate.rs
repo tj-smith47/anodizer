@@ -298,22 +298,31 @@ impl Context {
     /// Populate the `ReleaseNotes` template variable from stored changelogs.
     ///
     /// Should be called after the changelog stage has run and populated
-    /// `self.stage_outputs.changelogs`. Uses the first crate (by crate
-    /// universe order — top-level `crates:` then every `workspaces[].crates`
-    /// entry) whose changelog is present, or an empty string if no
-    /// changelogs exist. Universe order is deterministic, unlike HashMap
-    /// iteration order.
+    /// `self.stage_outputs`. Prefers the single-track AGGREGATE body
+    /// ([`StageOutputs::release_body_changelog`]) when present, so a lockstep
+    /// release's `{{ .ReleaseNotes }}` spans the whole workspace rather than one
+    /// crate's path slice. Falls back to the first crate (by crate universe
+    /// order — top-level `crates:` then every `workspaces[].crates` entry) whose
+    /// per-crate changelog is present, or an empty string. Universe order is
+    /// deterministic, unlike HashMap iteration order.
     pub fn populate_release_notes_var(&mut self) {
-        // Look up changelogs in universe order for determinism. The universe
+        // The single-track aggregate spans every crate dir over the whole range;
+        // prefer it so `ReleaseNotes` matches the GitHub release body. Fall back
+        // to per-crate lookup in universe order for determinism — the universe
         // walk (not `config.crates`) is what lets a pure-`workspaces:` config
-        // resolve a non-empty `ReleaseNotes` — its crates carry the
+        // resolve a non-empty `ReleaseNotes`, since its crates carry the
         // changelogs but never appear in the top-level list.
         let notes = self
-            .config
-            .crate_universe()
-            .into_iter()
-            .find_map(|c| self.stage_outputs.changelogs.get(&c.name))
-            .cloned()
+            .stage_outputs
+            .release_body_changelog
+            .clone()
+            .or_else(|| {
+                self.config
+                    .crate_universe()
+                    .into_iter()
+                    .find_map(|c| self.stage_outputs.changelogs.get(&c.name))
+                    .cloned()
+            })
             .unwrap_or_default();
         self.template_vars.set("ReleaseNotes", &notes);
     }

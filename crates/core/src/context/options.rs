@@ -183,6 +183,28 @@ pub struct ContextOptions {
     /// required to opt in (the version is not re-stated). Default `false`
     /// (fail-closed).
     pub allow_snapshot_publish: bool,
+    /// Pre-resolved aggregate changelog render set for a SINGLE-TRACK workspace
+    /// (single-crate / lockstep / flat-aggregate — one shared tag, one release).
+    ///
+    /// `Some` means the CLI resolved the repo shape (via `detect_repo_shape` /
+    /// `select_crates` / `resolve_single_track` — the SAME predicate the
+    /// standalone `changelog --format release-notes` / `json` / `keep-a-changelog`
+    /// formats use) to single-track and collapsed the workspace to ONE
+    /// path-cleared aggregate entry that spans every crate directory. The
+    /// changelog stage then renders THIS set instead of `crate_universe()` and
+    /// exposes the combined markdown as [`super::StageOutputs::release_body_changelog`]
+    /// — the single GitHub release body for the whole workspace, regardless of
+    /// which crate carries the `release:` block.
+    ///
+    /// `None` is the per-crate case (a `PerCrate` workspace like a multi-track
+    /// monorepo): the changelog stage iterates `crate_universe()` and each
+    /// crate's own path-scoped slice becomes its own release body.
+    ///
+    /// Resolving the shape ONCE in the CLI and passing the decision in (rather
+    /// than re-deriving it inside the stage) is what keeps the pipeline body
+    /// byte-identical to the standalone formats: the single-track predicate
+    /// lives in exactly one place and cannot drift.
+    pub changelog_aggregate_set: Option<Vec<crate::config::CrateConfig>>,
 }
 
 impl Default for ContextOptions {
@@ -223,6 +245,7 @@ impl Default for ContextOptions {
             changelog_preview: false,
             notify: false,
             allow_snapshot_publish: false,
+            changelog_aggregate_set: None,
         }
     }
 }

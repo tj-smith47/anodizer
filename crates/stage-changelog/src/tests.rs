@@ -1501,6 +1501,135 @@ fn test_integration_changelog_stage_with_real_git_repo() {
     );
 }
 
+/// A lockstep workspace's GitHub release body must span the WHOLE workspace,
+/// not the release crate's own directory. Regression guard for the empty
+/// "No notable changes" body that shipped when a release's commits landed under
+/// a non-release crate (e.g. `crates/core`) while the `release:` block lived on
+/// the binary crate (`crates/cli`).
+///
+/// Two halves against ONE real git repo so the only variable is the render set:
+///   - per-crate mode (no aggregate set) COLLAPSES — the release crate's path
+///     slice is empty because no commit touched its directory;
+///   - aggregate mode (the single path-cleared entry the CLI resolves for a
+///     single-track workspace) CAPTURES the commit and exposes it as
+///     `release_body_changelog`, the single release body.
+#[test]
+#[serial(cwd)]
+fn aggregate_release_body_spans_non_release_crate() {
+    use anodizer_core::config::{ChangelogConfig, ChangelogGroup, CrateConfig};
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let git = |args: &[&str]| {
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    git(&["init"]);
+    std::fs::create_dir_all(repo.join("crates/libcore")).unwrap();
+    std::fs::create_dir_all(repo.join("crates/app")).unwrap();
+    std::fs::write(repo.join("crates/app/main.rs"), b"fn main() {}").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "chore: scaffold workspace"]);
+    // Baseline tag so the pending window is v0.1.0..HEAD.
+    git(&["tag", "v0.1.0"]);
+    // A release-worthy commit that touches ONLY the non-release crate.
+    std::fs::write(repo.join("crates/libcore/lib.rs"), b"pub fn f() {}").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "feat: add libcore helper"]);
+
+    let changelog = Some(ChangelogConfig {
+        groups: Some(vec![ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat".into()),
+            order: Some(0),
+            groups: None,
+        }]),
+        abbrev: Some(7),
+        ..Default::default()
+    });
+    // Lockstep: both crates share the same `v{Version}` tag namespace.
+    let crates = vec![
+        CrateConfig {
+            name: "libcore".into(),
+            path: "crates/libcore".into(),
+            tag_template: Some("v{{ .Version }}".into()),
+            ..Default::default()
+        },
+        CrateConfig {
+            name: "app".into(),
+            path: "crates/app".into(),
+            tag_template: Some("v{{ .Version }}".into()),
+            ..Default::default()
+        },
+    ];
+
+    let _cwd = CwdGuard::new(repo).unwrap();
+
+    // Per-crate mode: the release crate ('app') slice collapses to empty.
+    let mut ctx_pc = TestContextBuilder::new()
+        .project_name("myproj")
+        .crates(crates.clone())
+        .dist(repo.join("dist"))
+        .build();
+    ctx_pc.config.changelog = changelog.clone();
+    ChangelogStage.run(&mut ctx_pc).unwrap();
+    assert!(
+        ctx_pc.stage_outputs.release_body_changelog.is_none(),
+        "per-crate mode must not set an aggregate body"
+    );
+    let app_slice = ctx_pc
+        .stage_outputs
+        .changelogs
+        .get("app")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !app_slice.contains("libcore helper"),
+        "the release crate's path slice must NOT see the non-release crate's commit \
+         (this is the collapse the aggregate body fixes); got:\n{app_slice}"
+    );
+
+    // Aggregate mode: the single path-cleared entry spans the whole workspace.
+    let mut aggregate_entry = crates[0].clone();
+    aggregate_entry.path = String::new();
+    let mut ctx_agg = TestContextBuilder::new()
+        .project_name("myproj")
+        .crates(crates.clone())
+        .dist(repo.join("dist"))
+        .build();
+    ctx_agg.config.changelog = changelog.clone();
+    ctx_agg.options.changelog_aggregate_set = Some(vec![aggregate_entry]);
+    ChangelogStage.run(&mut ctx_agg).unwrap();
+    let body = ctx_agg
+        .stage_outputs
+        .release_body_changelog
+        .clone()
+        .expect("aggregate mode must set release_body_changelog");
+    assert!(
+        body.contains("libcore helper"),
+        "aggregate release body must span the non-release crate's commit; got:\n{body}"
+    );
+}
+
 /// The dist `CHANGELOG.md` write is gated on `!changelog_preview`: the release
 /// pipeline (preview unset) MUST persist the dist artifact downstream stages
 /// consume; the standalone `changelog` preview (preview set) MUST NOT, so it

@@ -572,6 +572,7 @@ impl TestContextBuilder {
             notify: false,
             allow_snapshot_publish: false,
             publisher_allowlist: self.publisher_allowlist,
+            changelog_aggregate_set: None,
         };
 
         let mut ctx = Context::new(config, options);
