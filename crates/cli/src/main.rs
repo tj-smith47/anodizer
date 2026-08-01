@@ -283,7 +283,7 @@ fn run() {
     // before any pipeline subprocess spawns.
     anodizer_core::run::install_termination_handler();
 
-    let brontes_cfg = brontes::Config::default().tool_name_prefix("anodizer");
+    let brontes_cfg = anodizer_cli::mcp::config();
     let augmented = Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
     let matches = augmented
         .clone()

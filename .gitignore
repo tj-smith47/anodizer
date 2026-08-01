@@ -46,3 +46,6 @@ cobertura.xml
 
 # local working scratch — not version-controlled
 .claude/known-bugs.md
+
+# Tool inventory `anodizer mcp tools` writes into the working directory.
+/mcp-tools.json

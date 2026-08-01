@@ -105,6 +105,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Cross-publisher track promotion (`anodizer promote`) — flip an already-published artifact to a stable track (snapcraft channels, npm dist-tags, OCI floating tags, GitHub prerelease) with no rebuild
 - Post-release verification with install smoke tests
 - JSON Schema for editor autocomplete and validation
+- Built-in MCP server (`anodizer mcp`) exposing the CLI as annotated tools for AI assistants
 
 ## Installation
 
@@ -286,6 +287,51 @@ jobs:
 ```
 
 For split/merge fan-out, GPG key import, registry login, and per-platform variants, see [anodizer-action](https://github.com/tj-smith47/anodizer-action) and the live [`.github/workflows/release.yml`](.github/workflows/release.yml) in this repo.
+
+## MCP server
+
+`anodizer mcp` serves the CLI to any MCP client — Claude Desktop, VS Code, Cursor,
+Zed — over stdio or streamable HTTP, built on [brontes](https://github.com/tj-smith47/brontes).
+Every subcommand becomes a tool with its flags as a JSON Schema, so a release can be
+driven by an assistant without wrapping anything by hand.
+
+```bash
+$ anodizer mcp claude enable      # register with Claude Desktop (also: vscode, cursor, zed)
+$ anodizer mcp start              # stdio, for a client that spawns the process
+$ anodizer mcp stream --port 8080 # streamable HTTP, for a shared/remote client
+$ anodizer mcp tools              # dump the tool list to mcp-tools.json for inspection
+```
+
+23 tools ship by default (`completion` and `man` are shell-prompt artifacts and are
+withheld). Three groups narrow that for a client that shouldn't see the whole surface:
+
+| Selection | Tools | Covers |
+|---|---|---|
+| *(default)* | 23 | the full tree |
+| `--group inspect` | 9 | `check config`, `check version-files`, `healthcheck`, `preflight`, `jsonschema`, `resolve-tag`, `targets`, `vocabulary`, `tools` |
+| `--group author` | 5 | `init`, `changelog`, `bump`, `tag`, `tag rollback` |
+| `--group ship` | 7 | `build`, `release`, `publish`, `promote`, `continue`, `announce`, `notify` |
+
+The same `--group` / `--command` / `--tool` flags work on `mcp start` and `mcp stream`,
+and the editor installers forward them — `anodizer mcp claude enable --group inspect`
+registers a read-only assistant. Each has a `--hide-` counterpart for subtracting from
+the full list instead of selecting into it.
+
+Each tool carries annotations a client can gate on, so a config validation and a publish
+are distinguishable before either runs:
+
+| Annotation | Commands |
+|---|---|
+| `readOnlyHint` | the `inspect` group — `preflight` alone sets `openWorldHint` |
+| idempotent local write | `build`, `changelog`, `check determinism`, `init`, `tag` |
+| idempotent + `openWorldHint` | `announce`, `continue`, `notify`, `promote`, `publish`, `release` |
+| non-idempotent | `bump` — bumping twice moves the version twice |
+| `destructiveHint` | `tag rollback` — unwinds publishers, deletes tags, rewrites history |
+
+The six commands that routinely run for minutes — `build`, `check determinism`,
+`continue`, `promote`, `publish`, `release` — are handed back as task handles rather
+than held-open requests, so a client that speaks the MCP tasks extension can poll,
+stream progress, and cancel a running release.
 
 ## CLI Reference
 
