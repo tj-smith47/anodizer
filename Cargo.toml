@@ -129,7 +129,7 @@ anodizer-stage-install-script = { path = "crates/stage-install-script", version 
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.25.1" }
 anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.25.1" }
 anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.25.1" }
-brontes = "0.7.0"
+brontes = "0.7.1"
 anyhow = "1"
 # Compile-time-exhaustive enum iteration: `PublisherKind` derives `EnumIter`
 # so `valid_publisher_names`, the `--skip` publisher vocabulary, and the

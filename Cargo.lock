@@ -846,9 +846,9 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
 name = "brontes"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276efd8c0690fa829cd81212b3518a523bfcf6e267604e505ae0493c95a77bff"
+checksum = "ef0468b2cc2b931de7cdc14b680baa14cf02e3b83b281a03bbcd490ce0351eee"
 dependencies = [
  "async-trait",
  "clap",
