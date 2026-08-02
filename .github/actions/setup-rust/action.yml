@@ -81,7 +81,7 @@ runs:
 
     - name: Set up sccache
       if: ${{ inputs.sccache == 'true' }}
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
     - name: Cache cargo build artifacts
       if: ${{ inputs.cache == 'true' }}
@@ -97,7 +97,7 @@ runs:
 
     - name: Install cargo tools
       if: ${{ inputs.tools != '' }}
-      uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+      uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
       with:
         tool: ${{ inputs.tools }}
 
