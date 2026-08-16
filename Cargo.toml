@@ -129,7 +129,7 @@ anodizer-stage-install-script = { path = "crates/stage-install-script", version 
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.25.2" }
 anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.25.2" }
 anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.25.2" }
-brontes = "0.3.0"
+brontes = "0.7.1"
 anyhow = "1"
 # Compile-time-exhaustive enum iteration: `PublisherKind` derives `EnumIter`
 # so `valid_publisher_names`, the `--skip` publisher vocabulary, and the
@@ -231,7 +231,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # 0.40.x line because 0.14 pins `^0.40.1`; the resulting advisory is a
 # tracked ignore in `.cargo/audit.toml`, not a blocker here.
 object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
-object = { version = "0.39", default-features = false, features = ["read", "elf", "macho", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "elf", "macho", "std"] }
 serial_test = "4"
 schemars = "1.2"
 # 2.0 adopted. GoReleaser template parity is preserved by keeping every custom
