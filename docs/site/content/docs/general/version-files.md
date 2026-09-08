@@ -106,17 +106,14 @@ gate:
 version and enrolls your selection into `version_files` in an existing
 `.anodizer.yaml`. It scans every version in play (single-crate, the shared
 lockstep version, and each member's own version) and presents a scrollable
-multi-select:
+multi-select — space toggles a candidate, enter confirms. Once confirmed (or
+with `-y`, which selects every candidate) it reports what it enrolled:
 
 ```text
-$ anodizer init --version-files
-Select files to enroll under version_files (space toggles, enter confirms)
-  [x] charts/myapp/Chart.yaml
-  [x] docs/install.md
-  [ ] CONTRIBUTING.md
-enrolled 2 file(s) under version_files in .anodizer.yaml
-  + charts/myapp/Chart.yaml
-  + docs/install.md
+$ anodizer init --version-files -y
+   • enrolled 2 file(s) under version_files in .anodizer.yaml
+   •   + charts/myapp/Chart.yaml
+   •   + docs/install.md
 ```
 
 `Cargo.toml`, `Cargo.lock`, and `dist/` are auto-excluded — the `tag` command
@@ -128,12 +125,8 @@ comma-separated):
 anodizer init --version-files --exclude 'docs/**' --exclude CONTRIBUTING.md
 ```
 
-Pass `-y` / `--yes` to enroll every discovered candidate without prompting —
-useful in scripts:
-
-```bash
-anodizer init --version-files -y
-```
+`-y` / `--yes` (used above) skips the prompt and enrolls every discovered
+candidate — useful in scripts.
 
 Enrollment is idempotent (already-enrolled paths are never re-added) and
 preserves the existing comments and key order in `.anodizer.yaml`.
