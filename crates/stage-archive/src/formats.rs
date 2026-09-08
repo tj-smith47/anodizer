@@ -313,29 +313,15 @@ pub fn create_zip(
     Ok(())
 }
 
-/// Copy binary files directly to the output directory (no archiving).
-/// For a single file, copies to `output` directly.
-/// For multiple files, copies each file into the parent directory of `output`.
-pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
-    if files.len() == 1 {
-        let src = files[0];
-        if !src.exists() {
-            anyhow::bail!("binary: source does not exist: {}", src.display());
-        }
-        fs::copy(src, output)
-            .with_context(|| format!("binary: copy {} → {}", src.display(), output.display()))?;
-    } else {
-        let out_dir = output.parent().unwrap_or(Path::new("."));
-        for &src in files {
-            if !src.exists() {
-                continue;
-            }
-            let file_name = src.file_name().unwrap_or(src.as_os_str());
-            let dest = out_dir.join(file_name);
-            fs::copy(src, &dest)
-                .with_context(|| format!("binary: copy {} → {}", src.display(), dest.display()))?;
-        }
+/// Copy one binary directly to `output` (the `binary` archive format — no
+/// archiving). `output` carries the rendered `name_template` for this binary,
+/// so each build target's copy lands at its own path.
+pub fn copy_binary(src: &Path, output: &Path) -> Result<()> {
+    if !src.exists() {
+        anyhow::bail!("binary: source does not exist: {}", src.display());
     }
+    fs::copy(src, output)
+        .with_context(|| format!("binary: copy {} → {}", src.display(), output.display()))?;
     Ok(())
 }
 

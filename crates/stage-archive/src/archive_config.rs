@@ -22,7 +22,7 @@ use crate::file_specs::{
 };
 use crate::formats;
 use crate::run::{ARCHIVE_TEMPLATED_STAGING_DIR, resolve_host_binary};
-use crate::run_helpers::{resolve_archive_mtime, write_archive_in_format};
+use crate::run_helpers::{claim_output_path, resolve_archive_mtime, write_archive_in_format};
 use crate::{
     default_binary_name_template, default_name_template, default_name_template_multi_crate,
 };
@@ -239,6 +239,14 @@ pub(crate) fn archive_one_config(
             default_name_template()
         };
         let name_tmpl = archive_cfg.name_template.as_deref().unwrap_or(default_tmpl);
+        // `binary` format names each output after the BINARY it holds rather
+        // than the project, so its default template differs; an explicit
+        // `name_template` still wins.
+        let binary_name_tmpl = if has_custom_name_tmpl {
+            name_tmpl
+        } else {
+            default_binary_name_template()
+        };
 
         // strip_binary_directory: place binaries at archive root
         let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
@@ -618,28 +626,49 @@ pub(crate) fn archive_one_config(
                     continue;
                 }
 
-                // For binary format, no extension by default; on Windows
-                // targets append `.exe` (Windows binaries keep their
-                // executable suffix even in binary-format archives).
-                // For non-binary formats, append the format as the extension.
-                // The default uses the {{ Binary }} prefix (not {{ ProjectName }})
-                // for binary format when no custom name_template is set.
-                let archive_filename = if format == "binary" {
-                    let stem = if has_custom_name_tmpl {
-                        archive_stem.clone()
-                    } else {
-                        ctx.render_template(default_binary_name_template())
-                        .with_context(|| {
+                // `binary` format produces ONE output per selected binary,
+                // each named by rendering the name template with THAT
+                // binary's `.Binary`; on Windows targets the executable
+                // suffix is kept. Rendered up front so the collision guard,
+                // the copy and the artifact registration agree on the paths.
+                let binary_outputs: Vec<(String, PathBuf)> = if format == "binary" {
+                    let mut outs = Vec::with_capacity(selected_bins.len());
+                    for bin in &selected_bins {
+                        if let Some(bin_name) = bin.metadata.get("binary") {
+                            ctx.template_vars_mut().set("Binary", bin_name);
+                        }
+                        let stem = ctx.render_template(binary_name_tmpl).with_context(|| {
                             format!(
-                                "archive: render default binary name template for {crate_name}/{target}"
+                                "archive: render binary name template for {crate_name}/{target}"
                             )
-                        })?
-                    };
-                    if anodizer_core::target::is_windows(target) && !stem.ends_with(".exe") {
-                        format!("{stem}.exe")
-                    } else {
-                        stem
+                        })?;
+                        let stem = if anodizer_core::target::is_windows(target)
+                            && !stem.ends_with(".exe")
+                        {
+                            format!("{stem}.exe")
+                        } else {
+                            stem
+                        };
+                        let dest = dist.join(&stem);
+                        outs.push((stem, dest));
                     }
+                    // Restore the group-representative `.Binary` the rest of
+                    // this iteration's templates expect.
+                    if let Some(bin_name) =
+                        selected_bins.first().and_then(|b| b.metadata.get("binary"))
+                    {
+                        ctx.template_vars_mut().set("Binary", bin_name);
+                    }
+                    outs
+                } else {
+                    Vec::new()
+                };
+
+                let archive_filename = if format == "binary" {
+                    binary_outputs
+                        .first()
+                        .map(|(stem, _)| stem.clone())
+                        .unwrap_or_default()
                 } else {
                     format!("{archive_stem}.{format}")
                 };
@@ -727,43 +756,65 @@ pub(crate) fn archive_one_config(
                 let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
                 let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                // `binary` format with more than one source writes per-binary
-                // copies into dist/ rather than to `archive_path`, so that path
-                // is never produced and must not enter the produced-path set.
-                let writes_archive_path = format != "binary" || path_refs.len() == 1;
-                if writes_archive_path {
-                    name_guard.check(
+                if format == "binary" {
+                    // Extra files never travel with a raw binary: there is no
+                    // container to put them in, and the consumer downloads one
+                    // executable.
+                    let ignored = sorted
+                        .iter()
+                        .filter(|e| !binary_paths.contains(&e.src))
+                        .count();
+                    if ignored > 0 {
+                        log.verbose(&format!(
+                            "binary format ignores {ignored} extra file(s) \
+                             for crate '{crate_name}' target '{target}'"
+                        ));
+                    }
+                    for ((stem, dest), bin) in binary_outputs.iter().zip(&selected_bins) {
+                        claim_output_path(
+                            name_guard,
+                            log,
+                            dest,
+                            binary_name_tmpl,
+                            stem,
+                            crate_name,
+                            dry_run,
+                        )?;
+                        if dry_run {
+                            log.status(&format!("(dry-run) would create {}", dest.display()));
+                        } else {
+                            log.status(&format!("creating {}", dest.display()));
+                            formats::copy_binary(&bin.path, dest)?;
+                        }
+                    }
+                } else {
+                    claim_output_path(
+                        name_guard,
+                        log,
                         &archive_path,
-                        "archives",
-                        "archive",
                         name_tmpl,
                         &archive_filename,
                         crate_name,
+                        dry_run,
                     )?;
-                    if !dry_run && archive_path.exists() {
-                        log.verbose(&format!(
-                            "replacing existing archive '{archive_filename}' left by an earlier run"
+                    if dry_run {
+                        log.status(&format!(
+                            "(dry-run) would create {} with {} files",
+                            archive_path.display(),
+                            all_entries.len()
                         ));
+                    } else {
+                        log.status(&format!("creating {}", archive_path.display()));
+                        write_archive_in_format(
+                            format,
+                            &archive_path,
+                            &all_entries,
+                            &path_refs,
+                            source_date_epoch,
+                            ctx.is_strict(),
+                            log,
+                        )?;
                     }
-                }
-
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) would create {} with {} files",
-                        archive_path.display(),
-                        all_entries.len()
-                    ));
-                } else {
-                    log.status(&format!("creating {}", archive_path.display()));
-                    write_archive_in_format(
-                        format,
-                        &archive_path,
-                        &all_entries,
-                        &path_refs,
-                        source_date_epoch,
-                        ctx.is_strict(),
-                        log,
-                    )?;
                 }
 
                 // Now that the archive is written (and templated_files have
@@ -823,7 +874,7 @@ pub(crate) fn archive_one_config(
                 // — so it is NOT the archive's alphabetical `sort_entries` order.
                 // Harmless for krew, which re-selects by basename rather than
                 // relying on the list order.
-                if !archive_extra_files.is_empty() {
+                if !archive_extra_files.is_empty() && format != "binary" {
                     metadata.insert("archive_files".to_string(), archive_extra_files.join(","));
                 }
 
@@ -875,32 +926,20 @@ pub(crate) fn archive_one_config(
                 }
 
                 if format == "binary" {
-                    // `format=binary`
-                    // emits one UploadableBinary artifact per source
-                    // binary, not a single Archive. Registering an Archive
-                    // with the "parent" archive_path would point downstream
-                    // stages (checksum/sign/release/blob) at a file that is
-                    // never created on disk.
-                    let out_dir = archive_path.parent().unwrap_or(Path::new("."));
-                    for bin in &selected_bins {
-                        let file_name = bin
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| bin.path.to_string_lossy().to_string());
-                        let dest = if path_refs.len() == 1 {
-                            archive_path.clone()
-                        } else {
-                            out_dir.join(&file_name)
-                        };
+                    // `format=binary` emits one UploadableBinary artifact per
+                    // source binary, not a single Archive: registering an
+                    // Archive would point downstream stages
+                    // (checksum/sign/release/blob) at a file that is never
+                    // created on disk.
+                    for ((stem, dest), bin) in binary_outputs.iter().zip(&selected_bins) {
                         let mut per_bin_meta = metadata.clone();
                         if let Some(bin_name) = bin.metadata.get("binary") {
                             per_bin_meta.insert("binary".to_string(), bin_name.clone());
                         }
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::UploadableBinary,
-                            name: file_name,
-                            path: dest,
+                            name: stem.clone(),
+                            path: dest.clone(),
                             target: Some(target.clone()),
                             crate_name: crate_name.to_string(),
                             metadata: per_bin_meta,

@@ -174,55 +174,10 @@ fn test_copy_binary_single() {
 
     let dest = tmp.path().join("dist").join("myapp");
     fs::create_dir_all(dest.parent().unwrap()).unwrap();
-    copy_binary(&[src.as_path()], &dest).unwrap();
+    copy_binary(&src, &dest).unwrap();
 
     assert!(dest.exists());
     assert_eq!(fs::read(&dest).unwrap(), b"actual binary bytes");
-}
-
-#[test]
-fn test_copy_binary_multiple() {
-    let tmp = TempDir::new().unwrap();
-    let src1 = tmp.path().join("bin1");
-    let src2 = tmp.path().join("bin2");
-    fs::write(&src1, b"binary-1").unwrap();
-    fs::write(&src2, b"binary-2").unwrap();
-
-    let out_dir = tmp.path().join("dist");
-    fs::create_dir_all(&out_dir).unwrap();
-    let output = out_dir.join("placeholder");
-
-    copy_binary(&[src1.as_path(), src2.as_path()], &output).unwrap();
-
-    assert!(out_dir.join("bin1").exists());
-    assert!(out_dir.join("bin2").exists());
-    assert_eq!(fs::read(out_dir.join("bin1")).unwrap(), b"binary-1");
-    assert_eq!(fs::read(out_dir.join("bin2")).unwrap(), b"binary-2");
-}
-
-// ---------------------------------------------------------------------------
-// New tests: glob pattern resolution
-// ---------------------------------------------------------------------------
-
-/// Pins W3: a single license/readme/changelog file produces exactly one
-/// resolved entry, regardless of which case glob hit it first. The dedup
-/// logic in `resolve_default_extra_files` (HashSet on resolved path)
-/// must collapse the two case-globs that resolve to the same file on
-/// case-insensitive filesystems (macOS HFS+, Windows NTFS default).
-#[test]
-fn test_resolve_default_extra_files_dedup_single_file() {
-    let tmp = TempDir::new().unwrap();
-    // Just one license file. On both case-sensitive and case-insensitive
-    // filesystems, the resolver should return exactly one entry —
-    // the lowercase and uppercase globs may or may not BOTH find it,
-    // but the result must be deduped.
-    fs::write(tmp.path().join("license.txt"), b"mit").unwrap();
-    let results = resolve_default_extra_files(tmp.path());
-    assert_eq!(
-        results.len(),
-        1,
-        "exactly one entry expected for single license file; got {results:?}"
-    );
 }
 
 /// Default extra-file glob order is lowercase-first
@@ -1827,7 +1782,7 @@ fn test_copy_binary_source_missing_errors_with_path() {
     let missing = tmp.path().join("does-not-exist");
     let output = tmp.path().join("output");
 
-    let result = copy_binary(&[missing.as_path()], &output);
+    let result = copy_binary(&missing, &output);
     assert!(
         result.is_err(),
         "copy_binary with missing source should fail"
@@ -6022,7 +5977,10 @@ mod archive_name_guard {
         let lines = cap.all_messages();
         let hit = lines
             .iter()
-            .find(|(_, m)| m.contains("replacing existing archive"))
+            .find(|(_, m)| {
+                m == "replacing existing archive 'proj_1.0.0_linux_amd64.tar.gz' \
+                      left by an earlier run"
+            })
             .unwrap_or_else(|| panic!("no overwrite note recorded: {lines:?}"));
         assert_eq!(hit.0, LogLevel::Verbose, "{lines:?}");
         assert!(
@@ -6070,23 +6028,127 @@ mod archive_name_guard {
     }
 
     #[test]
-    fn binary_format_multi_source_does_not_enter_the_guard() {
-        // `format: binary` with more than one source (the binary plus an
-        // auto-included LICENSE) writes per-binary copies into dist/ rather
-        // than to `archive_path`, so that path is never produced and must not
-        // be recorded — strict parity with the filesystem probe, which never
-        // fired here either.
+    fn binary_format_names_each_binary_by_template() {
+        // `format: binary` emits ONE output per binary, named by rendering the
+        // name template with that binary's `.Binary` — so two binaries across
+        // two targets land at four distinct paths in dist/ instead of two
+        // basename copies clobbering each other.
         let tmp = TempDir::new().unwrap();
-        let cfgs = [cfg("default", Some("{{ .Binary }}_bin"), &["binary"])];
+        let cfgs = [cfg("default", None, &["binary"])];
         let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &TARGETS, false, false);
-        fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+        // A second binary for the same crate on both targets.
+        for target in TARGETS {
+            let bin_path = tmp.path().join(target).join("myhelper");
+            fs::write(&bin_path, format!("binary myhelper {target}")).unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: bin_path,
+                target: Some(target.to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([
+                    ("binary".to_string(), "myhelper".to_string()),
+                    ("id".to_string(), "myapp".to_string()),
+                ]),
+                size: None,
+            });
+        }
 
-        ArchiveStage
-            .run(&mut ctx)
-            .expect("multi-source binary format must not collide");
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 4, "{bins:?}");
+        let mut names: Vec<String> = bins
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
         assert_eq!(
-            ctx.artifacts.by_kind(ArtifactKind::UploadableBinary).len(),
-            TARGETS.len()
+            names,
+            vec![
+                "myapp_1.0.0_linux_amd64",
+                "myapp_1.0.0_linux_arm64",
+                "myhelper_1.0.0_linux_amd64",
+                "myhelper_1.0.0_linux_arm64",
+            ],
+            "{bins:?}"
         );
+        for b in &bins {
+            assert_eq!(
+                b.name,
+                b.path.file_name().unwrap().to_string_lossy(),
+                "artifact name must be the rendered stem: {b:?}"
+            );
+            let bin_name = b.metadata.get("binary").unwrap();
+            let target = b.target.as_deref().unwrap();
+            assert_eq!(
+                fs::read(&b.path).unwrap(),
+                format!("binary {bin_name} {target}").into_bytes(),
+                "{b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn binary_format_ignores_extra_files_at_verbose() {
+        // A raw binary has no container, so `files:` and the auto-included
+        // LICENSE/README/CHANGELOG never travel with it. The drop is noted
+        // once per (config, target) in the verbose register.
+        let tmp = TempDir::new().unwrap();
+        let mut c = cfg("default", None, &["binary"]);
+        c.files = Some(vec![anodizer_core::config::ArchiveFileSpec::Glob(
+            tmp.path()
+                .join("root")
+                .join("LICENSE")
+                .to_string_lossy()
+                .to_string(),
+        )]);
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &[c],
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            true,
+        );
+        fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let dist = ctx.config.dist.clone();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        assert!(
+            !dist.join("LICENSE").exists(),
+            "binary format must not copy extra files into dist/"
+        );
+        let lines = cap.all_messages();
+        let hit = lines
+            .iter()
+            .find(|(_, m)| {
+                m == "binary format ignores 1 extra file(s) for crate 'myapp' \
+                      target 'x86_64-unknown-linux-gnu'"
+            })
+            .unwrap_or_else(|| panic!("no ignored-extras note recorded: {lines:?}"));
+        assert_eq!(hit.0, LogLevel::Verbose, "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|(l, m)| *l == LogLevel::Status && m.contains("binary format ignores")),
+            "ignored-extras note must not reach the default-visible register: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn binary_format_collision_across_targets_bails() {
+        // A custom `name_template` carrying neither `{{ Os }}` nor
+        // `{{ Arch }}` renders one dist/ path for every target, so the second
+        // target's binary would silently overwrite the first's.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("{{ .Binary }}"), &["binary"])];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &TARGETS, false, false);
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("archives:"), "{err}");
+        assert!(err.contains("more than once"), "{err}");
     }
 }

@@ -12,7 +12,7 @@ use anodizer_core::config::{ArchiveConfig, VALID_ARCHIVE_FORMATS};
 use anodizer_core::log::StageLogger;
 
 use crate::entries::{ArchiveEntry, write_archive_entries, write_zip_entries};
-use crate::formats::{copy_binary, create_gz, create_xz};
+use crate::formats::{create_gz, create_xz};
 
 pub(crate) fn validate_archive_configs(
     work: &[(String, std::path::PathBuf, Vec<ArchiveConfig>)],
@@ -64,6 +64,39 @@ fn entries_to_owned(all_entries: &[&ArchiveEntry]) -> Vec<ArchiveEntry> {
             info: e.info.clone(),
         })
         .collect()
+}
+
+/// Record `path` in the run-scoped produced-path set, and note an overwrite of
+/// a file an earlier run left in `dist/`.
+///
+/// A path this pass has not claimed before is by construction leftover state
+/// from an earlier attempt, and every archive writer truncates, so it is
+/// rewritten. A second claim on one path within a single pass is a
+/// `name_template` defect and hard-errors.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn claim_output_path(
+    name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
+    log: &StageLogger,
+    path: &Path,
+    name_template: &str,
+    rendered: &str,
+    crate_name: &str,
+    dry_run: bool,
+) -> Result<()> {
+    name_guard.check(
+        path,
+        "archives",
+        "archive",
+        name_template,
+        rendered,
+        crate_name,
+    )?;
+    if !dry_run && path.exists() {
+        log.verbose(&format!(
+            "replacing existing archive '{rendered}' left by an earlier run"
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn write_archive_in_format(
@@ -168,7 +201,6 @@ pub(crate) fn write_archive_in_format(
             }
             create_xz(path_refs[0], archive_path)?;
         }
-        "binary" => copy_binary(path_refs, archive_path)?,
         other => bail!("unsupported archive format: {other}"),
     }
     Ok(())

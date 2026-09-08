@@ -148,13 +148,40 @@ nfpm:
 
 ## Raw binary (no archive)
 
-Use `formats: [binary]` to skip archiving and distribute the raw binary:
+Use `formats: [binary]` to skip archiving and distribute the raw binaries:
 
 ```yaml
 archives:
   - formats: [binary]
-    name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
+
+One output per binary, per target. Each is named by rendering `name_template`
+with that binary's `{{ .Binary }}` — the default is
+`{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}` (plus the
+micro-architecture suffix where one applies), so a crate shipping `myapp` and
+`myhelper` for two targets produces four files:
+
+```console
+$ anodizer release --snapshot
+dist/myapp_1.0.0_linux_amd64
+dist/myapp_1.0.0_darwin_arm64
+dist/myhelper_1.0.0_linux_amd64
+dist/myhelper_1.0.0_darwin_arm64
+```
+
+A template that omits `{{ .Os }}` / `{{ .Arch }}` renders one path for several
+targets and is rejected, the same way it is for container formats.
+
+Extra files are ignored under this format — a raw binary has no container to
+carry a `LICENSE` in — so `files:`, `templated_files:` and the auto-included
+LICENSE/README/CHANGELOG are dropped with a `-v` note:
+
+```console
+[archive] binary format ignores 1 extra file(s) for crate 'myapp' target 'x86_64-unknown-linux-gnu'
+```
+
+Windows targets keep the `.exe` suffix. `before:` / `after:` archive hooks do
+not fire for `binary`, since there is no archive to post-process.
 
 ## Re-running over a populated `dist/`
 
