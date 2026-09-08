@@ -2008,6 +2008,48 @@ fn dist_holding_only_its_own_bookkeeping_passes_the_dist_gate() {
     enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
 }
 
+/// A `--split` run creates its shard directory before any stage runs, so a
+/// run refused after that point leaves an empty `dist/<shard>/` behind. The
+/// retry must not trip over it: population is files, not directories, and a
+/// shard holding only its own `context.json` produced nothing either.
+#[test]
+fn an_empty_split_shard_directory_is_not_dist_population() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(dist.join("linux")).unwrap();
+    std::fs::write(dist.join("config.yaml"), "x").unwrap();
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
+
+    std::fs::write(dist.join("linux").join("context.json"), "{}").unwrap();
+    enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
+}
+
+/// A shard directory holding an artifact IS population, and the gate names it
+/// by its `dist`-relative path so the operator can find it.
+#[test]
+fn a_split_shard_holding_an_artifact_is_refused_by_its_relative_path() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(dist.join("linux")).unwrap();
+    std::fs::write(dist.join("linux").join("context.json"), "{}").unwrap();
+    std::fs::write(dist.join("linux").join("myapp_linux_amd64.tar.gz"), "x").unwrap();
+    let config = Config {
+        dist,
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    let err = enforce_dist_state(&config, &base_release_opts(), &log)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is not empty"), "{err}");
+    assert!(err.contains("linux/myapp_linux_amd64.tar.gz"), "{err}");
+}
+
 /// Bookkeeping only the run that wrote it produces (a `matrix.json` from an
 /// earlier `--split`) must not outlive the gate: once the population check
 /// passes, every bookkeeping file present is removed.

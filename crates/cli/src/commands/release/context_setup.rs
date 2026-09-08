@@ -210,19 +210,39 @@ fn clear_stale_bookkeeping(dist: &Path, dry_run: bool, log: &StageLogger) -> Res
     Ok(())
 }
 
-/// The first entry of `dist` that is not one of the run's own
-/// [`RUN_BOOKKEEPING_FILES`], or `None` when nothing else is there.
+/// The first FILE under `dist` that is neither one of the run's own
+/// [`RUN_BOOKKEEPING_FILES`] nor a split shard's own `context.json`, as a
+/// `dist`-relative path; `None` when nothing else is there.
+///
+/// Directories are never population in themselves. A `--split` run creates
+/// `dist/<shard>/` before any stage produces an artifact, so a run refused
+/// after that point would otherwise be unable to retry without `--clean`; the
+/// shard directory only counts once it holds something the retry would
+/// overwrite.
 fn dist_population(dist: &Path) -> Option<String> {
-    let entries = dist.read_dir().ok()?;
-    let mut names: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| !RUN_BOOKKEEPING_FILES.contains(&name.as_str()))
-        .collect();
+    fn walk(dir: &Path, prefix: &Path, found: &mut Vec<String>) {
+        let Ok(entries) = dir.read_dir() else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = prefix.join(&name);
+            if entry.path().is_dir() {
+                walk(&entry.path(), &rel, found);
+            } else if !RUN_BOOKKEEPING_FILES.contains(&name.as_str())
+                && name != anodizer_core::dist::CONTEXT_JSON
+            {
+                found.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(dist, Path::new(""), &mut found);
     // Sorted so the named entry is stable across runs rather than whatever
     // the filesystem returned first.
-    names.sort();
-    names.into_iter().next()
+    found.sort();
+    found.into_iter().next()
 }
 /// Read the `--release-notes-tmpl` file (when set) so its content can be
 /// rendered post-`populate_*_vars`. `--release-notes-tmpl` overrides
