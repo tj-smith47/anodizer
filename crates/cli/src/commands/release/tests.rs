@@ -1250,6 +1250,49 @@ fn nightly_renders_tag_as_the_minted_tag() {
     );
 }
 
+/// The same seed on a SINGLE-family workspace — one crate, one track, which is
+/// what anodizer and every lockstep repo actually are. The two-family pin above
+/// cannot catch a seed that only works because a family prefix was there to
+/// scope it.
+#[test]
+fn nightly_renders_tag_as_the_minted_tag_single_family() {
+    let (mut config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ Version }}".to_string()),
+        ..Default::default()
+    }];
+    ctx.config = config.clone();
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+    assert_eq!(
+        ctx.template_vars().get("Tag").map(String::as_str),
+        Some("v1.2.4-abc123d-nightly"),
+    );
+}
+
+/// A single-family workspace takes `nightly.tag_name` VERBATIM: there is no
+/// sibling track to disambiguate from, so prefixing it would invent a tag no
+/// other surface looks for.
+#[test]
+fn nightly_tag_name_renders_tag_as_the_rolling_tag_single_family() {
+    let (mut config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ Version }}".to_string()),
+        ..Default::default()
+    }];
+    ctx.config = config.clone();
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+    assert_eq!(
+        ctx.template_vars().get("Tag").map(String::as_str),
+        Some("edge"),
+    );
+}
+
 /// With `nightly.tag_name` set the release is created on the rolling tag, so
 /// `{{ Tag }}` must be that tag — scoped to the covered crate's own family.
 #[test]
