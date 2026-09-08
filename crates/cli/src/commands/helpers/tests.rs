@@ -2667,6 +2667,125 @@ fn resolve_git_context_nightly_lockstep_base_unchanged() {
     });
 }
 
+/// A track with no tags at all (the cfgd-schema shape) is simply skipped by
+/// the probe — it must not veto the base the tagged tracks supply.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_base_ignores_a_family_with_no_tags() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0"], || {
+        let mut config = multi_family_config();
+        config.crates.push(CrateConfig {
+            name: "cfgd-schema".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("schema-v{{ Version }}".to_string()),
+            ..Default::default()
+        });
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.10.0"),
+        );
+    });
+}
+
+/// No family has a tag: a nightly still runs, off the documented `v0.0.0`
+/// floor, rather than bailing on a repo that has never released.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_with_no_tags_at_all_falls_back_to_zero() {
+    with_multi_family_tags_repo_cwd(&[], || {
+        let config = multi_family_config();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.0.0"),
+            "the documented tagless floor",
+        );
+        assert_eq!(
+            ctx.git_info.as_ref().unwrap().previous_tag,
+            None,
+            "a repo with no tags has no previous tag — and so is never skipped \
+             by nightly.skip_if_no_changes",
+        );
+    });
+}
+
+/// A LATER-declared track is the one that is ahead. Every track is stamped
+/// with that track's base — one nightly run mints one version, and the
+/// newest tag in the repository is the only base that is never stale for
+/// any track.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_base_follows_the_leading_track() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0", "operator-v2.4.0"], || {
+        let config = multi_family_config();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("2.4.0"),
+        );
+        assert_eq!(
+            ctx.git_info.as_ref().unwrap().previous_tag,
+            None,
+            "operator-v2.4.0 is the only tag in its family",
+        );
+    });
+}
+
+/// Every crate leaves `tag_template` UNSET: the family is the `<name>-v`
+/// convention, so the tracks stay distinct and the base still resolves.
+/// Collapsing them to a shared bare `v` would make the probe find nothing.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_base_resolves_with_unset_tag_templates() {
+    with_multi_family_tags_repo_cwd(&["cfgd-crd-v0.5.1", "cfgd-v0.10.0"], || {
+        let bare = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: None,
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "cfgd".to_string(),
+            crates: vec![bare("cfgd-crd"), bare("cfgd")],
+            ..Default::default()
+        };
+        assert!(
+            config.mints_multiple_tag_families(),
+            "unset templates must still resolve to DISTINCT families",
+        );
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.10.0"),
+        );
+    });
+}
+
 /// Three tracks whose first-declared crate is the laggard.
 #[cfg(unix)]
 fn multi_family_config() -> Config {

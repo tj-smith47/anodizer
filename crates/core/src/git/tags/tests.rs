@@ -279,3 +279,84 @@ mod create_tag_local_only_tests {
         );
     }
 }
+
+mod tag_family_tests {
+    use crate::git::{tag_family_prefix, tag_in_family, tag_in_family_excluding_siblings};
+
+    fn families(templates: &[&str]) -> Vec<String> {
+        templates.iter().map(|t| t.to_string()).collect()
+    }
+
+    /// A bare `v` family "contains" every tag that merely starts with the
+    /// letter. Deleting `vault-v1.0.0-nightly` as if it were a `v` release
+    /// takes another track's release AND the git ref behind it.
+    #[test]
+    fn a_bare_v_family_does_not_swallow_a_sibling_tracks_tag() {
+        let siblings = families(&["vault-v{{ Version }}"]);
+        assert!(
+            tag_in_family("vault-v1.0.0-nightly", "v{{ Version }}", None),
+            "the two-argument prefix test alone cannot tell them apart",
+        );
+        assert!(
+            !tag_in_family_excluding_siblings(
+                "vault-v1.0.0-nightly",
+                "v{{ Version }}",
+                None,
+                &siblings
+            ),
+            "the narrower sibling family must claim its own tag back",
+        );
+        assert!(tag_in_family_excluding_siblings(
+            "v1.0.0-nightly",
+            "v{{ Version }}",
+            None,
+            &siblings
+        ));
+    }
+
+    /// A prefixed literal (`v` + `nightly`) carries no version at all, and it
+    /// still belongs to the family whose prefix was glued onto it — that
+    /// prefixing is exactly what keeps the tracks apart.
+    #[test]
+    fn a_prefixed_literal_stays_inside_its_own_family() {
+        let siblings = families(&["operator-v{{ Version }}", "csi-v{{ Version }}"]);
+        assert!(tag_in_family_excluding_siblings(
+            "vnightly",
+            "v{{ Version }}",
+            None,
+            &siblings
+        ));
+        assert!(!tag_in_family_excluding_siblings(
+            "operator-vnightly",
+            "v{{ Version }}",
+            None,
+            &siblings
+        ));
+        assert!(tag_in_family_excluding_siblings(
+            "operator-vnightly",
+            "operator-v{{ Version }}",
+            None,
+            &siblings
+        ));
+    }
+
+    /// The prefix a literal tag is glued onto comes from the SAME scope the
+    /// matcher tests membership against, monorepo namespace included.
+    #[test]
+    fn family_prefix_matches_the_scope_the_matcher_uses() {
+        assert_eq!(
+            tag_family_prefix("operator-v{{ Version }}", None).as_deref(),
+            Some("operator-v")
+        );
+        assert_eq!(
+            tag_family_prefix("{{ Version }}", Some("sub/")).as_deref(),
+            Some("sub/")
+        );
+        assert_eq!(tag_family_prefix("nightly", None), None);
+        let glued = format!(
+            "{}edge",
+            tag_family_prefix("{{ Version }}", Some("sub/")).unwrap()
+        );
+        assert!(tag_in_family(&glued, "{{ Version }}", Some("sub/")));
+    }
+}

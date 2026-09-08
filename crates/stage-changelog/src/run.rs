@@ -384,7 +384,7 @@ pub(crate) fn resolve_prev_tag(
             Some(from.to_string())
         }
         _ => find_latest_tag_matching_with_prefix(
-            crate_cfg.resolved_tag_template(),
+            &crate_cfg.tag_family_template(),
             ctx.config.git.as_ref(),
             Some(ctx.template_vars()),
             monorepo_prefix,
@@ -420,7 +420,7 @@ pub(crate) fn resolve_prev_tag(
             // spanning zero commits and an empty changelog.
             let prev = anodizer_core::git::find_previous_tag_in_family(
                 t,
-                crate_cfg.resolved_tag_template(),
+                &crate_cfg.tag_family_template(),
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,

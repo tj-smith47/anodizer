@@ -30,20 +30,6 @@ pub(super) fn resolve_tag_override(
         })
 }
 
-/// A crate's own full tag template: its raw `tag_template` when set, else the
-/// `{name}-v{{ Version }}` convention.
-///
-/// NOT `resolved_tag_template()`'s built-in `v{{ Version }}` default, which is
-/// the wrong family for a per-crate config that leaves the template unset.
-/// Every latest-tag probe here extracts from this SAME resolution so the
-/// families can never drift apart.
-fn full_tag_template(crate_cfg: &anodizer_core::config::CrateConfig) -> String {
-    crate_cfg
-        .tag_template
-        .clone()
-        .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", crate_cfg.name))
-}
-
 /// The newest tag, by semver, across the tag families of every crate this run
 /// covers (the explicit selection when there is one, else the whole crate
 /// universe).
@@ -70,7 +56,7 @@ fn newest_tag_across_crates(
     let mut seen_templates: Vec<String> = Vec::new();
     let mut best: Option<(git::SemVer, String)> = None;
     for crate_cfg in covered {
-        let template = full_tag_template(crate_cfg);
+        let template = crate_cfg.tag_family_template();
         if seen_templates.contains(&template) {
             continue;
         }
@@ -170,14 +156,10 @@ pub fn resolve_git_context(
         .or_else(|| config.crate_universe().into_iter().next());
 
     if let Some(crate_cfg) = first_crate {
-        // Resolve the crate's own full tag template once — the crate's raw
-        // value if set, else the `{name}-v` convention (NOT
-        // `resolved_tag_template()`'s built-in `v{{ Version }}` default,
-        // which is the wrong family for per-crate `{name}-v` configs). Both
-        // the latest-tag matcher below and the previous-tag prefix filter
-        // extract from this SAME resolved template so they never drift
-        // into mismatched families for an unset-template crate.
-        let crate_tag_template = full_tag_template(crate_cfg);
+        // The crate's own tag family, resolved once, so the latest-tag matcher
+        // below and the previous-tag prefix filter can never drift into
+        // mismatched families for an unset-template crate.
+        let crate_tag_template = crate_cfg.tag_family_template();
         // An override is the operator NAMING the version this run targets;
         // everything else is an inference from what the repository happens to
         // hold. Gates that ask "is the resolved version the one being

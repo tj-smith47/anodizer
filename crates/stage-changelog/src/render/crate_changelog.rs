@@ -98,7 +98,7 @@ pub(crate) fn render_crate_changelog(
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();
     let current_tag = ctx.template_vars().get("Tag").cloned();
     let tag_family =
-        anodizer_core::git::tag_family_glob(crate_cfg.resolved_tag_template(), monorepo_prefix);
+        anodizer_core::git::tag_family_glob(&crate_cfg.tag_family_template(), monorepo_prefix);
     let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref())?;
 
     // Source the aggregate's crate dirs + monorepo dir from `.anodizer.yaml` —

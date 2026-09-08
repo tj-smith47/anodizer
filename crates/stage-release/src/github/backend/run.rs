@@ -566,9 +566,12 @@ pub(crate) fn run_github_backend(
                 Some(&retry_after_capture),
             )
             .await?;
+            let tag_template = crate_cfg.tag_family_template();
+            let sibling_templates = ctx.config.sibling_tag_family_templates(&crate_cfg.name);
             let family = NightlyRetentionFamily {
                 tag,
-                tag_template: crate_cfg.resolved_tag_template(),
+                tag_template: &tag_template,
+                sibling_templates: &sibling_templates,
                 monorepo_prefix: ctx.config.monorepo_tag_prefix(),
                 multitrack: ctx.config.mints_multiple_tag_families(),
             };
@@ -576,14 +579,7 @@ pub(crate) fn run_github_backend(
                 log.verbose(&format!(
                     "nightly retention scoped to tag family '{}' ({} of {} name-matched release(s) in family)",
                     family.describe(),
-                    existing
-                        .iter()
-                        .filter(|(_, t)| anodizer_core::git::tag_in_family(
-                            t,
-                            crate_cfg.resolved_tag_template(),
-                            ctx.config.monorepo_tag_prefix()
-                        ))
-                        .count(),
+                    family.scope(&existing).len(),
                     existing.len()
                 ));
             }

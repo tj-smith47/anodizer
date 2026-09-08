@@ -172,7 +172,8 @@ pub struct PublishDefaults {
 pub struct DefaultsCrateBlock {
     /// Git tag template applied to any crate that omits its own
     /// `tag_template`. Overridden by a crate's own `tag_template` when set;
-    /// falls back to `CrateConfig::DEFAULT_TAG_TEMPLATE` when neither is set.
+    /// falls back to the `<name>-v{{ Version }}` convention when neither is
+    /// set.
     pub tag_template: Option<String>,
 }
 

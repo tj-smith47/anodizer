@@ -68,9 +68,9 @@ impl Config {
     /// — the per-crate shape, as opposed to single-crate or lockstep, where
     /// every crate shares one `tag_template`.
     pub fn mints_multiple_tag_families(&self) -> bool {
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for c in self.crate_universe() {
-            let tmpl = c.resolved_tag_template();
+            let tmpl = c.tag_family_template();
             if !seen.contains(&tmpl) {
                 seen.push(tmpl);
                 if seen.len() > 1 {
@@ -79,6 +79,23 @@ impl Config {
             }
         }
         false
+    }
+
+    /// Every OTHER crate's tag-family template, deduped — the sibling set a
+    /// family matcher needs so a narrower family reclaims the tags a broader
+    /// one would otherwise swallow.
+    pub fn sibling_tag_family_templates(&self, crate_name: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in self.crate_universe() {
+            if c.name == crate_name {
+                continue;
+            }
+            let tmpl = c.tag_family_template();
+            if !out.contains(&tmpl) {
+                out.push(tmpl);
+            }
+        }
+        out
     }
 
     /// Return the monorepo tag prefix, if configured.

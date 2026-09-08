@@ -1213,14 +1213,42 @@ fn setup_nightly_ctx(tag_name: Option<&str>, version: &str) -> (Config, Context)
     (config, ctx)
 }
 
+/// `nightly.tag_name` is resolved by the release stage, per crate, where the
+/// tag family is known. A guess written here would render into every
+/// `{{ Tag }}` reference in the config while the release was created on a
+/// different tag entirely.
 #[test]
-fn nightly_tag_name_default_is_literal_nightly() {
+fn nightly_does_not_overwrite_the_tag_var() {
     let (config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
     apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
     assert_eq!(
         ctx.template_vars().get("Tag").map(String::as_str),
-        Some("nightly")
+        Some("v1.2.3"),
+        "the resolved git tag must survive the nightly version rewrite",
     );
+}
+
+/// Same for a configured `tag_name`: it is the release stage's input, not a
+/// run-wide template var.
+#[test]
+fn nightly_tag_name_does_not_leak_into_the_tag_var() {
+    let (config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+    assert_eq!(
+        ctx.template_vars().get("Tag").map(String::as_str),
+        Some("v1.2.3"),
+    );
+}
+
+/// `nightly.name_template` likewise belongs to the release stage. `ReleaseName`
+/// was written here and read nowhere.
+#[test]
+fn nightly_does_not_set_a_release_name_var() {
+    let (config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+    assert_eq!(ctx.template_vars().get("ReleaseName"), None);
 }
 
 #[test]
@@ -1288,41 +1316,6 @@ fn nightly_version_template_supports_nightly_build_and_base() {
     assert_eq!(
         ctx.template_vars().get("Version").map(String::as_str),
         Some("0.103.0-nightly.42+a1b2c3"),
-    );
-}
-
-#[test]
-fn nightly_tag_name_renders_version_template() {
-    let (config, mut ctx) = setup_nightly_ctx(Some("nightly-{{ .Version }}"), "1.2.3");
-    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
-    // `{{ .Version }}` resolves to the nightly-overridden value (now
-    // `1.2.4-abc123d-nightly`), not the base "1.2.3" — proving the
-    // tag template is evaluated LATE, after Version is rewritten.
-    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
-    assert_eq!(tag, "nightly-1.2.4-abc123d-nightly");
-}
-
-#[test]
-fn nightly_tag_name_can_use_is_nightly_branch() {
-    let (config, mut ctx) = setup_nightly_ctx(
-        Some("{{ if .IsNightly }}edge{{ else }}stable{{ end }}"),
-        "0.1.0",
-    );
-    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
-    assert_eq!(
-        ctx.template_vars().get("Tag").map(String::as_str),
-        Some("edge")
-    );
-}
-
-#[test]
-fn nightly_tag_name_empty_render_bails() {
-    let (config, mut ctx) = setup_nightly_ctx(Some("   "), "0.1.0");
-    let err = apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log())
-        .expect_err("blank tag_name must bail");
-    assert!(
-        err.to_string().contains("empty"),
-        "error should mention empty: {err}",
     );
 }
 

@@ -1546,7 +1546,7 @@ mod per_crate_tag {
 
     /// An UNSET `tag_template` in a `{name}-v`-convention per-crate
     /// workspace must re-anchor `Tag` onto the crate's OWN family, not
-    /// the repo-level bare `v{version}` (`resolved_tag_template()`'s
+    /// the repo-level bare `v{version}` (`tag_family_template()`'s
     /// built-in default — correct for lockstep/single, wrong family
     /// here).
     #[test]

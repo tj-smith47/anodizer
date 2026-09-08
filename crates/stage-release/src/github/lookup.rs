@@ -190,12 +190,7 @@ pub async fn fetch_published_assets(
         return Ok(None);
     };
 
-    let tag = crate::release_body::resolve_release_tag(
-        ctx,
-        crate_cfg.resolved_tag_template(),
-        release_cfg.tag.as_deref(),
-        &crate_cfg.name,
-    )?;
+    let tag = crate::release_body::resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
 
     let token = crate::resolve_release_token(ctx, release_cfg)
         .or_else(|| ctx.options.token.clone())

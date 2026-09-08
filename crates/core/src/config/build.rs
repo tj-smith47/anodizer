@@ -134,8 +134,9 @@ pub struct CrateConfig {
     pub path: String,
     /// Git tag template used to tag and identify releases (supports
     /// templates). Overrides `defaults.crates.tag_template`. When both are
-    /// unset, resolves to `CrateConfig::DEFAULT_TAG_TEMPLATE` — use
-    /// `resolved_tag_template()` rather than reading this field directly.
+    /// unset the crate's tag family is the `<name>-v{{ Version }}`
+    /// convention — read it through `tag_family_template()` rather than
+    /// touching this field directly.
     pub tag_template: Option<String>,
     /// Pinned semver version. When set, `anodizer bump --strict` refuses to
     /// edit this crate's `Cargo.toml` to anything other than this value;
@@ -289,19 +290,26 @@ impl Default for CrateConfig {
 }
 
 impl CrateConfig {
-    /// Built-in fallback used when neither the crate nor
-    /// `defaults.crates.tag_template` supplies a value.
-    pub const DEFAULT_TAG_TEMPLATE: &'static str = "v{{ Version }}";
-
-    /// Resolves this crate's effective tag template: the crate's own value
-    /// if set, else the built-in default. `defaults_merge::apply_to_crate`
-    /// folds `defaults.crates.tag_template` into `self.tag_template` before
-    /// this is ever read, so this accessor only needs to know about the
-    /// crate-level field and the built-in fallback.
-    pub fn resolved_tag_template(&self) -> &str {
+    /// The tag template this crate mints and scans under: its own value when
+    /// set, else the `<name>-v{{ Version }}` convention.
+    ///
+    /// `defaults_merge::apply_to_crate` folds `defaults.crates.tag_template`
+    /// into `self.tag_template` before this is ever read, so this accessor
+    /// only needs to know about the crate-level field and the fallback.
+    ///
+    /// The fallback is the template form of
+    /// [`per_crate_tag_prefix`](crate::git::per_crate_tag_prefix)'s
+    /// `<name>-v` — the family `init` writes, `tag` cuts under, and `bump`,
+    /// `changelog`, `docker promote` and `tag rollback` all scan. A second
+    /// answer here (a bare `v`) would put the release stage's tag outside the
+    /// family every other surface looks in, so the tag it created is the one
+    /// nothing else can find.
+    pub fn tag_family_template(&self) -> String {
         self.tag_template
             .as_deref()
-            .unwrap_or(Self::DEFAULT_TAG_TEMPLATE)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", self.name))
     }
 }
 

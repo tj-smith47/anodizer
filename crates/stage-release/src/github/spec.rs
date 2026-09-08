@@ -210,8 +210,11 @@ fn digests_match(remote_digest: &str, local_hex: &str) -> bool {
 pub(crate) struct NightlyRetentionFamily<'a> {
     /// The tag of the release this run just published.
     pub(crate) tag: &'a str,
-    /// The publishing crate's resolved `tag_template`.
+    /// The publishing crate's tag-family template.
     pub(crate) tag_template: &'a str,
+    /// Every OTHER crate's tag-family template, so a narrower sibling family
+    /// (`vault-v` under a bare `v`) claims its own tags back.
+    pub(crate) sibling_templates: &'a [String],
     /// `monorepo.tag_prefix`, when configured.
     pub(crate) monorepo_prefix: Option<&'a str>,
     /// Whether the workspace mints more than one tag family.
@@ -228,20 +231,28 @@ impl NightlyRetentionFamily<'_> {
     /// A literal `nightly.tag_name` likewise mints a tag outside every
     /// family, leaving the name as the only key there is.
     pub(crate) fn scopes(&self) -> bool {
-        self.multitrack
-            && anodizer_core::git::tag_in_family(self.tag, self.tag_template, self.monorepo_prefix)
+        self.multitrack && self.contains(self.tag)
+    }
+
+    /// Whether `tag` belongs to this track, with narrower sibling families
+    /// excluded so a bare `v` never swallows `vault-v1.0.0-nightly`.
+    pub(crate) fn contains(&self, tag: &str) -> bool {
+        anodizer_core::git::tag_in_family_excluding_siblings(
+            tag,
+            self.tag_template,
+            self.monorepo_prefix,
+            self.sibling_templates,
+        )
     }
 
     /// Narrow a name-matched release set to this track.
-    fn scope(&self, releases: &[(u64, String)]) -> Vec<(u64, String)> {
+    pub(crate) fn scope(&self, releases: &[(u64, String)]) -> Vec<(u64, String)> {
         if !self.scopes() {
             return releases.to_vec();
         }
         releases
             .iter()
-            .filter(|(_, rel_tag)| {
-                anodizer_core::git::tag_in_family(rel_tag, self.tag_template, self.monorepo_prefix)
-            })
+            .filter(|(_, rel_tag)| self.contains(rel_tag))
             .cloned()
             .collect()
     }
@@ -769,6 +780,7 @@ mod spec_struct_surface_tests {
         NightlyRetentionFamily {
             tag,
             tag_template: "nightly",
+            sibling_templates: &[],
             monorepo_prefix: None,
             multitrack: false,
         }
@@ -779,6 +791,7 @@ mod spec_struct_surface_tests {
         NightlyRetentionFamily {
             tag,
             tag_template,
+            sibling_templates: &[],
             monorepo_prefix: None,
             multitrack: true,
         }
@@ -790,6 +803,34 @@ mod spec_struct_surface_tests {
             multitrack: false,
             ..family(tag, tag_template)
         }
+    }
+
+    /// A workspace whose crates leave `tag_template` UNSET still mints one
+    /// family per crate (the `<name>-v` convention), so the sweep narrows —
+    /// and a bare `v` sibling cannot claim `vault-v…`.
+    #[test]
+    fn nightly_retention_scopes_when_a_sibling_family_shares_a_prefix() {
+        let siblings = vec!["vault-v{{ Version }}".to_string()];
+        let family = NightlyRetentionFamily {
+            tag: "v0.5.2-new-nightly",
+            tag_template: "v{{ Version }}",
+            sibling_templates: &siblings,
+            monorepo_prefix: None,
+            multitrack: true,
+        };
+        assert!(family.scopes());
+        let all = vec![
+            (1u64, "v0.5.0-old-nightly".to_string()),
+            (2u64, "vault-v1.0.0-nightly".to_string()),
+            (3u64, "v0.5.2-new-nightly".to_string()),
+        ];
+        let pruned = nightly_releases_to_prune(&all, 1, 3, &family);
+        assert_eq!(
+            pruned,
+            vec![(1u64, "v0.5.0-old-nightly".to_string())],
+            "only this track's own older nightly is pruned; the `vault-v` \
+             sibling's release must survive",
+        );
     }
 
     #[test]

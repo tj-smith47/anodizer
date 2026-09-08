@@ -815,7 +815,7 @@ mod tests {
             crate_cfg.tag_template,
             Some("core-v{{ .Version }}".to_string())
         );
-        assert_eq!(crate_cfg.resolved_tag_template(), "core-v{{ .Version }}");
+        assert_eq!(crate_cfg.tag_family_template(), "core-v{{ .Version }}");
     }
 
     #[test]
@@ -832,14 +832,15 @@ mod tests {
         apply_to_crate(&defaults, &mut crate_cfg);
 
         assert_eq!(crate_cfg.tag_template, Some("v{{ .Version }}".to_string()));
-        assert_eq!(crate_cfg.resolved_tag_template(), "v{{ .Version }}");
+        assert_eq!(crate_cfg.tag_family_template(), "v{{ .Version }}");
     }
 
     #[test]
-    fn tag_template_falls_back_to_built_in_when_nothing_set() {
+    fn tag_template_falls_back_to_the_name_v_convention_when_nothing_set() {
         // No defaults.crates block at all, and the crate itself omits
-        // tag_template — resolution must still land on the built-in default
-        // rather than an empty prefix.
+        // tag_template — resolution must land on the `<name>-v` convention
+        // rather than an empty prefix or a bare `v` that collides with
+        // every sibling.
         let defaults = Defaults::default();
         let mut crate_cfg = make_crate("a");
         crate_cfg.tag_template = None;
@@ -847,7 +848,7 @@ mod tests {
         apply_to_crate(&defaults, &mut crate_cfg);
 
         assert_eq!(crate_cfg.tag_template, None);
-        assert_eq!(crate_cfg.resolved_tag_template(), "v{{ Version }}");
+        assert_eq!(crate_cfg.tag_family_template(), "a-v{{ Version }}");
     }
 
     // --------------- Apply-defaults entry point: idempotent ---------------

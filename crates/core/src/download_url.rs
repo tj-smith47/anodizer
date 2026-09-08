@@ -58,8 +58,9 @@ pub fn seed_missing_download_urls_for_crate(
     let tag_tmpl = release_cfg
         .tag
         .as_deref()
-        .unwrap_or(crate_cfg.resolved_tag_template());
-    let tag = match ctx.render_template(tag_tmpl) {
+        .map(str::to_string)
+        .unwrap_or_else(|| crate_cfg.tag_family_template());
+    let tag = match ctx.render_template(&tag_tmpl) {
         Ok(t) if !t.is_empty() => t,
         _ => return Ok(None),
     };

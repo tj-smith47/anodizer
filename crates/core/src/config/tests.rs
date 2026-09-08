@@ -7127,28 +7127,32 @@ crates: []
 
 // ---------------------------------------------------------------------------
 // CrateConfig.tag_template resolution — crate override > defaults.crate >
-// built-in ("v{{ Version }}"), proven in all three config modes.
+// the `<name>-v` convention, proven in all three config modes.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_resolved_tag_template_default_when_unset() {
-    assert_eq!(
-        CrateConfig::default().resolved_tag_template(),
-        "v{{ Version }}"
-    );
+fn test_tag_family_template_default_when_unset() {
+    // The `<name>-v` convention `init` writes and `tag` / `bump` / `changelog`
+    // scan — NOT a bare `v`, which would put the release stage's tag outside
+    // the family every other surface looks in.
+    let cfg = CrateConfig {
+        name: "solo".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(cfg.tag_family_template(), "solo-v{{ Version }}");
 }
 
 #[test]
-fn test_resolved_tag_template_crate_value_wins() {
+fn test_tag_family_template_crate_value_wins() {
     let cfg = CrateConfig {
         tag_template: Some("core-v{{ Version }}".to_string()),
         ..Default::default()
     };
-    assert_eq!(cfg.resolved_tag_template(), "core-v{{ Version }}");
+    assert_eq!(cfg.tag_family_template(), "core-v{{ Version }}");
 }
 
 #[test]
-fn test_tag_template_single_crate_mode_omitted_falls_back_to_built_in() {
+fn test_tag_template_single_crate_mode_omitted_uses_the_name_v_convention() {
     let yaml = r#"
 project_name: solo
 crates:
@@ -7159,7 +7163,10 @@ crates:
         serde_yaml_ng::from_str(yaml).expect("single-crate config should parse");
     crate::defaults_merge::apply_defaults(&mut config);
     assert_eq!(config.crates.len(), 1);
-    assert_eq!(config.crates[0].resolved_tag_template(), "v{{ Version }}");
+    assert_eq!(
+        config.crates[0].tag_family_template(),
+        "solo-v{{ Version }}"
+    );
 }
 
 #[test]
@@ -7181,7 +7188,7 @@ crates:
     assert_eq!(config.crates.len(), 2);
     for c in &config.crates {
         assert_eq!(
-            c.resolved_tag_template(),
+            c.tag_family_template(),
             "v{{ Version }}",
             "crate '{}' should inherit defaults.crates.tag_template",
             c.name
@@ -7215,8 +7222,8 @@ crates:
         .iter()
         .find(|c| c.name == "backend")
         .expect("backend crate entry");
-    assert_eq!(frontend.resolved_tag_template(), "frontend-v{{ Version }}");
-    assert_eq!(backend.resolved_tag_template(), "v{{ Version }}");
+    assert_eq!(frontend.tag_family_template(), "frontend-v{{ Version }}");
+    assert_eq!(backend.tag_family_template(), "v{{ Version }}");
 }
 
 #[test]
@@ -7240,11 +7247,11 @@ fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
             "crate '{}' raw tag_template should be filled in from \
              `defaults.crates.tag_template` by apply_defaults, not left \
              unset and merely coincide with the built-in default via \
-             resolved_tag_template()'s fallback",
+             tag_family_template()'s fallback",
             c.name
         );
         assert_eq!(
-            c.resolved_tag_template(),
+            c.tag_family_template(),
             "v{{ Version }}",
             "crate '{}' resolved a different tag_template after dedup",
             c.name

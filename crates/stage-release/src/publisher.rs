@@ -260,12 +260,7 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
         else {
             continue;
         };
-        let tag = resolve_release_tag(
-            ctx,
-            c.resolved_tag_template(),
-            release_cfg.tag.as_deref(),
-            &c.name,
-        )?;
+        let tag = resolve_release_tag(ctx, c, release_cfg.tag.as_deref())?;
         out.push(GithubReleaseTarget {
             crate_name: c.name.clone(),
             owner,
@@ -1346,6 +1341,32 @@ mod publisher_tests {
         assert_eq!(targets[0].owner, "acme");
         assert_eq!(targets[0].repo, "widget");
         assert!(targets[0].release_id.is_none(), "id not yet captured");
+    }
+
+    /// The tag the publisher captures by MUST be the tag the release stage
+    /// created on. With `nightly.tag_name` set they are only equal if both
+    /// route through the same resolver.
+    #[test]
+    fn collect_release_targets_uses_the_nightly_tag_name_the_release_was_created_on() {
+        let track = |name: &str, tmpl: &str| {
+            let mut c = github_release_crate(name);
+            c.tag_template = Some(tmpl.to_string());
+            c
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                track("app", "v{{ Version }}"),
+                track("operator", "operator-v{{ Version }}"),
+            ])
+            .build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(anodizer_core::config::NightlyConfig {
+            tag_name: Some("edge".to_string()),
+            ..Default::default()
+        });
+        let targets = collect_release_targets(&ctx).expect("collect ok");
+        let tags: Vec<&str> = targets.iter().map(|t| t.tag.as_str()).collect();
+        assert_eq!(tags, vec!["vedge", "operator-vedge"]);
     }
 
     /// `is_github_release_configured` (the registry predicate) lives in

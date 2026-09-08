@@ -4761,7 +4761,7 @@
           }
         },
         "tag_template": {
-          "description": "Git tag template used to tag and identify releases (supports templates). Overrides `defaults.crates.tag_template`. When both are unset, resolves to `CrateConfig::DEFAULT_TAG_TEMPLATE` — use `resolved_tag_template()` rather than reading this field directly.",
+          "description": "Git tag template used to tag and identify releases (supports templates). Overrides `defaults.crates.tag_template`. When both are unset the crate's tag family is the `<name>-v{{ Version }}` convention — read it through `tag_family_template()` rather than touching this field directly.",
           "default": null,
           "type": [
             "string",
@@ -5179,7 +5179,7 @@
       "type": "object",
       "properties": {
         "tag_template": {
-          "description": "Git tag template applied to any crate that omits its own `tag_template`. Overridden by a crate's own `tag_template` when set; falls back to `CrateConfig::DEFAULT_TAG_TEMPLATE` when neither is set.",
+          "description": "Git tag template applied to any crate that omits its own `tag_template`. Overridden by a crate's own `tag_template` when set; falls back to the `<name>-v{{ Version }}` convention when neither is set.",
           "default": null,
           "type": [
             "string",

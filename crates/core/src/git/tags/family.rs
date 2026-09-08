@@ -263,6 +263,56 @@ pub fn tag_in_family(tag: &str, tag_template: &str, monorepo_prefix: Option<&str
     tag_family_scope(tag_template, monorepo_prefix).is_some_and(|s| s.contains(tag))
 }
 
+/// The literal prefix of the family `tag_template` mints, honouring
+/// `monorepo.tag_prefix` exactly as [`tag_in_family`] does — so a tag built
+/// by gluing this prefix onto a literal name lands inside the family the
+/// matcher will later test it against.
+///
+/// `Some("")` for a bare-version family (nothing to glue on); `None` when the
+/// template mints no family at all.
+///
+/// # Examples
+/// ```
+/// # use anodizer_core::git::tag_family_prefix;
+/// assert_eq!(tag_family_prefix("operator-v{{ Version }}", None).as_deref(), Some("operator-v"));
+/// assert_eq!(tag_family_prefix("{{ Version }}", Some("sub/")).as_deref(), Some("sub/"));
+/// assert_eq!(tag_family_prefix("nightly", None), None);
+/// ```
+pub fn tag_family_prefix(tag_template: &str, monorepo_prefix: Option<&str>) -> Option<String> {
+    match tag_family_scope(tag_template, monorepo_prefix)? {
+        TagFamilyScope::Prefix(p) => Some(p.to_string()),
+        TagFamilyScope::BareVersion => Some(String::new()),
+    }
+}
+
+/// Whether `tag` belongs to the family `tag_template` mints **and** to no
+/// narrower family in `sibling_templates`.
+///
+/// A bare `v` prefix is a proper prefix of every `<name>-v` sibling only in
+/// the other direction, but it does swallow any tag that merely starts with
+/// the letter: `vault-v1.0.0-nightly` "starts with" `v`, and a sweep that
+/// believed it deletes another track's release and the git ref behind it.
+/// Membership is therefore longest-prefix-wins across the workspace's own
+/// families — the one piece of context a two-argument prefix test cannot
+/// have. A tag no sibling claims stays in the family whose prefix it carries,
+/// which is what keeps a prefixed literal (`v` + `nightly` → `vnightly`)
+/// inside its own track.
+pub fn tag_in_family_excluding_siblings(
+    tag: &str,
+    tag_template: &str,
+    monorepo_prefix: Option<&str>,
+    sibling_templates: &[String],
+) -> bool {
+    if !tag_in_family(tag, tag_template, monorepo_prefix) {
+        return false;
+    }
+    let own = tag_family_prefix(tag_template, monorepo_prefix).unwrap_or_default();
+    !sibling_templates.iter().any(|sib| {
+        tag_family_prefix(sib, monorepo_prefix)
+            .is_some_and(|p| p.len() > own.len() && tag.starts_with(&p))
+    })
+}
+
 /// Resolve the family a crate's `tag_template` mints, falling back to the
 /// monorepo namespace when the template carries no usable scope of its own.
 pub(super) fn tag_family_scope<'a>(

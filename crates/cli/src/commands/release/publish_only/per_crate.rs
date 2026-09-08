@@ -377,19 +377,12 @@ pub(super) fn apply_per_crate_tag(
     crate_name: &str,
     log: &StageLogger,
 ) {
-    // The crate's own raw template if set, else the `{name}-v` convention
-    // (NOT `resolved_tag_template()`'s built-in `v{{ Version }}` default,
-    // which is the wrong family for per-crate `{name}-v` configs). The
-    // `crate_prefix` derived below extracts from this SAME resolved
-    // template, keeping the re-anchored `Tag` and `PreviousTag` in the
-    // same family.
+    // The `crate_prefix` derived below extracts from this SAME template,
+    // keeping the re-anchored `Tag` and `PreviousTag` in the same family the
+    // release stage created the tag in.
     let tag_template = config
         .find_crate(crate_name)
-        .map(|c| {
-            c.tag_template
-                .clone()
-                .unwrap_or_else(|| format!("{crate_name}-v{{{{ Version }}}}"))
-        })
+        .map(|c| c.tag_family_template())
         .filter(|t| !t.is_empty());
     let Some(tag_template) = tag_template else {
         return;

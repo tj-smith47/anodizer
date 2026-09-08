@@ -978,8 +978,8 @@ changelog:
 
 /// BLOCKER regression: an UNSET `tag_template` must resolve the SAME
 /// `{crate}-v` prefix family `tag`/`changelog` use — not silently collapse
-/// to the bare `v{{ Version }}` built-in default (`resolved_tag_template()`).
-/// Against the bug (`.map(|c| c.resolved_tag_template())`), the previous-tag
+/// to the bare `v{{ Version }}` built-in default (`tag_family_template()`).
+/// Against the bug (`.map(|c| c.tag_family_template())`), the previous-tag
 /// lookup for prefix `v` misses `demo-v0.1.0`, `from_tag` is `None`, the
 /// changelog range spans all history, and the pre-tag commit leaks in.
 #[test]
@@ -1202,7 +1202,7 @@ crates:
 /// Both crates leave `tag_template` UNSET — the workspace relies purely on
 /// the `{name}-v` convention default. `Positional::Infer` must derive that
 /// same `{name}-v` prefix family (matching tag/changelog), never silently
-/// collapse to the bare `v` built-in default from `resolved_tag_template()`.
+/// collapse to the bare `v` built-in default from `tag_family_template()`.
 #[test]
 fn inference_unset_template_resolves_name_v_prefix_not_bare_v() {
     let tmp = TempDir::new().unwrap();
@@ -1255,7 +1255,7 @@ crates:
         .iter()
         .map(|r| (r["crate"].as_str().unwrap(), r))
         .collect();
-    // With the bug (`.map(|c| c.resolved_tag_template())`), an UNSET
+    // With the bug (`.map(|c| c.tag_family_template())`), an UNSET
     // template collapses to the bare `v` prefix — neither `core-v0.1.0` nor
     // `cli-v0.1.0` matches, so both rows would scan full history (including
     // the "initial" commit) instead of bounding at each crate's real tag.

@@ -250,7 +250,7 @@ pub(crate) fn detect_changed_crates(
 
     for c in crates {
         let latest_tag = git::find_latest_tag_matching_with_prefix(
-            c.resolved_tag_template(),
+            &c.tag_family_template(),
             git_config,
             None,
             monorepo_prefix,

@@ -587,9 +587,12 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     // Omitted tag_template stays None on the raw field; resolution falls back
-    // to CrateConfig::DEFAULT_TAG_TEMPLATE via resolved_tag_template().
+    // to the `<name>-v` convention via tag_family_template().
     assert_eq!(config.crates[0].tag_template, None);
-    assert_eq!(config.crates[0].resolved_tag_template(), "v{{ Version }}");
+    assert_eq!(
+        config.crates[0].tag_family_template(),
+        "my-crate-v{{ Version }}"
+    );
 }
 
 #[test]
@@ -3059,7 +3062,8 @@ fn test_crate_config_default_struct() {
     assert_eq!(config.name, "");
     assert_eq!(config.path, "");
     assert_eq!(config.tag_template, None);
-    assert_eq!(config.resolved_tag_template(), "v{{ Version }}");
+    // An unnamed default crate yields the bare convention prefix.
+    assert_eq!(config.tag_family_template(), "-v{{ Version }}");
     assert!(config.depends_on.is_none());
     assert!(config.builds.is_none());
     assert!(config.cross.is_none());

@@ -81,7 +81,7 @@ pub fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Strin
     }
     let tag = crate::git::find_latest_tag_matching_with_prefix_in(
         &repo,
-        crate_cfg.resolved_tag_template(),
+        &crate_cfg.tag_family_template(),
         ctx.config.git.as_ref(),
         Some(ctx.template_vars()),
         monorepo_prefix,
@@ -106,8 +106,8 @@ fn tag_for_current_version(
     repo: &std::path::Path,
     monorepo_prefix: Option<&str>,
 ) -> Option<String> {
-    let template = crate_cfg.resolved_tag_template();
-    let rendered = ctx.render_template(template).ok()?;
+    let template = crate_cfg.tag_family_template();
+    let rendered = ctx.render_template(&template).ok()?;
     if rendered == template {
         return None;
     }
@@ -147,7 +147,7 @@ pub fn no_matching_tag_error(ctx: &Context, crate_cfg: &CrateConfig, selected_fo
              run `git fetch --tags`, create a release tag, or use --snapshot (local build) \
              or --nightly (synthesized version) which need no tag",
             crate_cfg.name,
-            crate_cfg.resolved_tag_template()
+            crate_cfg.tag_family_template()
         )
     } else {
         let sample = existing
@@ -160,7 +160,7 @@ pub fn no_matching_tag_error(ctx: &Context, crate_cfg: &CrateConfig, selected_fo
             "crate '{}' is selected for {selected_for} but has no release tag matching its \
              tag_template '{}'; cannot derive its version (nearest existing tags: {sample})",
             crate_cfg.name,
-            crate_cfg.resolved_tag_template()
+            crate_cfg.tag_family_template()
         )
     }
 }

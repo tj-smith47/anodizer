@@ -899,12 +899,22 @@ fn test_dry_run_with_make_latest() {
 
 // ---- release.tag override tests ----
 
+/// A crate whose tag family is `tag_template`, for the resolver pins.
+fn tag_crate(tag_template: &str) -> anodizer_core::config::CrateConfig {
+    anodizer_core::config::CrateConfig {
+        name: "testcrate".to_string(),
+        path: ".".to_string(),
+        tag_template: Some(tag_template.to_string()),
+        ..Default::default()
+    }
+}
+
 #[test]
 fn test_resolve_release_tag_override() {
     // When release.tag is set, the override value should be used as the
-    // release tag instead of crate_cfg.tag_template.
+    // release tag instead of the crate's tag family template.
     let ctx = TestContextBuilder::new().build();
-    let tag = resolve_release_tag(&ctx, "myapp/v1.0.0", Some("v1.0.0"), "testcrate").unwrap();
+    let tag = resolve_release_tag(&ctx, &tag_crate("myapp/v1.0.0"), Some("v1.0.0")).unwrap();
     assert_eq!(
         tag, "v1.0.0",
         "release.tag override must take precedence over tag_template"
@@ -916,7 +926,7 @@ fn test_resolve_release_tag_template_rendering() {
     // The release.tag field supports template rendering.
     let ctx = TestContextBuilder::new().tag("v2.5.0").build();
     let tag =
-        resolve_release_tag(&ctx, "prefix/{{ .Tag }}", Some("{{ .Tag }}"), "testcrate").unwrap();
+        resolve_release_tag(&ctx, &tag_crate("prefix/{{ .Tag }}"), Some("{{ .Tag }}")).unwrap();
     assert_eq!(
         tag, "v2.5.0",
         "release.tag template must render to the git tag value"
@@ -927,17 +937,33 @@ fn test_resolve_release_tag_template_rendering() {
 fn test_resolve_release_tag_falls_back_to_tag_template() {
     // When release.tag is None, the crate's tag_template is used as before.
     let ctx = TestContextBuilder::new().build();
-    let tag = resolve_release_tag(&ctx, "v1.0.0", None, "testcrate").unwrap();
+    let tag = resolve_release_tag(&ctx, &tag_crate("v1.0.0"), None).unwrap();
     assert_eq!(
         tag, "v1.0.0",
         "with no release.tag, tag_template must be used"
     );
 }
 
+/// An unset `tag_template` resolves the `<name>-v` convention — the family
+/// `init` writes and `tag`, `bump` and `changelog` all scan. A bare `v` here
+/// would create the release on a tag no other surface looks for.
+#[test]
+fn resolve_release_tag_unset_template_uses_the_name_v_convention() {
+    let ctx = TestContextBuilder::new().build();
+    let crate_cfg = anodizer_core::config::CrateConfig {
+        name: "testcrate".to_string(),
+        path: ".".to_string(),
+        tag_template: None,
+        ..Default::default()
+    };
+    let tag = resolve_release_tag(&ctx, &crate_cfg, None).unwrap();
+    assert_eq!(tag, "testcrate-v1.2.3");
+}
+
 #[test]
 fn test_resolve_release_tag_invalid_template_errors() {
     let ctx = TestContextBuilder::new().build();
-    let result = resolve_release_tag(&ctx, "ok", Some("{{ invalid"), "testcrate");
+    let result = resolve_release_tag(&ctx, &tag_crate("ok"), Some("{{ invalid"));
     assert!(result.is_err(), "malformed template must return an error");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -954,7 +980,9 @@ fn release_tag_empty_bails_with_actionable_error() {
     // (`tag_name is too short`). Bail message must name the field
     // (release.tag), the crate, and an actionable next step.
     let ctx = TestContextBuilder::new().build();
-    let result = resolve_release_tag(&ctx, "ok", Some(""), "mycrate");
+    let mut crate_cfg = tag_crate("ok");
+    crate_cfg.name = "mycrate".to_string();
+    let result = resolve_release_tag(&ctx, &crate_cfg, Some(""));
     let err = result
         .expect_err("empty release.tag override must bail")
         .to_string();
@@ -975,12 +1003,13 @@ fn release_tag_empty_bails_with_actionable_error() {
 #[test]
 fn release_tag_template_renders_empty_bails_with_actionable_error() {
     // The fallback tag_template path must also bail when it renders to
-    // empty (e.g. `tag_template: ""` or a template referencing an
-    // unset variable that resolves to ""). Bail message must name
-    // `tag_template` (not `release.tag`) so the user knows which field
-    // to fix.
+    // empty (a template referencing an unset variable that resolves to "").
+    // Bail message must name `tag_template` (not `release.tag`) so the user
+    // knows which field to fix.
     let ctx = TestContextBuilder::new().build();
-    let result = resolve_release_tag(&ctx, "", None, "mycrate");
+    let mut crate_cfg = tag_crate("{{ Env.ANODIZER_NO_SUCH_VAR | default(value='') }}");
+    crate_cfg.name = "mycrate".to_string();
+    let result = resolve_release_tag(&ctx, &crate_cfg, None);
     let err = result
         .expect_err("empty tag_template must bail")
         .to_string();
