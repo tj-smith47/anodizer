@@ -481,8 +481,12 @@ fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> 
         .with_context(|| format!("failed to render binstall tag template: {tag_template}"))?;
     if rendered.trim().is_empty() {
         anyhow::bail!(
-            "binstall: the release tag template for crate '{}' rendered to an empty              tag, so the generated `pkg_url` would omit the release entirely and 404              for every user. Set a non-empty `release.tag` or crate `tag_template`.",
-            crate_cfg.name
+            concat!(
+                "binstall: the release tag for crate '{}' is empty, so the generated ",
+                "`pkg_url` would omit the release and 404 for every user. {}"
+            ),
+            crate_cfg.name,
+            crate::release_tag::EMPTY_RELEASE_TAG_HELP
         );
     }
     Ok(rendered.replace(VERSION_SENTINEL, "{ version }"))
@@ -1752,10 +1756,14 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         let err = render_tag_with_version_token(&crate_cfg, &mut ctx)
             .expect_err("an empty release tag template must bail")
             .to_string();
-        assert!(err.contains("myapp"), "error must name the crate: {err}");
-        assert!(
-            err.contains("pkg_url"),
-            "error must name the surface: {err}"
+        assert_eq!(
+            err,
+            format!(
+                "binstall: the release tag for crate 'myapp' is empty, so the \
+                 generated `pkg_url` would omit the release and 404 for every \
+                 user. {}",
+                crate::release_tag::EMPTY_RELEASE_TAG_HELP
+            ),
         );
     }
 }

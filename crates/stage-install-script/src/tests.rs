@@ -832,3 +832,28 @@ fn which(tool: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// An empty `release.tag` is a missing tag, not a version-infix template. The
+/// installer reports it with the SAME words the release stage and binstall do,
+/// so one config bug does not read as three different problems.
+#[test]
+fn empty_release_tag_bails_with_the_shared_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None);
+    ctx.config.crates[0].release = Some(anodizer_core::config::ReleaseConfig {
+        tag: Some(String::new()),
+        ..Default::default()
+    });
+    let err = InstallScriptStage
+        .run(&mut ctx)
+        .expect_err("an empty release.tag must bail")
+        .to_string();
+    assert!(
+        err.contains(anodizer_core::release_tag::EMPTY_RELEASE_TAG_HELP),
+        "the installer must reuse the shared empty-tag guidance verbatim: {err}"
+    );
+    assert!(
+        !err.contains("must end with the version"),
+        "an empty tag is not a version-infix template: {err}"
+    );
+}

@@ -316,6 +316,19 @@ fn resolve_tag_prefix(ctx: &mut Context, crate_cfg: &CrateConfig) -> Result<Stri
     let rendered = ctx
         .render_template(&template)
         .with_context(|| format!("install-script: render tag template '{template}'"))?;
+    // An empty render is a missing tag, not a version-infix template — saying
+    // "'' must end with the version" describes the wrong bug.
+    if rendered.trim().is_empty() {
+        anyhow::bail!(
+            concat!(
+                "install-script: the release tag for crate '{}' is empty, so the ",
+                "generated installer would download from a release that has no ",
+                "tag. {}"
+            ),
+            crate_cfg.name,
+            anodizer_core::release_tag::EMPTY_RELEASE_TAG_HELP
+        );
+    }
     match rendered.strip_suffix(VERSION_PLACEHOLDER) {
         Some(prefix) => Ok(prefix.to_string()),
         None => anyhow::bail!(
