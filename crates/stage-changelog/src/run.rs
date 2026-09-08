@@ -206,7 +206,7 @@ impl Stage for super::ChangelogStage {
         // working tree. The release pipeline leaves `changelog_preview` unset,
         // so it still writes dist normally.
         if !ctx.options.changelog_preview {
-            write_changelog_dist(&log, &dist, &final_markdown)?;
+            write_changelog_dist(&log, &dist, &final_markdown, ctx.is_dry_run())?;
         }
         Ok(())
     }
@@ -434,15 +434,24 @@ pub(crate) fn resolve_prev_tag(
 }
 
 /// Write the final Markdown to `<dist>/CHANGELOG.md`, creating the
-/// directory first. This file is written even in dry-run mode.
+/// directory first.
+///
+/// A dry-run reports the write instead of performing it: leaving the file
+/// behind would populate `dist/` with something no stage produced, and the
+/// next real run refuses to build over a populated dist.
 pub(crate) fn write_changelog_dist(
     log: &StageLogger,
     dist: &PathBuf,
     markdown: &str,
+    dry_run: bool,
 ) -> Result<()> {
+    let notes_path = dist.join("CHANGELOG.md");
+    if dry_run {
+        log.status(&format!("(dry-run) would write {}", notes_path.display()));
+        return Ok(());
+    }
     std::fs::create_dir_all(dist)
         .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
-    let notes_path = dist.join("CHANGELOG.md");
     std::fs::write(&notes_path, markdown)
         .with_context(|| format!("changelog: write {}", notes_path.display()))?;
     log.status(&format!("wrote {}", notes_path.display()));

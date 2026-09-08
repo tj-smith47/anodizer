@@ -4376,7 +4376,7 @@ fn test_include_meta_missing_metadata_json_bails_in_strict_mode() {
     std::fs::create_dir_all(&dist_dir).unwrap();
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
-        .dry_run(true)
+        .snapshot(true)
         .crates(vec![CrateConfig {
             name: "testcrate".to_string(),
             path: ".".to_string(),
@@ -4396,6 +4396,37 @@ fn test_include_meta_missing_metadata_json_bails_in_strict_mode() {
         err.contains("include_meta") && err.contains("strict"),
         "strict include_meta with missing file should bail; got: {err}"
     );
+}
+
+/// A dry-run never writes metadata.json — populating dist would make the
+/// next real run refuse to build over it — so the file's absence there says
+/// nothing about the release the operator is previewing. Bailing on it would
+/// make `--dry-run --strict` unusable for any config setting `include_meta`.
+#[test]
+fn test_include_meta_missing_metadata_json_is_expected_in_dry_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let dist_dir = dir.path().join("dist");
+    std::fs::create_dir_all(&dist_dir).unwrap();
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v1.0.0".to_string()),
+            release: Some(ReleaseConfig {
+                include_meta: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.config.dist = dist_dir;
+    ctx.options.strict = true;
+
+    ReleaseStage
+        .run(&mut ctx)
+        .expect("a dry-run must not bail on the metadata.json it never wrote");
 }
 
 // ---- release.tag override drifts from pushed git tag (warn) -----------

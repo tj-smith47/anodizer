@@ -1518,6 +1518,47 @@ fn setup_env_multiple_tokens_without_force_bails() {
     );
 }
 
+/// A dry-run shows what a release would do; it must not leave real output
+/// in `dist/`. metadata.json and artifacts.json are files no stage produced,
+/// so a dry-run that wrote them would make the next real run refuse to build
+/// over a populated dist.
+#[test]
+fn write_metadata_and_artifacts_leaves_dist_empty_in_dry_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = Config {
+        project_name: "demo".to_string(),
+        dist: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config.clone(),
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    let (log, capture) = StageLogger::with_capture("test", anodizer_core::log::Verbosity::Quiet);
+    write_metadata_and_artifacts(&mut ctx, &config, &log)
+        .expect("a dry-run metadata write must succeed");
+
+    let messages: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    for name in ["metadata.json", "artifacts.json"] {
+        let expected = format!("(dry-run) would write {}", tmp.path().join(name).display());
+        assert!(
+            messages.iter().any(|m| m == &expected),
+            "a dry-run must report the write it skipped: {expected}; got {messages:?}"
+        );
+    }
+    assert!(
+        !tmp.path().join("metadata.json").exists(),
+        "a dry-run must not write metadata.json"
+    );
+    assert!(
+        !tmp.path().join("artifacts.json").exists(),
+        "a dry-run must not write artifacts.json"
+    );
+}
+
 // ---- write_metadata_and_artifacts — mod_timestamp application ------
 
 /// `metadata.mod_timestamp` (when it renders non-empty) must be parsed and

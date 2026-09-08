@@ -352,7 +352,14 @@ fn flush_skipped(log: &StageLogger, pending: &mut Vec<(&str, bool)>, show: bool)
 /// stage so that `include_meta: true` can attach metadata.json to the GitHub
 /// release (artifacts.json stays local to dist).
 /// `run_post_pipeline` overwrites these with the final version afterward.
+///
+/// A dry-run writes neither: nothing is uploaded, and a dry-run that
+/// populated `dist/` would make the next real run refuse to build over it.
+/// The release stage's `include_meta` check knows to expect the absence.
 fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+    if ctx.is_dry_run() {
+        return Ok(());
+    }
     let dist = &ctx.config.dist;
     std::fs::create_dir_all(dist)?;
 

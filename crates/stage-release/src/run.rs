@@ -566,7 +566,10 @@ pub(crate) fn assemble_artifact_entries(
         let dist_dir = &ctx.config.dist;
         let meta_name = anodizer_core::dist::METADATA_JSON;
         let meta_path = dist_dir.join(meta_name);
-        if meta_path.exists() {
+        // A dry-run never writes metadata.json (populating dist would block
+        // the next real run), so the file's absence there says nothing about
+        // the real release — list it as an upload rather than warning.
+        if meta_path.exists() || ctx.is_dry_run() {
             artifact_entries.push((meta_path, None));
         } else if ctx.is_strict() {
             anyhow::bail!(

@@ -1206,8 +1206,10 @@ fn run_per_crate_metadata_carries_per_crate_release_url() {
     let mut ctx = preserved_dist_ctx(&config);
     // The changelog stage shells to git in the process cwd; skip it so
     // the test stays hermetic — the surface under test is the release
-    // stage's URL derivation + the metadata write.
+    // stage's URL derivation and the per-crate metadata write it feeds.
     ctx.options.skip_stages = vec!["changelog".to_string()];
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
 
     let log = anodizer_core::log::StageLogger::new(
         "publish-only-release-url-test",
@@ -1224,18 +1226,25 @@ fn run_per_crate_metadata_carries_per_crate_release_url() {
     )
     .expect("both per-crate dry-run iterations must complete");
 
+    // A dry-run reports the metadata write rather than performing it, so the
+    // URL each crate's metadata.json WOULD carry is read from the derivation
+    // that feeds it — `write_metadata_json` copies the `ReleaseURL` var
+    // verbatim, and the release stage logs the value it derived per crate.
+    let messages: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
     for name in ["a", "b"] {
-        let body = std::fs::read_to_string(dist_base.join(name).join("metadata.json")).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         let expected_tag = format!("{name}-v0.0.0");
-        assert_eq!(
-            json["tag"], expected_tag,
-            "crate '{name}' metadata must carry its own tag"
+        let expected_url = format!("https://github.com/acme/widget/releases/tag/{expected_tag}");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains(&expected_url) && m.contains(&format!("crate '{name}'"))),
+            "crate '{name}' must derive its OWN release URL '{expected_url}'; got: {messages:?}"
         );
-        assert_eq!(
-            json["release_url"],
-            format!("https://github.com/acme/widget/releases/tag/{expected_tag}"),
-            "crate '{name}' metadata must carry its OWN release URL"
+        let would_write = dist_base.join(name).join("metadata.json");
+        assert!(
+            !would_write.exists(),
+            "a dry-run must not write {}",
+            would_write.display()
         );
     }
     assert!(

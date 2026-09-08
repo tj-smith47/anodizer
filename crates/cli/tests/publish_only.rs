@@ -1073,74 +1073,54 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
     // downstream `anodize publish` invocation, or operator inspection)
     // sees, and a regression that dropped a shard would surface here
     // as a missing entry.
-    let post_artifacts = dist.join("artifacts.json");
-    assert!(
-        post_artifacts.is_file(),
-        "expected run_post_pipeline to rewrite {} after publish-only succeeded",
-        post_artifacts.display(),
-    );
-
-    #[derive(serde::Deserialize, Debug)]
-    struct PostArtifact {
-        kind: String,
-        name: String,
-        path: String,
-        #[serde(default)]
-        target: Option<String>,
-        crate_name: String,
-    }
-    let bytes = fs::read_to_string(&post_artifacts)
-        .unwrap_or_else(|e| panic!("read {}: {e}", post_artifacts.display()));
-    let parsed: Vec<PostArtifact> = serde_json::from_str(&bytes).unwrap_or_else(|e| {
-        panic!(
-            "parse {} as Vec<PostArtifact>: {e}",
-            post_artifacts.display()
-        )
-    });
-
-    let archive_entries: Vec<&PostArtifact> =
-        parsed.iter().filter(|a| a.kind == "archive").collect();
-    let names: Vec<&str> = archive_entries.iter().map(|a| a.name.as_str()).collect();
-
-    assert!(
-        names.contains(&archive_a.as_str()),
-        "shard-a archive {archive_a} missing from post-pipeline artifacts.json; \
-         survivors were: {names:?}"
-    );
-    assert!(
-        names.contains(&archive_b.as_str()),
-        "shard-b archive {archive_b} missing from post-pipeline artifacts.json; \
-         survivors were: {names:?}"
-    );
-    assert_eq!(
-        archive_entries.len(),
-        2,
-        "expected EXACTLY two archive entries (one per shard); a regression that \
-         deduped them or dropped a shard would fail here. Got entries: {archive_entries:?}"
-    );
-
-    for entry in &archive_entries {
-        assert_eq!(entry.target.as_deref(), Some(target));
-        assert_eq!(entry.crate_name, FIXTURE_CRATE_NAME);
+    // The union is asserted on the dry-run's own output rather than on a
+    // rewritten `dist/artifacts.json`: a dry-run leaves dist exactly as it
+    // found it, so the operator-visible upload list is where a dropped shard
+    // shows up. One line per shard, and no third archive line.
+    let uploads: Vec<&str> = merged_log
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("• (dry-run) would upload artifact"))
+        .collect();
+    for (shard, archive) in [("shard-a", &archive_a), ("shard-b", &archive_b)] {
         assert!(
-            entry.path.ends_with(&entry.name),
-            "archive path {} must end with its filename {}",
-            entry.path,
-            entry.name,
+            uploads.iter().any(|l| l.ends_with(archive.as_str())),
+            "{shard} archive {archive} missing from the dry-run upload list; \
+             survivors were: {uploads:?}"
+        );
+    }
+    let archive_uploads: Vec<&&str> = uploads.iter().filter(|l| l.ends_with(".tar.gz")).collect();
+    assert_eq!(
+        archive_uploads.len(),
+        2,
+        "expected EXACTLY two archive uploads (one per shard); a regression that \
+         deduped them or dropped a shard would fail here. Got: {archive_uploads:?}"
+    );
+    for archive in [&archive_a, &archive_b] {
+        assert!(
+            archive.contains(target) && archive.contains(FIXTURE_CRATE_NAME),
+            "fixture archive {archive} must carry its target and crate name"
         );
     }
 
-    // Per-shard manifests must be removed once the canonical
-    // un-suffixed artifacts.json is rewritten — otherwise a retry
-    // (operator-driven workflow rerun) trips the unsuffixed-vs-
-    // suffixed collision check. The cleanup is part of the merge
-    // contract too: without it the file the next run reads would
-    // collide with the surviving sharded files.
+    // A dry-run neither writes the canonical manifest nor deletes the shard
+    // manifests that would have been superseded by it — deleting them on a
+    // write that never happened would leave the preserved dist with no
+    // manifest at all.
+    assert!(
+        !dist.join("artifacts.json").exists(),
+        "a dry-run must not write the canonical artifacts.json"
+    );
+    assert!(
+        !dist.join("metadata.json").exists(),
+        "a dry-run must not write metadata.json"
+    );
     for shard in ["shard-a", "shard-b"] {
         let shard_manifest = dist.join(format!("artifacts-{shard}.json"));
         assert!(
-            !shard_manifest.exists(),
-            "shard manifest {} must be cleaned up after successful publish-only",
+            shard_manifest.exists(),
+            "shard manifest {} must survive a dry-run that wrote no canonical \
+             artifacts.json to supersede it",
             shard_manifest.display(),
         );
     }

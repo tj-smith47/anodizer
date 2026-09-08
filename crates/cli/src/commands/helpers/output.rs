@@ -108,10 +108,20 @@ pub fn write_metadata_json(
     log: &StageLogger,
 ) -> Result<std::path::PathBuf> {
     let dist = &ctx.config.dist;
+    let metadata_path = dist.join(anodizer_core::dist::METADATA_JSON);
+    // A dry-run reports the write instead of performing it: the file is real
+    // output no stage produced, and leaving it behind makes the next real run
+    // refuse to build over a populated dist.
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would write {}",
+            metadata_path.display()
+        ));
+        return Ok(metadata_path);
+    }
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
 
-    let metadata_path = dist.join(anodizer_core::dist::METADATA_JSON);
     let goos = anodizer_core::context::map_os_to_goos(std::env::consts::OS);
     let goarch = anodizer_core::context::map_arch_to_goarch(std::env::consts::ARCH);
 
@@ -196,6 +206,13 @@ pub fn write_metadata_and_artifacts(
     });
 
     let artifacts_path = dist.join(anodizer_core::dist::ARTIFACTS_JSON);
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would write {}",
+            artifacts_path.display()
+        ));
+        return Ok(());
+    }
     let artifacts_json = ctx
         .artifacts
         .to_artifacts_json()

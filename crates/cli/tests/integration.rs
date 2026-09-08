@@ -1228,38 +1228,30 @@ fn test_e2e_dry_run_no_side_effects() {
         stderr
     );
 
-    // In dry-run mode, dist/ either should not exist (the expected case),
-    // or if it does exist, it must not contain any archive/checksum artifacts.
+    // A dry-run leaves behind nothing but the bookkeeping every run writes
+    // before any stage produces an artifact. Anything else populates dist,
+    // and the dist gate then refuses the real run that follows without
+    // `--clean`.
     let dist_dir = tmp.path().join("dist");
     if dist_dir.exists() {
-        // dist/ was created (e.g., archive stage mkdir), but verify no actual
-        // artifacts were produced.
-        let entries: Vec<_> = fs::read_dir(&dist_dir)
+        let mut entries: Vec<_> = fs::read_dir(&dist_dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        // There should be no .tar.gz archives, no checksums, no metadata.json
-        let has_archives = entries
+        entries.sort();
+        // Spelled out rather than read from the release command's constant,
+        // so a widened set fails this pin instead of widening with it.
+        let bookkeeping = ["config.yaml", "matrix.json", "release-notes.md"];
+        let leftovers: Vec<_> = entries
             .iter()
-            .any(|name| name.ends_with(".tar.gz") || name.ends_with(".zip"));
+            .filter(|name| !bookkeeping.contains(&name.as_str()))
+            .collect();
         assert!(
-            !has_archives,
-            "dist/ should NOT contain archives after dry-run, found: {:?}",
-            entries
+            leftovers.is_empty(),
+            "a dry-run must leave only its own bookkeeping in dist/, found: {leftovers:?}"
         );
-        let has_checksums = entries
-            .iter()
-            .any(|name| name.contains("checksum") || name.ends_with(".txt"));
-        assert!(
-            !has_checksums,
-            "dist/ should NOT contain checksum files after dry-run, found: {:?}",
-            entries
-        );
-        // metadata.json and artifacts.json are written even in dry-run mode.
-        // Anodizer matches this behavior: metadata is always written for debugging.
     }
-    // If dist/ doesn't exist at all, that's the expected case for dry-run.
 
     // Verify the stderr mentions dry-run activity
     assert!(

@@ -249,12 +249,7 @@ pub(crate) fn handle_release_notes_override(ctx: &mut Context, log: &StageLogger
     }
 
     let dist = ctx.config.dist.clone();
-    std::fs::create_dir_all(&dist)
-        .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
-    let notes_out = dist.join("CHANGELOG.md");
-    std::fs::write(&notes_out, &content)
-        .with_context(|| format!("changelog: write {}", notes_out.display()))?;
-    log.status(&format!("wrote {}", notes_out.display()));
+    write_changelog_dist(log, &dist, &content, ctx.is_dry_run())?;
     Ok(true)
 }
 
@@ -463,7 +458,8 @@ pub(crate) fn handle_github_native_changelog(
     ctx.stage_outputs.changelog_footer = rendered_footer;
 
     let dist = ctx.config.dist.clone();
-    write_changelog_dist(log, &dist, &final_markdown)
+    let dry_run = ctx.is_dry_run();
+    write_changelog_dist(log, &dist, &final_markdown, dry_run)
 }
 
 #[cfg(test)]

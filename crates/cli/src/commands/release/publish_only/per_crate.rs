@@ -650,7 +650,16 @@ pub(super) fn run_one_crate_dist(
         // sees a clean canonical layout. Best-effort: by the time this
         // runs the release has already completed successfully, so a
         // remove failure is logged but never propagated.
-        cleanup_shard_manifests(&dist, log);
+        //
+        // Skipped under dry-run: the whole justification for deleting the
+        // shard manifests is that the canonical un-suffixed artifacts.json
+        // now supersedes them, and a dry-run writes no such file. Deleting
+        // them anyway would leave the operator's preserved dist with no
+        // manifest at all — a dry-run must leave dist exactly as it found
+        // it, deletions included.
+        if !ctx.is_dry_run() {
+            cleanup_shard_manifests(&dist, log);
+        }
     }
 
     // Same gate as `release` / `--merge`: required-publisher failures

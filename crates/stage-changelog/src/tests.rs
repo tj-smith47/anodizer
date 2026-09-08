@@ -18,6 +18,7 @@ use crate::group::{
     CommitInfo, GroupedCommits, apply_filters, apply_include_filters, extract_co_authors,
     group_commits, parse_commit_message, render_changelog, sort_commits,
 };
+use crate::run::write_changelog_dist;
 
 #[test]
 fn github_native_has_repo_sees_workspace_only_crate() {
@@ -837,13 +838,13 @@ fn test_changelog_stage_github_native_dry_run_skips_api() {
     );
     assert!(ctx.stage_outputs.github_native_changelog);
 
-    // CHANGELOG.md must be written to dist so downstream artifacts and
-    // re-runs see a deterministic file (the
-    // the changelog stage).
+    // The dry-run reports the write instead of performing it: a file left
+    // in dist that no stage produced makes the next real run refuse to
+    // build over a populated dist.
     let changelog_path = ctx.config.dist.join("CHANGELOG.md");
     assert!(
-        changelog_path.exists(),
-        "expected dist/CHANGELOG.md at {}",
+        !changelog_path.exists(),
+        "a dry-run must not write {}",
         changelog_path.display()
     );
 }
@@ -2298,7 +2299,6 @@ fn test_changelog_dry_run_writes_file() {
     git(&["add", "."]);
     git(&["commit", "-m", "feat: initial"]);
 
-    // CHANGELOG.md is written even in dry-run mode
     let config = Config {
         project_name: "test".to_string(),
         dist: dist.clone(),
@@ -2322,13 +2322,10 @@ fn test_changelog_dry_run_writes_file() {
     let _cwd = CwdGuard::new(repo).unwrap();
     let result = ChangelogStage.run(&mut ctx);
 
+    assert!(result.is_ok(), "dry-run should succeed");
     assert!(
-        result.is_ok(),
-        "dry-run should succeed and write CHANGELOG.md"
-    );
-    assert!(
-        dist.join("CHANGELOG.md").exists(),
-        "CHANGELOG.md should be written even in dry-run mode"
+        !dist.join("CHANGELOG.md").exists(),
+        "a dry-run must not write dist/CHANGELOG.md"
     );
 }
 
@@ -5963,4 +5960,26 @@ line two\n\
             refresh.rendered_text
         );
     }
+}
+
+/// A dry-run reports the changelog write instead of performing it: the file
+/// is real output no stage produced, and leaving it in `dist/` makes the
+/// next real run refuse to build over a populated dist.
+#[test]
+fn a_dry_run_leaves_no_changelog_in_dist() {
+    let tmp = tempfile::tempdir().expect("temp dist");
+    let dist = tmp.path().join("dist");
+    let log = StageLogger::new("changelog", Verbosity::Quiet);
+
+    write_changelog_dist(&log, &dist, "# notes\n", true).expect("dry-run write must succeed");
+    assert!(
+        !dist.join("CHANGELOG.md").exists(),
+        "a dry-run must not write dist/CHANGELOG.md"
+    );
+
+    write_changelog_dist(&log, &dist, "# notes\n", false).expect("real write must succeed");
+    assert_eq!(
+        std::fs::read_to_string(dist.join("CHANGELOG.md")).expect("real run writes the file"),
+        "# notes\n"
+    );
 }
