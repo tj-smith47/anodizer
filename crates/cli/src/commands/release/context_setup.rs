@@ -214,13 +214,20 @@ fn clear_stale_bookkeeping(dist: &Path, dry_run: bool, log: &StageLogger) -> Res
 /// [`RUN_BOOKKEEPING_FILES`] nor a split shard's own `context.json`, as a
 /// `dist`-relative path; `None` when nothing else is there.
 ///
+/// Both exemptions are anchored to the depth the run writes them at: the
+/// bookkeeping files at the root of `dist`, a shard's `context.json`
+/// directly inside its own `dist/<shard>/`. A stage artifact that happens
+/// to share one of those names deeper in the tree — `dist/<shard>/config.yaml`
+/// — is population like any other file, and a gate that excused it would
+/// silently build over it.
+///
 /// Directories are never population in themselves. A `--split` run creates
 /// `dist/<shard>/` before any stage produces an artifact, so a run refused
 /// after that point would otherwise be unable to retry without `--clean`; the
 /// shard directory only counts once it holds something the retry would
 /// overwrite.
 fn dist_population(dist: &Path) -> Option<String> {
-    fn walk(dir: &Path, prefix: &Path, found: &mut Vec<String>) {
+    fn walk(dir: &Path, prefix: &Path, depth: usize, found: &mut Vec<String>) {
         let Ok(entries) = dir.read_dir() else {
             return;
         };
@@ -228,17 +235,19 @@ fn dist_population(dist: &Path) -> Option<String> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let rel = prefix.join(&name);
             if entry.path().is_dir() {
-                walk(&entry.path(), &rel, found);
-            } else if !RUN_BOOKKEEPING_FILES.contains(&name.as_str())
-                && name != anodizer_core::dist::CONTEXT_JSON
-            {
+                walk(&entry.path(), &rel, depth + 1, found);
+                continue;
+            }
+            let run_bookkeeping = depth == 0 && RUN_BOOKKEEPING_FILES.contains(&name.as_str());
+            let shard_context = depth == 1 && name == anodizer_core::dist::CONTEXT_JSON;
+            if !run_bookkeeping && !shard_context {
                 found.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
     }
 
     let mut found = Vec::new();
-    walk(dist, Path::new(""), &mut found);
+    walk(dist, Path::new(""), 0, &mut found);
     // Sorted so the named entry is stable across runs rather than whatever
     // the filesystem returned first.
     found.sort();

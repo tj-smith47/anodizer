@@ -2029,6 +2029,50 @@ fn an_empty_split_shard_directory_is_not_dist_population() {
     enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
 }
 
+/// The bookkeeping exemptions are anchored to the depth the run writes them
+/// at: a file that merely shares a bookkeeping name deeper in the tree is a
+/// stage artifact, and the gate must refuse to build over it.
+#[test]
+fn a_bookkeeping_name_below_the_dist_root_is_still_population() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(dist.join("sub")).unwrap();
+    std::fs::write(dist.join("config.yaml"), "x").unwrap();
+    std::fs::write(dist.join("sub").join("config.yaml"), "x").unwrap();
+    let config = Config {
+        dist,
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    let err = enforce_dist_state(&config, &base_release_opts(), &log)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("sub/config.yaml"), "{err}");
+}
+
+/// `context.json` is a shard's own bookkeeping, so it is excused directly
+/// inside `dist/<shard>/` and nowhere else.
+#[test]
+fn a_context_json_below_a_shard_directory_is_population() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(dist.join("linux").join("deeper")).unwrap();
+    std::fs::write(dist.join("linux").join("context.json"), "{}").unwrap();
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    enforce_dist_state(&config, &base_release_opts(), &log)
+        .expect("a shard's own context.json is not population");
+
+    std::fs::write(dist.join("linux").join("deeper").join("context.json"), "{}").unwrap();
+    let err = enforce_dist_state(&config, &base_release_opts(), &log)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("linux/deeper/context.json"), "{err}");
+}
+
 /// A shard directory holding an artifact IS population, and the gate names it
 /// by its `dist`-relative path so the operator can find it.
 #[test]
