@@ -9,6 +9,7 @@ use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
     PrereleaseConfig, ReleaseConfig, StringOrBool,
 };
+use anodizer_core::release_tag::resolve_release_tag;
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
 use anodizer_core::test_helpers::TestContextBuilder;
@@ -19,7 +20,7 @@ use super::release_body::{
     GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
     build_release_json, collect_extra_files, compose_body_for_mode,
     render_nondeterministic_exemptions_block, resolve_content_source, resolve_header_footer,
-    resolve_make_latest, resolve_release_tag,
+    resolve_make_latest,
 };
 use super::{
     compose_release_url, populate_artifact_download_urls, populate_checksums_var, retry_upload,

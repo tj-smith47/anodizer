@@ -54,6 +54,7 @@ pub mod publish_report;
 pub mod publisher;
 pub mod publisher_kind;
 pub mod redact;
+pub mod release_tag;
 pub mod retry;
 pub mod run;
 pub mod scm;

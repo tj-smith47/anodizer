@@ -1,5 +1,6 @@
 use anodizer_core::artifact::{ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
+use anodizer_core::release_tag::{anchor_crate_tag, resolve_release_tag};
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
@@ -11,7 +12,7 @@ use crate::flags::{
 };
 use crate::release_body::{
     build_release_body, collect_extra_files, render_nondeterministic_exemptions_block,
-    resolve_content_source, resolve_header_footer, resolve_release_tag,
+    resolve_content_source, resolve_header_footer,
 };
 use crate::{
     compose_release_url, gitea, github, gitlab, populate_artifact_download_urls,
@@ -238,6 +239,10 @@ fn release_one_crate(
     let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
 
     let tag = resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
+    // Every `{{ Tag }}` this crate's release renders — header, footer, blob
+    // directory, announce body, compare link — must name the tag the release
+    // is created on, not the run-wide base tag another family supplied.
+    anchor_crate_tag(ctx, crate_cfg, &tag, log);
 
     warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
 

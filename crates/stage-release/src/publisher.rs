@@ -250,8 +250,8 @@ fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateCon
 /// matching the publish path's filter. Render errors are surfaced so
 /// the caller fails loudly rather than silently dropping a target.
 fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTarget>> {
-    use crate::release_body::resolve_release_tag;
     use crate::resolve_release_repo;
+    use anodizer_core::release_tag::resolve_release_tag;
 
     let mut out: Vec<GithubReleaseTarget> = Vec::new();
     for c in active_release_configs(ctx) {

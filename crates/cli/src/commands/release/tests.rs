@@ -1206,39 +1206,73 @@ fn setup_nightly_ctx(tag_name: Option<&str>, version: &str) -> (Config, Context)
         }),
         ..Default::default()
     };
-    let mut ctx = Context::new(config.clone(), ContextOptions::default());
+    let mut ctx = Context::new(
+        config.clone(),
+        ContextOptions {
+            nightly: true,
+            ..Default::default()
+        },
+    );
     ctx.template_vars_mut().set("Version", version);
     ctx.template_vars_mut().set("ProjectName", "myproj");
     ctx.template_vars_mut().set("ShortCommit", "abc123d");
     (config, ctx)
 }
 
-/// `nightly.tag_name` is resolved by the release stage, per crate, where the
-/// tag family is known. A guess written here would render into every
-/// `{{ Tag }}` reference in the config while the release was created on a
-/// different tag entirely.
+/// Two tracks so the seeded `Tag` has a family to belong to.
+fn nightly_tracks() -> Vec<CrateConfig> {
+    let track = |name: &str, tmpl: &str| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some(tmpl.to_string()),
+        ..Default::default()
+    };
+    vec![
+        track("app", "v{{ Version }}"),
+        track("operator", "operator-v{{ Version }}"),
+    ]
+}
+
+/// `Tag` arrives holding the BASE tag the nightly version was derived FROM.
+/// Leaving it there makes every pre-release stage — archive names, blob
+/// directories, the release header — name the PREVIOUS release.
 #[test]
-fn nightly_does_not_overwrite_the_tag_var() {
-    let (config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+fn nightly_renders_tag_as_the_minted_tag() {
+    let (mut config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+    config.crates = nightly_tracks();
+    ctx.config = config.clone();
     ctx.template_vars_mut().set("Tag", "v1.2.3");
     apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
     assert_eq!(
         ctx.template_vars().get("Tag").map(String::as_str),
-        Some("v1.2.3"),
-        "the resolved git tag must survive the nightly version rewrite",
+        Some("v1.2.4-abc123d-nightly"),
+        "`Tag` must name the tag this nightly release is created on",
     );
 }
 
-/// Same for a configured `tag_name`: it is the release stage's input, not a
-/// run-wide template var.
+/// With `nightly.tag_name` set the release is created on the rolling tag, so
+/// `{{ Tag }}` must be that tag — scoped to the covered crate's own family.
 #[test]
-fn nightly_tag_name_does_not_leak_into_the_tag_var() {
-    let (config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
+fn nightly_tag_name_renders_tag_as_the_rolling_tag() {
+    let (mut config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
+    config.crates = nightly_tracks();
+    ctx.config = config.clone();
     ctx.template_vars_mut().set("Tag", "v1.2.3");
     apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
     assert_eq!(
         ctx.template_vars().get("Tag").map(String::as_str),
-        Some("v1.2.3"),
+        Some("vedge"),
+    );
+
+    let (mut config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
+    config.crates = nightly_tracks();
+    ctx.config = config.clone();
+    ctx.options.selected_crates = vec!["operator".to_string()];
+    apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+    assert_eq!(
+        ctx.template_vars().get("Tag").map(String::as_str),
+        Some("operator-vedge"),
+        "the covered crate decides the family the run-wide tag lands in",
     );
 }
 

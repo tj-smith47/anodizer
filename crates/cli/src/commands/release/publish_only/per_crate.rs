@@ -371,50 +371,35 @@ pub(super) fn peek_preserved_version(crate_dist: &Path) -> Option<String> {
         .find(|v| !v.is_empty())
 }
 
+/// Re-anchor `Tag` and `PreviousTag` onto one crate's own release tag.
+///
+/// The tag comes from the same resolver the release stage creates the release
+/// with, so a `--publish-only` run captures and titles the release under the
+/// tag it actually exists on rather than a second derivation of it.
 pub(super) fn apply_per_crate_tag(
     ctx: &mut Context,
     config: &Config,
     crate_name: &str,
     log: &StageLogger,
 ) {
-    // The `crate_prefix` derived below extracts from this SAME template,
-    // keeping the re-anchored `Tag` and `PreviousTag` in the same family the
-    // release stage created the tag in.
-    let tag_template = config
-        .find_crate(crate_name)
-        .map(|c| c.tag_family_template())
-        .filter(|t| !t.is_empty());
-    let Some(tag_template) = tag_template else {
+    let Some(crate_cfg) = config.find_crate(crate_name).cloned() else {
         return;
     };
-
-    let tag = match ctx.render_template(&tag_template) {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) => return,
+    let release_tag_override = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
+    let tag = match anodizer_core::release_tag::resolve_release_tag(
+        ctx,
+        &crate_cfg,
+        release_tag_override.as_deref(),
+    ) {
+        Ok(t) => t,
         Err(e) => {
             log.warn(&format!(
-                "failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
+                "failed to resolve the release tag for crate '{crate_name}': {e}"
             ));
             return;
         }
     };
-    ctx.template_vars_mut().set("Tag", &tag);
-
-    match anodizer_core::git::find_previous_tag_in_family(
-        &tag,
-        &tag_template,
-        config.git.as_ref(),
-        Some(ctx.template_vars()),
-        config.monorepo_tag_prefix(),
-    ) {
-        Ok(Some(prev)) => ctx.template_vars_mut().set("PreviousTag", &prev),
-        Ok(None) => {
-            ctx.template_vars_mut().unset("PreviousTag");
-        }
-        Err(e) => log.verbose(&format!(
-            "previous-tag lookup for crate '{crate_name}' failed: {e}"
-        )),
-    }
+    anodizer_core::release_tag::anchor_crate_tag(ctx, &crate_cfg, &tag, log);
 }
 
 /// Merge a workspace's `skip:` list into the iteration's effective

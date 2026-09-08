@@ -154,15 +154,41 @@ pub(crate) fn apply_nightly_template_vars(
     ctx.template_vars_mut().set("Version", &nightly_version);
     ctx.template_vars_mut().set("RawVersion", &nightly_version);
 
-    // `nightly.tag_name` and `nightly.name_template` are resolved by the
-    // release stage, per crate, where the tag family that scopes the retention
-    // sweep is known. Setting `Tag` here would publish one answer and render
-    // another: with `tag_name` unset the release is created on the version's
-    // own tag (`v0.26.0-abc1234-nightly`) while every `{{ Tag }}` reference in
-    // the config — release header, blob directory, announce bodies — would
-    // still say whatever this function had guessed.
+    // `Tag` still holds the BASE tag the nightly version was derived FROM
+    // (`v0.25.2`), so every pre-release stage — archive names, blob
+    // directories, checksum files, the release header — would render the
+    // previous release's tag for artifacts belonging to `v0.25.3-<sha>-nightly`.
+    // Seed it from the same resolver the release stage creates the release
+    // with, using the first covered crate; `release_one_crate` re-anchors it
+    // per crate afterwards, which is what a multi-family workspace needs.
+    // Best-effort: a template that cannot render here fails loudly in the
+    // release stage, and a `--skip=release` run must not die for a tag it
+    // never uses.
+    if let Some(crate_cfg) = first_covered_crate(ctx, config).cloned() {
+        let override_tag = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
+        match anodizer_core::release_tag::resolve_release_tag(
+            ctx,
+            &crate_cfg,
+            override_tag.as_deref(),
+        ) {
+            Ok(tag) => ctx.template_vars_mut().set("Tag", &tag),
+            Err(e) => log.verbose(&format!("nightly tag not resolvable yet: {e}")),
+        }
+    }
+
     log.verbose(&format!("nightly version={nightly_version}"));
     Ok(())
+}
+
+/// The crate whose tag family seeds the run-wide nightly `Tag`: the first of
+/// the explicit `--crate` selection when there is one, else the first crate in
+/// declaration order.
+fn first_covered_crate<'a>(ctx: &Context, config: &'a Config) -> Option<&'a CrateConfig> {
+    let selected = &ctx.options.selected_crates;
+    config
+        .crate_universe()
+        .into_iter()
+        .find(|c| selected.is_empty() || selected.contains(&c.name))
 }
 
 /// Apply the snapshot version template (one is always applied).
