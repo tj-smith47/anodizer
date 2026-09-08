@@ -180,6 +180,31 @@ fn test_copy_binary_single() {
     assert_eq!(fs::read(&dest).unwrap(), b"actual binary bytes");
 }
 
+// ---------------------------------------------------------------------------
+// New tests: glob pattern resolution
+// ---------------------------------------------------------------------------
+
+/// Pins W3: a single license/readme/changelog file produces exactly one
+/// resolved entry, regardless of which case glob hit it first. The dedup
+/// logic in `resolve_default_extra_files` (HashSet on resolved path)
+/// must collapse the two case-globs that resolve to the same file on
+/// case-insensitive filesystems (macOS HFS+, Windows NTFS default).
+#[test]
+fn test_resolve_default_extra_files_dedup_single_file() {
+    let tmp = TempDir::new().unwrap();
+    // Just one license file. On both case-sensitive and case-insensitive
+    // filesystems, the resolver should return exactly one entry —
+    // the lowercase and uppercase globs may or may not BOTH find it,
+    // but the result must be deduped.
+    fs::write(tmp.path().join("license.txt"), b"mit").unwrap();
+    let results = resolve_default_extra_files(tmp.path());
+    assert_eq!(
+        results.len(),
+        1,
+        "exactly one entry expected for single license file; got {results:?}"
+    );
+}
+
 /// Default extra-file glob order is lowercase-first
 /// for each of license / readme / changelog. On case-insensitive
 /// filesystems where both `LICENSE` and `license` exist, the lowercase
