@@ -231,8 +231,10 @@ pub(crate) fn archive_one_config(
                 .filter(|b| match binary_filter {
                     None => true,
                     Some(names) => {
-                        let bin_name = b.metadata.get("binary").map(|s| s.as_str()).unwrap_or("");
-                        names.iter().any(|n| n == bin_name)
+                        // Same name a `binaries:` entry would be written
+                        // against: matching a missing key as "" drops the
+                        // binary silently and skips the whole target.
+                        names.contains(&binary_var(b))
                     }
                 })
                 .collect();
@@ -383,7 +385,7 @@ pub(crate) fn archive_one_config(
                     if !b.path.exists() && !dry_run {
                         anyhow::bail!(
                             "binary artifact missing: {} (expected at {})",
-                            b.metadata.get("binary").unwrap_or(&b.crate_name),
+                            binary_var(b),
                             b.path.display()
                         );
                     }

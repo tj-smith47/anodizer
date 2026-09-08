@@ -6572,6 +6572,66 @@ mod archive_name_guard {
     }
 
     #[test]
+    fn binaries_filter_matches_a_fallback_named_binary() {
+        // A `binaries:` entry is written against the name the user SEES —
+        // the file name when the build stage recorded no metadata. Matching
+        // a missing key as "" dropped the binary and skipped the target with
+        // no diagnostic at all.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-unknown-linux-gnu";
+        let mut filtered = cfg("default", None, &["binary"]);
+        filtered.binaries = Some(vec!["myhelper".to_string()]);
+        let mut ctx = build_ctx(&tmp, &["myapp"], &[filtered], &[target], false, false);
+        let bin_path = tmp.path().join(target).join("myhelper");
+        fs::write(&bin_path, b"helper").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UploadableBinary)
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["myhelper_1.0.0_linux_amd64"]);
+    }
+
+    #[test]
+    fn missing_binary_bail_names_the_file_name() {
+        // The diagnostic must name the same thing every other surface names.
+        // Falling back to the crate name told the operator to look for
+        // 'myapp' when the missing file is 'myhelper'.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-unknown-linux-gnu";
+        let cfgs = [cfg("default", None, &["tar.gz"])];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[target], false, false);
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: tmp.path().join(target).join("myhelper"),
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("binary artifact missing: myhelper"),
+            "bail must name the binary by its file name: {err}"
+        );
+    }
+
+    #[test]
     fn binary_only_target_skips_templated_files() {
         // A binary-only target packs no entries, so its templated_files are
         // never read — rendering them anyway staged scratch files in dist/ and
@@ -6704,5 +6764,88 @@ mod archive_name_guard {
         let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("archives:"), "{err}");
         assert!(err.contains("more than once"), "{err}");
+    }
+}
+
+/// One read policy for `metadata["binary"]` in this stage: every caller goes
+/// through `binary_var`, so a build artifact missing the key is named by its
+/// file name everywhere instead of by "" here and the crate name there.
+mod binary_name_read_policy {
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    #[test]
+    fn completions_binary_name_falls_back_to_the_file_name() {
+        // Completions/man generation named a metadata-less binary after the
+        // CRATE, so its generated files disagreed with the archive entries
+        // for the very same binary. With no host binary at all there is no
+        // artifact to read, and the crate name is all that is left.
+        let bin = Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/tmp/x86_64-unknown-linux-gnu/myhelper"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        assert_eq!(
+            crate::completions_gen::binary_name(Some(&bin), "myapp"),
+            "myhelper"
+        );
+        assert_eq!(crate::completions_gen::binary_name(None, "myapp"), "myapp");
+    }
+
+    #[test]
+    fn metadata_binary_is_read_only_through_binary_var() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits: Vec<(String, usize)> = Vec::new();
+        for entry in fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if name == "tests.rs" {
+                continue;
+            }
+            let body = fs::read_to_string(&path).unwrap();
+            for (i, line) in body.lines().enumerate() {
+                // The read is matched on `.get("binary")` alone: rustfmt
+                // splits the receiver onto its own line, so the whole
+                // `metadata.get("binary")` phrase never appears in one line.
+                if line.contains(".get(\"binary\")") {
+                    hits.push((name.clone(), i + 1));
+                }
+            }
+        }
+        assert_eq!(
+            hits.len(),
+            1,
+            "every `binary` metadata read must go through `binary_var`; found {hits:?}"
+        );
+        assert_eq!(hits[0].0, "run_helpers.rs", "{hits:?}");
+
+        let helpers = fs::read_to_string(src.join("run_helpers.rs")).unwrap();
+        let lines: Vec<&str> = helpers.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.starts_with("pub(crate) fn binary_var("))
+            .expect("binary_var moved or renamed");
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.starts_with("pub(crate) fn "))
+            .map(|i| start + 1 + i)
+            .unwrap_or(lines.len());
+        let hit_line = hits[0].1 - 1;
+        assert!(
+            hit_line > start && hit_line < end,
+            "the read sits outside `binary_var` (lines {}..{}): {hits:?}",
+            start + 1,
+            end + 1
+        );
     }
 }
