@@ -111,6 +111,7 @@ pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
         worktree = %spec.worktree_path.display(),
         "spawning anodize release child for determinism harness",
     );
+    cmd.stdin(std::process::Stdio::null());
     let status = cmd
         .status()
         .context("spawning anodize release for determinism harness")?;
@@ -370,6 +371,7 @@ fn prefetch_deps_with(
     let mut last: Option<String> = None;
     for attempt in 1..=attempts {
         let mut cmd = build_fetch_command(manifest_dir, cargo_home);
+        cmd.stdin(std::process::Stdio::null());
         match cmd.status() {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => last = Some(format!("cargo fetch exited {:?}", status.code())),

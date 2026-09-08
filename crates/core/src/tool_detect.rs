@@ -113,6 +113,9 @@ pub fn runs(name: &str) -> ToolProbe {
     match Command::new(name)
         .arg(version_flag(name))
         .current_dir(crate::path_util::probe_dir())
+        // A version probe reads nothing; `status()` would still hand the child
+        // this process's stdin, so a stub that consumes stdin blocks forever.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -183,6 +186,7 @@ pub fn tool_runs_with_args(name: &str, args: &[&str]) -> bool {
     Command::new(name)
         .args(args)
         .current_dir(crate::path_util::probe_dir())
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

@@ -315,6 +315,11 @@ fn provision_apk(tmpdir: &Path) -> Result<Option<PathBuf>> {
             "-out",
         ])
         .arg(&key_path)
+        // `status()` would otherwise hand the child THIS process's stdin.
+        // `openssl genpkey` reads none, but a stub standing in for it during a
+        // harness test can, and a child waiting on a stdin nobody closes hangs
+        // the run.
+        .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())

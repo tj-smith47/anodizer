@@ -98,6 +98,7 @@ fn preflight_kms_cli_with_binary(binary: &std::path::Path, tool: &str) -> Result
     std::process::Command::new(binary)
         .arg("--version")
         .current_dir(anodizer_core::path_util::probe_dir())
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
