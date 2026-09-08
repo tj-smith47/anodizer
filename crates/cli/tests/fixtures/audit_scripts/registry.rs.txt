@@ -1,0 +1,12 @@
+use std::collections::HashMap;
+
+#[derive(Default)]
+pub struct Artifact {
+    pub metadata: HashMap<String, String>,
+}
+
+impl Artifact {
+    pub fn binary_name(&self) -> Option<&String> {
+        self.metadata.get("binary")
+    }
+}

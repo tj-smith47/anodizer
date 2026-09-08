@@ -1,0 +1,33 @@
+use std::collections::HashMap;
+use std::process::Command;
+
+#[derive(Default)]
+pub struct Meta {
+    pub metadata: HashMap<String, String>,
+    pub tag_template: Option<String>,
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    #[test]
+    fn every_shape_below_is_test_code() {
+        let m = Meta::default();
+        let _inline_binary = m.metadata.get("binary");
+        let _inline_family = m.tag_template.clone();
+        unsafe { std::env::set_var("INLINE_ONLY", "1") };
+        let _ = Command::new("git").arg("status").output();
+    }
+}
+
+pub fn after_the_inline_module(m: &Meta) -> Option<&String> {
+    let _production_family = m.tag_template.clone();
+    let production_binary = m.metadata.get("binary");
+    production_binary
+}
+
+pub fn production_globals() {
+    unsafe { std::env::set_var("PRODUCTION_ONLY", "1") };
+    let _ = Command::new("git").arg("rev-parse").output();
+}

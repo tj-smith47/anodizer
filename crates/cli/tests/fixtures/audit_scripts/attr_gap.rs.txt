@@ -1,0 +1,20 @@
+use std::collections::HashMap;
+
+#[derive(Default)]
+pub struct Holder {
+    pub metadata: HashMap<String, String>,
+    pub tag_template: Option<String>,
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_names)]
+mod gapped_tests {
+    use super::*;
+
+    #[test]
+    fn an_attribute_between_the_gate_and_the_mod_keeps_the_region() {
+        let h = Holder::default();
+        let _gapped_binary = h.metadata.get("binary");
+        let _gapped_family = h.tag_template.clone();
+    }
+}
