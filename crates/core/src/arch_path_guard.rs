@@ -275,6 +275,105 @@ mod tests {
 
     const ALL: [&str; 6] = ["CrateName", "Binary", "Amd64", "Target", "Os", "Arch"];
 
+    /// Line wrapping collapsed away, so a documented message can be compared
+    /// to a rendered one however the page happens to wrap it.
+    fn collapse(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Every fenced `text` block on a page that quotes one of this guard's
+    /// diagnostics, in page order.
+    fn documented_messages(doc: &str) -> Vec<String> {
+        let mut blocks = Vec::new();
+        let mut fence: Option<String> = None;
+        for line in doc.lines() {
+            let line = line.trim_end();
+            if fence.is_none() {
+                if line == "```text" {
+                    fence = Some(String::new());
+                }
+                continue;
+            }
+            if line == "```" {
+                let body = collapse(&fence.take().expect("inside a fence"));
+                if body.starts_with("archives: name template") {
+                    blocks.push(body);
+                }
+            } else {
+                let open = fence.as_mut().expect("inside a fence");
+                open.push_str(line);
+                open.push(' ');
+            }
+        }
+        blocks
+    }
+
+    /// One `archives` entry shipping two binaries on one build target.
+    fn two_binaries_of_one_entry() -> String {
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/myapp_1.0.0_linux_amd64");
+        let c = claim(
+            path,
+            "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
+            "myapp",
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            &all,
+        );
+        guard.check(c).expect("first binary must pass");
+        guard.check(c).unwrap_err().to_string()
+    }
+
+    /// One `archives` entry over two build targets of different architectures.
+    fn two_targets_of_one_entry() -> String {
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/myapp.tar.gz");
+        let mut c = claim(
+            path,
+            "{{ .ProjectName }}",
+            "myapp",
+            Some("aarch64-unknown-linux-gnu"),
+            None,
+            &all,
+        );
+        c.artifact = "archive";
+        guard.check(c).expect("first archive must pass");
+        c.target = Some("x86_64-unknown-linux-gnu");
+        guard.check(c).unwrap_err().to_string()
+    }
+
+    /// The archives page quotes this guard's output. A quoted message that
+    /// drifts from what the guard renders sends a reader looking for a clause
+    /// the binary never prints, so every fenced block on the page is checked
+    /// against a live render for the inputs the block documents.
+    #[test]
+    fn the_archives_page_quotes_messages_the_guard_renders() {
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/packages/archives.md"
+        ))
+        .expect("read docs/site/content/docs/packages/archives.md");
+
+        let documented = documented_messages(&doc);
+        let rendered = [two_binaries_of_one_entry(), two_targets_of_one_entry()];
+        assert_eq!(
+            documented.len(),
+            rendered.len(),
+            "every collision block on the page needs a render here; found {documented:#?}"
+        );
+        for block in &documented {
+            assert!(
+                rendered
+                    .iter()
+                    .any(|m| collapse(m).contains(block.as_str())),
+                "the page quotes a message the guard never renders:\n{block}\n\nrenders:\n{}",
+                rendered.join("\n\n")
+            );
+        }
+    }
+
     #[test]
     fn distinct_paths_pass() {
         let all = exposed(&ALL);

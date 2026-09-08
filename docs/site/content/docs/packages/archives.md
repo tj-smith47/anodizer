@@ -225,16 +225,18 @@ selects, so an entry shipping two or more binaries is rejected rather than
 letting one overwrite the other. Every output path of the whole run — every
 crate, build target, format and binary — is claimed before the first copy, so
 the refusal leaves no archive or binary behind in `dist/`; only the run's own
-bookkeeping (`config.yaml`, and `release-notes.md` under
-`--release-notes-tmpl`) remains, and a retry after fixing the template needs
-no `--clean`:
+bookkeeping remains — the effective `config.yaml` every run writes, plus
+`release-notes.md` under `--release-notes-tmpl` and `matrix.json` under
+`--split` — and a retry after fixing the template needs no `--clean`:
 
 ```text
 archives: name template '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 rendered the same binary 'myapp_1.0.0_linux_amd64' more than once for crate
-'myapp' on build target 'x86_64-unknown-linux-gnu', so one binary would
-silently overwrite another. Both come from the same build target, so no
-architecture variable can separate them: add '{{ .Binary }}' to the `name` …
+'myapp', so one binary would silently overwrite another. Both binaries come
+from the same build target 'x86_64-unknown-linux-gnu' and the same `archives`
+entry, so no architecture variable can separate them: add '{{ .Binary }}' to
+the `name_template` (e.g. "{{ .Binary }}_{{ .Os }}_{{ .Arch }}") so each binary
+gets a distinct path.
 ```
 
 The remedy names the one variable that separates the two outputs:
@@ -242,7 +244,8 @@ The remedy names the one variable that separates the two outputs:
 | The two outputs are… | Remedy |
 |---|---|
 | from different crates | `{{ .CrateName }}` |
-| two binaries of one entry on one build target | `{{ .Binary }}` (or a distinct `name_template` per entry) |
+| from two `archives` entries of one crate on one build target | a distinct `name_template` per entry |
+| two binaries of one entry on one build target | `{{ .Binary }}` |
 | two amd64 micro-architecture variants of one target | `{{ .Amd64 }}` |
 | from two targets sharing OS and architecture (`-gnu` / `-musl`) | `{{ .Target }}` |
 | from two targets of one architecture | `{{ .Os }}` |
@@ -270,12 +273,12 @@ still a hard error — that is a config defect, not leftover state, and it is
 caught in `--dry-run` and `--snapshot` too:
 
 ```text
-archives: name template '{{ ProjectName }}' rendered the same archive
+archives: name template '{{ .ProjectName }}' rendered the same archive
 'myapp.tar.gz' more than once for crate 'myapp', so one archive would silently
 overwrite another. The collision is between build targets
 'aarch64-unknown-linux-gnu' and 'x86_64-unknown-linux-gnu': add '{{ .Arch }}'
-to the `name_template` (e.g. "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}") so
-each archive gets a distinct path.
+to the `name_template` (e.g. "{{ .ProjectName }}_{{ .Arch }}") so each archive
+gets a distinct path.
 ```
 
 ## Disabling archives
