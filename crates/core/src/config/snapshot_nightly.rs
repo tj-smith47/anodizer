@@ -73,7 +73,14 @@ pub struct NightlyConfig {
     ///
     /// The signal is the changelog stage's own entry count, so
     /// `changelog.filters` / `paths` / `groups` decide what counts as
-    /// notable. A run with `--skip=changelog` has no signal and never skips.
+    /// notable. A run that produces no such count never skips: `--skip=changelog`
+    /// (the stage did not run) and `changelog.use: github-native` (GitHub
+    /// composes the notes server-side, so anodizer counts nothing) both leave
+    /// the nightly to cut as usual.
+    ///
+    /// A repo with no prior tag in the crate's family is never skipped
+    /// either: its whole history is unreleased, so "no changes since the last
+    /// release" is not a claim it can make.
     pub skip_if_no_changes: Option<bool>,
     /// Publish the nightly release to a DIFFERENT repository than the source
     /// repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default

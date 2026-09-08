@@ -158,11 +158,15 @@ fn should_skip_release(
             == Some(true)
         && let Some(range) = nightly_changelog_range(ctx, crate_name)
         && range.notable_entries == 0
+        // A repo with no prior tag in this family has never published
+        // anything, so "no changes since the last release" is not a statement
+        // it can make: everything in its history is unreleased. Only a range
+        // bounded by a real previous tag can be empty in the sense this knob
+        // means, so the first nightly always cuts.
+        && let Some(previous_tag) = range.previous_tag.as_deref()
     {
         log.status(&format!(
-            "skipping nightly release for crate '{}': no notable changes since {}",
-            crate_name,
-            range.previous_tag.as_deref().unwrap_or("the first commit")
+            "skipping nightly release for crate '{crate_name}': no notable changes since {previous_tag}"
         ));
         return Ok(true);
     }
@@ -1343,7 +1347,7 @@ mod tests {
     #[test]
     fn skip_if_no_changes_skips_an_empty_aggregate_range() {
         let mut ctx = skip_if_no_changes_ctx();
-        ctx.stage_outputs.release_body_range = Some(range(0, None));
+        ctx.stage_outputs.release_body_range = Some(range(0, Some("v0.9.0")));
         assert!(
             should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
                 .expect("should_skip_release returns Ok"),
@@ -1425,6 +1429,25 @@ mod tests {
             !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
                 .expect("ok"),
             "skip_if_no_changes must not reach a stable run"
+        );
+    }
+
+    /// A repo with no prior tag has published nothing, so an empty range is
+    /// not "nothing changed since the last release" — it is "everything is
+    /// still unreleased". Skipping there would leave the repo with no
+    /// nightly at all, forever.
+    #[test]
+    fn first_nightly_without_a_prior_tag_is_never_skipped() {
+        let mut ctx = skip_if_no_changes_ctx();
+        ctx.config.nightly = Some(NightlyConfig {
+            skip_if_no_changes: Some(true),
+            ..Default::default()
+        });
+        ctx.stage_outputs.release_body_range = Some(range(0, None));
+        assert!(
+            !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("ok"),
+            "an empty range with no previous tag must still cut",
         );
     }
 

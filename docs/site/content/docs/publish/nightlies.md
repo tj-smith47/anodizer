@@ -63,6 +63,8 @@ Not applicable as a separate config — nightly publishes use the same release c
 - Without `tag_name` every run cuts its own tag, so `keep_single_release: true` is what stops the pile accumulating.
 - With `tag_name` the pinned tag is moved every run and existing release assets are replaced (set `release.replace_existing_artifacts: true` to clear before re-upload).
 - A nightly cuts even when nothing changed since the last release; `skip_if_no_changes: true` turns that into a no-op.
+- `skip_if_no_changes` needs a changelog signal to act on: with `--skip=changelog` or `changelog.use: github-native` there is no entry count, so the nightly cuts as usual. A repo with no prior tag is never skipped either — its whole history is unreleased.
+- With a multitrack workspace, `tag_name` is prefixed with each crate's own family (`operator-v` + `edge` -> `operator-vedge`) so one literal tag cannot carry three tracks.
 
 ## Behavior
 
