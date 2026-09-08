@@ -140,16 +140,22 @@ pub(crate) fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOp
 }
 
 /// The files a run writes into `dist/` before any stage produces an
-/// artifact: the effective config, the rendered `--release-notes-tmpl`, and
-/// the `--split` matrix. A failed run leaves exactly these behind, and every
-/// retry rewrites them from the same inputs, so their presence is not the
-/// population the dist gate refuses to build over.
+/// artifact: the effective config (`config.yaml`, every run), the rendered
+/// `--release-notes-tmpl` (`release-notes.md`, only with that flag) and the
+/// `--split` worker matrix (`matrix.json`, only with `--split`). A failed run
+/// leaves exactly these behind, so their presence is not the population the
+/// dist gate refuses to build over. Because only the first is unconditional,
+/// the gate deletes all three once it passes rather than trusting the next run
+/// to overwrite them — otherwise a `matrix.json` from an earlier `--split`
+/// outlives the split that wrote it and a later `--merge` reconciles against a
+/// worker set that no longer exists.
 pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] =
     &["config.yaml", "release-notes.md", "matrix.json"];
 
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
 /// otherwise a dist holding anything beyond the run's own bookkeeping
-/// ([`RUN_BOOKKEEPING_FILES`]) is a hard error.
+/// ([`RUN_BOOKKEEPING_FILES`]) is a hard error, and the bookkeeping a previous
+/// run left is removed so this run starts from only what it writes itself.
 /// `--merge` / `--publish-only` skip the non-empty check because each of
 /// those modes requires preserved dist content;
 /// `--preflight-secrets` skips it because the secrets gate is a
@@ -180,6 +186,25 @@ pub(crate) fn enforce_dist_state(
                 "dist directory '{}' is not empty (holds '{populated}'); use --clean to remove it first",
                 dist.display()
             )));
+        }
+        clear_stale_bookkeeping(dist, opts.dry_run, log)?;
+    }
+    Ok(())
+}
+
+/// Drop the [`RUN_BOOKKEEPING_FILES`] a previous run left in `dist`, so the
+/// only ones present afterwards are the ones this run writes.
+fn clear_stale_bookkeeping(dist: &Path, dry_run: bool, log: &StageLogger) -> Result<()> {
+    for name in RUN_BOOKKEEPING_FILES {
+        let path = dist.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        if dry_run {
+            log.status(&format!("(dry-run) would remove stale {name}"));
+        } else {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("remove stale {}", path.display()))?;
         }
     }
     Ok(())

@@ -2008,6 +2008,82 @@ fn dist_holding_only_its_own_bookkeeping_passes_the_dist_gate() {
     enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
 }
 
+/// Bookkeeping only the run that wrote it produces (a `matrix.json` from an
+/// earlier `--split`) must not outlive the gate: once the population check
+/// passes, every bookkeeping file present is removed.
+#[test]
+fn passing_the_dist_gate_removes_the_previous_run_bookkeeping() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    for name in ["config.yaml", "matrix.json"] {
+        std::fs::write(dist.join(name), "x").unwrap();
+    }
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
+    assert!(
+        !dist.join("matrix.json").exists(),
+        "stale matrix.json survived"
+    );
+    assert!(
+        !dist.join("config.yaml").exists(),
+        "stale config.yaml survived"
+    );
+}
+
+/// A refused gate deletes nothing — the operator still sees the dist that
+/// tripped it.
+#[test]
+fn a_refused_dist_gate_leaves_the_bookkeeping_in_place() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("matrix.json"), "x").unwrap();
+    std::fs::write(dist.join("myapp_linux_amd64.tar.gz"), "x").unwrap();
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    enforce_dist_state(&config, &base_release_opts(), &log).unwrap_err();
+    assert!(
+        dist.join("matrix.json").exists(),
+        "a refused gate deleted bookkeeping"
+    );
+}
+
+/// `--dry-run` announces the removal at status and touches nothing.
+#[test]
+fn dry_run_reports_stale_bookkeeping_without_removing_it() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("matrix.json"), "x").unwrap();
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let (log, capture) = StageLogger::with_capture("test", Verbosity::Quiet);
+    let opts = ReleaseOpts {
+        dry_run: true,
+        ..base_release_opts()
+    };
+    enforce_dist_state(&config, &opts, &log).unwrap();
+    assert!(dist.join("matrix.json").exists(), "dry-run deleted a file");
+    let lines = capture.all_messages();
+    assert!(
+        lines.contains(&(
+            anodizer_core::log::LogLevel::Status,
+            "(dry-run) would remove stale matrix.json".to_string(),
+        )),
+        "{lines:?}"
+    );
+}
+
 /// One artifact next to the bookkeeping is population: the gate refuses and
 /// names the entry it tripped over, never the bookkeeping file.
 #[test]
