@@ -57,51 +57,46 @@ const MANPAGES_STAGING: &str = ".manpages";
 /// The returned files are staged on disk under `dist/.completions/<crate>/`
 /// and `dist/.manpages/<crate>/` so the same files can also feed nfpm
 /// `contents:` globs (the single source-of-truth requirement).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_archive_aux_files(
     ctx: &mut Context,
     completions: Option<&CompletionsConfig>,
     manpages: Option<&ManpagesConfig>,
-    crate_name: &str,
-    crate_dir: &Path,
-    host_binary: Option<&Artifact>,
     dist: &Path,
-    dry_run: bool,
-    log: &StageLogger,
+    aux: &AuxInputs<'_>,
 ) -> Result<Vec<ResolvedExtraFile>> {
     let mut out: Vec<ResolvedExtraFile> = Vec::new();
 
     if let Some(cfg) = completions {
-        let staging = dist.join(COMPLETIONS_STAGING).join(crate_name);
-        let files = gen_completions(
-            ctx,
-            cfg,
-            crate_name,
-            crate_dir,
-            host_binary,
-            &staging,
-            dry_run,
-            log,
-        )?;
+        let staging = dist.join(COMPLETIONS_STAGING).join(aux.crate_name);
+        let files = gen_completions(ctx, cfg, &staging, aux)?;
         append_entries(&mut out, files, cfg.resolved_dst());
     }
 
     if let Some(cfg) = manpages {
-        let staging = dist.join(MANPAGES_STAGING).join(crate_name);
-        let files = gen_manpages(
-            ctx,
-            cfg,
-            crate_name,
-            crate_dir,
-            host_binary,
-            &staging,
-            dry_run,
-            log,
-        )?;
+        let staging = dist.join(MANPAGES_STAGING).join(aux.crate_name);
+        let files = gen_manpages(ctx, cfg, &staging, aux)?;
         append_entries(&mut out, files, cfg.resolved_dst());
     }
 
     Ok(out)
+}
+
+/// The per-crate inputs every aux-file generator shares: which crate is being
+/// generated for, where its sources live, the host-native binary mode A runs
+/// (`None` on a pure cross build), and the run's dry-run flag and logger.
+pub(crate) struct AuxInputs<'a> {
+    pub crate_name: &'a str,
+    pub crate_dir: &'a Path,
+    pub host_binary: Option<&'a Artifact>,
+    pub dry_run: bool,
+    pub log: &'a StageLogger,
+}
+
+/// Where one generated aux file lands, and what to call it in diagnostics.
+struct GenOutput<'a> {
+    staging: &'a Path,
+    file_name: &'a str,
+    kind: &'a str,
 }
 
 /// Wrap each staged file as a `ResolvedExtraFile` whose archive destination is
@@ -140,22 +135,19 @@ pub(crate) fn binary_name(host_binary: Option<&Artifact>, crate_name: &str) -> S
         .unwrap_or_else(|| crate_name.to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gen_completions(
     ctx: &mut Context,
     cfg: &CompletionsConfig,
-    crate_name: &str,
-    crate_dir: &Path,
-    host_binary: Option<&Artifact>,
     staging: &Path,
-    dry_run: bool,
-    log: &StageLogger,
+    aux: &AuxInputs<'_>,
 ) -> Result<Vec<PathBuf>> {
-    let bin = binary_name(host_binary, crate_name);
+    let bin = binary_name(aux.host_binary, aux.crate_name);
     match cfg.mode() {
         GenMode::None => Ok(Vec::new()),
         GenMode::Generate(cmd_tmpl) => {
-            let host = host_binary.ok_or_else(|| host_missing_error(crate_name, "completions"))?;
+            let host = aux
+                .host_binary
+                .ok_or_else(|| host_missing_error(aux.crate_name, "completions"))?;
             let mut files = Vec::new();
             for shell in cfg.resolved_shells() {
                 let file_name = completion_filename(&bin, &shell);
@@ -165,54 +157,74 @@ fn gen_completions(
                     host,
                     &bin,
                     Some(&shell),
-                    staging,
-                    &file_name,
-                    dry_run,
-                    log,
-                    "completions",
+                    &GenOutput {
+                        staging,
+                        file_name: &file_name,
+                        kind: "completions",
+                    },
+                    aux,
                 )?;
                 files.push(path);
             }
             Ok(files)
         }
         GenMode::FromBuildOut(glob_tmpl) => {
-            harvest_from_build_out(ctx, glob_tmpl, &bin, staging, log, "completions")
+            harvest_from_build_out(ctx, glob_tmpl, &bin, staging, aux.log, "completions")
         }
-        GenMode::Copy(glob_tmpl) => {
-            copy_committed(ctx, glob_tmpl, &bin, crate_dir, staging, log, "completions")
-        }
+        GenMode::Copy(glob_tmpl) => copy_committed(
+            ctx,
+            glob_tmpl,
+            &bin,
+            aux.crate_dir,
+            staging,
+            aux.log,
+            "completions",
+        ),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gen_manpages(
     ctx: &mut Context,
     cfg: &ManpagesConfig,
-    crate_name: &str,
-    crate_dir: &Path,
-    host_binary: Option<&Artifact>,
     staging: &Path,
-    dry_run: bool,
-    log: &StageLogger,
+    aux: &AuxInputs<'_>,
 ) -> Result<Vec<PathBuf>> {
-    let bin = binary_name(host_binary, crate_name);
+    let bin = binary_name(aux.host_binary, aux.crate_name);
     match cfg.mode() {
         GenMode::None => Ok(Vec::new()),
         GenMode::Generate(cmd_tmpl) => {
-            let host = host_binary.ok_or_else(|| host_missing_error(crate_name, "manpages"))?;
+            let host = aux
+                .host_binary
+                .ok_or_else(|| host_missing_error(aux.crate_name, "manpages"))?;
             // Man pages are shell-agnostic: one file named `<binary>.1`.
             let file_name = format!("{bin}.1");
             let path = run_generate(
-                ctx, cmd_tmpl, host, &bin, None, staging, &file_name, dry_run, log, "manpages",
+                ctx,
+                cmd_tmpl,
+                host,
+                &bin,
+                None,
+                &GenOutput {
+                    staging,
+                    file_name: &file_name,
+                    kind: "manpages",
+                },
+                aux,
             )?;
             Ok(vec![path])
         }
         GenMode::FromBuildOut(glob_tmpl) => {
-            harvest_from_build_out(ctx, glob_tmpl, &bin, staging, log, "manpages")
+            harvest_from_build_out(ctx, glob_tmpl, &bin, staging, aux.log, "manpages")
         }
-        GenMode::Copy(glob_tmpl) => {
-            copy_committed(ctx, glob_tmpl, &bin, crate_dir, staging, log, "manpages")
-        }
+        GenMode::Copy(glob_tmpl) => copy_committed(
+            ctx,
+            glob_tmpl,
+            &bin,
+            aux.crate_dir,
+            staging,
+            aux.log,
+            "manpages",
+        ),
     }
 }
 
@@ -252,19 +264,21 @@ pub(crate) fn clear_generate_vars(ctx: &mut Context) {
 /// Mode A: render the `generate:` command (binding `{{ .Shell }}` /
 /// `{{ .Binary }}` / `{{ .ArtifactPath }}`), run it once via `sh -c`, and
 /// capture stdout into `staging/<file_name>`.
-#[allow(clippy::too_many_arguments)]
 fn run_generate(
     ctx: &mut Context,
     cmd_tmpl: &str,
     host: &Artifact,
     bin: &str,
     shell: Option<&str>,
-    staging: &Path,
-    file_name: &str,
-    dry_run: bool,
-    log: &StageLogger,
-    kind: &str,
+    out: &GenOutput<'_>,
+    aux: &AuxInputs<'_>,
 ) -> Result<PathBuf> {
+    let GenOutput {
+        staging,
+        file_name,
+        kind,
+    } = *out;
+    let (dry_run, log) = (aux.dry_run, aux.log);
     std::fs::create_dir_all(staging)
         .with_context(|| format!("{kind}: create staging dir {}", staging.display()))?;
     let out_path = staging.join(file_name);

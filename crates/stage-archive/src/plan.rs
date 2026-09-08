@@ -160,20 +160,32 @@ pub(crate) fn seed_target_context(
     );
 }
 
+/// The inputs that are constant for one archive-stage run, resolved once in
+/// `run()` and shared by every crate's plan.
+pub(crate) struct RunInputs<'a> {
+    pub dist: &'a Path,
+    /// The run archives more than one crate, so names must carry the crate.
+    pub multi_crate: bool,
+    pub default_format: &'a str,
+    pub format_overrides: &'a [FormatOverride],
+}
+
 /// Resolve every output the stage will write for one crate.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_crate(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
-    dist: &Path,
-    multi_crate: bool,
-    global_default_format: &str,
-    global_format_overrides: &[FormatOverride],
+    run: &RunInputs<'_>,
     crate_name: &str,
     crate_dir: &Path,
     archive_cfgs: &[ArchiveConfig],
     all_binaries: &[Artifact],
 ) -> Result<CratePlan> {
+    let RunInputs {
+        dist,
+        multi_crate,
+        default_format: global_default_format,
+        format_overrides: global_format_overrides,
+    } = *run;
     let mut configs = Vec::with_capacity(archive_cfgs.len());
     for (index, archive_cfg) in archive_cfgs.iter().enumerate() {
         let archive_id = archive_cfg.id.as_deref().unwrap_or("default").to_string();

@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 
 use crate::ArchiveStage;
 use crate::archive_config::write_crate_archives;
-use crate::plan::plan_crate;
+use crate::plan::{RunInputs, plan_crate};
 use crate::run_helpers::{clear_archive_template_vars, validate_archive_configs};
 
 /// Artifact kinds eligible for archiving — bound to the shared selection
@@ -39,6 +39,12 @@ impl Stage for ArchiveStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let multi_crate = work.len() > 1;
+        let run_inputs = RunInputs {
+            dist: &dist,
+            multi_crate,
+            default_format: &global_default_format,
+            format_overrides: &global_format_overrides,
+        };
 
         // Run-scoped, spanning every crate: two `archives:` entries — of one
         // crate or of two — that render one filename are a name-template
@@ -81,10 +87,7 @@ impl Stage for ArchiveStage {
                 plans.push(plan_crate(
                     ctx,
                     &log,
-                    &dist,
-                    multi_crate,
-                    &global_default_format,
-                    &global_format_overrides,
+                    &run_inputs,
                     crate_name,
                     crate_dir,
                     archive_cfgs,

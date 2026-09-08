@@ -64,12 +64,14 @@ pub(crate) fn write_crate_archives(
                     ctx,
                     archive_cfg.completions.as_ref(),
                     archive_cfg.manpages.as_ref(),
-                    crate_name,
-                    crate_dir,
-                    host_binary,
                     dist,
-                    dry_run,
-                    log,
+                    &crate::completions_gen::AuxInputs {
+                        crate_name,
+                        crate_dir,
+                        host_binary,
+                        dry_run,
+                        log,
+                    },
                 )?
             } else {
                 Vec::new()
@@ -504,9 +506,11 @@ pub(crate) fn write_crate_archives(
                     format,
                     archive_stem,
                     archive_id,
-                    is_meta,
-                    strip_bin_dir,
-                    wrap_dir,
+                    ArchiveLayout {
+                        is_meta,
+                        strip_bin_dir,
+                        wrap_dir,
+                    },
                     &selected_bins,
                     &archive_extra_files,
                 );
@@ -567,21 +571,33 @@ pub(crate) fn write_crate_archives(
     Ok(())
 }
 
+/// How one archive lays its payload out: whether the entry is a meta archive,
+/// whether the binaries' directories are stripped, and the directory the
+/// contents are wrapped in.
+#[derive(Clone, Copy)]
+struct ArchiveLayout<'a> {
+    is_meta: bool,
+    strip_bin_dir: bool,
+    wrap_dir: Option<&'a str>,
+}
+
 /// The metadata every artifact of one (target, format) carries: the format,
 /// name and id, the layout flags, the sorted binary names, the bundled
 /// non-binary paths, and the values publishers consume from the source
 /// binaries (`replaces`, `ndynlink`, `amd64_variant`).
-#[allow(clippy::too_many_arguments)]
 fn archive_metadata(
     format: &str,
     archive_stem: &str,
     archive_id: &str,
-    is_meta: bool,
-    strip_bin_dir: bool,
-    wrap_dir: Option<&str>,
+    layout: ArchiveLayout<'_>,
     selected_bins: &[&Artifact],
     archive_extra_files: &[String],
 ) -> HashMap<String, String> {
+    let ArchiveLayout {
+        is_meta,
+        strip_bin_dir,
+        wrap_dir,
+    } = layout;
     let mut metadata = HashMap::from([
         ("format".to_string(), format.to_string()),
         ("name".to_string(), archive_stem.to_string()),
