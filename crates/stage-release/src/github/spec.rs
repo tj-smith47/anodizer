@@ -257,6 +257,17 @@ impl NightlyRetentionFamily<'_> {
             .collect()
     }
 
+    /// The sibling prefixes [`Self::contains`] takes tags away from this
+    /// family — the matcher's own list, so the scope line cannot describe a
+    /// narrowing the sweep does not apply.
+    pub(crate) fn excluded_prefixes(&self) -> Vec<String> {
+        anodizer_core::git::excluded_sibling_prefixes(
+            self.tag_template,
+            self.monorepo_prefix,
+            self.sibling_templates,
+        )
+    }
+
     /// The family as a diagnostic, for the sweep's verbose line.
     ///
     /// Names the excluded siblings (`v* minus operator-v*, csi-v*`) because
@@ -269,29 +280,12 @@ impl NightlyRetentionFamily<'_> {
         else {
             return "(unscoped)".to_string();
         };
-        let own_prefix =
-            anodizer_core::git::tag_family_prefix(self.tag_template, self.monorepo_prefix)
-                .unwrap_or_default();
-        let mut excluded: Vec<String> = Vec::new();
-        for sib in self.sibling_templates {
-            let Some(prefix) = anodizer_core::git::tag_family_prefix(sib, self.monorepo_prefix)
-            else {
-                continue;
-            };
-            if prefix.len() <= own_prefix.len() {
-                continue;
-            }
-            let Some(glob) = anodizer_core::git::tag_family_glob(sib, self.monorepo_prefix) else {
-                continue;
-            };
-            if !excluded.contains(&glob) {
-                excluded.push(glob);
-            }
-        }
+        let excluded = self.excluded_prefixes();
         if excluded.is_empty() {
             own
         } else {
-            format!("{own} minus {}", excluded.join(", "))
+            let globs: Vec<String> = excluded.iter().map(|p| format!("{p}*")).collect();
+            format!("{own} minus {}", globs.join(", "))
         }
     }
 }
@@ -1137,5 +1131,44 @@ mod spec_struct_surface_tests {
             multitrack: true,
         };
         assert_eq!(family.describe(), "operator-v*");
+    }
+
+    /// The scope line is only trustworthy if it lists the SAME narrowing the
+    /// matcher applies; two copies of the rule would drift.
+    #[test]
+    fn describe_lists_exactly_the_prefixes_the_matcher_excludes() {
+        let siblings = vec![
+            "operator-v{{ Version }}".to_string(),
+            "csi-v{{ Version }}".to_string(),
+            "v{{ Version }}".to_string(),
+        ];
+        let family = NightlyRetentionFamily {
+            tag: "v0.5.2-new-nightly",
+            tag_template: "v{{ Version }}",
+            sibling_templates: &siblings,
+            monorepo_prefix: None,
+            multitrack: true,
+        };
+        let printed = family
+            .describe()
+            .strip_prefix("v* minus ")
+            .expect("the scope line names its exclusions")
+            .split(", ")
+            .map(|g| g.trim_end_matches('*').to_string())
+            .collect::<Vec<_>>();
+        let matcher_excludes = anodizer_core::git::excluded_sibling_prefixes(
+            family.tag_template,
+            family.monorepo_prefix,
+            family.sibling_templates,
+        );
+        assert_eq!(printed, matcher_excludes);
+        // And the list is the one membership acts on: each excluded prefix
+        // names a tag this family must NOT claim.
+        for prefix in matcher_excludes {
+            assert!(
+                !family.contains(&format!("{prefix}1.0.0-nightly")),
+                "the matcher must exclude {prefix}"
+            );
+        }
     }
 }

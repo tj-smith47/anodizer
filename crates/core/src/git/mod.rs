@@ -75,8 +75,8 @@ pub use status::{
 };
 pub use tags::{
     AtomicPushSpec, TagPosition, create_and_push_tag, create_and_push_tag_in,
-    create_tag_local_only, delete_local_tag_in, delete_remote_tag_in, extract_tag_prefix,
-    filter_ignored_tags, find_latest_tag_matching, find_latest_tag_matching_in,
+    create_tag_local_only, delete_local_tag_in, delete_remote_tag_in, excluded_sibling_prefixes,
+    extract_tag_prefix, filter_ignored_tags, find_latest_tag_matching, find_latest_tag_matching_in,
     find_latest_tag_matching_with_prefix, find_latest_tag_matching_with_prefix_in,
     find_previous_tag, find_previous_tag_in, find_previous_tag_in_family,
     find_previous_tag_in_family_in, find_previous_tag_with_prefix,

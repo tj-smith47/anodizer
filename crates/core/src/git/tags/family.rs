@@ -320,11 +320,45 @@ pub fn tag_in_family_excluding_siblings(
     if !tag_in_family(tag, tag_template, monorepo_prefix) {
         return false;
     }
+    !excluded_sibling_prefixes(tag_template, monorepo_prefix, sibling_templates)
+        .iter()
+        .any(|p| tag.starts_with(p))
+}
+
+/// The sibling family prefixes that [`tag_in_family_excluding_siblings`] takes
+/// tags away from this family — every configured family strictly narrower than
+/// this one, in `sibling_templates` order, deduplicated.
+///
+/// The rule and its wording have to agree: a diagnostic that lists a different
+/// set from the one membership applies is worse than no diagnostic, so the
+/// scope line the nightly retention sweep prints formats THIS list rather than
+/// re-deriving it.
+///
+/// # Examples
+/// ```
+/// # use anodizer_core::git::excluded_sibling_prefixes;
+/// let siblings = vec!["operator-v{{ Version }}".to_string(), "v{{ Version }}".to_string()];
+/// assert_eq!(
+///     excluded_sibling_prefixes("v{{ Version }}", None, &siblings),
+///     vec!["operator-v".to_string()]
+/// );
+/// ```
+pub fn excluded_sibling_prefixes(
+    tag_template: &str,
+    monorepo_prefix: Option<&str>,
+    sibling_templates: &[String],
+) -> Vec<String> {
     let own = tag_family_prefix(tag_template, monorepo_prefix).unwrap_or_default();
-    !sibling_templates.iter().any(|sib| {
-        tag_family_prefix(sib, monorepo_prefix)
-            .is_some_and(|p| p.len() > own.len() && tag.starts_with(&p))
-    })
+    let mut out: Vec<String> = Vec::new();
+    for sib in sibling_templates {
+        let Some(prefix) = tag_family_prefix(sib, monorepo_prefix) else {
+            continue;
+        };
+        if prefix.len() > own.len() && !out.contains(&prefix) {
+            out.push(prefix);
+        }
+    }
+    out
 }
 
 /// Resolve the family a crate's `tag_template` mints, COMPOSED with the
