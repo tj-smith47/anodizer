@@ -67,7 +67,7 @@ pub fn resolve_release_tag(
         (declared, "the declared current tag")
     } else {
         let source = if release_tag_override.is_some() {
-            "release.tag"
+            "the release.tag override"
         } else {
             "tag_template"
         };
@@ -111,6 +111,11 @@ fn declared_tag(ctx: &Context) -> Option<String> {
 /// The tag TEMPLATE a crate's release is minted from: an explicit
 /// `release.tag` override, else the crate's own tag family.
 ///
+/// An override that is present but empty is returned as-is: `release.tag: ""`
+/// is a config bug, and every consumer of this template fails loudly on an
+/// empty tag. Falling back to the crate's family instead would paper over it
+/// and ship a release under a tag the operator did not ask for.
+///
 /// This is the version-PARAMETERISED half of [`resolve_release_tag`], for the
 /// surfaces that emit a template rather than a tag — the `curl | sh` installer
 /// and cargo-binstall's `pkg_url` both resolve a version at install time and
@@ -119,7 +124,6 @@ fn declared_tag(ctx: &Context) -> Option<String> {
 /// release is, which is never the rolling tag a nightly run mints.
 pub fn release_tag_template(crate_cfg: &CrateConfig, release_tag_override: Option<&str>) -> String {
     release_tag_override
-        .filter(|t| !t.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| crate_cfg.tag_family_template())
 }

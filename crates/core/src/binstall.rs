@@ -479,6 +479,12 @@ fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> 
     restore_version(ctx, prior);
     let rendered = rendered
         .with_context(|| format!("failed to render binstall tag template: {tag_template}"))?;
+    if rendered.trim().is_empty() {
+        anyhow::bail!(
+            "binstall: the release tag template for crate '{}' rendered to an empty              tag, so the generated `pkg_url` would omit the release entirely and 404              for every user. Set a non-empty `release.tag` or crate `tag_template`.",
+            crate_cfg.name
+        );
+    }
     Ok(rendered.replace(VERSION_SENTINEL, "{ version }"))
 }
 
@@ -1726,5 +1732,30 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
             "cascade-only keys must be removed after derivation"
         );
         assert_eq!(ctx.template_vars().all_env().len(), before_keys);
+    }
+
+    /// An empty `release.tag` renders to an empty tag, and a `pkg_url` missing
+    /// its release segment 404s for every cargo-binstall user. Bail loudly at
+    /// generation time rather than shipping a metadata block that cannot work.
+    #[test]
+    fn an_empty_release_tag_bails_instead_of_emitting_a_tagless_pkg_url() {
+        let mut ctx = make_ctx();
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            release: Some(ReleaseConfig {
+                tag: Some(String::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = render_tag_with_version_token(&crate_cfg, &mut ctx)
+            .expect_err("an empty release tag template must bail")
+            .to_string();
+        assert!(err.contains("myapp"), "error must name the crate: {err}");
+        assert!(
+            err.contains("pkg_url"),
+            "error must name the surface: {err}"
+        );
     }
 }
