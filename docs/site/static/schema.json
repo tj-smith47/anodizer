@@ -11311,6 +11311,14 @@
             }
           ]
         },
+        "skip_if_no_changes": {
+          "description": "Skip the nightly release when the run's changelog resolved to ZERO notable entries. Default: `false` — a nightly always cuts, even at a commit that already shipped as a stable release.\n\n`true` makes a nightly a no-op on a quiet day: it skips exactly what `publish_release: false` skips (the release publish; every other configured stage still runs) and exits 0. In a per-crate workspace the decision is made per crate, against that crate's own range.\n\nThe signal is the changelog stage's own entry count, so `changelog.filters` / `paths` / `groups` decide what counts as notable. A run with `--skip=changelog` has no signal and never skips.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "tag_name": {
           "description": "Tag name used for the nightly release. Default: `\"nightly\"`. Templates allowed.",
           "default": null,

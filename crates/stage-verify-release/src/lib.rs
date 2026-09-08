@@ -229,18 +229,7 @@ impl Stage for VerifyReleaseStage {
 
         let log = ctx.logger(STAGE_NAME);
 
-        // Every crate that produced a release. In single-crate mode this is
-        // one crate; in workspace modes it is all published crates — the gate
-        // verifies each crate's produced artifacts / debs without siloing.
-        let selected = ctx.options.selected_crates.clone();
-        let crates: Vec<CrateConfig> = ctx
-            .config
-            .crate_universe()
-            .into_iter()
-            .filter(|c| c.release.is_some())
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .cloned()
-            .collect();
+        let crates = crates_to_verify(ctx);
 
         if crates.is_empty() {
             // Landing checks are report-driven (a crate can publish to cargo
@@ -678,6 +667,26 @@ fn surface_dependent_asset_names(
 
 mod deb;
 mod rpm;
+
+/// Every crate whose release this gate must verify: one in single-crate
+/// mode, each published crate in workspace modes — the gate verifies each
+/// crate's produced artifacts / debs without siloing.
+///
+/// A crate the release stage deliberately did not publish
+/// (`release.skip`, `nightly.publish_release: false`,
+/// `nightly.skip_if_no_changes`) has no release to verify; probing for one
+/// turns an intentional skip into a 404 failure.
+fn crates_to_verify(ctx: &Context) -> Vec<CrateConfig> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| c.release.is_some())
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| !ctx.stage_outputs.release_skipped_crates.contains(&c.name))
+        .cloned()
+        .collect()
+}
 
 #[cfg(test)]
 mod tests;

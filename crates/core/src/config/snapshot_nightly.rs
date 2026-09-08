@@ -46,6 +46,19 @@ pub struct NightlyConfig {
     /// Whether to publish a GitHub Release at all. Default: `true`.
     /// Set `false` for nightly-only docker pushes / blob uploads.
     pub publish_release: Option<bool>,
+    /// Skip the nightly release when the run's changelog resolved to ZERO
+    /// notable entries. Default: `false` — a nightly always cuts, even at a
+    /// commit that already shipped as a stable release.
+    ///
+    /// `true` makes a nightly a no-op on a quiet day: it skips exactly what
+    /// `publish_release: false` skips (the release publish; every other
+    /// configured stage still runs) and exits 0. In a per-crate workspace the
+    /// decision is made per crate, against that crate's own range.
+    ///
+    /// The signal is the changelog stage's own entry count, so
+    /// `changelog.filters` / `paths` / `groups` decide what counts as
+    /// notable. A run with `--skip=changelog` has no signal and never skips.
+    pub skip_if_no_changes: Option<bool>,
     /// Publish the nightly release to a DIFFERENT repository than the source
     /// repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default
     /// (`None`) publishes to the configured `release.github` repo, unchanged.

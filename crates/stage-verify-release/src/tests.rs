@@ -4223,3 +4223,36 @@ mod signature_crypto_verification {
         );
     }
 }
+
+/// A nightly that skipped a crate's release (`nightly.skip_if_no_changes`,
+/// `nightly.publish_release: false`, `release.skip`) leaves nothing to
+/// verify for that crate; without the exclusion the gate probes for a
+/// release that was never created and 404s the run it just decided to skip.
+#[test]
+fn crates_to_verify_excludes_crates_the_release_stage_skipped() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![
+            published_crate("app", None),
+            published_crate("operator", None),
+        ])
+        .build();
+    ctx.stage_outputs.release_skipped_crates = vec!["operator".to_string()];
+    let names: Vec<String> = crates_to_verify(&ctx).into_iter().map(|c| c.name).collect();
+    assert_eq!(names, vec!["app".to_string()]);
+}
+
+/// The exclusion is additive to the existing filters, not a replacement:
+/// with nothing skipped every crate carrying a release block is verified.
+#[test]
+fn crates_to_verify_keeps_every_published_crate_when_nothing_was_skipped() {
+    let ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![
+            published_crate("app", None),
+            published_crate("operator", None),
+        ])
+        .build();
+    let names: Vec<String> = crates_to_verify(&ctx).into_iter().map(|c| c.name).collect();
+    assert_eq!(names, vec!["app".to_string(), "operator".to_string()]);
+}

@@ -87,6 +87,17 @@ impl Stage for super::ReleaseStage {
                 continue;
             };
             if should_skip_release(ctx, release_cfg, &crate_cfg.name, &log)? {
+                // No release exists for this crate; record it so the
+                // verify-release gate does not hunt for its assets.
+                if !ctx
+                    .stage_outputs
+                    .release_skipped_crates
+                    .contains(&crate_cfg.name)
+                {
+                    ctx.stage_outputs
+                        .release_skipped_crates
+                        .push(crate_cfg.name.clone());
+                }
                 continue;
             }
             validate_release_flags(release_cfg, &crate_cfg.name)?;
@@ -138,7 +149,38 @@ fn should_skip_release(
         ));
         return Ok(true);
     }
+    if ctx.is_nightly()
+        && ctx
+            .config
+            .nightly
+            .as_ref()
+            .and_then(|n| n.skip_if_no_changes)
+            == Some(true)
+        && let Some(range) = nightly_changelog_range(ctx, crate_name)
+        && range.notable_entries == 0
+    {
+        log.status(&format!(
+            "skipping nightly release for crate '{}': no notable changes since {}",
+            crate_name,
+            range.previous_tag.as_deref().unwrap_or("the first commit")
+        ));
+        return Ok(true);
+    }
     Ok(false)
+}
+
+/// The changelog range this crate's nightly release would describe: the
+/// single-track aggregate when the changelog stage produced one, else the
+/// crate's own slice. `None` when the changelog stage did not run — an
+/// absent signal is never a reason to skip.
+fn nightly_changelog_range<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+) -> Option<&'a anodizer_core::context::ChangelogRangeSummary> {
+    ctx.stage_outputs
+        .release_body_range
+        .as_ref()
+        .or_else(|| ctx.stage_outputs.changelog_ranges.get(crate_name))
 }
 
 /// Execute the full release pipeline for a single crate: resolve tag, build
@@ -1261,5 +1303,145 @@ mod tests {
             ..Default::default()
         });
         validate_nightly_config(&ctx, &quiet_log());
+    }
+
+    // ---- nightly.skip_if_no_changes ------------------------------------
+
+    fn skip_if_no_changes_ctx() -> anodizer_core::context::Context {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            skip_if_no_changes: Some(true),
+            ..Default::default()
+        });
+        ctx
+    }
+
+    fn range(notable: usize, prev: Option<&str>) -> anodizer_core::context::ChangelogRangeSummary {
+        anodizer_core::context::ChangelogRangeSummary {
+            notable_entries: notable,
+            previous_tag: prev.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn skip_if_no_changes_skips_an_empty_aggregate_range() {
+        let mut ctx = skip_if_no_changes_ctx();
+        ctx.stage_outputs.release_body_range = Some(range(0, Some("v0.9.0")));
+        assert!(
+            should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("should_skip_release returns Ok"),
+            "an empty single-track range must skip the nightly release"
+        );
+    }
+
+    #[test]
+    fn skip_if_no_changes_cuts_when_the_range_has_entries() {
+        let mut ctx = skip_if_no_changes_ctx();
+        ctx.stage_outputs.release_body_range = Some(range(3, Some("v0.9.0")));
+        assert!(
+            !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("should_skip_release returns Ok"),
+            "a range with notable entries must still cut a nightly"
+        );
+    }
+
+    /// Per-crate workspace: each track answers from its OWN slice, so one
+    /// quiet crate does not silence a busy sibling.
+    #[test]
+    fn skip_if_no_changes_is_decided_per_crate_in_a_per_crate_workspace() {
+        let mut ctx = skip_if_no_changes_ctx();
+        ctx.stage_outputs
+            .changelog_ranges
+            .insert("quiet".to_string(), range(0, Some("quiet-v1.0.0")));
+        ctx.stage_outputs
+            .changelog_ranges
+            .insert("busy".to_string(), range(2, Some("busy-v1.0.0")));
+        let cfg = ReleaseConfig::default();
+        assert!(
+            should_skip_release(&ctx, &cfg, "quiet", &quiet_log()).expect("ok"),
+            "the crate with an empty range skips"
+        );
+        assert!(
+            !should_skip_release(&ctx, &cfg, "busy", &quiet_log()).expect("ok"),
+            "its sibling with entries still cuts"
+        );
+    }
+
+    /// The default is OFF: an empty range with the knob unset still cuts,
+    /// which is the pre-existing rolling-nightly behaviour.
+    #[test]
+    fn skip_if_no_changes_defaults_to_cutting_an_empty_range() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig::default());
+        ctx.stage_outputs.release_body_range = Some(range(0, Some("v0.9.0")));
+        assert!(
+            !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("ok"),
+            "skip_if_no_changes must be opt-in"
+        );
+    }
+
+    /// An absent changelog signal (the stage was skipped) is never a reason
+    /// to skip — the run has no evidence either way.
+    #[test]
+    fn skip_if_no_changes_cuts_when_the_changelog_stage_did_not_run() {
+        let ctx = skip_if_no_changes_ctx();
+        assert!(
+            !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("ok"),
+            "no recorded range must not be read as an empty range"
+        );
+    }
+
+    /// The knob is nightly-only; a stable release with an empty range still
+    /// publishes (the tag was cut deliberately).
+    #[test]
+    fn skip_if_no_changes_ignored_on_a_stable_run() {
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        ctx.config.nightly = Some(NightlyConfig {
+            skip_if_no_changes: Some(true),
+            ..Default::default()
+        });
+        ctx.stage_outputs.release_body_range = Some(range(0, Some("v0.9.0")));
+        assert!(
+            !should_skip_release(&ctx, &ReleaseConfig::default(), "demo", &quiet_log())
+                .expect("ok"),
+            "skip_if_no_changes must not reach a stable run"
+        );
+    }
+
+    /// Every skip reason must reach `verify-release`, or the gate goes
+    /// looking for a release that was never created and 404s.
+    #[test]
+    fn a_skipped_crate_is_recorded_for_the_verify_gate() {
+        use anodizer_core::stage::Stage;
+
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![anodizer_core::config::CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            }])
+            .build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            skip_if_no_changes: Some(true),
+            ..Default::default()
+        });
+        ctx.stage_outputs.release_body_range = Some(range(0, None));
+        crate::ReleaseStage.run(&mut ctx).expect("stage run ok");
+        assert_eq!(
+            ctx.stage_outputs.release_skipped_crates,
+            vec!["demo".to_string()],
+        );
+        assert!(
+            ctx.stage_outputs.release_stage_ran,
+            "the stage must mark itself run so the publisher does not repeat it"
+        );
     }
 }

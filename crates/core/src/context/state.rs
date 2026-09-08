@@ -1,5 +1,20 @@
 use super::*;
 
+/// What the changelog stage resolved for one release range.
+///
+/// Recorded per crate (and once for a single-track workspace's aggregate)
+/// so a later stage can ask "did this range produce anything?" without
+/// re-deriving the walk or pattern-matching the rendered markdown.
+#[derive(Debug, Clone, Default)]
+pub struct ChangelogRangeSummary {
+    /// Entries left after grouping and filtering — the same count the
+    /// changelog stage's own empty-changelog warning gates on. Zero means the
+    /// release body carries no notes.
+    pub notable_entries: usize,
+    /// The tag the range started at, when one was resolved.
+    pub previous_tag: Option<String>,
+}
+
 /// Stage→stage handoff state produced by stages and consumed by later
 /// stages (as opposed to `config` / `options` which are pipeline inputs,
 /// or `artifacts` which has its own registry). The changelog stage
@@ -43,6 +58,20 @@ pub struct StageOutputs {
     /// stably). Empty when polling was disabled or no eligible
     /// publishers ran.
     pub post_publish_results: Vec<serde_json::Value>,
+    /// Per-crate release-range summary, keyed by crate name. Written by the
+    /// changelog stage; `nightly.skip_if_no_changes` reads it. A crate absent
+    /// from the map had no changelog rendered (the stage was skipped), which
+    /// is NOT the same as a range that produced nothing.
+    pub changelog_ranges: HashMap<String, ChangelogRangeSummary>,
+    /// The aggregate range summary that accompanies
+    /// [`Self::release_body_changelog`] — set for a single-track workspace,
+    /// `None` for a per-crate one, on exactly the same condition.
+    pub release_body_range: Option<ChangelogRangeSummary>,
+    /// Crates whose release the release stage deliberately did not publish
+    /// (`release.skip`, `nightly.publish_release: false`,
+    /// `nightly.skip_if_no_changes`). No release exists for them, so the
+    /// verify-release gate must not go looking for one.
+    pub release_skipped_crates: Vec<String>,
     /// Set by the release stage once its per-crate loop has run. The
     /// `github-release` publisher delegates to that same stage, so without
     /// this marker a pipeline that runs both creates every release — and

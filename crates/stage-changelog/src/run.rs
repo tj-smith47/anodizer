@@ -184,6 +184,12 @@ impl Stage for super::ChangelogStage {
         // the `release:` block. Per-crate mode leaves this `None`.
         if aggregate_mode {
             ctx.stage_outputs.release_body_changelog = Some(combined_markdown.clone());
+            // The aggregate render set is one path-cleared entry, so its
+            // summary IS the release body's range.
+            ctx.stage_outputs.release_body_range = crates
+                .first()
+                .and_then(|c| ctx.stage_outputs.changelog_ranges.get(&c.name))
+                .cloned();
         }
 
         let final_markdown = wrap_with_header_footer(

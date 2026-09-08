@@ -221,7 +221,16 @@ pub(crate) fn render_crate_changelog(
     // WHY (the range had commits, but `changelog.filters`/`paths`/`groups`
     // dropped every one) so the operator can loosen the config or confirm a
     // genuinely change-free release, instead of discovering a blank release.
-    if crate::render::group_tree_commit_count(&grouped) == 0 {
+    let notable_entries = crate::render::group_tree_commit_count(&grouped);
+    ctx.stage_outputs.changelog_ranges.insert(
+        crate_name.clone(),
+        anodizer_core::context::ChangelogRangeSummary {
+            notable_entries,
+            previous_tag: prev_tag.clone(),
+        },
+    );
+
+    if notable_entries == 0 {
         log.warn(&format!(
             "changelog for '{crate_name}' is EMPTY: {} in {}. The release body \
              will carry no notes — check that the range bounds are the ones you \
