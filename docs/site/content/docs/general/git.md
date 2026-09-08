@@ -7,6 +7,22 @@ template = "docs.html"
 
 Anodizer detects the current version from git tags. The `git` section lets you control how tags are sorted and which tags are considered.
 
+## Git version floor
+
+Anodizer shells out to the `git` on `PATH` and needs **git 2.13 or newer**.
+The floor comes from previous-tag discovery: when a crate's tag family has a
+nested sibling track (a bare `v*` family next to a `vault-v*` one), the
+search runs `git describe --match '<family>*' --exclude '<sibling>*'`, and
+`--exclude` first shipped in git 2.13. Anodizer does not probe the version
+at startup, so on an older git the floor surfaces as a failed `git describe`
+(`error: unknown option 'exclude'`) the first time a multi-track repo
+searches for a previous tag.
+
+```console
+$ git --version
+git version 2.43.0
+```
+
 ## Minimal config
 
 ```yaml

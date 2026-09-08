@@ -17,6 +17,7 @@ the config signal:
 |-------|---------------|--------------|-----------------|
 | **Single** | one crate, or no config | one `v*` tag | one flat section |
 | **Lockstep** | `[workspace.package].version` in root `Cargo.toml` | one shared `v*` tag | one flat section |
+| **Lockstep, `crates:` with no `tag_template`** | `[workspace.package].version` plus a `crates:` list whose members omit `tag_template` | one shared `v*` tag — the family is [derived](#crate-level-defaults) from the lockstep signal, so `anodizer tag` cuts `v1.2.3`, not one `<name>-v1.2.3` per crate | one flat section |
 | **Flat-aggregate** | flat `crates:` list, every `tag_template` resolves to the **same** prefix, per-crate `[package].version` | one shared `v*` tag | one flat section |
 | **Multi-track** | flat `crates:` list (or `workspaces:`) with **distinct** tag prefixes (`core-v`, `cli-v`) | per-crate tags | `### <crate>` subsection per track |
 
@@ -30,55 +31,100 @@ for the changelog side, including the flat-aggregate
 ## Crate-level defaults
 
 `CrateConfig.tag_template` is optional. Anodizer resolves each crate's
-effective tag template with this precedence:
+effective tag family — the template `anodizer tag` mints under and every
+other command (`release`, `bump`, `changelog`, `docker promote`,
+`tag rollback`, `resolve-tag`) scans under — with this precedence, first
+rung that applies wins:
 
 ```
-crate's own tag_template  →  defaults.crates.tag_template  →  built-in "v{{ Version }}"
+1. crate's own tag_template
+2. defaults.crates.tag_template
+3. derived from tag.tag_prefix            →  "<tag_prefix>{{ Version }}"
+4. derived from a Cargo lockstep workspace →  "v{{ Version }}"
+5. built-in fallback                       →  "<name>-v{{ Version }}"
 ```
 
-For a workspace where every crate uses the same tag template, set it once
-under `defaults.crates:` instead of repeating it on every entry:
+Rung 1 — the crate says so:
 
 ```yaml
-# Before — 32 crates, the same line repeated 32 times
 crates:
-  - { name: core, path: crates/core, tag_template: "v{{ Version }}" }
-  - { name: cli, path: crates/cli, tag_template: "v{{ Version }}" }
-  - { name: macros, path: crates/macros, tag_template: "v{{ Version }}" }
-  # ... 29 more, each restating the identical tag_template
+  - { name: core, path: crates/core, tag_template: "core-v{{ Version }}" }   # → core-v1.2.3
 ```
 
+Rung 2 — one default for the whole list:
+
 ```yaml
-# After — one default, 32 crates just name + path
 defaults:
   crates:
     tag_template: "v{{ Version }}"
 
 crates:
-  - { name: core, path: crates/core }
-  - { name: cli, path: crates/cli }
-  - { name: macros, path: crates/macros }
-  # ... 29 more
+  - { name: core, path: crates/core }   # → v1.2.3
+  - { name: cli, path: crates/cli }     # → v1.2.3
 ```
 
-A crate's own `tag_template` always wins when set — `defaults.crates.tag_template`
-only fills the gap for crates that omit it.
+Rung 3 — a repo-level `tag.tag_prefix` names the family every crate that
+omits `tag_template` releases under:
+
+```yaml
+tag:
+  tag_prefix: "rel-"
+
+crates:
+  - { name: core, path: crates/core }   # → rel-1.2.3
+  - { name: cli, path: crates/cli }     # → rel-1.2.3
+```
+
+Rung 4 — a Cargo lockstep workspace (root `Cargo.toml` declares
+`[workspace.package].version`) releases under one `v*` tag, so its crates
+need no template at all:
+
+```toml
+# Cargo.toml
+[workspace.package]
+version = "1.2.3"
+```
+
+```yaml
+crates:
+  - { name: core, path: crates/core }   # → v1.2.3
+  - { name: cli, path: crates/cli }     # → v1.2.3
+```
+
+Rung 5 — nothing above applies (independent `[package].version`s, no
+`tag.tag_prefix`): each crate is its own track under `<name>-v`:
+
+```yaml
+crates:
+  - { name: core, path: crates/core }   # → core-v1.2.3
+  - { name: cli, path: crates/cli }     # → cli-v0.4.0
+```
+
+Rungs 3 and 4 never fire for a config with a `workspaces:` list — that block
+declares several release tracks, and each track's crates fall through to
+their own `tag_template` or the `<name>-v` convention. Under `-v`,
+`anodizer` prints `derived tag family '<template>' for crates omitting
+tag_template` whenever rung 3 or 4 filled a crate.
+
+A crate's own `tag_template` always wins when set — the lower rungs only
+fill the gap for crates that omit it.
 
 **Correctness note — this touches repo-shape detection.** Shape detection
-(the table above) reads each crate's raw `tag_template` field to group crates
-by extracted tag prefix — the [Flat-aggregate](#workspace-shapes) shape
-requires the *whole* `crates:` list to share one explicit prefix. If you
-delete a workspace's repeated `tag_template: "v{{ Version }}"` lines
-**without** adding `defaults.crates.tag_template: "v{{ Version }}"`, every
-crate's raw field goes from an identical explicit string to `None` — shape
-detection then sees no extractable shared prefix and falls back to
-`PerCrate` (independent singleton tracks) instead of `Flat-aggregate` (one
-shared tag). The built-in `"v{{ Version }}"` fallback only applies when
-*reading* a crate's tag template for tagging/dispatch, not when *grouping*
-crates for shape detection — so a genuine flat-aggregate/lockstep-style
-workspace whose crates omit `tag_template` still needs
-`defaults.crates.tag_template` set explicitly for shape detection to keep
-seeing them as one group.
+(the table above) groups crates by the tag prefix their `tag_template`
+resolves to — the [Flat-aggregate](#workspace-shapes) shape requires the
+*whole* `crates:` list to share one prefix. Because rungs 3 and 4 fill the
+field at config load, deleting a workspace's repeated
+`tag_template: "v{{ Version }}"` lines is safe for a **lockstep** workspace
+or one with an explicit `tag.tag_prefix`: the derived value keeps shape
+detection seeing one group, and `anodizer tag` keeps cutting one shared tag.
+The note applies only to a workspace with **independent** `[package].version`s
+and **no** `tag.tag_prefix`: there every crate falls to rung 5, its own
+`<name>-v` track, and shape detection sees independent singleton tracks
+instead of one shared tag. To release such a workspace under one tag,
+set `defaults.crates.tag_template` (rung 2) or `tag.tag_prefix` (rung 3) — and
+bring the members' `[package].version`s into agreement, which the
+[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)
+enforces.
 
 `defaults.crates:` (and this precedence) only applies when the top-level
 `crates:` list is non-empty — a single-crate config with no `crates:` block

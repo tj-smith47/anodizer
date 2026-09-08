@@ -4761,7 +4761,7 @@
           }
         },
         "tag_template": {
-          "description": "Git tag template used to tag and identify releases (supports templates). Overrides `defaults.crates.tag_template`. When both are unset the crate's tag family is the `<name>-v{{ Version }}` convention — read it through `tag_family_template()` rather than touching this field directly.",
+          "description": "Git tag template used to tag and identify releases (supports templates). The first rung that applies wins:\n\n1. this field, when set; 2. `defaults.crates.tag_template`; 3. `<tag.tag_prefix>{{ Version }}` when the repo sets `tag.tag_prefix`; 4. `v{{ Version }}` when the root `Cargo.toml` declares `[workspace.package].version` (a lockstep workspace); 5. the `<name>-v{{ Version }}` convention.\n\nRungs 3 and 4 never apply to a config with a `workspaces:` list. Rungs 2–4 are folded into this field at config load; read the resolved family through `tag_family_template()` rather than touching this field directly.",
           "default": null,
           "type": [
             "string",
@@ -15911,7 +15911,7 @@
           }
         },
         "tag_prefix": {
-          "description": "Prefix prepended to version tags (e.g., \"v\" produces \"v1.2.3\").",
+          "description": "Prefix prepended to version tags (e.g., \"v\" produces \"v1.2.3\").\n\nAlso names the tag family every crate that omits `tag_template` releases under: a crate with no template of its own and no `defaults.crates.tag_template` derives `<tag_prefix>{{ Version }}` at config load, so `tag`, `release`, `bump` and `changelog` all agree on the same tag.\n\n```yaml\ntag:\n  tag_prefix: \"rel-\"\ncrates:\n  - { name: core, path: crates/core }   # tag family rel-{{ Version }}\n  - { name: cli, path: crates/cli }     # tag family rel-{{ Version }}\n```",
           "default": null,
           "type": [
             "string",

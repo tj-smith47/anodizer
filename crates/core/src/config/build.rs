@@ -133,10 +133,19 @@ pub struct CrateConfig {
     /// Relative path to the crate directory from the project root.
     pub path: String,
     /// Git tag template used to tag and identify releases (supports
-    /// templates). Overrides `defaults.crates.tag_template`. When both are
-    /// unset the crate's tag family is the `<name>-v{{ Version }}`
-    /// convention — read it through `tag_family_template()` rather than
-    /// touching this field directly.
+    /// templates). The first rung that applies wins:
+    ///
+    /// 1. this field, when set;
+    /// 2. `defaults.crates.tag_template`;
+    /// 3. `<tag.tag_prefix>{{ Version }}` when the repo sets `tag.tag_prefix`;
+    /// 4. `v{{ Version }}` when the root `Cargo.toml` declares
+    ///    `[workspace.package].version` (a lockstep workspace);
+    /// 5. the `<name>-v{{ Version }}` convention.
+    ///
+    /// Rungs 3 and 4 never apply to a config with a `workspaces:` list.
+    /// Rungs 2–4 are folded into this field at config load; read the
+    /// resolved family through `tag_family_template()` rather than touching
+    /// this field directly.
     pub tag_template: Option<String>,
     /// Pinned semver version. When set, `anodizer bump --strict` refuses to
     /// edit this crate's `Cargo.toml` to anything other than this value;
@@ -293,9 +302,13 @@ impl CrateConfig {
     /// The tag template this crate mints and scans under: its own value when
     /// set, else the `<name>-v{{ Version }}` convention.
     ///
-    /// `defaults_merge::apply_to_crate` folds `defaults.crates.tag_template`
-    /// into `self.tag_template` before this is ever read, so this accessor
-    /// only needs to know about the crate-level field and the fallback.
+    /// Two folds fill `self.tag_template` at config load before this is ever
+    /// read: `defaults_merge::apply_to_crate` writes
+    /// `defaults.crates.tag_template`, then
+    /// [`Config::populate_derived_tag_templates`](crate::config::Config::populate_derived_tag_templates)
+    /// writes the repo-level family derived from `tag.tag_prefix` or a Cargo
+    /// lockstep workspace. This accessor therefore only needs to know about
+    /// the crate-level field and the fallback.
     ///
     /// The fallback is the template form of
     /// [`per_crate_tag_prefix`](crate::git::per_crate_tag_prefix)'s

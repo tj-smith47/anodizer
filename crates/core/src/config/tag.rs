@@ -30,6 +30,20 @@ pub struct TagConfig {
     /// Default false.
     pub bump_patch_for_minor_pre_major: Option<bool>,
     /// Prefix prepended to version tags (e.g., "v" produces "v1.2.3").
+    ///
+    /// Also names the tag family every crate that omits `tag_template`
+    /// releases under: a crate with no template of its own and no
+    /// `defaults.crates.tag_template` derives `<tag_prefix>{{ Version }}`
+    /// at config load, so `tag`, `release`, `bump` and `changelog` all agree
+    /// on the same tag.
+    ///
+    /// ```yaml
+    /// tag:
+    ///   tag_prefix: "rel-"
+    /// crates:
+    ///   - { name: core, path: crates/core }   # tag family rel-{{ Version }}
+    ///   - { name: cli, path: crates/cli }     # tag family rel-{{ Version }}
+    /// ```
     pub tag_prefix: Option<String>,
     /// Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]).
     pub release_branches: Option<Vec<String>>,
