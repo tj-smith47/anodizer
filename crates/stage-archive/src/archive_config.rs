@@ -22,7 +22,10 @@ use crate::file_specs::{
 };
 use crate::formats;
 use crate::run::{ARCHIVE_TEMPLATED_STAGING_DIR, resolve_host_binary};
-use crate::run_helpers::{claim_output_path, resolve_archive_mtime, write_archive_in_format};
+use crate::run_helpers::{
+    binary_var, claim_output_path, render_binary_outputs, resolve_archive_mtime,
+    write_archive_in_format,
+};
 use crate::{
     default_binary_name_template, default_name_template, default_name_template_multi_crate,
 };
@@ -449,12 +452,20 @@ pub(crate) fn archive_one_config(
                 }
             }
 
+            // A target producing nothing but `binary` outputs packs no extra
+            // file, so resolving them is wasted IO — and under `--strict` an
+            // unmatched `files:` glob would fail a release whose extras are
+            // discarded either way.
+            let binary_only_target = formats_to_produce.iter().all(|f| f == "binary");
+
             // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support.
             // When no files are configured, auto-include common files
             // (LICENSE*, README*, CHANGELOG*) default set.
             // File spec source patterns are rendered through the
             // template engine before glob expansion.
-            let extra_files: Vec<ResolvedExtraFile> = if let Some(file_specs) = &archive_cfg.files {
+            let extra_files: Vec<ResolvedExtraFile> = if binary_only_target {
+                Vec::new()
+            } else if let Some(file_specs) = &archive_cfg.files {
                 let rendered_specs: Vec<ArchiveFileSpec> = file_specs
                 .iter()
                 .map(|spec| -> Result<ArchiveFileSpec> {
@@ -626,40 +637,31 @@ pub(crate) fn archive_one_config(
                     continue;
                 }
 
+                // A meta entry carries no binaries, so `binary` has nothing to
+                // emit for it. Say so instead of completing silently with an
+                // empty dist/.
+                if format == "binary" && selected_bins.is_empty() {
+                    log.status(&format!(
+                        "skipped archive for {crate_name}/{target} — meta archive \
+                         under format: binary carries no binaries"
+                    ));
+                    continue;
+                }
+
                 // `binary` format produces ONE output per selected binary,
                 // each named by rendering the name template with THAT
                 // binary's `.Binary`; on Windows targets the executable
                 // suffix is kept. Rendered up front so the collision guard,
                 // the copy and the artifact registration agree on the paths.
-                let binary_outputs: Vec<(String, PathBuf)> = if format == "binary" {
-                    let mut outs = Vec::with_capacity(selected_bins.len());
-                    for bin in &selected_bins {
-                        if let Some(bin_name) = bin.metadata.get("binary") {
-                            ctx.template_vars_mut().set("Binary", bin_name);
-                        }
-                        let stem = ctx.render_template(binary_name_tmpl).with_context(|| {
-                            format!(
-                                "archive: render binary name template for {crate_name}/{target}"
-                            )
-                        })?;
-                        let stem = if anodizer_core::target::is_windows(target)
-                            && !stem.ends_with(".exe")
-                        {
-                            format!("{stem}.exe")
-                        } else {
-                            stem
-                        };
-                        let dest = dist.join(&stem);
-                        outs.push((stem, dest));
-                    }
-                    // Restore the group-representative `.Binary` the rest of
-                    // this iteration's templates expect.
-                    if let Some(bin_name) =
-                        selected_bins.first().and_then(|b| b.metadata.get("binary"))
-                    {
-                        ctx.template_vars_mut().set("Binary", bin_name);
-                    }
-                    outs
+                let binary_outputs: Vec<(String, PathBuf, &Artifact)> = if format == "binary" {
+                    render_binary_outputs(
+                        ctx,
+                        &selected_bins,
+                        binary_name_tmpl,
+                        dist,
+                        crate_name,
+                        target,
+                    )?
                 } else {
                     Vec::new()
                 };
@@ -667,7 +669,7 @@ pub(crate) fn archive_one_config(
                 let archive_filename = if format == "binary" {
                     binary_outputs
                         .first()
-                        .map(|(stem, _)| stem.clone())
+                        .map(|(stem, _, _)| stem.clone())
                         .unwrap_or_default()
                 } else {
                     format!("{archive_stem}.{format}")
@@ -692,11 +694,8 @@ pub(crate) fn archive_one_config(
 
                 // Fire the `before:` hook here — after `.Format` / `.Os`
                 // / `.Arch` / `.Target` are wired but before the archive
-                // is written. Skipped when format is `binary` to match
-                // ("Skipped if archive format
-                // is binary"); the user's hook expects an archive to
-                // create or post-process, and the `binary` branch
-                // creates none.
+                // is written. Skipped for binary: the hook expects an archive
+                // to post-process and this branch creates none.
                 if format != "binary"
                     && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
                 {
@@ -759,18 +758,34 @@ pub(crate) fn archive_one_config(
                 if format == "binary" {
                     // Extra files never travel with a raw binary: there is no
                     // container to put them in, and the consumer downloads one
-                    // executable.
-                    let ignored = sorted
-                        .iter()
-                        .filter(|e| !binary_paths.contains(&e.src))
-                        .count();
-                    if ignored > 0 {
-                        log.verbose(&format!(
-                            "binary format ignores {ignored} extra file(s) \
-                             for crate '{crate_name}' target '{target}'"
-                        ));
+                    // executable. On a binary-only target they were never
+                    // resolved, so report what was configured rather than a
+                    // count of entries that do not exist.
+                    if binary_only_target {
+                        let configured = archive_cfg.files.as_ref().is_some_and(|f| !f.is_empty())
+                            || archive_cfg
+                                .templated_files
+                                .as_ref()
+                                .is_some_and(|t| !t.is_empty());
+                        if configured {
+                            log.verbose(&format!(
+                                "binary format ignores the files: entries for \
+                                 crate '{crate_name}' target '{target}'"
+                            ));
+                        }
+                    } else {
+                        let ignored = sorted
+                            .iter()
+                            .filter(|e| !binary_paths.contains(&e.src))
+                            .count();
+                        if ignored > 0 {
+                            log.verbose(&format!(
+                                "binary format ignores {ignored} extra file(s) \
+                                 for crate '{crate_name}' target '{target}'"
+                            ));
+                        }
                     }
-                    for ((stem, dest), bin) in binary_outputs.iter().zip(&selected_bins) {
+                    for (stem, dest, bin) in &binary_outputs {
                         claim_output_path(
                             name_guard,
                             log,
@@ -852,15 +867,8 @@ pub(crate) fn archive_one_config(
                 // the artifact registry, which can pick up HashMap
                 // iteration order from earlier stages and surface as
                 // mid-of-file drift in `artifacts.json`.
-                let mut bin_names: Vec<String> = selected_bins
-                    .iter()
-                    .filter_map(|b| {
-                        b.metadata
-                            .get("binary")
-                            .cloned()
-                            .or_else(|| b.path.file_name().map(|n| n.to_string_lossy().to_string()))
-                    })
-                    .collect();
+                let mut bin_names: Vec<String> =
+                    selected_bins.iter().map(|b| binary_var(b)).collect();
                 bin_names.sort();
                 if !bin_names.is_empty() {
                     metadata.insert("extra_binaries".to_string(), bin_names.join(","));
@@ -931,7 +939,7 @@ pub(crate) fn archive_one_config(
                     // Archive would point downstream stages
                     // (checksum/sign/release/blob) at a file that is never
                     // created on disk.
-                    for ((stem, dest), bin) in binary_outputs.iter().zip(&selected_bins) {
+                    for (stem, dest, bin) in &binary_outputs {
                         let mut per_bin_meta = metadata.clone();
                         if let Some(bin_name) = bin.metadata.get("binary") {
                             per_bin_meta.insert("binary".to_string(), bin_name.clone());

@@ -6126,7 +6126,7 @@ mod archive_name_guard {
         let hit = lines
             .iter()
             .find(|(_, m)| {
-                m == "binary format ignores 1 extra file(s) for crate 'myapp' \
+                m == "binary format ignores the files: entries for crate 'myapp' \
                       target 'x86_64-unknown-linux-gnu'"
             })
             .unwrap_or_else(|| panic!("no ignored-extras note recorded: {lines:?}"));
@@ -6164,6 +6164,8 @@ mod archive_name_guard {
             false,
         );
         fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
         let dist = ctx.config.dist.clone();
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -6174,6 +6176,13 @@ mod archive_name_guard {
                 .is_empty()
         );
         assert!(ctx.artifacts.by_kind(ArtifactKind::Archive).is_empty());
+        let lines = cap.all_messages();
+        assert!(
+            lines.iter().any(|(l, m)| *l == LogLevel::Status
+                && m == "skipped archive for myapp/unknown — meta archive under \
+                         format: binary carries no binaries"),
+            "{lines:?}"
+        );
         let left_in_dist: Vec<String> = fs::read_dir(&dist)
             .map(|rd| {
                 rd.flatten()
@@ -6185,6 +6194,274 @@ mod archive_name_guard {
             left_in_dist.is_empty(),
             "a meta binary-format entry must leave dist/ untouched, found {left_in_dist:?}"
         );
+    }
+
+    #[test]
+    fn binary_format_mixed_with_archive_format_counts_ignored_extras() {
+        // A target producing `binary` AND a container format DOES resolve its
+        // extras (the container packs them), so the binary output reports how
+        // many it dropped rather than naming the config key.
+        let tmp = TempDir::new().unwrap();
+        let mut c = cfg("default", None, &["binary", "tar.gz"]);
+        c.files = Some(vec![anodizer_core::config::ArchiveFileSpec::Glob(
+            tmp.path()
+                .join("root")
+                .join("LICENSE")
+                .to_string_lossy()
+                .to_string(),
+        )]);
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &[c],
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            true,
+        );
+        fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let lines = cap.all_messages();
+        assert!(
+            lines.iter().any(|(l, m)| *l == LogLevel::Verbose
+                && m == "binary format ignores 1 extra file(s) for crate 'myapp' \
+                         target 'x86_64-unknown-linux-gnu'"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn strict_binary_only_target_ignores_unmatched_files() {
+        // `--strict` fails a literal `files:` entry that matches nothing — but
+        // a binary-only target never packs one, so resolving them at all would
+        // fail a release over files it was always going to discard.
+        let tmp = TempDir::new().unwrap();
+        let mut c = cfg("default", None, &["binary"]);
+        c.files = Some(vec![anodizer_core::config::ArchiveFileSpec::Glob(
+            tmp.path()
+                .join("root")
+                .join("NOTICE")
+                .to_string_lossy()
+                .to_string(),
+        )]);
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &[c],
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        ctx.options.strict = true;
+
+        ArchiveStage
+            .run(&mut ctx)
+            .expect("a binary-only target must not resolve files: under --strict");
+
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 1, "{bins:?}");
+        assert!(bins[0].path.exists(), "{bins:?}");
+    }
+
+    #[test]
+    fn binary_stale_output_from_prior_run_is_overwritten() {
+        // The resume shape for `format: binary`: a per-binary destination an
+        // earlier attempt already wrote is rebuilt, not refused.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["binary"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            true,
+        );
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let dist = ctx.config.dist.clone();
+        fs::create_dir_all(&dist).unwrap();
+        let stale = dist.join("myapp_1.0.0_linux_amd64");
+        fs::write(&stale, b"STALE").unwrap();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        assert_eq!(
+            fs::read(&stale).unwrap(),
+            b"binary myapp x86_64-unknown-linux-gnu"
+        );
+        let lines = cap.all_messages();
+        assert!(
+            lines.iter().any(|(l, m)| *l == LogLevel::Verbose
+                && m == "replacing existing archive 'myapp_1.0.0_linux_amd64' \
+                         left by an earlier run"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn binary_format_dry_run_writes_nothing() {
+        // A dry run still names and registers every binary output — it just
+        // does not copy one.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["binary"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            true,
+            false,
+        );
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let dist = ctx.config.dist.clone();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 1, "{bins:?}");
+        assert_eq!(bins[0].path, dist.join("myapp_1.0.0_linux_amd64"));
+        assert!(!bins[0].path.exists(), "dry run must copy nothing");
+        let lines = cap.all_messages();
+        assert!(
+            lines.iter().any(|(l, m)| *l == LogLevel::Status
+                && m == &format!("(dry-run) would create {}", bins[0].path.display())),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn binary_format_cross_crate_collision_bails() {
+        // The guard is run-scoped for binary outputs too: two crates sharing a
+        // template that names neither the crate nor the binary render one
+        // dist/ path, and the second crate would clobber the first.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("shared_{{ .Os }}"), &["binary"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["alpha", "beta"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("shared_linux"), "{err}");
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn binary_format_windows_multi_bin_keeps_single_exe_suffix() {
+        // Windows outputs keep the executable suffix, and a custom template
+        // that already ends in `.exe` must not gain a second one.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-pc-windows-msvc";
+        let cfgs = [cfg("default", Some("{{ .Binary }}_win.exe"), &["binary"])];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[target], false, false);
+        let bin_path = tmp.path().join(target).join("myhelper");
+        fs::write(&bin_path, format!("binary myhelper {target}")).unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myhelper".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UploadableBinary)
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["myapp_win.exe", "myhelper_win.exe"]);
+    }
+
+    #[test]
+    fn binary_without_binary_metadata_falls_back_to_its_file_name() {
+        // A build artifact missing `metadata["binary"]` must still name its own
+        // output. Without the fallback the template var keeps the PREVIOUS
+        // binary's value and the two outputs collide.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-unknown-linux-gnu";
+        let cfgs = [cfg("default", None, &["binary"])];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[target], false, false);
+        let bin_path = tmp.path().join(target).join("myhelper");
+        fs::write(&bin_path, b"helper").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UploadableBinary)
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["myapp_1.0.0_linux_amd64", "myhelper_1.0.0_linux_amd64"]
+        );
+    }
+
+    #[test]
+    fn empty_per_binary_stem_bails() {
+        // An empty stem resolves to the dist directory itself. The default
+        // binary template cannot render empty, so this guards a custom one;
+        // driven directly because the per-target stem guard fires first
+        // whenever the custom template is what the archive stem uses too.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["binary"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        ctx.template_vars_mut().set("Version", "");
+        let bin = Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: tmp.path().join("myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
+        };
+        let err = crate::run_helpers::render_binary_outputs(
+            &mut ctx,
+            &[&bin],
+            "{{ .Version }}",
+            Path::new("dist"),
+            "myapp",
+            "x86_64-unknown-linux-gnu",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("empty stem for binary 'myapp'"), "{err}");
     }
 
     #[test]

@@ -2,13 +2,15 @@
 //! while keeping behavior identical.
 
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
+use anodizer_core::artifact::Artifact;
 use anodizer_core::config::{ArchiveConfig, VALID_ARCHIVE_FORMATS};
+use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 
 use crate::entries::{ArchiveEntry, write_archive_entries, write_zip_entries};
@@ -64,6 +66,75 @@ fn entries_to_owned(all_entries: &[&ArchiveEntry]) -> Vec<ArchiveEntry> {
             info: e.info.clone(),
         })
         .collect()
+}
+
+/// The `{{ .Binary }}` value for a build artifact: the `binary` metadata the
+/// build stage records, falling back to the on-disk file name. Without the
+/// fallback an artifact missing the key would leave the template var holding
+/// the PREVIOUS binary's name and render a false collision.
+pub(crate) fn binary_var(bin: &Artifact) -> String {
+    bin.metadata
+        .get("binary")
+        .cloned()
+        .or_else(|| {
+            bin.path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Render one `(stem, dest, source)` triple per binary for `format: binary`,
+/// each named by `name_tmpl` evaluated with THAT binary's `{{ .Binary }}`.
+///
+/// Leaves `{{ .Binary }}` on the group representative (the first selected
+/// binary) so templates evaluated later in the same target iteration see the
+/// value they saw before this call.
+pub(crate) fn render_binary_outputs<'a>(
+    ctx: &mut Context,
+    selected_bins: &[&'a Artifact],
+    name_tmpl: &str,
+    dist: &Path,
+    crate_name: &str,
+    target: &str,
+) -> Result<Vec<(String, PathBuf, &'a Artifact)>> {
+    let mut outs = Vec::with_capacity(selected_bins.len());
+    for bin in selected_bins {
+        ctx.template_vars_mut().set("Binary", &binary_var(bin));
+        let stem = ctx.render_template(name_tmpl).with_context(|| {
+            format!("archive: render binary name template for {crate_name}/{target}")
+        })?;
+        if stem.is_empty() {
+            bail!(
+                "archive: rendered archive name template '{}' produced an \
+                 empty stem for binary '{}' of crate '{}' target '{}'. An \
+                 empty stem yields the dist directory itself as the output \
+                 path, which the duplicate-name detector and downstream \
+                 stages cannot resolve. Verify the template references \
+                 variables that are populated on this run (e.g. \
+                 `{{{{ Tag }}}}` is unset during `--snapshot` — use \
+                 `{{{{ Version }}}}` or the default \
+                 `archive.name_template` instead).",
+                name_tmpl,
+                binary_var(bin),
+                crate_name,
+                target
+            );
+        }
+        let stem = if anodizer_core::target::is_windows(target) && !stem.ends_with(".exe") {
+            format!("{stem}.exe")
+        } else {
+            stem
+        };
+        let dest = dist.join(&stem);
+        outs.push((stem, dest, *bin));
+    }
+    // Restore the group-representative `.Binary` the rest of
+    // this iteration's templates expect.
+    if let Some(bin) = selected_bins.first() {
+        ctx.template_vars_mut().set("Binary", &binary_var(bin));
+    }
+    Ok(outs)
 }
 
 /// Record `path` in the run-scoped produced-path set, and note an overwrite of
