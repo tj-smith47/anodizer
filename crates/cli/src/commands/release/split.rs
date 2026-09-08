@@ -496,20 +496,28 @@ fn check_split_worker_completeness(
 /// yet it is the worker the matrix dispatched, so its identity is folded
 /// through the same matrix-key function as an artifact target. Under
 /// `split_by: os` that reduces any subdir shape (`linux`, `linux_amd64`, a
-/// triple, `targets-<triple>`) to its OS. Under `split_by: target` a subdir
-/// that is itself a matrix key is that key; an OS-shaped subdir (an
-/// `ANODIZER_OS` worker) covers every matrix triple of that OS — and arch,
-/// when the subdir names one; a subdir matching nothing stays itself, so a
-/// stale shard is still reported as surplus.
+/// triple, `targets-<triple>`) to its OS. Under `split_by: target` only a
+/// subdir that
+/// [`PartialTarget::from_dist_subdir`](anodizer_core::partial::PartialTarget::from_dist_subdir)
+/// classifies as `OsArch` — an `ANODIZER_OS`/`ANODIZER_ARCH` worker — stands
+/// for a set of triples and covers every matrix triple of that OS (and arch,
+/// when the subdir names one). Every other shape names exactly one worker and
+/// stays itself, so a shard left over from an earlier matrix is still reported
+/// as surplus.
 fn shard_identity_keys(
     partial_target: &str,
     split_by: &str,
     expected: &std::collections::BTreeSet<String>,
 ) -> std::collections::BTreeSet<String> {
+    use anodizer_core::partial::PartialTarget;
+
     let own = matrix_key(partial_target, split_by);
     if split_by == "os" || expected.contains(&own) {
         return std::iter::once(own).collect();
     }
+    let PartialTarget::OsArch { .. } = PartialTarget::from_dist_subdir(partial_target) else {
+        return std::iter::once(own).collect();
+    };
     let (os, arch) = anodizer_core::target::map_target(partial_target);
     let names_arch = partial_target.contains('_');
     let covered: std::collections::BTreeSet<String> = expected
@@ -1442,6 +1450,60 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("unexpected context.json"), "{msg}");
         assert!(msg.contains("windows"), "{msg}");
+    }
+
+    /// Under `split_by: target` only an `OsArch`-shaped subdir stands for a
+    /// set of matrix triples. A triple-shaped subdir names one worker, so a
+    /// stale one keeps its own key and is reported as surplus instead of
+    /// laundering itself into the OS's matrix entries.
+    #[test]
+    fn shard_identity_keys_keep_a_triple_shaped_subdir_as_its_own_key() {
+        let expected: std::collections::BTreeSet<String> =
+            ["x86_64-unknown-linux-musl".to_string()]
+                .into_iter()
+                .collect();
+
+        assert_eq!(
+            shard_identity_keys("x86_64-unknown-linux-gnu", "target", &expected),
+            ["x86_64-unknown-linux-gnu".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+        assert_eq!(
+            shard_identity_keys("targets-x86_64-unknown-linux-gnu", "target", &expected),
+            ["targets-x86_64-unknown-linux-gnu".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+    }
+
+    /// The fan-out an OS-shaped (`linux`) and an os_arch-shaped
+    /// (`linux_amd64`) subdir get under `split_by: target` is unchanged.
+    #[test]
+    fn shard_identity_keys_fan_an_os_shaped_subdir_over_the_matrix() {
+        let expected: std::collections::BTreeSet<String> = [
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            shard_identity_keys("linux", "target", &expected),
+            [
+                "aarch64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        );
+        assert_eq!(
+            shard_identity_keys("linux_amd64", "target", &expected),
+            ["x86_64-unknown-linux-gnu".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
     }
 
     #[test]

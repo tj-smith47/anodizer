@@ -109,6 +109,53 @@ impl PartialTarget {
             }
         }
     }
+
+    /// Recover the [`PartialTarget`] shape a `dist/` subdirectory name was
+    /// written for — the inverse of [`dist_subdir`](Self::dist_subdir), and
+    /// the only recogniser for that name. Callers that must know whether a
+    /// shard directory stands for one triple or for a whole OS classify it
+    /// here rather than re-deriving the shape from the string.
+    ///
+    /// `dist_subdir` names a `Targets` list after its first triple, so the
+    /// recovered `Targets` holds that triple alone; the other three shapes
+    /// round-trip exactly.
+    ///
+    /// ```
+    /// use anodizer_core::partial::PartialTarget;
+    ///
+    /// for shape in [
+    ///     PartialTarget::Exact("x86_64-unknown-linux-gnu".into()),
+    ///     PartialTarget::OsArch { os: "linux".into(), arch: None },
+    ///     PartialTarget::OsArch { os: "linux".into(), arch: Some("amd64".into()) },
+    ///     PartialTarget::Targets(vec!["x86_64-apple-darwin".into()]),
+    /// ] {
+    ///     assert_eq!(PartialTarget::from_dist_subdir(&shape.dist_subdir()), shape);
+    /// }
+    /// ```
+    pub fn from_dist_subdir(subdir: &str) -> PartialTarget {
+        if let Some(rest) = subdir.strip_prefix("targets-") {
+            return if rest.is_empty() || rest == "empty" {
+                PartialTarget::Targets(Vec::new())
+            } else {
+                PartialTarget::Targets(vec![rest.to_string()])
+            };
+        }
+        // `dist_subdir` spells `OsArch` with Go-style os/arch words, which
+        // never contain a hyphen; every target triple does.
+        if subdir.contains('-') {
+            return PartialTarget::Exact(subdir.to_string());
+        }
+        match subdir.split_once('_') {
+            Some((os, arch)) => PartialTarget::OsArch {
+                os: os.to_string(),
+                arch: Some(arch.to_string()),
+            },
+            None => PartialTarget::OsArch {
+                os: subdir.to_string(),
+                arch: None,
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
