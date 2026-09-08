@@ -222,8 +222,11 @@ archives:
 
 A template without `{{ .Binary }}` renders one path for every binary the entry
 selects, so an entry shipping two or more binaries is rejected rather than
-letting one overwrite the other. Every output path is claimed before any
-binary is copied, so the refusal leaves nothing behind in `dist/`:
+letting one overwrite the other. Every output path of the whole run — every
+crate, build target, format and binary — is claimed before the first copy, so
+the refusal leaves no archive or binary behind in `dist/`; only the run's own
+bookkeeping (`config.yaml`, and `release-notes.md` under
+`--release-notes-tmpl`) remains:
 
 ```text
 archives: name template '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
@@ -233,10 +236,20 @@ silently overwrite another. Both come from the same build target, so no
 architecture variable can separate them: add '{{ .Binary }}' to the `name` …
 ```
 
-The remedy names the one variable that separates the two outputs: `{{ .Binary }}`
-when both belong to the same build target (two binaries through one template),
-`{{ .Amd64 }}` when they are two amd64 micro-architecture variants of one
-target, `{{ .Arch }}` when they come from different targets.
+The remedy names the one variable that separates the two outputs:
+
+| The two outputs are… | Remedy |
+|---|---|
+| from different crates | `{{ .CrateName }}` |
+| two binaries of one entry on one build target | `{{ .Binary }}` (or a distinct `name_template` per entry) |
+| two amd64 micro-architecture variants of one target | `{{ .Amd64 }}` |
+| from two targets sharing OS and architecture (`-gnu` / `-musl`) | `{{ .Target }}` |
+| from two targets of one architecture | `{{ .Os }}` |
+| from two targets otherwise | `{{ .Arch }}` |
+
+Only variables the stage exposes are ever advised: a package stage whose
+naming context carries no `{{ .Binary }}` is told to give each config entry
+a distinct name instead.
 
 ## Re-running over a populated `dist/`
 
@@ -257,10 +270,11 @@ caught in `--dry-run` and `--snapshot` too:
 
 ```text
 archives: name template '{{ ProjectName }}' rendered the same archive
-'myapp.tar.gz' more than once for crate 'myapp', so one build target would
-silently overwrite another. Add '{{ .Arch }}' to the `name`
-(e.g. "{{ .ProjectName }}_{{ .Arch }}") so each build target's archive gets a
-distinct path.
+'myapp.tar.gz' more than once for crate 'myapp', so one archive would silently
+overwrite another. The collision is between build targets
+'aarch64-unknown-linux-gnu' and 'x86_64-unknown-linux-gnu': add '{{ .Arch }}'
+to the `name_template` (e.g. "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}") so
+each archive gets a distinct path.
 ```
 
 ## Disabling archives

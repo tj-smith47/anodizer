@@ -18,6 +18,7 @@ mod completions_gen;
 mod entries;
 mod file_specs;
 mod formats;
+mod plan;
 mod run;
 mod run_helpers;
 

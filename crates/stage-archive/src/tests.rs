@@ -6827,6 +6827,161 @@ mod archive_name_guard {
         assert!(err.contains("add '{{ .Arch }}'"), "{err}");
         assert!(!err.contains("add '{{ .Binary }}'"), "{err}");
     }
+    /// Every regular file under `dir`, recursively, sorted — what a refused
+    /// run leaves behind in dist/.
+    fn files_under(dir: &Path) -> Vec<PathBuf> {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(rd) = fs::read_dir(dir) else { return };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn cross_target_refusal_leaves_nothing_in_dist() {
+        // One crate, two targets that share OS and arch (gnu + musl) under a
+        // template naming only `.Os`/`.Arch`: the second target's output
+        // collides with the first. The refusal must come before the first
+        // copy — a run that wrote target one and then refused would leave a
+        // half-populated dist/ the retry then trips over.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg(
+            "default",
+            Some("{{ .Binary }}_{{ .Os }}_{{ .Arch }}"),
+            &["binary"],
+        )];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+            false,
+            false,
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("myapp_linux_amd64"), "{err}");
+        assert!(err.contains("{{ .Target }}"), "{err}");
+        assert_eq!(files_under(&tmp.path().join("dist")), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn same_crate_two_binaries_refusal_leaves_nothing_in_dist() {
+        // The single-crate shape: two binaries of one crate under a `binary`
+        // template that names neither, so both render one path.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg(
+            "default",
+            Some("{{ .ProjectName }}_{{ .Os }}"),
+            &["binary"],
+        )];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        // A second binary of the same crate on the same target.
+        let helper = tmp.path().join("x86_64-unknown-linux-gnu").join("myhelper");
+        fs::write(&helper, "binary myhelper").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: helper,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myhelper".to_string()),
+                ("id".to_string(), "myhelper".to_string()),
+            ]),
+            size: None,
+        });
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("proj_linux"), "{err}");
+        assert!(err.contains("{{ .Binary }}"), "{err}");
+        assert_eq!(files_under(&tmp.path().join("dist")), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn lockstep_cross_crate_refusal_leaves_nothing_in_dist() {
+        // Two top-level crates (the lockstep shape) under `shared_{{ .Os }}`:
+        // crate two's only output collides with crate one's. Planning the
+        // whole run before writing means crate one's archive is never copied.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("shared_{{ .Os }}"), &["tar.gz"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["alpha", "beta"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("shared_linux.tar.gz"), "{err}");
+        assert!(err.contains("{{ .CrateName }}"), "{err}");
+        assert_eq!(files_under(&tmp.path().join("dist")), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn per_crate_cross_crate_refusal_leaves_nothing_in_dist() {
+        // The same collision reached through `workspaces[]` (independent
+        // cadences): the guard and the plan-before-write order both span
+        // workspaces, so the first workspace's output is never copied.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("shared_{{ .Os }}"), &["binary"])];
+        let mut ctx = build_ctx_workspaces(
+            &tmp,
+            &[("alpha-ws", &["alpha"]), ("beta-ws", &["beta"])],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("shared_linux"), "{err}");
+        assert!(err.contains("{{ .CrateName }}"), "{err}");
+        assert_eq!(files_under(&tmp.path().join("dist")), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn cross_crate_advice_followed_verbatim_succeeds() {
+        // The remedy for the cross-crate row is `{{ .CrateName }}`; adding
+        // it to the same template must turn the refusal into a run that
+        // ships one output per crate.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg(
+            "default",
+            Some("shared_{{ .CrateName }}_{{ .Os }}"),
+            &["binary"],
+        )];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["alpha", "beta"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        ArchiveStage.run(&mut ctx).unwrap();
+        let dist = tmp.path().join("dist");
+        assert_eq!(
+            files_under(&dist),
+            vec![
+                dist.join("shared_alpha_linux"),
+                dist.join("shared_beta_linux")
+            ]
+        );
+    }
 }
 
 /// One read policy for a binary's name across the workspace:

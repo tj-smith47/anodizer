@@ -8,7 +8,8 @@ use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
 
 use crate::ArchiveStage;
-use crate::archive_config::archive_one_config;
+use crate::archive_config::write_crate_archives;
+use crate::plan::plan_crate;
 use crate::run_helpers::{clear_archive_template_vars, validate_archive_configs};
 
 /// Artifact kinds eligible for archiving — bound to the shared selection
@@ -43,7 +44,7 @@ impl Stage for ArchiveStage {
         // crate or of two — that render one filename are a name-template
         // defect, and the guard is the only scope wide enough to see both.
         // A path this pass did NOT produce is by construction leftover state,
-        // which `archive_one_config` overwrites instead of refusing.
+        // which the execute pass overwrites instead of refusing.
         let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
 
         let original_project_name = ctx
@@ -56,6 +57,10 @@ impl Stage for ArchiveStage {
         // failure must still restore the rebound `ProjectName` below before
         // propagating, so the workspace value never leaks past this stage.
         let loop_result: Result<()> = (|| {
+            // Plan every crate, then run the guard over the whole plan, and
+            // only then write: a colliding name anywhere in the run must be
+            // refused while dist/ still holds nothing of this stage's.
+            let mut plans = Vec::with_capacity(work.len());
             for (crate_name, crate_dir, archive_cfgs) in &work {
                 if multi_crate {
                     ctx.template_vars_mut().set("ProjectName", crate_name);
@@ -73,21 +78,29 @@ impl Stage for ArchiveStage {
                     continue;
                 }
 
-                archive_one_config(
+                plans.push(plan_crate(
                     ctx,
                     &log,
                     &dist,
-                    dry_run,
                     multi_crate,
                     &global_default_format,
                     &global_format_overrides,
-                    archive_cfgs,
                     crate_name,
                     crate_dir,
+                    archive_cfgs,
                     &all_binaries,
-                    &mut new_artifacts,
-                    &mut name_guard,
-                )?;
+                )?);
+            }
+
+            for claim in plans.iter().flat_map(|plan| plan.claims()) {
+                name_guard.check(claim)?;
+            }
+
+            for plan in &plans {
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &plan.crate_name);
+                }
+                write_crate_archives(ctx, &log, &dist, dry_run, plan, &mut new_artifacts)?;
             }
             Ok(())
         })();
