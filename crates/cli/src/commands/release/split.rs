@@ -60,9 +60,11 @@ pub struct SplitArtifact {
 /// Full context serialized during split for merge recovery.
 /// Includes config, git info, template vars, and artifacts.
 ///
-/// The shard's worker identity is NOT a field here: `--merge` derives it
-/// from each artifact's `target` through the same matrix-key function that
-/// wrote `matrix.json`, so the two sides cannot disagree on the axis.
+/// `--merge` reconciles a shard against `matrix.json` by the union of two
+/// identities folded through the same matrix-key function that wrote the
+/// matrix: the `target` of each artifact it built, and `partial_target`
+/// itself — so a shard that built nothing (`--skip=build`) still counts as
+/// the worker it was dispatched as.
 ///
 /// `template_vars`, `env_vars`, and each artifact's `extra` field use
 /// [`BTreeMap`] rather than [`HashMap`] so two `release --split` runs
@@ -76,8 +78,8 @@ pub struct SplitArtifact {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SplitContext {
     /// The `dist/` subdirectory this shard wrote (its resolved partial
-    /// target's [`PartialTarget::dist_subdir`](anodizer_core::partial::PartialTarget::dist_subdir)).
-    /// Informational — never compared against `matrix.json`.
+    /// target's [`PartialTarget::dist_subdir`](anodizer_core::partial::PartialTarget::dist_subdir)),
+    /// and the shard's own worker identity for the `matrix.json` check.
     pub partial_target: String,
     /// Template variables (all resolved values at split time).
     pub template_vars: BTreeMap<String, String>,
@@ -432,6 +434,11 @@ fn check_split_worker_completeness(
                 .filter_map(|a| a.target.as_deref())
                 .map(|t| matrix_key(t, &matrix.split_by)),
         );
+        got.extend(shard_identity_keys(
+            &split_ctx.partial_target,
+            &matrix.split_by,
+            &expected,
+        ));
     }
 
     let missing: Vec<&String> = expected.difference(&got).collect();
@@ -480,6 +487,44 @@ fn check_split_worker_completeness(
     }
 
     Ok(())
+}
+
+/// The matrix keys a shard covers by its own identity — the `dist/`
+/// subdirectory it was dispatched as — independent of what it built.
+///
+/// A shard that ran `--skip=build` carries no artifact to derive a key from,
+/// yet it is the worker the matrix dispatched, so its identity is folded
+/// through the same matrix-key function as an artifact target. Under
+/// `split_by: os` that reduces any subdir shape (`linux`, `linux_amd64`, a
+/// triple, `targets-<triple>`) to its OS. Under `split_by: target` a subdir
+/// that is itself a matrix key is that key; an OS-shaped subdir (an
+/// `ANODIZER_OS` worker) covers every matrix triple of that OS — and arch,
+/// when the subdir names one; a subdir matching nothing stays itself, so a
+/// stale shard is still reported as surplus.
+fn shard_identity_keys(
+    partial_target: &str,
+    split_by: &str,
+    expected: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let own = matrix_key(partial_target, split_by);
+    if split_by == "os" || expected.contains(&own) {
+        return std::iter::once(own).collect();
+    }
+    let (os, arch) = anodizer_core::target::map_target(partial_target);
+    let names_arch = partial_target.contains('_');
+    let covered: std::collections::BTreeSet<String> = expected
+        .iter()
+        .filter(|triple| {
+            let (t_os, t_arch) = anodizer_core::target::map_target(triple);
+            t_os == os && (!names_arch || t_arch == arch)
+        })
+        .cloned()
+        .collect();
+    if covered.is_empty() {
+        std::iter::once(own).collect()
+    } else {
+        covered
+    }
 }
 
 /// Outcome of a split-context load — flags which loader the caller
@@ -1347,6 +1392,93 @@ mod tests {
 
         check_split_worker_completeness(dist, &[path], &null_logger())
             .expect("one os shard covering both triple keys must reconcile");
+    }
+
+    /// A `--skip=build` shard writes a context with no artifacts. It is still
+    /// the worker the matrix dispatched, so it counts by its own identity.
+    #[test]
+    fn worker_completeness_counts_a_zero_artifact_shard_by_its_own_identity_under_split_by_os() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux"]);
+        let ctx_files = vec![write_split_context_full(dist, "linux", "linux", Vec::new())];
+
+        check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect("a shard that built nothing still covers its own matrix key");
+    }
+
+    /// The same under `split_by: target`: a triple-named shard is its own
+    /// key, and an OS-named (`ANODIZER_OS`) shard covers every triple of
+    /// that OS — with no artifact to say so.
+    #[test]
+    fn worker_completeness_counts_a_zero_artifact_shard_by_its_own_identity_under_split_by_target()
+    {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        let write_target_matrix = |targets: &[&str]| {
+            let matrix = SplitMatrix {
+                split_by: "target".to_string(),
+                include: targets
+                    .iter()
+                    .map(|t| MatrixEntry {
+                        target: (*t).to_string(),
+                        runner: "ubuntu-latest".to_string(),
+                    })
+                    .collect(),
+            };
+            std::fs::write(
+                dist.join("matrix.json"),
+                serde_json::to_string(&matrix).unwrap(),
+            )
+            .unwrap();
+        };
+
+        write_target_matrix(&["x86_64-unknown-linux-gnu"]);
+        let triple_shard = vec![write_split_context_full(
+            dist,
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            Vec::new(),
+        )];
+        check_split_worker_completeness(dist, &triple_shard, &null_logger())
+            .expect("a triple-named shard is its own matrix key");
+
+        write_target_matrix(&["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]);
+        let os_shard = vec![write_split_context_full(dist, "linux", "linux", Vec::new())];
+        check_split_worker_completeness(dist, &os_shard, &null_logger())
+            .expect("an OS-named shard covers every matrix triple of that OS");
+
+        let os_arch_shard = vec![write_split_context_full(
+            dist,
+            "linux_amd64",
+            "linux_amd64",
+            Vec::new(),
+        )];
+        let err = check_split_worker_completeness(dist, &os_arch_shard, &null_logger())
+            .expect_err("an os_arch shard covers only its arch");
+        assert!(
+            err.to_string().contains("aarch64-unknown-linux-gnu"),
+            "{err}"
+        );
+    }
+
+    /// Counting a shard by its identity must not launder a stale shard: one
+    /// left over from an earlier run under a different key is still surplus.
+    #[test]
+    fn worker_completeness_still_reports_a_stale_zero_artifact_shard_as_surplus() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux"]);
+        let ctx_files = vec![
+            write_split_context(dist, "linux", "x86_64-unknown-linux-gnu"),
+            write_split_context_full(dist, "windows", "windows", Vec::new()),
+        ];
+
+        let err = check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect_err("a stale shard is surplus even when it built nothing");
+        let msg = err.to_string();
+        assert!(msg.contains("unexpected context.json"), "{msg}");
+        assert!(msg.contains("windows"), "{msg}");
     }
 
     #[test]
