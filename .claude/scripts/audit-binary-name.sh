@@ -18,11 +18,12 @@
 # matched.
 #
 # Not scanned: Cargo test targets (crates/*/tests/**), sibling test files
-# (`tests.rs`, `*_tests.rs`), inline `#[cfg(test)] mod … { … }` bodies
-# (everything from that module's opening line to end of file), and comment
-# lines.
+# (`tests.rs`, `*_tests.rs`), test-only gated items — an inline
+# `#[cfg(test)] mod … { … }` body through its closing brace, with scanning
+# resuming after it (lib/skip-test-regions.awk) — and comment lines.
 set -euo pipefail
 
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -44,25 +45,14 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 violations="$(
-awk -v allow="$allow_keys" '
+awk -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/skip-test-regions.awk" -f - "${FILES[@]}" <<'AWK'
     BEGIN {
         n = split(allow, keys, "\n")
         for (i = 1; i <= n; i++) ok[keys[i]] = 1
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); return s }
 
-    FNR == 1 { fname = ""; cfgtest = 0; skipping = 0 }
-
-    skipping { next }
-
-    # A test-only cfg gate: the next `mod … {` is an inline test module and
-    # runs to end of file; any other single gated line is skipped on its own.
-    /^[[:space:]]*#\[cfg\((all\()?test[,)]/ { cfgtest = 1; next }
-    cfgtest {
-        cfgtest = 0
-        if ($0 ~ /^[[:space:]]*(pub(\([a-z]+\))? )?mod [A-Za-z0-9_]+ \{/) { skipping = 1 }
-        next
-    }
+    FNR == 1 { fname = "" }
 
     /^[[:space:]]*(pub(\([a-z]+\))? )?(async )?(const )?fn [A-Za-z0-9_]+/ {
         match($0, /fn [A-Za-z0-9_]+/)
@@ -74,7 +64,7 @@ awk -v allow="$allow_keys" '
         if (!(key in ok))
             printf("%s:%d (fn %s): %s\n", FILENAME, FNR, fname, trim($0))
     }
-' "${FILES[@]}"
+AWK
 )"
 
 accessor_hits="$(grep -c '\.get("binary")' crates/core/src/artifact/registry.rs || true)"
