@@ -736,8 +736,13 @@ pub(crate) fn archive_one_config(
                             ));
                         }
                     }
-                    for (stem, dest, bin) in &binary_outputs {
-                        let replacing = claim_output_path(
+                    // Claim every output path before writing any: a
+                    // collision on the second binary must refuse the whole
+                    // entry, not leave the first binary already copied into
+                    // dist/ under the contested name.
+                    let mut replacing_outputs = Vec::with_capacity(binary_outputs.len());
+                    for (stem, dest, _) in &binary_outputs {
+                        replacing_outputs.push(claim_output_path(
                             name_guard,
                             dest,
                             "binary",
@@ -746,7 +751,11 @@ pub(crate) fn archive_one_config(
                             crate_name,
                             target,
                             group_variant.as_deref(),
-                        )?;
+                        )?);
+                    }
+                    for ((stem, dest, bin), replacing) in
+                        binary_outputs.iter().zip(replacing_outputs)
+                    {
                         if replacing && !dry_run {
                             log.verbose(&format!(
                                 "replacing existing binary '{stem}' left by an earlier run"

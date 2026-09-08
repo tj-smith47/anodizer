@@ -6797,6 +6797,18 @@ mod archive_name_guard {
         // separates them is `.Binary`, and `.Arch` would be a false lead.
         assert!(err.contains("{{ .Binary }}"), "{err}");
         assert!(!err.contains("{{ .Arch }}'"), "{err}");
+        // The refusal happens before any binary is written: the first
+        // binary must not sit in dist/ under the contested name.
+        let dist = tmp.path().join("dist");
+        assert!(
+            !dist.join("proj_linux").exists(),
+            "refused entry left a half-result in dist/: {:?}",
+            fs::read_dir(&dist)
+                .map(|d| d
+                    .filter_map(|e| e.ok().map(|e| e.file_name()))
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
     }
 
     #[test]

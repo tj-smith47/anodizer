@@ -222,7 +222,8 @@ archives:
 
 A template without `{{ .Binary }}` renders one path for every binary the entry
 selects, so an entry shipping two or more binaries is rejected rather than
-letting one overwrite the other:
+letting one overwrite the other. Every output path is claimed before any
+binary is copied, so the refusal leaves nothing behind in `dist/`:
 
 ```text
 archives: name template '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
