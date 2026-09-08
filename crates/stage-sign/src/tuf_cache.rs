@@ -79,8 +79,49 @@ pub(crate) fn keyless_cosign_host_lock(
     env: &dyn EnvSource,
     log: &StageLogger,
 ) -> Option<TufInitLock> {
-    let dir = tuf_cache_dir(config_env, env)?;
-    let file = match TufInitLock::open_sentinel(&dir) {
+    host_lock_for_dir(&tuf_cache_dir(config_env, env)?, log)
+}
+
+/// Take the host-level TUF lock for every distinct cache directory the given
+/// per-job envs resolve to.
+///
+/// A `TUF_ROOT` that renders per artifact (`{{ .Os }}`, `{{ .Target }}`, …)
+/// puts a config's jobs on several trust stores; one lock would leave every
+/// other store racing a sibling process. Acquisition follows sorted path
+/// order — a total order every process agrees on — so two runs holding
+/// overlapping sets queue instead of deadlocking. Unresolvable or unlockable
+/// roots are skipped exactly as in [`keyless_cosign_host_lock`].
+pub(crate) fn keyless_cosign_host_locks(
+    job_envs: &[&[(String, String)]],
+    env: &dyn EnvSource,
+    log: &StageLogger,
+) -> Vec<TufInitLock> {
+    let mut roots: Vec<PathBuf> = job_envs
+        .iter()
+        .filter_map(|job_env| tuf_cache_dir(job_env, env))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    if roots.len() > 1 {
+        log.verbose(&format!(
+            "keyless jobs resolve {} distinct TUF_ROOT values; locking each: {}",
+            roots.len(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    roots
+        .iter()
+        .filter_map(|root| host_lock_for_dir(root, log))
+        .collect()
+}
+
+/// Lock one resolved TUF cache directory, probing before blocking.
+fn host_lock_for_dir(dir: &Path, log: &StageLogger) -> Option<TufInitLock> {
+    let file = match TufInitLock::open_sentinel(dir) {
         Ok(file) => file,
         Err(err) => {
             log.verbose(&format!(

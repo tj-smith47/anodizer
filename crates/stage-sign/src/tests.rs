@@ -6160,10 +6160,11 @@ mod cosign_tuf_race {
         );
     }
 
-    /// A `TUF_ROOT` that renders per artifact puts jobs on different stores,
-    /// which one lock cannot cover — the run must say so.
+    /// A `TUF_ROOT` that renders per artifact puts jobs on different stores.
+    /// Every one of them must be locked — a store left unlocked races a
+    /// sibling process exactly like an unserialized fan-out.
     #[test]
-    fn jobs_with_different_tuf_roots_are_reported() {
+    fn jobs_with_different_tuf_roots_lock_every_root() {
         use anodizer_core::artifact::Artifact;
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -6205,14 +6206,25 @@ mod cosign_tuf_race {
             .run(&mut ctx)
             .expect("all stub signs succeed");
 
+        for os in ["linux", "darwin"] {
+            assert!(
+                tmp.path()
+                    .join(os)
+                    .join(".anodizer-tuf-init.lock")
+                    .is_file(),
+                "every distinct TUF_ROOT must be locked, '{os}' was not: {:?}",
+                capture.all_messages()
+            );
+        }
         assert!(
             capture
                 .all_messages()
                 .iter()
-                .any(|(_, msg)| msg.contains("keyless jobs resolve different TUF_ROOT values")),
-            "per-artifact TUF_ROOT values must be reported: {:?}",
+                .any(|(_, msg)| msg.contains("keyless jobs resolve 2 distinct TUF_ROOT values")),
+            "the run must name the roots it locked: {:?}",
             capture.all_messages()
         );
+        assert_no_overlap(&state, 2);
     }
 
     /// Docker image signing is a keyless cosign spawn site too: the loop is

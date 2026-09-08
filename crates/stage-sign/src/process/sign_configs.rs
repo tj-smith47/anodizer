@@ -651,37 +651,24 @@ pub(crate) fn process_sign_configs(
         // Keyed cosign (`--key=`) never contacts Fulcio/Rekor and keeps the
         // full parallelism.
         let keyless = is_keyless_cosign(&cmd, &args) && !sign_jobs.is_empty();
-        let tuf_init_lock = if keyless {
+        let tuf_init_locks = if keyless {
             log.verbose(&format!(
                 "keyless cosign: serializing {} invocation(s) — concurrent invocations \
                  collide on the sigstore TUF trust store",
                 sign_jobs.len()
             ));
-            // The cache dir must be resolved from the env the cosign CHILD
-            // sees: the sign config's rendered `env:` entries can set
-            // TUF_ROOT (or HOME) and shadow the process env, and job 0
-            // carries that rendered env.
-            let overlay: &[(String, String)] = sign_jobs[0].env.as_deref().unwrap_or(&[]);
-            // One lock covers one cache directory, so jobs whose rendered
-            // env resolves elsewhere sign unserialized against that other
-            // store — a per-artifact `TUF_ROOT` template silently defeats
-            // the guard, so name it.
-            let job0_root = crate::tuf_cache::tuf_cache_dir(overlay, ctx.env_source());
-            if sign_jobs.iter().any(|job| {
-                crate::tuf_cache::tuf_cache_dir(job.env.as_deref().unwrap_or(&[]), ctx.env_source())
-                    != job0_root
-            }) {
-                log.verbose(&format!(
-                    "keyless jobs resolve different TUF_ROOT values; the host lock covers '{}' only",
-                    job0_root
-                        .as_deref()
-                        .map(|d| d.display().to_string())
-                        .unwrap_or_default()
-                ));
-            }
-            crate::tuf_cache::keyless_cosign_host_lock(overlay, ctx.env_source(), log)
+            // Each cache dir must be resolved from the env the cosign CHILD
+            // sees: a config's rendered `env:` entries can set TUF_ROOT (or
+            // HOME) and shadow the process env, and a templated TUF_ROOT can
+            // resolve differently per job — every distinct store gets its own
+            // lock, so none of them is left racing a sibling process.
+            let job_envs: Vec<&[(String, String)]> = sign_jobs
+                .iter()
+                .map(|job| job.env.as_deref().unwrap_or(&[]))
+                .collect();
+            crate::tuf_cache::keyless_cosign_host_locks(&job_envs, ctx.env_source(), log)
         } else {
-            None
+            Vec::new()
         };
         let effective_parallelism = if keyless { 1 } else { parallelism };
 
@@ -743,7 +730,7 @@ pub(crate) fn process_sign_configs(
             log,
             run_job,
         )?;
-        drop(tuf_init_lock);
+        drop(tuf_init_locks);
 
         let verified = sign_jobs.iter().filter(|j| j.verify.is_some()).count();
         if verified > 0 {
