@@ -15,7 +15,7 @@ const TOOLS: &[ToolCheck] = &[
     },
     ToolCheck {
         name: "git",
-        description: "Version control",
+        description: "Version control (2.13 or newer)",
     },
     ToolCheck {
         name: "docker",
