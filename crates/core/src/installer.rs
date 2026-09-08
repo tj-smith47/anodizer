@@ -860,7 +860,7 @@ mod tests {
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
         ]);
-        let moved: Vec<CrateConfig> = ctx.config.crates.drain(..).collect();
+        let moved: Vec<CrateConfig> = std::mem::take(&mut ctx.config.crates);
         ctx.config.workspaces = Some(vec![crate::config::WorkspaceConfig {
             name: "cli".to_string(),
             crates: moved,
