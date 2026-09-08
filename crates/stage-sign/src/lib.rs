@@ -527,17 +527,28 @@ impl Stage for DockerSignStage {
                 // the host's sigstore TUF trust store and the loser exits
                 // with `creating cached local store: resource temporarily
                 // unavailable`. Held across the loop so the post-sign verify
-                // is covered too. The `env:` overlay only locates the cache
-                // directory, so a render failure degrades to the process env
-                // rather than failing the sign.
+                // is covered too.
                 let _tuf_lock = (!ctx.is_dry_run()
                     && crate::process::is_keyless_cosign(&cmd, &args))
                 .then(|| {
-                    let overlay = anodizer_core::config::render_env_entries(
-                        docker_sign_cfg.env.as_deref().unwrap_or(&[]),
-                        |v| ctx.render_template(v),
-                    )
-                    .unwrap_or_default();
+                    // Per entry, not all-or-nothing: a docker `env:` may mix a
+                    // static `TUF_ROOT` with a per-image template (`{{ Digest }}`
+                    // is only set inside the loop below), and one unrenderable
+                    // entry must not discard the one that locates the cache.
+                    let mut overlay: Vec<(String, String)> = Vec::new();
+                    for entry in docker_sign_cfg.env.as_deref().unwrap_or(&[]) {
+                        match anodizer_core::config::render_env_entries(
+                            std::slice::from_ref(entry),
+                            |v| ctx.render_template(v),
+                        ) {
+                            Ok(pairs) => overlay.extend(pairs),
+                            Err(_) => log.verbose(&format!(
+                                "docker sign: env entry '{}' is only renderable per image; \
+                                 not used to locate the TUF cache",
+                                entry.split('=').next().unwrap_or(entry)
+                            )),
+                        }
+                    }
                     crate::tuf_cache::keyless_cosign_host_lock(&overlay, ctx.env_source(), &log)
                 })
                 .flatten();

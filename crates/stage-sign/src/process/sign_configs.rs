@@ -662,6 +662,23 @@ pub(crate) fn process_sign_configs(
             // TUF_ROOT (or HOME) and shadow the process env, and job 0
             // carries that rendered env.
             let overlay: &[(String, String)] = sign_jobs[0].env.as_deref().unwrap_or(&[]);
+            // One lock covers one cache directory, so jobs whose rendered
+            // env resolves elsewhere sign unserialized against that other
+            // store — a per-artifact `TUF_ROOT` template silently defeats
+            // the guard, so name it.
+            let job0_root = crate::tuf_cache::tuf_cache_dir(overlay, ctx.env_source());
+            if sign_jobs.iter().any(|job| {
+                crate::tuf_cache::tuf_cache_dir(job.env.as_deref().unwrap_or(&[]), ctx.env_source())
+                    != job0_root
+            }) {
+                log.verbose(&format!(
+                    "keyless jobs resolve different TUF_ROOT values; the host lock covers '{}' only",
+                    job0_root
+                        .as_deref()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default()
+                ));
+            }
             crate::tuf_cache::keyless_cosign_host_lock(overlay, ctx.env_source(), log)
         } else {
             None

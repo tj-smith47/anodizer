@@ -10,7 +10,7 @@ use super::helpers::{
 use super::process::{
     ArtifactFilter, COSIGN_CONSENT_ENV, ensure_cosign_consent_env, process_sign_configs,
 };
-use super::{DockerSignStage, SignStage};
+use super::{BinarySignStage, DockerSignStage, SignStage};
 
 /// Readability alias for the kind-filter predicate at call sites.
 fn should_sign(kind: ArtifactKind, filter: &str) -> anyhow::Result<bool> {
@@ -5803,6 +5803,203 @@ mod cosign_tuf_race {
             .expect("stub docker sign succeeds");
 
         cache.join(".anodizer-tuf-init.lock").is_file()
+    }
+
+    /// A docker `env:` mixing a static `TUF_ROOT` with a per-image template
+    /// must still scope the lock: the unrenderable entry is dropped alone,
+    /// not the whole overlay.
+    #[test]
+    fn docker_env_with_a_digest_entry_still_scopes_the_lock_by_tuf_root() {
+        use anodizer_core::config::DockerSignConfig;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("child-root");
+        let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 0\n");
+
+        let docker_signs = vec![DockerSignConfig {
+            verify: None,
+            cmd: Some(stub.to_string_lossy().into_owned()),
+            args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            id: Some("image-cosign".to_string()),
+            env: Some(vec![
+                format!("TUF_ROOT={}", cache.display()),
+                "FOO={{ Digest }}".to_string(),
+            ]),
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .sealed_env()
+            .build();
+        ctx.config.docker_signs = Some(docker_signs);
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: String::new(),
+            path: std::path::PathBuf::from("ghcr.io/acme/app:latest"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        DockerSignStage
+            .run(&mut ctx)
+            .expect("stub docker sign succeeds");
+
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "a per-image env entry must not discard the TUF_ROOT entry that \
+             locates the cache"
+        );
+    }
+
+    /// A second holder of the host lock must produce ONE default-visible
+    /// wait line — an unexplained multi-minute stall reads as a hang — and
+    /// the run must still complete once the holder releases.
+    #[test]
+    fn contended_host_lock_reports_the_wait() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let lock = crate::tuf_cache::TufInitLock::acquire(&cache).expect("holder acquire");
+        let released = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&released);
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            flag.store(true, Ordering::SeqCst);
+            drop(lock);
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        add_archives(&mut ctx, tmp.path(), 2);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+        holder.join().expect("holder thread");
+
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the stage must not have signed before the holder released"
+        );
+        let waits = capture
+            .all_messages()
+            .into_iter()
+            .filter(|(level, msg)| {
+                *level == anodizer_core::log::LogLevel::Status
+                    && msg.contains("waiting for the host-level TUF lock")
+            })
+            .count();
+        assert_eq!(waits, 1, "one wait line per contended acquire");
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Signature).len(),
+            2,
+            "the run must complete once the lock is released"
+        );
+    }
+
+    /// An uncontended acquire must stay silent — the wait line only earns
+    /// its default visibility when there really is a wait.
+    #[test]
+    fn uncontended_host_lock_reports_no_wait() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        add_archives(&mut ctx, tmp.path(), 2);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        assert!(
+            !capture
+                .all_messages()
+                .iter()
+                .any(|(_, msg)| msg.contains("waiting for the host-level TUF lock")),
+            "an uncontended lock must not announce a wait"
+        );
+    }
+
+    /// A `TUF_ROOT` that renders per artifact puts jobs on different stores,
+    /// which one lock cannot cover — the run must say so.
+    #[test]
+    fn jobs_with_different_tuf_roots_are_reported() {
+        use anodizer_core::artifact::Artifact;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        // `Os` is seeded per binary from its target, so a templated TUF_ROOT
+        // resolves to a different store for each of these two jobs.
+        let mut signs = stub_signs(&stub, &state);
+        signs[0].env.as_mut().unwrap().push(format!(
+            "TUF_ROOT={}/{}",
+            tmp.path().display(),
+            "{{ Os }}"
+        ));
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .binary_signs(signs)
+            .sealed_env()
+            .build();
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"] {
+            let path = tmp.path().join(format!("myapp-{target}"));
+            std::fs::write(&path, "binary").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: format!("myapp-{target}"),
+                path,
+                target: Some(target.to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+        BinarySignStage
+            .run(&mut ctx)
+            .expect("all stub signs succeed");
+
+        assert!(
+            capture
+                .all_messages()
+                .iter()
+                .any(|(_, msg)| msg.contains("keyless jobs resolve different TUF_ROOT values")),
+            "per-artifact TUF_ROOT values must be reported: {:?}",
+            capture.all_messages()
+        );
     }
 
     /// Docker image signing is a keyless cosign spawn site too: the loop is

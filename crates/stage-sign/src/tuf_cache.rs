@@ -80,8 +80,25 @@ pub(crate) fn keyless_cosign_host_lock(
     log: &StageLogger,
 ) -> Option<TufInitLock> {
     let dir = tuf_cache_dir(config_env, env)?;
-    match TufInitLock::acquire(&dir) {
-        Ok(lock) => Some(lock),
+    let file = match TufInitLock::open_sentinel(&dir) {
+        Ok(file) => file,
+        Err(err) => {
+            log.verbose(&format!(
+                "could not acquire host-level TUF init lock ({err:#}); \
+                 keyless cosign runs unserialized across processes"
+            ));
+            return None;
+        }
+    };
+    // Probe before blocking: waiting here can stall a release for however
+    // long the other process signs, and an unexplained stall gets reported
+    // as a hang.
+    if fs4::FileExt::try_lock(&file).is_ok() {
+        return Some(TufInitLock { file });
+    }
+    log.status("waiting for the host-level TUF lock held by another anodizer process on this host"); // status-ok: explains a multi-minute stall
+    match fs4::FileExt::lock(&file) {
+        Ok(()) => Some(TufInitLock { file }),
         Err(err) => {
             log.verbose(&format!(
                 "could not acquire host-level TUF init lock ({err:#}); \
@@ -102,23 +119,35 @@ pub(crate) struct TufInitLock {
 }
 
 impl TufInitLock {
-    /// Create the cache directory (and parents) if needed, then take an
-    /// exclusive blocking lock on the sentinel file inside it.
-    pub(crate) fn acquire(cache_dir: &Path) -> Result<Self> {
+    /// Create the cache directory (and parents) if needed and open the
+    /// sentinel file inside it, unlocked.
+    fn open_sentinel(cache_dir: &Path) -> Result<File> {
         std::fs::create_dir_all(cache_dir)
             .with_context(|| format!("creating sigstore TUF cache dir {}", cache_dir.display()))?;
         let path = cache_dir.join(LOCK_SENTINEL);
-        let file = File::options()
+        File::options()
             .create(true)
             .truncate(false)
             .write(true)
             .open(&path)
-            .with_context(|| format!("opening TUF init lock sentinel {}", path.display()))?;
+            .with_context(|| format!("opening TUF init lock sentinel {}", path.display()))
+    }
+
+    /// Create the cache directory (and parents) if needed, then take an
+    /// exclusive blocking lock on the sentinel file inside it. Production
+    /// goes through [`keyless_cosign_host_lock`], which probes first.
+    #[cfg(test)]
+    pub(crate) fn acquire(cache_dir: &Path) -> Result<Self> {
+        let file = Self::open_sentinel(cache_dir)?;
         // Explicit trait call: on toolchains ≥1.89 `std::fs::File` grew an
         // inherent `lock` that would otherwise shadow the fs4 method; on the
         // 1.87 MSRV only the fs4 method exists.
-        fs4::FileExt::lock(&file)
-            .with_context(|| format!("locking TUF init sentinel {}", path.display()))?;
+        fs4::FileExt::lock(&file).with_context(|| {
+            format!(
+                "locking TUF init sentinel {}",
+                cache_dir.join(LOCK_SENTINEL).display()
+            )
+        })?;
         Ok(Self { file })
     }
 }
