@@ -6809,9 +6809,10 @@ mod archive_name_guard {
     }
 }
 
-/// One read policy for `metadata["binary"]` in this stage: every caller goes
-/// through `binary_var`, so a build artifact missing the key is named by its
-/// file name everywhere instead of by "" here and the crate name there.
+/// One read policy for a binary's name across the workspace:
+/// `Artifact::binary_name`. This stage never reads the metadata key itself,
+/// so a build artifact missing the key is named by its file name everywhere
+/// instead of by "" here and the crate name there.
 mod binary_name_read_policy {
     use std::collections::HashMap;
     use std::fs;
@@ -6842,7 +6843,10 @@ mod binary_name_read_policy {
     }
 
     #[test]
-    fn metadata_binary_is_read_only_through_binary_var() {
+    fn metadata_binary_is_never_read_raw_in_this_stage() {
+        // The workspace-wide guard is `.claude/scripts/audit-binary-name.sh`;
+        // this pin keeps the stage's own population at zero even when the
+        // audit is not on the path a contributor ran.
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut hits: Vec<(String, usize)> = Vec::new();
         for entry in fs::read_dir(&src).unwrap() {
@@ -6856,38 +6860,21 @@ mod binary_name_read_policy {
             }
             let body = fs::read_to_string(&path).unwrap();
             for (i, line) in body.lines().enumerate() {
-                // The read is matched on `.get("binary")` alone: rustfmt
-                // splits the receiver onto its own line, so the whole
-                // `metadata.get("binary")` phrase never appears in one line.
-                if line.contains(".get(\"binary\")") {
+                // Matched on the call shape alone: rustfmt splits the
+                // receiver onto its own line, so `metadata.get("binary")`
+                // never appears in one line of source.
+                if line.contains(".get(\"binary\")")
+                    || line.contains("[\"binary\"]")
+                    || line.contains("contains_key(\"binary\")")
+                    || line.contains("remove(\"binary\")")
+                {
                     hits.push((name.clone(), i + 1));
                 }
             }
         }
-        assert_eq!(
-            hits.len(),
-            1,
-            "every `binary` metadata read must go through `binary_var`; found {hits:?}"
-        );
-        assert_eq!(hits[0].0, "run_helpers.rs", "{hits:?}");
-
-        let helpers = fs::read_to_string(src.join("run_helpers.rs")).unwrap();
-        let lines: Vec<&str> = helpers.lines().collect();
-        let start = lines
-            .iter()
-            .position(|l| l.starts_with("pub(crate) fn binary_var("))
-            .expect("binary_var moved or renamed");
-        let end = lines[start + 1..]
-            .iter()
-            .position(|l| l.starts_with("pub(crate) fn "))
-            .map(|i| start + 1 + i)
-            .unwrap_or(lines.len());
-        let hit_line = hits[0].1 - 1;
         assert!(
-            hit_line > start && hit_line < end,
-            "the read sits outside `binary_var` (lines {}..{}): {hits:?}",
-            start + 1,
-            end + 1
+            hits.is_empty(),
+            "every binary name must come from `Artifact::binary_name`; found {hits:?}"
         );
     }
 }

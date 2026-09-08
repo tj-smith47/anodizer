@@ -308,6 +308,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-tag-family.sh
 
+  audit:binary-name:
+    desc: "Guard: an artifact's binary name is read only through Artifact::binary_name (.claude/scripts/audit-binary-name.sh)."
+    cmds:
+      - .claude/scripts/audit-binary-name.sh
+
   audit:test-isolation:
     desc: "Guard: no unjustified process-global env mutation in tests (serial/seam/env-ok)."
     cmds:
@@ -357,6 +362,7 @@ tasks:
       - task: audit:log
       - task: audit:log-labels
       - task: audit:tag-family
+      - task: audit:binary-name
       - task: audit:test-isolation
       - task: audit:test-spawn
       - task: audit:repo-identity

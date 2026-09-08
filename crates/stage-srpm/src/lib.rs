@@ -97,7 +97,7 @@ impl Stage for SrpmStage {
             ctx.artifacts
                 .by_kind(ArtifactKind::Binary)
                 .iter()
-                .filter_map(|a| a.extra_binary()),
+                .filter_map(|a| a.binary_name()),
         );
 
         let source_archive = &source_archives[0];
@@ -1310,7 +1310,7 @@ mod tests {
     }
 
     /// Add a `Binary` artifact carrying the `binary` metadata key that
-    /// `extra_binary()` reads, under the given crate name + target. Mirrors
+    /// `binary_name()` reads, under the given crate name + target. Mirrors
     /// how the build stage registers binaries so the test drives the real
     /// `ctx.artifacts.by_kind(Binary)` query the stage runs.
     #[cfg(test)]
@@ -1355,7 +1355,7 @@ mod tests {
             ctx.artifacts
                 .by_kind(ArtifactKind::Binary)
                 .iter()
-                .filter_map(|a| a.extra_binary()),
+                .filter_map(|a| a.binary_name()),
         );
 
         // Both crates' binaries present, deduped to one entry each.
@@ -1406,10 +1406,45 @@ mod tests {
             ctx.artifacts
                 .by_kind(ArtifactKind::Binary)
                 .iter()
-                .filter_map(|a| a.extra_binary()),
+                .filter_map(|a| a.binary_name()),
         );
         let mut expected = BTreeMap::new();
         expected.insert("solo".to_string(), "%{_bindir}/solo".to_string());
+        assert_eq!(effective_bins, expected);
+    }
+
+    /// A `Binary` artifact carrying no `binary` metadata still lands in
+    /// `%files` — under its file name, the same name every other stage
+    /// gives it.
+    #[test]
+    fn test_default_bins_name_a_metadata_less_binary_by_its_file_name() {
+        let config = anodizer_core::config::Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/x86_64-unknown-linux-gnu/solo-helper"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "solo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let effective_bins: BTreeMap<String, String> = resolve_bins(
+            None,
+            ctx.artifacts
+                .by_kind(ArtifactKind::Binary)
+                .iter()
+                .filter_map(|a| a.binary_name()),
+        );
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            "solo-helper".to_string(),
+            "%{_bindir}/solo-helper".to_string(),
+        );
         assert_eq!(effective_bins, expected);
     }
 

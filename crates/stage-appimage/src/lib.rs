@@ -562,9 +562,7 @@ fn collect_config_jobs(
             .join(format!("{app_name}.AppDir"));
 
         let binary_name = primary
-            .metadata
-            .get("binary")
-            .cloned()
+            .binary_name()
             .unwrap_or_else(|| primary.name.clone());
 
         if dry_run {

@@ -275,9 +275,8 @@ pub(crate) fn render_scoop_manifest_for_crate(
         log,
     )?;
 
-    // Collect binary names from artifact metadata. The archive stage stores
-    // the binary name in the `"binary"` metadata key. Deduplicate to a unique
-    // set of binary names across all architecture variants.
+    // Collect binary names through the one artifact accessor, deduplicated to
+    // a unique set across all architecture variants.
     //
     // Gated on the same `filters.matches` the arch-entry collector above
     // applies — not a looser Windows-only check — so a binary name from an
@@ -291,10 +290,10 @@ pub(crate) fn render_scoop_manifest_for_crate(
             if !filters.matches(a) {
                 continue;
             }
-            if let Some(bin) = a.metadata.get("binary")
-                && !names.contains(bin)
+            if let Some(bin) = a.binary_name()
+                && !names.contains(&bin)
             {
-                names.push(bin.clone());
+                names.push(bin);
             }
         }
         names

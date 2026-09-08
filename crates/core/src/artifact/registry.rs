@@ -90,9 +90,29 @@ impl Artifact {
             .unwrap_or_default()
     }
 
-    /// Return the single binary name for an uploadable binary artifact.
-    pub fn extra_binary(&self) -> Option<String> {
-        self.metadata.get("binary").cloned()
+    /// The name of the binary this artifact is: the `binary` metadata the
+    /// build stage records, else — for a binary-like kind (`Binary`,
+    /// `UploadableBinary`, `UniversalBinary`) — the on-disk file name with a
+    /// trailing `.exe` removed. `None` for any other kind without the key:
+    /// an archive's file name is not a binary name, and the last-resort
+    /// substitute (a crate or package name) is the caller's to choose.
+    pub fn binary_name(&self) -> Option<String> {
+        if let Some(name) = self.metadata.get("binary") {
+            return Some(name.clone());
+        }
+        if !matches!(
+            self.kind,
+            ArtifactKind::Binary | ArtifactKind::UploadableBinary | ArtifactKind::UniversalBinary
+        ) {
+            return None;
+        }
+        let file_name = self.path.file_name()?.to_string_lossy();
+        Some(
+            file_name
+                .strip_suffix(".exe")
+                .unwrap_or(&file_name)
+                .to_string(),
+        )
     }
 
     /// Resolve the artifact's canonical file extension (including the leading

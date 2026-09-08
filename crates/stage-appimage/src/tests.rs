@@ -635,6 +635,46 @@ fn build_ctx_with_binaries(dist: &Path, targets: &[&str]) -> Context {
     ctx
 }
 
+/// A binary artifact without `binary` metadata is staged under its file
+/// name — the same name every other stage gives it — not under an empty or
+/// crate-derived one.
+#[test]
+fn metadata_less_binary_is_staged_under_its_file_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut ctx = build_ctx_with_binaries(&dist, &[]);
+    let p = dist.join("myhelper");
+    fs::write(&p, b"bin").unwrap();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: p,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    let cfg = appimage_fixture(tmp.path());
+    let log = ctx.logger("appimage");
+    let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
+    collect_config_jobs(
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
+    )
+    .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].binary_name, "myhelper");
+}
+
 fn appimage_fixture(tmp: &Path) -> AppImageConfig {
     let desktop = tmp.join("MyApp.desktop");
     write(&desktop, b"[Desktop Entry]\nName=MyApp\n");

@@ -132,12 +132,11 @@ fn append_entries(out: &mut Vec<ResolvedExtraFile>, files: Vec<PathBuf>, dst: &s
 }
 
 /// Resolve which binary name to use in templates (`{{ .Binary }}`): the host
-/// binary's name through the stage's one naming fallback
-/// ([`crate::run_helpers::binary_var`]), or the crate name when there is no
+/// binary's [`Artifact::binary_name`], or the crate name when there is no
 /// host binary at all — modes B/C never build one.
 pub(crate) fn binary_name(host_binary: Option<&Artifact>, crate_name: &str) -> String {
     host_binary
-        .map(crate::run_helpers::binary_var)
+        .and_then(Artifact::binary_name)
         .unwrap_or_else(|| crate_name.to_string())
 }
 

@@ -103,10 +103,10 @@ pub(crate) fn collect_windows_binary_names_by_target(
         if !target.to_ascii_lowercase().contains("windows") {
             continue;
         }
-        if let Some(bin_name) = b.metadata.get("binary") {
+        if let Some(bin_name) = b.binary_name() {
             let entry = map.entry(target.to_string()).or_default();
-            if !entry.contains(bin_name) {
-                entry.push(bin_name.clone());
+            if !entry.contains(&bin_name) {
+                entry.push(bin_name);
             }
         }
     }

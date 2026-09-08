@@ -127,7 +127,7 @@ pub(super) fn render_install_and_test_blocks(
             anodizer_core::artifact::ArtifactKind::UploadableBinary,
             crate_name,
         ) {
-            if let Some(bin) = art.extra_binary() {
+            if let Some(bin) = art.binary_name() {
                 if art.name() != bin {
                     // The fragment closes and reopens the Ruby string literal
                     // to emit `bin.install "<name>" => "<bin>"`; escape each

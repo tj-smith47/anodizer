@@ -21,7 +21,7 @@ use crate::file_specs::{
 use crate::formats;
 use crate::run::resolve_host_binary;
 use crate::run_helpers::{
-    binary_var, claim_output_path, render_archive_templated_files, render_binary_outputs,
+    claim_output_path, render_archive_templated_files, render_binary_outputs,
     resolve_archive_mtime, write_archive_in_format,
 };
 use crate::{
@@ -234,7 +234,7 @@ pub(crate) fn archive_one_config(
                         // Same name a `binaries:` entry would be written
                         // against: matching a missing key as "" drops the
                         // binary silently and skips the whole target.
-                        names.contains(&binary_var(b))
+                        names.contains(&b.binary_name().unwrap_or_default())
                     }
                 })
                 .collect();
@@ -309,7 +309,7 @@ pub(crate) fn archive_one_config(
             // itself: leaving `Binary` at the previous target's value renders
             // this target's stem from a different binary's name.
             if let Some(bin) = selected_bins.first() {
-                tvars.set("Binary", &binary_var(bin));
+                tvars.set("Binary", &bin.binary_name().unwrap_or_default());
             }
 
             // Render name
@@ -385,7 +385,7 @@ pub(crate) fn archive_one_config(
                     if !b.path.exists() && !dry_run {
                         anyhow::bail!(
                             "binary artifact missing: {} (expected at {})",
-                            binary_var(b),
+                            b.binary_name().unwrap_or_default(),
                             b.path.display()
                         );
                     }
@@ -826,8 +826,10 @@ pub(crate) fn archive_one_config(
                 // the artifact registry, which can pick up HashMap
                 // iteration order from earlier stages and surface as
                 // mid-of-file drift in `artifacts.json`.
-                let mut bin_names: Vec<String> =
-                    selected_bins.iter().map(|b| binary_var(b)).collect();
+                let mut bin_names: Vec<String> = selected_bins
+                    .iter()
+                    .map(|b| b.binary_name().unwrap_or_default())
+                    .collect();
                 bin_names.sort();
                 if !bin_names.is_empty() {
                     metadata.insert("extra_binaries".to_string(), bin_names.join(","));
@@ -900,7 +902,8 @@ pub(crate) fn archive_one_config(
                     // created on disk.
                     for (stem, dest, bin) in &binary_outputs {
                         let mut per_bin_meta = metadata.clone();
-                        per_bin_meta.insert("binary".to_string(), binary_var(bin));
+                        per_bin_meta
+                            .insert("binary".to_string(), bin.binary_name().unwrap_or_default());
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::UploadableBinary,
                             name: stem.clone(),

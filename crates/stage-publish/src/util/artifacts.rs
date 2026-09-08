@@ -124,13 +124,13 @@ fn artifact_to_os_artifact(
     let arm_variant = a.metadata.get("arm_variant").cloned();
     let target = a.target.as_deref().unwrap_or("");
     // Prefer archive's first extra_binaries entry; fall back to the artifact's
-    // own `binary` metadata (set on UploadableBinary). None when this artifact
-    // has no associated binary name (caller may substitute crate_name).
+    // own binary name (an UploadableBinary). None when this artifact has no
+    // associated binary name (caller may substitute crate_name).
     let binary = a
         .extra_binaries()
         .into_iter()
         .next()
-        .or_else(|| a.metadata.get("binary").cloned());
+        .or_else(|| a.binary_name());
     let wrap_in_directory = a
         .metadata
         .get("wrap_in_directory")
@@ -317,6 +317,23 @@ mod tests {
         a.metadata.insert("url".to_string(), url.to_string());
         a.metadata.insert("sha256".to_string(), sha256.to_string());
         a
+    }
+
+    /// An `UploadableBinary` with no `binary` metadata still names its
+    /// binary — by its file name without `.exe` — so a publisher does not
+    /// fall through to the crate name for an artifact that carries one.
+    #[test]
+    fn artifact_to_os_artifact_names_a_metadata_less_binary_by_its_file_name() {
+        let mut a = bare_archive("x86_64-pc-windows-msvc");
+        a.kind = ArtifactKind::UploadableBinary;
+        a.path = PathBuf::from("dist/tool-1.0.0-x86_64-pc-windows-msvc.exe");
+        a.metadata
+            .insert("sha256".to_string(), "abc123".to_string());
+        let os = artifact_to_os_artifact(&a, "windows", false).unwrap();
+        assert_eq!(
+            os.binary.as_deref(),
+            Some("tool-1.0.0-x86_64-pc-windows-msvc")
+        );
     }
 
     /// Missing `metadata["url"]` must produce a descriptive error rather than

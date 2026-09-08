@@ -1578,3 +1578,65 @@ fn third_registration_warns_even_when_it_matches_the_first_path() {
          got {hits} warning(s): {captured:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Artifact::binary_name — the one binary-name policy
+// ---------------------------------------------------------------------------
+
+fn binary_at(kind: ArtifactKind, path: &str, metadata: HashMap<String, String>) -> Artifact {
+    Artifact {
+        kind,
+        path: PathBuf::from(path),
+        name: String::new(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+#[test]
+fn binary_name_prefers_metadata() {
+    let a = binary_at(
+        ArtifactKind::Binary,
+        "dist/x86_64-pc-windows-msvc/renamed.exe",
+        HashMap::from([("binary".to_string(), "myapp".to_string())]),
+    );
+    assert_eq!(a.binary_name().as_deref(), Some("myapp"));
+}
+
+#[test]
+fn binary_name_falls_back_to_file_name_without_exe() {
+    for kind in [
+        ArtifactKind::Binary,
+        ArtifactKind::UploadableBinary,
+        ArtifactKind::UniversalBinary,
+    ] {
+        let win = binary_at(
+            kind,
+            "dist/x86_64-pc-windows-msvc/myapp.exe",
+            HashMap::new(),
+        );
+        assert_eq!(win.binary_name().as_deref(), Some("myapp"), "{kind:?}");
+        let nix = binary_at(kind, "dist/x86_64-unknown-linux-gnu/myapp", HashMap::new());
+        assert_eq!(nix.binary_name().as_deref(), Some("myapp"), "{kind:?}");
+    }
+}
+
+#[test]
+fn binary_name_is_metadata_only_for_non_binary_kinds() {
+    // An archive's file name is not a binary name; without the key the
+    // caller chooses its own last resort.
+    let archive = binary_at(
+        ArtifactKind::Archive,
+        "dist/myapp_1.0.0_linux_amd64.tar.gz",
+        HashMap::new(),
+    );
+    assert_eq!(archive.binary_name(), None);
+    let tagged = binary_at(
+        ArtifactKind::Archive,
+        "dist/myapp_1.0.0_linux_amd64.tar.gz",
+        HashMap::from([("binary".to_string(), "myapp".to_string())]),
+    );
+    assert_eq!(tagged.binary_name().as_deref(), Some("myapp"));
+}

@@ -1118,3 +1118,55 @@ fn winget_archive_without_sha256_metadata_bails_with_actionable_error() {
         "error must explain downstream consequence, got: {msg}"
     );
 }
+
+/// A Windows `Binary` carrying no `binary` metadata is still named — by its
+/// file name without `.exe` — so the zip installer's `NestedInstallerFiles`
+/// does not silently drop it.
+#[test]
+fn windows_binary_names_fall_back_to_the_file_name_without_exe() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![winget_crate("widget")])
+        .build();
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::Binary,
+        path: std::path::PathBuf::from("/dist/x86_64-pc-windows-msvc/widget.exe"),
+        name: String::new(),
+        target: Some("x86_64-pc-windows-msvc".to_string()),
+        crate_name: "widget".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    let by_target = crate::winget::fields::collect_windows_binary_names_by_target(&ctx, "widget");
+    assert_eq!(
+        by_target.get("x86_64-pc-windows-msvc").map(Vec::as_slice),
+        Some(&["widget".to_string()][..])
+    );
+}
+
+/// A portable `UploadableBinary` with no `binary` metadata gets its command
+/// from the file name (without `.exe`); the package name is only the last
+/// resort when the artifact carries no name at all.
+#[test]
+fn portable_installer_command_falls_back_to_the_file_name_without_exe() {
+    let ctx = TestContextBuilder::new()
+        .crates(vec![winget_crate("widget")])
+        .build();
+    let mut meta = std::collections::HashMap::new();
+    meta.insert("sha256".to_string(), "a".repeat(64));
+    meta.insert(
+        "url".to_string(),
+        "https://github.com/acme/widget/releases/download/v1.0.0/wdg.exe".to_string(),
+    );
+    let a = anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::UploadableBinary,
+        path: std::path::PathBuf::from("/dist/wdg.exe"),
+        name: "wdg.exe".to_string(),
+        target: Some("x86_64-pc-windows-msvc".to_string()),
+        crate_name: "widget".to_string(),
+        metadata: meta,
+        size: None,
+    };
+    let item = build_portable_installer(&ctx, &a, None, "widget", "1.0.0", None)
+        .expect("portable installer with sha256 + url builds");
+    assert_eq!(item.commands, vec!["wdg".to_string()]);
+}

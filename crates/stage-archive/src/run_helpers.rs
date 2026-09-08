@@ -73,22 +73,6 @@ fn entries_to_owned(all_entries: &[&ArchiveEntry]) -> Vec<ArchiveEntry> {
         .collect()
 }
 
-/// The `{{ .Binary }}` value for a build artifact: the `binary` metadata the
-/// build stage records, falling back to the on-disk file name. Without the
-/// fallback an artifact missing the key would leave the template var holding
-/// the PREVIOUS binary's name and render a false collision.
-pub(crate) fn binary_var(bin: &Artifact) -> String {
-    bin.metadata
-        .get("binary")
-        .cloned()
-        .or_else(|| {
-            bin.path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-        })
-        .unwrap_or_default()
-}
-
 /// Render one `(stem, dest, source)` triple per binary for `format: binary`,
 /// each named by `name_tmpl` evaluated with THAT binary's `{{ .Binary }}`.
 ///
@@ -105,7 +89,8 @@ pub(crate) fn render_binary_outputs<'a>(
 ) -> Result<Vec<(String, PathBuf, &'a Artifact)>> {
     let mut outs = Vec::with_capacity(selected_bins.len());
     for bin in selected_bins {
-        ctx.template_vars_mut().set("Binary", &binary_var(bin));
+        ctx.template_vars_mut()
+            .set("Binary", &bin.binary_name().unwrap_or_default());
         let stem = ctx.render_template(name_tmpl).with_context(|| {
             format!("archive: render binary name template for {crate_name}/{target}")
         })?;
@@ -121,7 +106,7 @@ pub(crate) fn render_binary_outputs<'a>(
                  `{{{{ Version }}}}` or the default \
                  `archive.name_template` instead).",
                 name_tmpl,
-                binary_var(bin),
+                bin.binary_name().unwrap_or_default(),
                 crate_name,
                 target
             );
@@ -137,7 +122,8 @@ pub(crate) fn render_binary_outputs<'a>(
     // Restore the group-representative `.Binary` the rest of
     // this iteration's templates expect.
     if let Some(bin) = selected_bins.first() {
-        ctx.template_vars_mut().set("Binary", &binary_var(bin));
+        ctx.template_vars_mut()
+            .set("Binary", &bin.binary_name().unwrap_or_default());
     }
     Ok(outs)
 }

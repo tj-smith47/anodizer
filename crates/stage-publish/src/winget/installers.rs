@@ -208,11 +208,7 @@ pub(crate) fn build_portable_installer(
             a.path.display()
         );
     }
-    let cmd = a
-        .metadata
-        .get("binary")
-        .cloned()
-        .unwrap_or_else(|| name.to_string());
+    let cmd = a.binary_name().unwrap_or_else(|| name.to_string());
     Ok(WingetInstallerItem {
         architecture: arch.to_string(),
         url: resolved_url,

@@ -164,6 +164,39 @@ fn single_crate_ctx(hb: HomebrewConfig, artifacts: Vec<Artifact>) -> Context {
     ctx
 }
 
+/// A metadata-less `UploadableBinary` still installs under its own name: the
+/// file name is the binary name, so no `=>` rename fragment is emitted and
+/// the formula does not fall through to `bin.install "<crate>"`.
+#[test]
+fn install_block_names_a_metadata_less_binary_by_its_file_name() {
+    let ctx = single_crate_ctx(
+        HomebrewConfig::default(),
+        vec![Artifact {
+            kind: ArtifactKind::UploadableBinary,
+            path: std::path::PathBuf::from("dist/mytool-cli"),
+            name: String::new(),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+    );
+    let code = render_install_and_test_blocks(
+        &ctx,
+        &HomebrewConfig::default(),
+        "mytool",
+        "1.2.3",
+        &quiet_log(),
+    )
+    .expect("render");
+    assert!(
+        code.install.contains("bin.install \"mytool-cli\""),
+        "{}",
+        code.install
+    );
+    assert!(!code.install.contains("=>"), "{}", code.install);
+}
+
 // ===================================================================
 // collect_archive_entries / homebrew_matching_artifacts — filter +
 // disambiguation + error paths feeding the formula renderer.
