@@ -222,6 +222,10 @@ fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateCon
         .crate_universe()
         .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        // A crate the release stage skipped has no release to name, capture or
+        // roll back; emitting a target for it makes `PublishEvidence.primary_ref`
+        // point at a release that was never created.
+        .filter(|c| !ctx.stage_outputs.release_skipped_crates.contains(&c.name))
         .filter(|c| {
             let Some(release_cfg) = c.release.as_ref() else {
                 return false;
@@ -1341,6 +1345,23 @@ mod publisher_tests {
         assert_eq!(targets[0].owner, "acme");
         assert_eq!(targets[0].repo, "widget");
         assert!(targets[0].release_id.is_none(), "id not yet captured");
+    }
+
+    /// A crate the release stage skipped has no release: emitting a target
+    /// for it makes the id lookup 404 and puts a non-existent release in
+    /// `PublishEvidence.primary_ref`.
+    #[test]
+    fn collect_release_targets_excludes_crates_the_release_stage_skipped() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                github_release_crate("demo"),
+                github_release_crate("other"),
+            ])
+            .build();
+        ctx.stage_outputs.release_skipped_crates = vec!["demo".to_string()];
+        let targets = collect_release_targets(&ctx).expect("collect ok");
+        let names: Vec<&str> = targets.iter().map(|t| t.crate_name.as_str()).collect();
+        assert_eq!(names, vec!["other"]);
     }
 
     /// The tag the publisher captures by MUST be the tag the release stage

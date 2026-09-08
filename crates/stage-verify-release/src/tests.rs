@@ -4242,6 +4242,29 @@ fn crates_to_verify_excludes_crates_the_release_stage_skipped() {
     assert_eq!(names, vec!["app".to_string()]);
 }
 
+/// The pre-publish gate must apply the SAME filter: its own inline crate
+/// list would send it probing GitHub for a release the run deliberately
+/// never created, turning an intentional skip into a 404 that blocks every
+/// one-way-door publisher behind it. With the only published crate skipped
+/// the gate has nothing to verify and passes without any network call.
+#[test]
+fn asset_gate_excludes_crates_the_release_stage_skipped() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.verify_release = anodizer_core::config::VerifyReleaseConfig {
+        enabled: true,
+        assert_assets: true,
+        ..Default::default()
+    };
+    ctx.stage_outputs.release_skipped_crates = vec!["app".to_string()];
+    assert!(
+        crate::run_asset_gate(&mut ctx).expect("gate must not error"),
+        "a gate with no crates left to verify passes",
+    );
+}
+
 /// The exclusion is additive to the existing filters, not a replacement:
 /// with nothing skipped every crate carrying a release block is verified.
 #[test]

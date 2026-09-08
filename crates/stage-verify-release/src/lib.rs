@@ -448,15 +448,7 @@ pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
     }
 
     let log = ctx.logger(STAGE_NAME);
-    let selected = ctx.options.selected_crates.clone();
-    let crates: Vec<CrateConfig> = ctx
-        .config
-        .crate_universe()
-        .into_iter()
-        .filter(|c| c.release.is_some())
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
-        .cloned()
-        .collect();
+    let crates: Vec<CrateConfig> = crates_to_verify(ctx);
     if crates.is_empty() {
         return Ok(true);
     }
