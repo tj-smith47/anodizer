@@ -78,8 +78,8 @@ non-zero, so CI fails before a release goes out:
 
 ```text
 $ anodizer check version-files
-STALE: charts/myapp/Chart.yaml (expected 0.2.0, not found)
-Error: version_files check failed with 1 finding(s)
+       Error STALE: charts/myapp/Chart.yaml (expected 0.2.0, not found)
+       Error version_files check failed with 1 finding(s)
 $ echo $?
 1
 ```
@@ -88,7 +88,7 @@ When everything is in sync the command exits 0:
 
 ```text
 $ anodizer check version-files
-all 3 version_files are in sync
+   • all 3 version_files are in sync
 ```
 
 When no crate enrolls any `version_files`, the guard is a no-op and exits 0 with

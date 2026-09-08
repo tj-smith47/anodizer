@@ -85,9 +85,10 @@ flaking:
   prevent it. Keyed cosign (`--key=…`) never contacts Fulcio/Rekor and keeps
   the full `--parallelism`.
 
-      $ anodizer release -v
-      [sign] signing 27 artifacts with parallelism=1
-      [sign] keyless cosign: serializing 27 invocation(s) — concurrent invocations collide on the sigstore TUF trust store
+      $ anodizer release --verbose
+           Signing artifacts
+           • keyless cosign: serializing 2 invocation(s) — concurrent invocations collide on the sigstore TUF trust store
+           • signing 2 artifacts with parallelism=1
 
 - **Transient retry** — failed cosign invocations are retried up to 5 attempts
   with jittered exponential backoff (2s base, 15s cap; ~29s total spread),

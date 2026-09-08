@@ -185,7 +185,7 @@ archives:
 ```
 
 ```console
-[archive] binary format ignores the files: entries for crate 'myapp' target 'x86_64-unknown-linux-gnu'
+     • binary format ignores the files: entries for crate 'myapp' target 'x86_64-unknown-linux-gnu'
 ```
 
 Windows targets keep the `.exe` suffix. `before:` / `after:` archive hooks do
@@ -194,7 +194,7 @@ entry that selects no binaries at all (`meta: true`) produces nothing under
 `binary` and says so:
 
 ```console
-[archive] skipped archive for myapp/unknown — meta archive under format: binary carries no binaries
+     • skipped archive for myapp/unknown — meta archive under format: binary carries no binaries
 ```
 
 ### Changed in this release
@@ -231,10 +231,10 @@ retried `release --merge`, or any run over a `dist/` a previous attempt already
 populated — rewrites its own archives rather than refusing:
 
 ```console
-$ anodizer release --prepare        # writes dist/myapp-1.0.0-linux-amd64.tar.gz
-$ anodizer release -v               # converges over it
-[archive] replacing existing archive 'myapp-1.0.0-linux-amd64.tar.gz' left by an earlier run
-[archive] creating ./dist/myapp-1.0.0-linux-amd64.tar.gz
+$ anodizer release --split                    # writes dist/myapp-1.0.0-linux-amd64.tar.gz
+$ anodizer release --merge --verbose           # converges over it
+     • replacing existing archive 'myapp-1.0.0-linux-amd64.tar.gz' left by an earlier run
+     • creating ./dist/myapp-1.0.0-linux-amd64.tar.gz
 ```
 
 A `name_template` that renders the same filename twice **within one run** is
