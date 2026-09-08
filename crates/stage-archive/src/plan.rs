@@ -106,6 +106,7 @@ impl CratePlan {
                             crate_name: &self.crate_name,
                             target: Some(&tp.target),
                             amd64_variant: tp.group_variant.as_deref(),
+                            entry: cfg.index,
                             exposed: &fp.exposed,
                         };
                         if fp.format == "binary" {

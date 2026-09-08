@@ -168,7 +168,7 @@ fn collect_nfpm_jobs_for_crate(
     // second silently clobber the first.
     let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
 
-    for nfpm_cfg in nfpm_configs {
+    for (entry, nfpm_cfg) in nfpm_configs.iter().enumerate() {
         let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
 
         if should_skip_nfpm_config(ctx, nfpm_cfg, &nfpm_id_for_log, log)? {
@@ -194,6 +194,7 @@ fn collect_nfpm_jobs_for_crate(
                     ctx,
                     log,
                     nfpm_cfg,
+                    entry,
                     &krate.name,
                     &linux_binaries,
                     target,
@@ -226,6 +227,7 @@ fn process_nfpm_format(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    entry: usize,
     crate_name: &str,
     linux_binaries: &[Artifact],
     target: &Option<String>,
@@ -367,6 +369,7 @@ fn process_nfpm_format(
         crate_name,
         target: target.as_deref(),
         amd64_variant,
+        entry,
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

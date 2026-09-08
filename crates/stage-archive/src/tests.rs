@@ -5983,6 +5983,71 @@ mod archive_name_guard {
         assert!(err.contains("more than once"), "{err}");
     }
 
+    /// ONE `archives:` entry shipping two binaries on one target through a
+    /// template with no `{{ .Binary }}`: the two outputs differ only by which
+    /// binary they hold, so the remedy names `{{ .Binary }}` — never "give
+    /// each config entry a distinct name", which cannot separate one entry.
+    #[test]
+    fn one_entry_two_binaries_on_one_target_advises_the_binary_var() {
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg(
+            "default",
+            Some("{{ .ProjectName }}_{{ .Os }}"),
+            &["binary"],
+        )];
+        let target = "x86_64-unknown-linux-gnu";
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[target], false, false);
+        let bin_path = tmp.path().join(target).join("myhelper");
+        fs::write(&bin_path, format!("binary myhelper {target}")).unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myhelper".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("archives:"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(
+            err.contains("add '{{ .Binary }}' to the `name_template`"),
+            "{err}"
+        );
+        assert!(!err.contains("give each config entry"), "{err}");
+    }
+
+    /// Two `archives:` entries on one target render the same `.Binary`, so
+    /// the remedy is a distinct `name_template` per entry instead.
+    #[test]
+    fn two_entries_one_binary_on_one_target_advise_distinct_templates() {
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [
+            cfg("a", Some("{{ .ProjectName }}_{{ .Os }}"), &["binary"]),
+            cfg("b", Some("{{ .ProjectName }}_{{ .Os }}"), &["binary"]),
+        ];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("give each config entry a distinct `name_template`"),
+            "{err}"
+        );
+        assert!(!err.contains("{{ .Binary }}"), "{err}");
+    }
+
     #[test]
     fn stale_archive_from_prior_run_is_overwritten() {
         // The known-bugs shape: an earlier attempt left its archive in dist/.

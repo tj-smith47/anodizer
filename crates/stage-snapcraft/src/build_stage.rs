@@ -191,7 +191,7 @@ impl Stage for SnapcraftStage {
             // letting the second silently clobber the first.
             let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
 
-            for snap_cfg in snap_configs {
+            for (entry, snap_cfg) in snap_configs.iter().enumerate() {
                 if validate_and_check_skip(ctx, &log, snap_cfg, &krate.name)? {
                     continue;
                 }
@@ -222,6 +222,7 @@ impl Stage for SnapcraftStage {
                         ctx,
                         &log,
                         snap_cfg,
+                        entry,
                         &krate.name,
                         target_key,
                         amd64_variant.as_deref(),
@@ -351,6 +352,7 @@ fn process_snap_target(
     ctx: &mut Context,
     log: &StageLogger,
     snap_cfg: &SnapcraftConfig,
+    entry: usize,
     crate_name: &str,
     target_key: &str,
     amd64_variant: Option<&str>,
@@ -417,6 +419,7 @@ fn process_snap_target(
         crate_name,
         target: target.as_deref(),
         amd64_variant,
+        entry,
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

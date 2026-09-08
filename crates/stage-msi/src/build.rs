@@ -124,7 +124,7 @@ pub(super) fn process_msi_crate(
 
     let default_name = default_msi_name_template();
 
-    for msi_cfg in msi_configs {
+    for (entry, msi_cfg) in msi_configs.iter().enumerate() {
         let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
 
         if should_skip_msi_config(ctx, msi_cfg, &msi_id_for_log, &krate.name, dry_run, log)? {
@@ -158,6 +158,7 @@ pub(super) fn process_msi_crate(
                 ctx,
                 log,
                 msi_cfg,
+                entry,
                 &krate.name,
                 target,
                 amd64_variant.as_deref(),
@@ -199,6 +200,7 @@ fn build_msi_target(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     msi_cfg: &anodizer_core::config::MsiConfig,
+    entry: usize,
     crate_name: &str,
     target: &Option<String>,
     amd64_variant: Option<&str>,
@@ -261,6 +263,7 @@ fn build_msi_target(
         crate_name,
         target: target.as_deref(),
         amd64_variant,
+        entry,
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

@@ -50,6 +50,7 @@ pub(crate) fn process_binary_iteration(
     dist: &std::path::Path,
     krate: &anodizer_core::config::CrateConfig,
     flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    entry: usize,
     identity: &FlatpakIdentity<'_>,
     version: &str,
     target: &Option<String>,
@@ -93,6 +94,7 @@ pub(crate) fn process_binary_iteration(
         crate_name: &krate.name,
         target: target.as_deref(),
         amd64_variant,
+        entry,
         exposed: &ctx.template_vars().defined_names(),
     })?;
 
@@ -206,6 +208,7 @@ pub(crate) fn process_flatpak_cfg(
     dist: &std::path::Path,
     krate: &anodizer_core::config::CrateConfig,
     flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    entry: usize,
     linux_binaries: &[Artifact],
     version: &str,
     dry_run: bool,
@@ -266,6 +269,7 @@ pub(crate) fn process_flatpak_cfg(
             dist,
             krate,
             flatpak_cfg,
+            entry,
             &identity,
             version,
             target,
@@ -329,7 +333,7 @@ impl Stage for FlatpakStage {
             // instead of letting the second silently clobber the first.
             let mut arch_guard = ArchPathGuard::new();
 
-            for flatpak_cfg in flatpak_configs {
+            for (entry, flatpak_cfg) in flatpak_configs.iter().enumerate() {
                 let mut acc = FlatpakAccumulators {
                     new_artifacts: &mut new_artifacts,
                     jobs: &mut jobs,
@@ -341,6 +345,7 @@ impl Stage for FlatpakStage {
                     &dist,
                     krate,
                     flatpak_cfg,
+                    entry,
                     &linux_binaries,
                     &version,
                     dry_run,

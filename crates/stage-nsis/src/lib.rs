@@ -211,7 +211,7 @@ impl Stage for NsisStage {
                 // clobbering the first; it resets per crate, so distinct crates are
                 // unaffected.
                 let mut arch_guard = ArchPathGuard::new();
-                for nsis_cfg in nsis_configs {
+                for (entry, nsis_cfg) in nsis_configs.iter().enumerate() {
                     let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
 
                     // `nsis.if`: template-conditional skip (opt-in).
@@ -423,6 +423,7 @@ impl Stage for NsisStage {
                             crate_name: &krate.name,
                             target: target.as_deref(),
                             amd64_variant: amd64_variant.as_deref(),
+                            entry,
                             exposed: &name_vars.defined_names(),
                         })?;
 
@@ -2482,7 +2483,13 @@ SectionEnd
         let msg = err.to_string();
         assert!(msg.contains("nsis:"), "{msg}");
         assert!(msg.contains("crate 'myapp'"), "{msg}");
-        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+        // Two ENTRIES on one target render the same `.Binary`, so the remedy
+        // is a distinct `name` per entry, never a template variable.
+        assert!(
+            msg.contains("give each config entry a distinct `name`"),
+            "{msg}"
+        );
+        assert!(!msg.contains("{{ .Binary }}"), "{msg}");
     }
 
     #[test]

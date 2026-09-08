@@ -523,11 +523,12 @@ impl Stage for MakeselfStage {
         // the second silently clobber the first.
         let mut arch_guard = ArchPathGuard::new();
 
-        for cfg in &configs {
+        for (entry, cfg) in configs.iter().enumerate() {
             collect_makeself_config_jobs(
                 ctx,
                 &log,
                 cfg,
+                entry,
                 &dist,
                 &version,
                 &project_name,
@@ -581,6 +582,7 @@ fn collect_makeself_config_jobs(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     cfg: &anodizer_core::config::MakeselfConfig,
+    entry: usize,
     dist: &std::path::Path,
     version: &str,
     project_name: &str,
@@ -658,6 +660,7 @@ fn collect_makeself_config_jobs(
             name,
             name_template,
             script,
+            entry,
             dist,
             version,
             project_name,
@@ -684,6 +687,7 @@ fn build_makeself_platform_job(
     name: &str,
     name_template: &str,
     script: &str,
+    entry: usize,
     dist: &std::path::Path,
     version: &str,
     project_name: &str,
@@ -726,6 +730,7 @@ fn build_makeself_platform_job(
         crate_name: &primary.crate_name,
         target: primary.target.as_deref(),
         amd64_variant,
+        entry,
         exposed: &ctx.template_vars().defined_names(),
     })?;
 
@@ -1329,6 +1334,7 @@ crates:
             &mut ctx,
             &log,
             &cfg,
+            0,
             tmp.path(),
             "1.0.0",
             "myapp",
@@ -1440,6 +1446,7 @@ crates:
             &mut ctx,
             &log,
             &cfg,
+            0,
             tmp.path(),
             "1.0.0",
             "myapp",

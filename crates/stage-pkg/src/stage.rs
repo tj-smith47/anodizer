@@ -197,7 +197,7 @@ impl Stage for PkgStage {
                 // clobbering the first; it resets per crate, so distinct crates are
                 // unaffected.
                 let mut arch_guard = ArchPathGuard::new();
-                for pkg_cfg in pkg_configs {
+                for (entry, pkg_cfg) in pkg_configs.iter().enumerate() {
                     let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
 
                     // `pkg.if`: template-conditional skip (opt-in).
@@ -406,6 +406,7 @@ impl Stage for PkgStage {
                             crate_name: &krate.name,
                             target: target.as_deref(),
                             amd64_variant: amd64_variant.as_deref(),
+                            entry,
                             exposed: &ctx.template_vars().defined_names(),
                         })?;
 

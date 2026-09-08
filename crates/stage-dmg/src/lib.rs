@@ -316,7 +316,7 @@ impl Stage for DmgStage {
                 // name) collide loudly instead of the second silently clobbering the
                 // first; it resets per crate, so distinct crates are unaffected.
                 let mut arch_guard = ArchPathGuard::new();
-                for dmg_cfg in dmgs {
+                for (entry, dmg_cfg) in dmgs.iter().enumerate() {
                     let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
                     // `dmg.if`: template-conditional skip (opt-in).
@@ -527,6 +527,7 @@ impl Stage for DmgStage {
                             crate_name: &krate.name,
                             target: target.as_deref(),
                             amd64_variant: amd64_variant.as_deref(),
+                            entry,
                             exposed: &ctx.template_vars().defined_names(),
                         })?;
 

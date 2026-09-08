@@ -367,11 +367,12 @@ impl Stage for AppImageStage {
         let mut arch_guard = ArchPathGuard::new();
 
         let mut jobs: Vec<AppImageJob> = Vec::new();
-        for cfg in &configs {
+        for (entry, cfg) in configs.iter().enumerate() {
             collect_config_jobs(
                 ctx,
                 &log,
                 cfg,
+                entry,
                 &dist,
                 &version,
                 &project_name,
@@ -411,6 +412,7 @@ fn collect_config_jobs(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     cfg: &anodizer_core::config::AppImageConfig,
+    entry: usize,
     dist: &Path,
     version: &str,
     project_name: &str,
@@ -550,6 +552,7 @@ fn collect_config_jobs(
             crate_name: &primary.crate_name,
             target: primary.target.as_deref(),
             amd64_variant: amd64_variant.as_deref(),
+            entry,
             exposed: &ctx.template_vars().defined_names(),
         })?;
 
