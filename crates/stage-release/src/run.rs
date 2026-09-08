@@ -236,6 +236,11 @@ fn release_one_crate(
 
     ctx.refresh_artifacts_var();
 
+    // Captured BEFORE the anchor: the divergence warning compares the tag the
+    // operator pushed against the one `release.tag` resolved, and the anchor
+    // overwrites `Tag` with the latter.
+    let pushed_tag = ctx.template_vars().get("Tag").cloned();
+
     let tag = resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
     // Every `{{ Tag }}` this crate's release renders — header, footer, blob
     // directory, announce body, compare link — must name the tag the release
@@ -247,7 +252,13 @@ fn release_one_crate(
 
     let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
 
-    warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
+    warn_tag_override_divergence(
+        release_cfg,
+        pushed_tag.as_deref(),
+        &tag,
+        &crate_cfg.name,
+        log,
+    );
 
     // Derive a default `ReleaseURL` from the SCM repo + tag BEFORE the
     // dry-run / backend branches. Without it, any path that never reaches
@@ -333,15 +344,19 @@ fn release_one_crate(
 
 /// Warn when `release.tag` resolves to a value different from the pushed
 /// git tag.
+///
+/// `pushed_tag` must be read BEFORE `anchor_crate_tag` runs: the anchor
+/// replaces `Tag` with the resolved tag, after which the comparison can only
+/// ever find the two equal.
 fn warn_tag_override_divergence(
-    ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
+    pushed_tag: Option<&str>,
     tag: &str,
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
 ) {
     if release_cfg.tag.is_some()
-        && let Some(pushed_tag) = ctx.template_vars().get("Tag")
+        && let Some(pushed_tag) = pushed_tag
         && !pushed_tag.is_empty()
         && pushed_tag != tag
     {
@@ -1774,6 +1789,75 @@ mod tests {
             !notes[1].contains("app-v1.2.3"),
             "operator's body must not carry the previous crate's tag: {}",
             notes[1]
+        );
+    }
+
+    /// The whole point of the warning: a `release.tag` that does not match the
+    /// ref the operator pushed creates a NEW tag at the target commit, which
+    /// is exactly the surprise worth a warning.
+    #[test]
+    fn override_diverging_from_the_pushed_tag_warns() {
+        use anodizer_core::config::ReleaseConfig;
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .crates(vec![anodizer_core::config::CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(ReleaseConfig {
+                    tag: Some("release-{{ Version }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("release-1.2.3") && m.contains("v1.2.3") && m.contains("app")),
+            "expected a divergence warning naming both tags and the crate; got: {warns:?}"
+        );
+    }
+
+    /// An override that resolves to the pushed tag is not a divergence, and a
+    /// warning there would train operators to ignore the real one.
+    #[test]
+    fn matching_tag_does_not_warn() {
+        use anodizer_core::config::ReleaseConfig;
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .crates(vec![anodizer_core::config::CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(ReleaseConfig {
+                    tag: Some("v{{ Version }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
+
+        let warns = capture.warn_messages();
+        assert!(
+            !warns
+                .iter()
+                .any(|m| m.contains("differs from pushed git tag")),
+            "no divergence warning is due when the override matches: {warns:?}"
         );
     }
 }
