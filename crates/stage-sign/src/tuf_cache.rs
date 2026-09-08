@@ -96,12 +96,7 @@ pub(crate) fn keyless_cosign_host_locks(
     env: &dyn EnvSource,
     log: &StageLogger,
 ) -> Vec<TufInitLock> {
-    let mut roots: Vec<PathBuf> = job_envs
-        .iter()
-        .filter_map(|job_env| tuf_cache_dir(job_env, env))
-        .collect();
-    roots.sort();
-    roots.dedup();
+    let roots = distinct_cache_roots(job_envs, env);
     if roots.len() > 1 {
         log.verbose(&format!(
             "keyless jobs resolve {} distinct TUF_ROOT values; locking each: {}",
@@ -117,6 +112,35 @@ pub(crate) fn keyless_cosign_host_locks(
         .iter()
         .filter_map(|root| host_lock_for_dir(root, log))
         .collect()
+}
+
+/// The distinct TUF cache directories a set of per-job envs resolves to, in
+/// sorted order.
+///
+/// De-duplication is by CANONICAL path: two spellings of one store
+/// (`/x/root` and `/x/sub/../root`, a symlinked cache dir) name the same
+/// sentinel file, so treating them as two roots would make one keyless run
+/// block on a lock it already holds. A directory that cannot be created or
+/// canonicalized keeps its literal spelling — locking it is best-effort
+/// anyway.
+fn distinct_cache_roots(job_envs: &[&[(String, String)]], env: &dyn EnvSource) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = job_envs
+        .iter()
+        .filter_map(|job_env| tuf_cache_dir(job_env, env))
+        .map(|root| canonical_cache_dir(&root).unwrap_or(root))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Create the TUF cache directory (and parents) if needed and resolve it to
+/// its canonical form.
+fn canonical_cache_dir(cache_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(cache_dir)
+        .with_context(|| format!("creating sigstore TUF cache dir {}", cache_dir.display()))?;
+    std::fs::canonicalize(cache_dir)
+        .with_context(|| format!("resolving sigstore TUF cache dir {}", cache_dir.display()))
 }
 
 /// Lock one resolved TUF cache directory, probing before blocking.
@@ -162,9 +186,11 @@ pub(crate) struct TufInitLock {
 impl TufInitLock {
     /// Create the cache directory (and parents) if needed and open the
     /// sentinel file inside it, unlocked.
+    ///
+    /// The sentinel is keyed on the directory's CANONICAL path, so two runs
+    /// spelling one store differently contend the same file.
     fn open_sentinel(cache_dir: &Path) -> Result<File> {
-        std::fs::create_dir_all(cache_dir)
-            .with_context(|| format!("creating sigstore TUF cache dir {}", cache_dir.display()))?;
+        let cache_dir = canonical_cache_dir(cache_dir)?;
         let path = cache_dir.join(LOCK_SENTINEL);
         File::options()
             .create(true)
@@ -284,6 +310,43 @@ mod tests {
             tuf_cache_dir(&blank, &process),
             Some(Path::new("/home/u").join(".sigstore").join("root"))
         );
+    }
+
+    /// Two spellings of one store name one sentinel file, so treating them
+    /// as two roots would make a single run block on a lock it already
+    /// holds. They must collapse to one canonical root, and one lock.
+    #[test]
+    fn spellings_of_one_cache_dir_resolve_to_one_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        let plain = vec![("TUF_ROOT".to_string(), root.display().to_string())];
+        // `..` survives `Path` component normalization, so only a real
+        // canonicalization can collapse this onto `root`.
+        let indirect = vec![(
+            "TUF_ROOT".to_string(),
+            tmp.path()
+                .join("sub")
+                .join("..")
+                .join("root")
+                .display()
+                .to_string(),
+        )];
+        let env = MapEnvSource::new();
+
+        let roots = distinct_cache_roots(&[&plain, &indirect], &env);
+        assert_eq!(
+            roots.len(),
+            1,
+            "one store spelled two ways must be one root: {roots:?}"
+        );
+        assert_eq!(roots[0], std::fs::canonicalize(&root).unwrap());
+
+        let log = StageLogger::new("sign", anodizer_core::log::Verbosity::Normal);
+        let locks = keyless_cosign_host_locks(&[&plain, &indirect], &env, &log);
+        assert_eq!(locks.len(), 1, "one root, one lock");
+        assert!(root.join(LOCK_SENTINEL).is_file());
     }
 
     #[test]
