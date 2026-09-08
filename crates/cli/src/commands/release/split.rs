@@ -60,6 +60,10 @@ pub struct SplitArtifact {
 /// Full context serialized during split for merge recovery.
 /// Includes config, git info, template vars, and artifacts.
 ///
+/// The shard's worker identity is NOT a field here: `--merge` derives it
+/// from each artifact's `target` through the same matrix-key function that
+/// wrote `matrix.json`, so the two sides cannot disagree on the axis.
+///
 /// `template_vars`, `env_vars`, and each artifact's `extra` field use
 /// [`BTreeMap`] rather than [`HashMap`] so two `release --split` runs
 /// against the same inputs serialize byte-identically — a hard
@@ -71,7 +75,9 @@ pub struct SplitArtifact {
 /// shard inputs (git HEAD, env, timestamps) are pinned.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SplitContext {
-    /// The partial target that was used for filtering.
+    /// The `dist/` subdirectory this shard wrote (its resolved partial
+    /// target's [`PartialTarget::dist_subdir`](anodizer_core::partial::PartialTarget::dist_subdir)).
+    /// Informational — never compared against `matrix.json`.
     pub partial_target: String,
     /// Template variables (all resolved values at split time).
     pub template_vars: BTreeMap<String, String>,
@@ -332,18 +338,29 @@ pub(super) fn run_split(
     Ok(())
 }
 
+/// The matrix key a build target belongs to: its OS under `split_by: os`,
+/// the full triple under `split_by: target`.
+///
+/// This is the ONE worker identity. `release --split` keys `matrix.json` by
+/// it, and `--merge` re-derives it from the targets each shard actually
+/// built — so a worker whose filter axis differs from the matrix's (a
+/// `--single-target` or `TARGET=<triple>` worker under `split_by: os`, an
+/// `ANODIZER_OS` worker under `split_by: target`) still reconciles.
+fn matrix_key(target: &str, split_by: &str) -> String {
+    if split_by == "os" {
+        anodizer_core::target::map_target(target).0
+    } else {
+        target.to_string()
+    }
+}
+
 /// Build a CI matrix from targets, deduplicating by OS when split_by=os.
 fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for t in targets {
-        let entry_target = if split_by == "os" {
-            let (os, _) = anodizer_core::target::map_target(t);
-            os
-        } else {
-            t.clone()
-        };
+        let entry_target = matrix_key(t, split_by);
 
         if seen.insert(entry_target.clone()) {
             // For target mode, extract OS component for runner suggestion
@@ -362,18 +379,19 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
     }
 }
 
-/// Cross-check the loaded `dist/<target>/context.json` files against the
-/// `matrix.json` written by `release --split`. Errors when the set of
-/// `partial_target` strings claimed by the loaded contexts does not match
-/// the set of `MatrixEntry.target` strings the split job dispatched.
+/// Cross-check the loaded `dist/<subdir>/context.json` files against the
+/// `matrix.json` written by `release --split`. Errors when the set of matrix
+/// keys covered by the loaded contexts' artifacts does not match the set of
+/// `MatrixEntry.target` strings the split job dispatched.
 ///
 /// `matrix.json` is the source-of-truth for which workers were dispatched;
-/// each worker writes a single `dist/<target>/context.json` with its
-/// `partial_target` field set to the same string. The two sets must be
-/// equal — a missing context indicates a worker that silently failed (CI
-/// runner cancelled, transient build failure, dispatch race), and a
-/// surplus context indicates merging artifacts from a stale prior split
-/// run that wasn't cleaned. Either case would otherwise sign / checksum /
+/// each worker is identified by [`matrix_key`] over the targets it built,
+/// never by the name of the subdirectory it wrote (which follows the
+/// worker's own filter axis and can differ from the matrix's). The two sets
+/// must be equal — a missing key indicates a worker that silently failed
+/// (CI runner cancelled, transient build failure, dispatch race), and a
+/// surplus key indicates merging artifacts from a stale prior split run
+/// that wasn't cleaned. Either case would otherwise sign / checksum /
 /// publish an incomplete artifact set.
 ///
 /// Returns `Ok(())` if matrix.json is absent (best-effort: users may merge
@@ -407,7 +425,13 @@ fn check_split_worker_completeness(
             .with_context(|| format!("read split context: {}", ctx_file.display()))?;
         let split_ctx: SplitContext = serde_json::from_str(&content)
             .with_context(|| format!("parse split context: {}", ctx_file.display()))?;
-        got.insert(split_ctx.partial_target);
+        got.extend(
+            split_ctx
+                .artifacts
+                .iter()
+                .filter_map(|a| a.target.as_deref())
+                .map(|t| matrix_key(t, &matrix.split_by)),
+        );
     }
 
     let missing: Vec<&String> = expected.difference(&got).collect();
@@ -1196,21 +1220,25 @@ mod tests {
     // check_split_worker_completeness — second-opinion finding Q-merge1
     // -----------------------------------------------------------------
 
-    /// Write a minimal `dist/<subdir>/context.json` carrying just the
-    /// `partial_target` field (the only field the completeness check
-    /// reads from each context).
-    fn write_split_context(dist: &Path, subdir: &str, partial_target: &str) -> PathBuf {
+    /// Write a minimal `dist/<subdir>/context.json` carrying one binary
+    /// built for `target` — the only thing the completeness check reads
+    /// from a context is its artifacts' targets.
+    fn write_split_context(dist: &Path, subdir: &str, target: &str) -> PathBuf {
         let dir = dist.join(subdir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("context.json");
         let ctx = SplitContext {
-            partial_target: partial_target.to_string(),
+            partial_target: subdir.to_string(),
             template_vars: BTreeMap::new(),
             env_vars: BTreeMap::new(),
             git_tag: None,
             git_commit: None,
             git_branch: None,
-            artifacts: Vec::new(),
+            artifacts: vec![make_split_artifact(
+                "binary",
+                &format!("/dist/{subdir}/app"),
+                Some(target),
+            )],
         };
         std::fs::write(&path, serde_json::to_string(&ctx).unwrap()).unwrap();
         path
@@ -1244,13 +1272,82 @@ mod tests {
         let dist = tmp.path();
         write_matrix(dist, &["linux", "darwin", "windows"]);
         let ctx_files = vec![
-            write_split_context(dist, "linux", "linux"),
-            write_split_context(dist, "darwin", "darwin"),
-            write_split_context(dist, "windows", "windows"),
+            write_split_context(dist, "linux", "x86_64-unknown-linux-gnu"),
+            write_split_context(dist, "darwin", "aarch64-apple-darwin"),
+            write_split_context(dist, "windows", "x86_64-pc-windows-msvc"),
         ];
 
         check_split_worker_completeness(dist, &ctx_files, &null_logger())
             .expect("all expected workers contributed → must succeed");
+    }
+
+    /// A `--single-target` (or `TARGET=<triple>`) worker writes
+    /// `dist/<triple>/context.json` under a `split_by: os` matrix keyed
+    /// `linux`. The worker is identified by the targets it built, through
+    /// the same function that keyed the matrix, so the shard reconciles.
+    #[test]
+    fn worker_completeness_reconciles_a_triple_keyed_shard_under_split_by_os() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux"]);
+        let ctx_files = vec![write_split_context(
+            dist,
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+        )];
+
+        check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect("a triple-named shard covering the linux key must reconcile");
+    }
+
+    /// One `ANODIZER_OS=linux` worker under a `split_by: target` matrix
+    /// covers every linux key at once; its artifacts say so.
+    #[test]
+    fn worker_completeness_reconciles_an_os_shard_under_split_by_target() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        let matrix = SplitMatrix {
+            split_by: "target".to_string(),
+            include: ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+                .iter()
+                .map(|t| MatrixEntry {
+                    target: (*t).to_string(),
+                    runner: "ubuntu-latest".to_string(),
+                })
+                .collect(),
+        };
+        std::fs::write(
+            dist.join("matrix.json"),
+            serde_json::to_string(&matrix).unwrap(),
+        )
+        .unwrap();
+        let dir = dist.join("linux");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("context.json");
+        let ctx = SplitContext {
+            partial_target: "linux".to_string(),
+            template_vars: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
+            git_tag: None,
+            git_commit: None,
+            git_branch: None,
+            artifacts: vec![
+                make_split_artifact(
+                    "binary",
+                    "/dist/linux/x86_64-unknown-linux-gnu/app",
+                    Some("x86_64-unknown-linux-gnu"),
+                ),
+                make_split_artifact(
+                    "binary",
+                    "/dist/linux/aarch64-unknown-linux-gnu/app",
+                    Some("aarch64-unknown-linux-gnu"),
+                ),
+            ],
+        };
+        std::fs::write(&path, serde_json::to_string(&ctx).unwrap()).unwrap();
+
+        check_split_worker_completeness(dist, &[path], &null_logger())
+            .expect("one os shard covering both triple keys must reconcile");
     }
 
     #[test]
@@ -1264,7 +1361,11 @@ mod tests {
         let dist = tmp.path();
         write_matrix(dist, &["linux", "darwin", "windows"]);
         // Only 1 of 3 workers wrote its context.
-        let ctx_files = vec![write_split_context(dist, "linux", "linux")];
+        let ctx_files = vec![write_split_context(
+            dist,
+            "linux",
+            "x86_64-unknown-linux-gnu",
+        )];
 
         let err = check_split_worker_completeness(dist, &ctx_files, &null_logger())
             .expect_err("incomplete worker set must error");
@@ -1289,8 +1390,8 @@ mod tests {
         let dist = tmp.path();
         write_matrix(dist, &["linux"]);
         let ctx_files = vec![
-            write_split_context(dist, "linux", "linux"),
-            write_split_context(dist, "darwin", "darwin"),
+            write_split_context(dist, "linux", "x86_64-unknown-linux-gnu"),
+            write_split_context(dist, "darwin", "aarch64-apple-darwin"),
         ];
 
         let err = check_split_worker_completeness(dist, &ctx_files, &null_logger())
@@ -1316,7 +1417,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();
         // No matrix.json written.
-        let ctx_files = vec![write_split_context(dist, "linux", "linux")];
+        let ctx_files = vec![write_split_context(
+            dist,
+            "linux",
+            "x86_64-unknown-linux-gnu",
+        )];
 
         check_split_worker_completeness(dist, &ctx_files, &null_logger())
             .expect("absent matrix.json must skip the check, not error");
@@ -1352,8 +1457,8 @@ mod tests {
         assert_eq!(names, vec!["darwin", "freebsd", "linux", "windows"]);
     }
 
-    /// `find_split_artifacts` must also be sorted so the legacy merge
-    /// path agrees with the modern path's iteration order.
+    /// `find_split_artifacts` must also be sorted so the manifest merge
+    /// path agrees with the context path's iteration order.
     #[test]
     fn find_split_artifacts_returns_sorted_order() {
         let tmp = tempfile::TempDir::new().unwrap();

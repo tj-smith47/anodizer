@@ -44,6 +44,25 @@ Each split job determines which targets to build using this priority chain:
 2. `ANODIZER_OS` + optional `ANODIZER_ARCH` environment variables — filter by OS/arch.
 3. Host auto-detection via `rustc -vV`, interpreted according to `partial.by`.
 
+`--single-target` is the first rung spelled as a flag: it pins `TARGET` to the
+host triple, so the shard lands under `dist/<triple>/` even when `partial.by`
+is `os`. That does not change how the merge sees it. `matrix.json` is keyed on
+the `partial.by` axis, and `--merge` identifies every shard by the targets its
+artifacts were built for, folded onto that same axis, so a shard written by
+`release --split --single-target` (or `TARGET=x86_64-unknown-linux-gnu release
+--split`) reconciles against the `linux` matrix entry exactly like one written
+by a plain `release --split`:
+
+```console
+$ anodizer release --snapshot --split --single-target
+   • building for x86_64-unknown-linux-gnu in split mode (dist/x86_64-unknown-linux-gnu)
+   • wrote 2 artifact(s) + context to ./dist/x86_64-unknown-linux-gnu/context.json
+   • wrote matrix to ./dist/matrix.json (1 entries, split by os)
+$ anodizer release --snapshot --merge
+   • running in merge mode (post-build stages)...
+   • loaded 2 artifact(s) from 1 context(s)
+```
+
 ## CLI commands
 
 ### `anodizer release --split`
@@ -93,7 +112,7 @@ dist/
 
 The `context.json` file contains the artifact metadata (paths, kinds, checksums) and git context (tag, commit, branch, template variables). The merge job uses this to reconstruct the artifact registry without rebuilding.
 
-A `dist/matrix.json` file is also written (on the first `--split` run) listing the CI matrix entries with runner suggestions, though it is not required by the merge step.
+A `dist/matrix.json` file is also written (on the first `--split` run) listing the CI matrix entries with runner suggestions. The merge step cross-checks the shards it finds against it: every matrix entry must be covered by the targets some shard built, and no shard may cover a target outside the matrix. A shard is identified by its artifacts' targets folded onto the `partial.by` axis — never by the name of the `dist/` subdirectory it wrote — so the selection flags a split job ran with cannot make the merge miscount it.
 
 ## GitHub Actions example
 
