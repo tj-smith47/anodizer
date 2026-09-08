@@ -1986,3 +1986,46 @@ fn resolve_tag_to_crate_unmatched_prefix_is_none() {
     let crates = vec![tagged_crate("core", "core-v{{ .Version }}")];
     assert!(resolve_tag_to_crates("cli-v1.0.0", &crates).is_empty());
 }
+
+/// A `dist/` holding only the files the run itself writes before any stage
+/// produces an artifact is what a refused run leaves behind; a retry must
+/// pass the gate without `--clean`.
+#[test]
+fn dist_holding_only_its_own_bookkeeping_passes_the_dist_gate() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    // Spelled out rather than read from `RUN_BOOKKEEPING_FILES`, so a
+    // shrunken set fails this pin instead of shrinking the fixture with it.
+    for name in ["config.yaml", "release-notes.md", "matrix.json"] {
+        std::fs::write(dist.join(name), "x").unwrap();
+    }
+    let config = Config {
+        dist,
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
+}
+
+/// One artifact next to the bookkeeping is population: the gate refuses and
+/// names the entry it tripped over, never the bookkeeping file.
+#[test]
+fn dist_holding_bookkeeping_and_an_artifact_is_refused() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("config.yaml"), "x").unwrap();
+    std::fs::write(dist.join("myapp_linux_amd64.tar.gz"), "x").unwrap();
+    let config = Config {
+        dist,
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    let err = enforce_dist_state(&config, &base_release_opts(), &log)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is not empty"), "{err}");
+    assert!(err.contains("myapp_linux_amd64.tar.gz"), "{err}");
+    assert!(!err.contains("config.yaml"), "{err}");
+}

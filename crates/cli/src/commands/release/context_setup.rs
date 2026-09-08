@@ -139,8 +139,17 @@ pub(crate) fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOp
     Ok(())
 }
 
+/// The files a run writes into `dist/` before any stage produces an
+/// artifact: the effective config, the rendered `--release-notes-tmpl`, and
+/// the `--split` matrix. A failed run leaves exactly these behind, and every
+/// retry rewrites them from the same inputs, so their presence is not the
+/// population the dist gate refuses to build over.
+pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] =
+    &["config.yaml", "release-notes.md", "matrix.json"];
+
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
-/// otherwise a populated dist is a hard error.
+/// otherwise a dist holding anything beyond the run's own bookkeeping
+/// ([`RUN_BOOKKEEPING_FILES`]) is a hard error.
 /// `--merge` / `--publish-only` skip the non-empty check because each of
 /// those modes requires preserved dist content;
 /// `--preflight-secrets` skips it because the secrets gate is a
@@ -166,17 +175,29 @@ pub(crate) fn enforce_dist_state(
         && !opts.preflight_secrets
     {
         let dist = &config.dist;
-        if dist.exists()
-            && let Ok(mut entries) = dist.read_dir()
-            && entries.next().is_some()
-        {
+        if let Some(populated) = dist_population(dist) {
             return Err(anodizer_core::error_class::deterministic_msg(format!(
-                "dist directory '{}' is not empty; use --clean to remove it first",
+                "dist directory '{}' is not empty (holds '{populated}'); use --clean to remove it first",
                 dist.display()
             )));
         }
     }
     Ok(())
+}
+
+/// The first entry of `dist` that is not one of the run's own
+/// [`RUN_BOOKKEEPING_FILES`], or `None` when nothing else is there.
+fn dist_population(dist: &Path) -> Option<String> {
+    let entries = dist.read_dir().ok()?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !RUN_BOOKKEEPING_FILES.contains(&name.as_str()))
+        .collect();
+    // Sorted so the named entry is stable across runs rather than whatever
+    // the filesystem returned first.
+    names.sort();
+    names.into_iter().next()
 }
 /// Read the `--release-notes-tmpl` file (when set) so its content can be
 /// rendered post-`populate_*_vars`. `--release-notes-tmpl` overrides

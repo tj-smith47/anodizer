@@ -226,7 +226,8 @@ letting one overwrite the other. Every output path of the whole run — every
 crate, build target, format and binary — is claimed before the first copy, so
 the refusal leaves no archive or binary behind in `dist/`; only the run's own
 bookkeeping (`config.yaml`, and `release-notes.md` under
-`--release-notes-tmpl`) remains:
+`--release-notes-tmpl`) remains, and a retry after fixing the template needs
+no `--clean`:
 
 ```text
 archives: name template '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
