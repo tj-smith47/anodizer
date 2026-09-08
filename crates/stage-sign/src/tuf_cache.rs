@@ -372,6 +372,28 @@ mod tests {
         assert!(root.join(LOCK_SENTINEL).is_file());
     }
 
+    /// The singular seam keys its sentinel on the canonical cache dir: a
+    /// child env spelling the store as `<tmp>/sub/../root` holds the lock
+    /// under `<tmp>/root`, so a sibling process naming the store plainly
+    /// contends the same file.
+    #[test]
+    fn singular_lock_keys_the_sentinel_on_the_canonical_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        let spelled = tmp.path().join("sub").join("..").join("root");
+        let config_env = vec![("TUF_ROOT".to_string(), spelled.display().to_string())];
+        let log = StageLogger::new("sign", anodizer_core::log::Verbosity::Normal);
+
+        let lock = keyless_cosign_host_lock(&config_env, &MapEnvSource::new(), &log)
+            .expect("the spelled root resolves and locks");
+        let canonical_sentinel = std::fs::canonicalize(&root).unwrap().join(LOCK_SENTINEL);
+        assert_eq!(lock.sentinel(), canonical_sentinel);
+        assert!(canonical_sentinel.is_file());
+        assert!(!lock.sentinel().components().any(|c| c.as_os_str() == ".."));
+    }
+
     /// Every message about the lock names the sentinel that was actually
     /// opened — under the canonical cache dir — never the caller's spelling.
     /// A directory squatting on the sentinel path is the one open failure

@@ -6028,6 +6028,76 @@ mod cosign_tuf_race {
         cache.join(".anodizer-tuf-init.lock").is_file()
     }
 
+    /// Every image's `env:` renders before the first signature is made: a
+    /// render error on image 2 aborts the config with cosign never spawned,
+    /// rather than after image 1 signed on a store nobody locked.
+    #[test]
+    fn docker_env_render_error_aborts_before_any_image_is_signed() {
+        use anodizer_core::config::DockerSignConfig;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let calls = tmp.path().join("calls");
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            &format!(
+                "#!/bin/sh\necho \"$@\" >> \"{}\"\nexit 0\n",
+                calls.display()
+            ),
+        );
+
+        let docker_signs = vec![DockerSignConfig {
+            verify: None,
+            cmd: Some(stub.to_string_lossy().into_owned()),
+            args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            id: Some("image-cosign".to_string()),
+            env: Some(vec![
+                format!("TUF_ROOT={}/{{{{ ArtifactID }}}}", tmp.path().display()),
+                "BROKEN={% if ArtifactID == 'worker' %}{{ no_such_var }}{% endif %}".to_string(),
+            ]),
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .sealed_env()
+            .build();
+        ctx.config.docker_signs = Some(docker_signs);
+        for id in ["api", "worker"] {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("id".to_string(), id.to_string());
+            metadata.insert("digest".to_string(), format!("sha256:{id}"));
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::DockerImage,
+                name: String::new(),
+                path: std::path::PathBuf::from(format!("ghcr.io/acme/{id}:latest")),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata,
+                size: None,
+            });
+        }
+        let err = DockerSignStage
+            .run(&mut ctx)
+            .expect_err("image 2's env must fail to render");
+        assert!(
+            format!("{err:#}").contains("render env entries"),
+            "the error must be the env render failure: {err:#}"
+        );
+        assert!(
+            !calls.exists(),
+            "cosign must not have been spawned for any image: {:?}",
+            std::fs::read_to_string(&calls)
+        );
+    }
+
     /// A `TUF_ROOT` that renders per image puts each image on its own store.
     /// Every one of them must be locked before the first signature is made —
     /// a store left unlocked races a sibling anodizer process.
@@ -6357,6 +6427,7 @@ mod cosign_tuf_race {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == "tests") {
+                    assert_declared_cfg_test(&path);
                     continue;
                 }
                 found.extend(rust_sources(&path));
@@ -6371,34 +6442,198 @@ mod cosign_tuf_race {
         found
     }
 
-    /// Assert the parent module declares `mod tests;` directly under a
-    /// `#[cfg(test)]` attribute — the premise that makes skipping the file
-    /// by name equivalent to skipping test code.
-    fn assert_declared_cfg_test(tests_rs: &std::path::Path) {
-        let dir = tests_rs.parent().expect("tests.rs has a parent directory");
+    /// Assert the parent module declares `mod tests;` under `#[cfg(test)]` —
+    /// the premise that makes skipping a `tests.rs` file or a `tests/`
+    /// directory by name equivalent to skipping test code.
+    ///
+    /// The parent is `mod.rs`/`lib.rs`/`main.rs` beside the skipped path, or
+    /// the 2018-layout `<dir>.rs` next to its directory. The attribute may
+    /// sit on the item's own line or anywhere in the contiguous run of
+    /// attribute and comment lines directly above it.
+    fn assert_declared_cfg_test(tests_path: &std::path::Path) {
+        let dir = tests_path
+            .parent()
+            .expect("test source has a parent directory");
+        let sibling = dir
+            .file_name()
+            .map(|name| dir.with_file_name(format!("{}.rs", name.to_string_lossy())));
         let parent = ["mod.rs", "lib.rs", "main.rs"]
             .iter()
             .map(|name| dir.join(name))
+            .chain(sibling)
             .find(|candidate| candidate.is_file())
-            .unwrap_or_else(|| panic!("no parent module file beside {}", tests_rs.display()));
+            .unwrap_or_else(|| panic!("no parent module file for {}", tests_path.display()));
         let text = std::fs::read_to_string(&parent).expect("read parent module");
         let lines: Vec<&str> = text.lines().collect();
-        let decl = lines
+        let item = lines
             .iter()
-            .position(|line| line.trim().trim_end_matches(';').ends_with("mod tests"))
+            .position(|line| is_mod_tests_item(line))
             .unwrap_or_else(|| {
                 panic!(
                     "{} declares no `mod tests;` for {}",
                     parent.display(),
-                    tests_rs.display()
+                    tests_path.display()
                 )
             });
+        let gated = (0..=item)
+            .rev()
+            .take_while(|&i| {
+                let trimmed = lines[i].trim_start();
+                i == item || trimmed.starts_with("#[") || trimmed.starts_with("//")
+            })
+            .any(|i| lines[i].contains("#[cfg(test)]"));
         assert!(
-            decl > 0 && lines[decl - 1].trim() == "#[cfg(test)]",
+            gated,
             "{} must be declared under #[cfg(test)] in {} — the keyless-site \
              walk skips it by name and would otherwise skip production code",
-            tests_rs.display(),
+            tests_path.display(),
             parent.display()
+        );
+    }
+
+    /// Whether a source line's code — trailing `//` comment stripped, any
+    /// same-line attributes stripped — is exactly the `mod tests;` item
+    /// (`pub`, `pub(crate)` and the like allowed). A comment never matches.
+    fn is_mod_tests_item(line: &str) -> bool {
+        let mut code = line.split("//").next().unwrap_or("").trim();
+        while let Some(rest) = code.strip_prefix("#[") {
+            let Some(close) = rest.find(']') else {
+                return false;
+            };
+            code = rest[close + 1..].trim_start();
+        }
+        if let Some(rest) = code.strip_prefix("pub") {
+            let rest = match rest.strip_prefix('(') {
+                Some(vis) => match vis.find(')') {
+                    Some(close) => &vis[close + 1..],
+                    None => return false,
+                },
+                None => rest,
+            };
+            if !rest.starts_with(char::is_whitespace) {
+                return false;
+            }
+            code = rest.trim_start();
+        }
+        code.strip_prefix("mod")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map(|rest| rest.trim_start())
+            .and_then(|rest| rest.strip_prefix("tests"))
+            .is_some_and(|rest| rest.trim_start() == ";")
+    }
+
+    /// Lay out `<tmp>/<parent>` with the given parent-module text and a
+    /// `tests.rs` (or `tests/` directory) inside it; returns the skipped path.
+    fn synthetic_module(
+        tmp: &std::path::Path,
+        parent_file: &str,
+        parent_text: &str,
+        tests_dir: bool,
+    ) -> std::path::PathBuf {
+        let module = tmp.join("m");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(tmp.join(parent_file), parent_text).unwrap();
+        if tests_dir {
+            let dir = module.join("tests");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("mod.rs"), "").unwrap();
+            dir
+        } else {
+            let file = module.join("tests.rs");
+            std::fs::write(&file, "").unwrap();
+            file
+        }
+    }
+
+    /// `#[cfg(test)] mod tests;` on one line is a gated declaration.
+    #[test]
+    fn cfg_test_on_the_same_line_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(tmp.path(), "m/mod.rs", "#[cfg(test)] mod tests;\n", false);
+        assert_declared_cfg_test(&tests);
+    }
+
+    /// A second attribute between `#[cfg(test)]` and the item is still gated.
+    #[test]
+    fn cfg_test_above_another_attribute_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "#[cfg(test)]\n#[allow(clippy::unwrap_used)]\nmod tests;\n",
+            false,
+        );
+        assert_declared_cfg_test(&tests);
+    }
+
+    /// A doc comment between `#[cfg(test)]` and the item is still gated.
+    #[test]
+    fn cfg_test_above_a_doc_comment_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "#[cfg(test)]\n/// Unit tests.\npub(crate) mod tests;\n",
+            false,
+        );
+        assert_declared_cfg_test(&tests);
+    }
+
+    /// The 2018 layout declares `m/tests.rs` from `m.rs` beside the directory.
+    #[test]
+    fn sibling_parent_file_is_found() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(tmp.path(), "m.rs", "#[cfg(test)]\nmod tests;\n", false);
+        assert_declared_cfg_test(&tests);
+    }
+
+    /// A `tests/` directory the walk skips needs the same gated declaration:
+    /// gated, the walk yields only the parent; ungated, the walk fails.
+    #[test]
+    fn tests_directory_needs_the_same_declaration() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(tmp.path(), "m/mod.rs", "#[cfg(test)]\nmod tests;\n", true);
+        let module = tests.parent().unwrap().to_path_buf();
+        assert_eq!(rust_sources(&module), vec![module.join("mod.rs")]);
+
+        std::fs::write(module.join("mod.rs"), "mod tests;\n").unwrap();
+        assert!(
+            std::panic::catch_unwind(|| rust_sources(&module)).is_err(),
+            "an ungated tests/ directory must fail the walk"
+        );
+    }
+
+    /// A comment ending in `mod tests` is not the item; the real gated item
+    /// below it is what the check must find.
+    #[test]
+    fn comment_ending_in_mod_tests_is_not_the_item() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "// helpers shared with mod tests\nfn helper() {}\n#[cfg(test)]\nmod tests;\n",
+            false,
+        );
+        assert_declared_cfg_test(&tests);
+    }
+
+    /// An ungated `mod tests;` fails with a message naming both files.
+    #[test]
+    fn ungated_mod_tests_fails_naming_both_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(tmp.path(), "m/mod.rs", "mod tests;\n", false);
+        let panic = std::panic::catch_unwind(|| assert_declared_cfg_test(&tests))
+            .expect_err("an ungated declaration must fail the premise check");
+        let msg = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let parent = tmp.path().join("m").join("mod.rs");
+        assert!(
+            msg.contains(&tests.display().to_string())
+                && msg.contains(&parent.display().to_string()),
+            "message must name the skipped file and its parent: {msg}"
         );
     }
 
