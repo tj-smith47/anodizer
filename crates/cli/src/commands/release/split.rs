@@ -527,17 +527,6 @@ fn shard_identity_keys(
     }
 }
 
-/// Outcome of a split-context load — flags which loader the caller
-/// hit so downstream behaviour (e.g. metadata-write fall-through) can
-/// branch on manifest-vs-context shape without a second filesystem walk.
-#[derive(Debug, PartialEq, Eq)]
-pub enum SplitLoadOutcome {
-    /// Loaded artifacts from `dist/<subdir>/context.json` files.
-    Modern,
-    /// Fell back to the `artifacts.json` manifests a full run writes.
-    Manifest,
-}
-
 /// Load every split-shard `dist/<subdir>/context.json` (or, when no shard
 /// context exists, every `dist/[<subdir>/]artifacts.json` manifest a full
 /// run writes) into `ctx`. Used by
@@ -563,7 +552,7 @@ pub fn load_split_contexts_into(
     ctx: &mut Context,
     dist: &Path,
     log: &anodizer_core::log::StageLogger,
-) -> Result<SplitLoadOutcome> {
+) -> Result<()> {
     // Mark the context as merge-mode regardless of which entry point the
     // caller is (release/continue/publish/announce). Stages branching on
     // merge mode (e.g. after-hook gate) must see the flag set BEFORE the
@@ -583,7 +572,7 @@ pub fn load_split_contexts_into(
             );
         }
         load_artifact_manifests(ctx, log, &artifact_files)?;
-        return Ok(SplitLoadOutcome::Manifest);
+        return Ok(());
     }
 
     // Worker-completeness pre-flight: matrix.json (written by `release --split`)
@@ -704,7 +693,7 @@ pub fn load_split_contexts_into(
         dist,
     )?;
 
-    Ok(SplitLoadOutcome::Modern)
+    Ok(())
 }
 
 /// Load every `artifacts.json` manifest into `ctx`. The manifest is the
@@ -777,10 +766,7 @@ pub fn run_merge(
 
     let dist = dist_override.unwrap_or(&config.dist);
 
-    let outcome = load_split_contexts_into(ctx, dist, log)?;
-    if outcome == SplitLoadOutcome::Manifest {
-        return run_merge_manifest_tail(ctx, config, log, dry_run);
-    }
+    load_split_contexts_into(ctx, dist, log)?;
 
     let p = pipeline::build_merge_pipeline();
     let result = p.run(ctx, log);
@@ -798,29 +784,6 @@ pub fn run_merge(
         super::gate_required_failures(ctx)?;
     }
 
-    result
-}
-
-/// Run the post-load tail of the manifest merge path (artifacts already
-/// rehydrated into `ctx` by [`load_split_contexts_into`]'s `artifacts.json`
-/// branch).
-fn run_merge_manifest_tail(
-    ctx: &mut Context,
-    config: &Config,
-    log: &anodizer_core::log::StageLogger,
-    dry_run: bool,
-) -> Result<()> {
-    let p = pipeline::build_merge_pipeline();
-    let result = p.run(ctx, log);
-    if result.is_ok() {
-        super::run_post_pipeline(ctx, config, dry_run, super::RootAfterHooks::Fire, log)?;
-    }
-    // See `release::gate_required_failures` — required-publisher
-    // failures must surface as non-zero exit even on the manifest merge
-    // path.
-    if result.is_ok() {
-        super::gate_required_failures(ctx)?;
-    }
     result
 }
 
@@ -2095,12 +2058,7 @@ mod tests {
         );
 
         let mut ctx = make_bare_context();
-        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
-        assert_eq!(
-            outcome,
-            SplitLoadOutcome::Manifest,
-            "no context.json present → artifacts.json fallback"
-        );
+        load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
         let paths: Vec<String> = ctx
             .artifacts
             .all()
@@ -2131,8 +2089,7 @@ mod tests {
         write_artifacts_manifest(dist, Some("b"), &body);
 
         let mut ctx = make_bare_context();
-        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
-        assert_eq!(outcome, SplitLoadOutcome::Manifest);
+        load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
         assert_eq!(
             ctx.artifacts.all().len(),
             1,
@@ -2202,8 +2159,7 @@ mod tests {
         write_split_context_full(dist, "linux", "linux", vec![unknown, known]);
 
         let mut ctx = make_bare_context();
-        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
-        assert_eq!(outcome, SplitLoadOutcome::Modern);
+        load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
         assert_eq!(
             ctx.artifacts.all().len(),
             1,
