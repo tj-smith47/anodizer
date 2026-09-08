@@ -48,6 +48,10 @@ tasks:
   check:determinism:
     desc: "Byte-verify this host's native release artifacts reproduce (CI-exact)."
     deps: [_check:tmp-headroom]
+    env:
+      # Reproducibility must be proven by real compiles, never served from a
+      # compile cache; empty overrides any global rustc-wrapper config.
+      RUSTC_WRAPPER: ""
     cmds:
       # Mirror anodizer-action's per-shard determinism command
       # (scripts/determinism/run-harness.sh): --require-tools so a missing
