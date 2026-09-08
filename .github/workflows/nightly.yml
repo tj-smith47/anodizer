@@ -57,8 +57,13 @@ jobs:
         # TWO msvc targets serially at ~35m each. Measured cold-cache total is
         # ~95m; 60 cancelled the aarch64 build every night for weeks with no
         # error message, because a timeout reads as "cancelled", not "failed".
+        #
+        # The linux leg has the same shape at a smaller scale: it compiles
+        # anodizer from master, then cross-builds aarch64-linux-gnu (+ musl)
+        # through zig. Healthy runs measure 45-52m, so a 60m budget left
+        # 8-15m of headroom and two runs blew through it mid-zigbuild.
         include:
-          - { os: ubuntu-latest,  shard: linux,   auto_install: 'true',  timeout: 60 }
+          - { os: ubuntu-latest,  shard: linux,   auto_install: 'true',  timeout: 120 }
           - { os: macos-latest,   shard: darwin,  auto_install: 'false', timeout: 60 }
           - { os: windows-latest, shard: windows, auto_install: 'true',  timeout: 150 }
     name: Nightly build (${{ matrix.shard }})
