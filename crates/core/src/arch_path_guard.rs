@@ -20,8 +20,11 @@
 //!
 //! | prior vs new claim | remedy variable |
 //! |---|---|
+//! | different crate | `{{ .CrateName }}` |
 //! | same crate, target and amd64 variant | `{{ .Binary }}` |
 //! | same crate and target, different amd64 variant | `{{ .Amd64 }}` |
+//! | same crate, OS and architecture, different triple (gnu vs musl) | `{{ .Target }}` |
+//! | same architecture, different OS | `{{ .Os }}` |
 //! | otherwise | `{{ .Arch }}` |
 //!
 //! A variable is only advised when the claim's [`Claim::exposed`] set — the
@@ -34,6 +37,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+
+use crate::target::map_target;
 
 /// One output path a stage is about to write, with everything the
 /// collision diagnostic needs.
@@ -136,7 +141,18 @@ fn collision_message(claim: &Claim<'_>, prev: &Prior) -> String {
 
     let same_crate = prev.crate_name == claim.crate_name;
     let same_target = same_crate && prev.target.as_deref() == claim.target;
-    let (reason, remedy) = if same_target && prev.amd64_variant.as_deref() == claim.amd64_variant {
+    let (reason, remedy) = if !same_crate {
+        let reason = format!(
+            "The collision is between crates '{}' and '{}', so no target variable can \
+             separate them",
+            prev.crate_name, claim.crate_name
+        );
+        let remedy = match var(claim, "CrateName") {
+            Some(v) => add(&v, &format!("{v}_{{{{ .Os }}}}_{{{{ .Arch }}}}")),
+            None => distinct("each crate's entry"),
+        };
+        (reason, remedy)
+    } else if same_target && prev.amd64_variant.as_deref() == claim.amd64_variant {
         let reason = format!(
             "Both come from the same build target '{}', so no architecture variable can \
              separate them",
@@ -161,16 +177,37 @@ fn collision_message(claim: &Claim<'_>, prev: &Prior) -> String {
         };
         (reason, remedy)
     } else {
-        let reason = format!(
-            "The collision is between build targets '{}' and '{}'",
-            prev.target.as_deref().unwrap_or("host"),
-            claim.target.unwrap_or("host")
-        );
-        let remedy = match var(claim, "Arch") {
-            Some(v) => add(&v, &format!("{{{{ .ProjectName }}}}_{v}")),
-            None => distinct("each target's entry"),
-        };
-        (reason, remedy)
+        let (prev_os, prev_arch) = prev.target.as_deref().map(map_target).unwrap_or_default();
+        let (os, arch) = claim.target.map(map_target).unwrap_or_default();
+        if prev_os == os && prev_arch == arch {
+            let reason = format!(
+                "Build targets '{}' and '{}' share OS '{os}' and architecture '{arch}', so \
+                 neither `{{{{ .Os }}}}` nor `{{{{ .Arch }}}}` can separate them",
+                prev.target.as_deref().unwrap_or("host"),
+                claim.target.unwrap_or("host")
+            );
+            let remedy = match var(claim, "Target") {
+                Some(v) => add(&v, &format!("{{{{ .ProjectName }}}}_{v}")),
+                None => distinct("each target's entry"),
+            };
+            (reason, remedy)
+        } else {
+            let reason = format!(
+                "The collision is between build targets '{}' and '{}'",
+                prev.target.as_deref().unwrap_or("host"),
+                claim.target.unwrap_or("host")
+            );
+            let name = if prev_arch == arch && var(claim, "Os").is_some() {
+                "Os"
+            } else {
+                "Arch"
+            };
+            let remedy = match var(claim, name) {
+                Some(v) => add(&v, &format!("{{{{ .ProjectName }}}}_{v}")),
+                None => distinct("each target's entry"),
+            };
+            (reason, remedy)
+        }
     };
     format!(
         "{stage}: {source} rendered the same {artifact} '{rendered}' more than once for crate \
@@ -273,6 +310,28 @@ mod tests {
     }
 
     #[test]
+    fn cross_os_same_arch_collision_names_the_os_var() {
+        // amd64 linux vs amd64 darwin: `.Arch` renders the same for both, so
+        // advising it would reproduce the collision.
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/app_amd64");
+        let mut c = claim(
+            path,
+            "{{ .ProjectName }}_{{ .Arch }}",
+            "app",
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            &all,
+        );
+        guard.check(c).unwrap();
+        c.target = Some("x86_64-apple-darwin");
+        let err = guard.check(c).unwrap_err().to_string();
+        assert!(err.contains("add '{{ .Os }}'"), "{err}");
+        assert!(!err.contains("'{{ .Arch }}'"), "{err}");
+    }
+
+    #[test]
     fn same_target_variant_collision_names_the_amd64_var() {
         // A baseline and a v3-tuned build of ONE triple share crate and
         // target; only `.Amd64` separates them.
@@ -358,6 +417,75 @@ mod tests {
             err.contains("give each config entry a distinct `name`"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn cross_crate_collision_names_the_crate_var() {
+        // Two crates render one name from `shared_{{ .Os }}`; they share the
+        // target, so `.Arch` / `.Binary` would reproduce the collision and
+        // only the crate variable separates them.
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/shared_linux");
+        let target = Some("x86_64-unknown-linux-gnu");
+        let mut c = claim(path, "shared_{{ .Os }}", "myapp", target, None, &all);
+        guard.check(c).unwrap();
+        c.crate_name = "mytool";
+        let err = guard.check(c).unwrap_err().to_string();
+        assert!(err.contains("between crates 'myapp' and 'mytool'"), "{err}");
+        assert!(err.contains("add '{{ .CrateName }}'"), "{err}");
+        assert!(!err.contains("'{{ .Arch }}'"), "{err}");
+        assert!(!err.contains("'{{ .Binary }}'"), "{err}");
+    }
+
+    #[test]
+    fn cross_crate_collision_without_crate_var_advises_distinct_templates() {
+        let installer = exposed(&["Os", "Arch", "Target"]);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/macos/shared.dmg");
+        let mut c = claim(
+            path,
+            "shared",
+            "myapp",
+            Some("x86_64-apple-darwin"),
+            None,
+            &installer,
+        );
+        c.template_key = "name";
+        guard.check(c).unwrap();
+        c.crate_name = "mytool";
+        let err = guard.check(c).unwrap_err().to_string();
+        assert!(!err.contains(".CrateName"), "{err}");
+        assert!(
+            err.contains("give each crate's entry a distinct `name`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn same_os_arch_different_triple_collision_names_the_target_var() {
+        // gnu vs musl: identical `.Os` / `.Arch`, so a template already
+        // carrying both still collides and only the triple separates them.
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/myapp_linux_amd64");
+        let mut c = claim(
+            path,
+            "{{ .Binary }}_{{ .Os }}_{{ .Arch }}",
+            "myapp",
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            &all,
+        );
+        guard.check(c).unwrap();
+        c.target = Some("x86_64-unknown-linux-musl");
+        let err = guard.check(c).unwrap_err().to_string();
+        assert!(
+            err.contains("share OS 'linux' and architecture 'amd64'"),
+            "{err}"
+        );
+        assert!(err.contains("add '{{ .Target }}'"), "{err}");
+        assert!(!err.contains("add '{{ .Arch }}'"), "{err}");
     }
 
     #[test]
