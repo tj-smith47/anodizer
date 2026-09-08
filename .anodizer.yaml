@@ -1044,10 +1044,20 @@ upx:
       - "x86_64-pc-windows-msvc"
 
 nightly:
-  name_template: "{{ ProjectName }}-nightly"
-  tag_name: nightly
+  # The retention sweep finds prior nightlies by release NAME, so this must
+  # keep rendering exactly what the standing rolling release is called
+  # ("anodizer nightly") or every past nightly becomes unreachable to it.
+  # `release.name_template` renders "anodizer {{ Tag }}", which a nightly's
+  # per-commit tag would make unique per run.
+  name_template: "{{ ProjectName }} nightly"
+  # No `tag_name`: the crate's own `v{{ Version }}` template mints the tag from
+  # the nightly version, which carries the short commit, so two nightlies at
+  # different commits stay distinguishable instead of moving one rolling ref.
   publish_release: true
   keep_single_release: true
+  # master usually sits AT the last release commit (the release workflow pushes
+  # its bump commit straight to master), so most nights have nothing to say.
+  skip_if_no_changes: true
 
 snapshot:
   version_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"

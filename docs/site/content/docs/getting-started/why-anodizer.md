@@ -226,8 +226,9 @@ unreleased branch — useful for proving a publisher before the feature ships.
 
 ```yaml
 nightly:
-  name_template: "{{ ProjectName }}-nightly"
-  tag_name: nightly
+  name_template: "{{ ProjectName }} nightly"
+  keep_single_release: true
+  skip_if_no_changes: true
 ```
 
 ```yaml

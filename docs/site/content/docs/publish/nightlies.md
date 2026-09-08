@@ -5,7 +5,7 @@ weight = 10
 template = "docs.html"
 +++
 
-Nightly mode creates date-based versions and replaces a rolling `nightly` release on GitHub.
+Nightly mode mints a commit-immutable prerelease version off the newest release tag and publishes it like any other release.
 
 ## Classification
 
@@ -23,17 +23,23 @@ No YAML changes required for the default behavior.
 
 ```yaml
 nightly:
-  name_template: "{{ ProjectName }}-nightly"  # optional; release-name template
-  tag_name: nightly                            # optional; the rolling tag to replace each night
+  version_template: "{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"  # optional
+  name_template: "{{ ProjectName }} nightly"  # optional; names the nightly release
+  tag_name: nightly           # optional; pin ONE rolling tag instead of a per-commit tag
   publish_release: true       # default true — create a GitHub Release for each nightly run
-  keep_single_release: false  # default false — set true to delete prior release before recreating
+  keep_single_release: false  # default false — set true to keep only the newest nightly release
+  skip_if_no_changes: false   # default false — set true to no-op on a quiet day
   draft: false                # optional — override release.draft for nightly runs only
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | The rendered `Version` for the run. |
+| `nightly.name_template` | `string` | (inherits `release.name_template`) | Names the nightly release, replacing `release.name_template` on nightly runs only. |
+| `nightly.tag_name` | `string` | (unset — the crate's `tag_template` mints the tag) | Pins one rolling tag, moved each run. In a workspace minting more than one tag family the value is prefixed with the publishing crate's family (`operator-v{{ Version }}` + `edge` → `operator-vedge`). |
 | `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. |
-| `nightly.keep_single_release` | `bool` | `false` | Delete the prior nightly release before creating a new one, keeping only the latest. |
+| `nightly.keep_single_release` | `bool` | `false` | Keep only the newest nightly release, deleting the older ones. In a workspace that mints more than one tag family the sweep is narrowed to the publishing crate's family, so the tracks do not delete each other. |
+| `nightly.skip_if_no_changes` | `bool` | `false` | Skip the release when the run's changelog resolved to zero notable entries. Decided per crate in a per-crate workspace. |
 | `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
 
 ## Publisher skip behavior
@@ -54,11 +60,13 @@ Not applicable as a separate config — nightly publishes use the same release c
 ## Common gotchas
 
 - Distinct from `--snapshot` — nightlies are published, snapshots are not.
-- The `nightly` tag is force-pushed every run; existing release assets are replaced (set `release.replace_existing_artifacts: true` to clear before re-upload).
-- Date format defaults to `YYYYMMDD`; override via `name_template` if you need higher resolution.
+- Without `tag_name` every run cuts its own tag, so `keep_single_release: true` is what stops the pile accumulating.
+- With `tag_name` the pinned tag is moved every run and existing release assets are replaced (set `release.replace_existing_artifacts: true` to clear before re-upload).
+- A nightly cuts even when nothing changed since the last release; `skip_if_no_changes: true` turns that into a no-op.
 
 ## Behavior
 
-- Version becomes `0.1.0-nightly.20260327` (date-stamped)
-- Creates/replaces a `nightly` tag and release on GitHub
+- Version becomes `0.1.1-3aece9dc-nightly` — the newest release tag's patch, bumped, plus the short commit
+- In a workspace minting several tag families the base is the newest tag across ALL of them, so one lagging track cannot stamp its siblings with a stale version
+- Creates a release on the tag the crate's `tag_template` mints, or on `nightly.tag_name` when set
 - Distinct from `--snapshot` — nightlies are published, snapshots are not

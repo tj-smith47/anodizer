@@ -38,10 +38,26 @@ pub struct NightlyConfig {
     /// enables nushell-style schemes such as
     /// `"{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"`.
     pub version_template: Option<String>,
-    /// Template for the release name. Default: `"{{ ProjectName }}-nightly"`.
+    /// Template for the nightly release's NAME, replacing
+    /// `release.name_template` on nightly runs only. Unset falls through to
+    /// `release.name_template`, so a nightly is named exactly like a stable
+    /// release unless this says otherwise. Templates are rendered with the
+    /// nightly `Version` already applied.
     pub name_template: Option<String>,
-    /// Tag name used for the nightly release. Default: `"nightly"`.
+    /// The tag the nightly release is created on, replacing the crate's
+    /// `tag_template` (and any `release.tag` override) on nightly runs only.
     /// Templates allowed.
+    ///
+    /// Unset — the default — leaves the crate's own `tag_template` to mint
+    /// the tag from the nightly version (`v{{ Version }}` →
+    /// `v1.2.4-abc1234-nightly`), which keeps two nightlies at different
+    /// commits distinguishable.
+    ///
+    /// Set it to pin one rolling tag instead (`tag_name: nightly` → tag
+    /// `nightly`, moved each run). In a workspace that mints more than one
+    /// tag family the value is prefixed with the publishing crate's family so
+    /// the tracks do not collide on a single tag: with `operator-v{{ Version }}`,
+    /// `tag_name: edge` yields `operator-vedge`.
     pub tag_name: Option<String>,
     /// Whether to publish a GitHub Release at all. Default: `true`.
     /// Set `false` for nightly-only docker pushes / blob uploads.

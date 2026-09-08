@@ -233,12 +233,17 @@ fn release_one_crate(
 
     let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
 
-    let tag = resolve_release_tag(
-        ctx,
-        crate_cfg.resolved_tag_template(),
-        release_cfg.tag.as_deref(),
-        &crate_cfg.name,
-    )?;
+    // `nightly.tag_name` is scoped to nightly runs, `release.tag` to every
+    // run, so on a nightly the narrower knob wins.
+    let tag = match nightly_tag_override(ctx, crate_cfg)? {
+        Some(t) => t,
+        None => resolve_release_tag(
+            ctx,
+            crate_cfg.resolved_tag_template(),
+            release_cfg.tag.as_deref(),
+            &crate_cfg.name,
+        )?,
+    };
 
     warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
 
@@ -395,9 +400,74 @@ fn resolve_release_name(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     crate_name: &str,
 ) -> Result<String> {
-    let name_tmpl = release_cfg.resolved_name_template();
-    ctx.render_template(name_tmpl)
+    // A nightly run names its rolling release from `nightly.name_template`
+    // when the user set one; `release.name_template` is the stable-release
+    // name and applies to every other run.
+    let name_tmpl = nightly_template(ctx, |n| n.name_template.as_deref())
+        .unwrap_or_else(|| release_cfg.resolved_name_template().to_string());
+    ctx.render_template(&name_tmpl)
         .with_context(|| format!("release: render name_template for crate '{}'", crate_name))
+}
+
+/// A non-empty `nightly:` template, on a nightly run only. `None` on any
+/// other run, or when the field is unset / blank.
+fn nightly_template(
+    ctx: &Context,
+    field: impl Fn(&anodizer_core::config::NightlyConfig) -> Option<&str>,
+) -> Option<String> {
+    if !ctx.is_nightly() {
+        return None;
+    }
+    ctx.config
+        .nightly
+        .as_ref()
+        .and_then(field)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// The tag a nightly run publishes this crate under when `nightly.tag_name`
+/// is set — `None` leaves the crate's `tag_template` to mint the tag.
+///
+/// In a workspace that mints more than one tag family the rendered value is
+/// prefixed with this crate's family (`operator-v` + `edge` →
+/// `operator-vedge`): one tag cannot carry three tracks' releases, and a tag
+/// inside the family is also what scopes the retention sweep to this track.
+/// A single-family workspace takes the value verbatim.
+fn nightly_tag_override(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+) -> Result<Option<String>> {
+    let Some(tmpl) = nightly_template(ctx, |n| n.tag_name.as_deref()) else {
+        return Ok(None);
+    };
+    let rendered = ctx
+        .render_template(&tmpl)
+        .with_context(|| {
+            format!(
+                "release: render nightly.tag_name for crate '{}'",
+                crate_cfg.name
+            )
+        })?
+        .trim()
+        .to_string();
+    if rendered.is_empty() {
+        anyhow::bail!(
+            "release: nightly.tag_name for crate '{}' rendered to an empty tag; \
+             the GitHub / GitLab / Gitea Releases REST API requires a non-empty \
+             `tag_name`",
+            crate_cfg.name
+        );
+    }
+    if !ctx.config.mints_multiple_tag_families() {
+        return Ok(Some(rendered));
+    }
+    let prefix = anodizer_core::git::extract_tag_prefix(crate_cfg.resolved_tag_template())
+        .unwrap_or_default();
+    if prefix.is_empty() || rendered.starts_with(&prefix) {
+        return Ok(Some(rendered));
+    }
+    Ok(Some(format!("{prefix}{rendered}")))
 }
 
 /// Collect the full set of `(path, Option<custom_name>)` entries to upload as
@@ -1443,5 +1513,142 @@ mod tests {
             ctx.stage_outputs.release_stage_ran,
             "the stage must mark itself run so the publisher does not repeat it"
         );
+    }
+
+    // ---- nightly.name_template / nightly.tag_name ----------------------
+
+    fn nightly_named_ctx(name: Option<&str>, tag: Option<&str>) -> anodizer_core::context::Context {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .tag("v1.2.3")
+            .build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            name_template: name.map(str::to_string),
+            tag_name: tag.map(str::to_string),
+            ..Default::default()
+        });
+        ctx
+    }
+
+    #[test]
+    fn nightly_name_template_wins_over_release_name_template() {
+        let ctx = nightly_named_ctx(Some("{{ ProjectName }} nightly"), None);
+        let release_cfg = ReleaseConfig {
+            name_template: Some("{{ ProjectName }} {{ Tag }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_release_name(&ctx, &release_cfg, "demo").expect("render ok"),
+            "widget nightly"
+        );
+    }
+
+    #[test]
+    fn nightly_name_template_is_ignored_on_a_stable_run() {
+        let mut ctx = nightly_named_ctx(Some("{{ ProjectName }} nightly"), None);
+        ctx.options.nightly = false;
+        let release_cfg = ReleaseConfig {
+            name_template: Some("{{ ProjectName }} {{ Tag }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_release_name(&ctx, &release_cfg, "demo").expect("render ok"),
+            "widget v1.2.3"
+        );
+    }
+
+    /// Single-family workspace: the rendered value IS the tag.
+    #[test]
+    fn nightly_tag_name_is_taken_verbatim_in_a_single_family_workspace() {
+        let mut ctx = nightly_named_ctx(None, Some("edge"));
+        ctx.config.crates = vec![anodizer_core::config::CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        }];
+        let crate_cfg = ctx.config.crates[0].clone();
+        assert_eq!(
+            nightly_tag_override(&ctx, &crate_cfg).expect("render ok"),
+            Some("edge".to_string())
+        );
+    }
+
+    /// Per-crate workspace: one literal tag cannot carry three tracks, so
+    /// the value is prefixed with each crate's own family.
+    #[test]
+    fn nightly_tag_name_is_prefixed_per_family_in_a_per_crate_workspace() {
+        let mut ctx = nightly_named_ctx(None, Some("edge"));
+        let track = |name: &str, tmpl: &str| anodizer_core::config::CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some(tmpl.to_string()),
+            ..Default::default()
+        };
+        ctx.config.crates = vec![
+            track("app", "v{{ Version }}"),
+            track("operator", "operator-v{{ Version }}"),
+        ];
+        assert_eq!(
+            nightly_tag_override(&ctx, &ctx.config.crates[0].clone()).expect("render ok"),
+            Some("vedge".to_string()),
+            "the bare `v` track's tag must land inside the `v` family"
+        );
+        assert_eq!(
+            nightly_tag_override(&ctx, &ctx.config.crates[1].clone()).expect("render ok"),
+            Some("operator-vedge".to_string()),
+            "the operator track's tag must land inside the operator family"
+        );
+    }
+
+    #[test]
+    fn nightly_tag_name_absent_leaves_the_tag_template_to_mint_the_tag() {
+        let ctx = nightly_named_ctx(None, None);
+        let crate_cfg = anodizer_core::config::CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            nightly_tag_override(&ctx, &crate_cfg).expect("render ok"),
+            None
+        );
+    }
+
+    #[test]
+    fn nightly_tag_name_is_ignored_on_a_stable_run() {
+        let mut ctx = nightly_named_ctx(None, Some("edge"));
+        ctx.options.nightly = false;
+        let crate_cfg = anodizer_core::config::CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            nightly_tag_override(&ctx, &crate_cfg).expect("render ok"),
+            None
+        );
+    }
+
+    /// The REST API rejects an empty `tag_name`; a template that renders to
+    /// nothing must fail loudly rather than 422 mid-publish.
+    #[test]
+    fn nightly_tag_name_rendering_empty_is_an_error() {
+        let ctx = nightly_named_ctx(
+            None,
+            Some("{{ Env.ANODIZER_NO_SUCH_VAR | default(value=\'\') }}"),
+        );
+        let crate_cfg = anodizer_core::config::CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        };
+        let err = nightly_tag_override(&ctx, &crate_cfg)
+            .expect_err("an empty rendered tag must not reach the API");
+        assert!(err.to_string().contains("empty tag"), "got: {err}");
     }
 }
