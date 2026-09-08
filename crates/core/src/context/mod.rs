@@ -177,6 +177,17 @@ pub struct Context {
     /// binaries do not carry the field at all.
     #[cfg(feature = "test-helpers")]
     pub log_capture: Option<crate::log::LogCapture>,
+    /// Temp directory backing a test context's private `dist`, held so the
+    /// directory is removed when the context that writes into it drops.
+    ///
+    /// Set only by `TestContextBuilder` when the test named no explicit dist;
+    /// an explicit `dist` is the caller's own directory to manage. `Arc` so a
+    /// cloned context keeps the directory alive.
+    ///
+    /// Gated behind the `test-helpers` Cargo feature — production
+    /// binaries do not carry the field at all.
+    #[cfg(feature = "test-helpers")]
+    pub private_dist: Option<Arc<tempfile::TempDir>>,
     /// Runtime-togglable strict-render flag, distinct from the user's global
     /// `--strict` (`options.strict`). The pre-publish guard flips this on for
     /// the duration of its in-memory render pass (via [`Context::set_render_strict`])
@@ -254,6 +265,8 @@ impl Context {
             cargo_trusted_publishing: None,
             #[cfg(feature = "test-helpers")]
             log_capture: None,
+            #[cfg(feature = "test-helpers")]
+            private_dist: None,
             render_strict: std::cell::Cell::new(false),
             tree_mutations: std::collections::BTreeSet::new(),
             literal_message: false,
