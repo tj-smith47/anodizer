@@ -281,7 +281,9 @@ mod create_tag_local_only_tests {
 }
 
 mod tag_family_tests {
-    use crate::git::{tag_family_prefix, tag_in_family, tag_in_family_excluding_siblings};
+    use crate::git::{
+        tag_family_glob, tag_family_prefix, tag_in_family, tag_in_family_excluding_siblings,
+    };
 
     fn families(templates: &[&str]) -> Vec<String> {
         templates.iter().map(|t| t.to_string()).collect()
@@ -358,5 +360,54 @@ mod tag_family_tests {
             tag_family_prefix("{{ Version }}", Some("sub/")).unwrap()
         );
         assert!(tag_in_family(&glued, "{{ Version }}", Some("sub/")));
+    }
+
+    /// A monorepo namespace and a per-crate track are two coordinates of the
+    /// same tag, not alternatives: dropping either one makes the family span a
+    /// neighbouring subproject or a neighbouring crate. Pinned on both halves
+    /// — the matcher that tests membership and the prefix the minter glues a
+    /// literal tag onto — because a drift between them mints a tag outside the
+    /// family that is later swept for it.
+    #[test]
+    fn monorepo_prefix_composes_with_the_template_prefix() {
+        assert_eq!(
+            tag_family_prefix("core-v{{ Version }}", Some("sub/")).as_deref(),
+            Some("sub/core-v")
+        );
+        assert_eq!(
+            tag_family_glob("core-v{{ Version }}", Some("sub/")).as_deref(),
+            Some("sub/core-v*")
+        );
+        assert!(tag_in_family(
+            "sub/core-v1.2.3",
+            "core-v{{ Version }}",
+            Some("sub/")
+        ));
+        // The namespace alone must not claim a sibling crate's track, and the
+        // track alone must not claim a sibling subproject's tag.
+        assert!(!tag_in_family(
+            "sub/cli-v1.2.3",
+            "core-v{{ Version }}",
+            Some("sub/")
+        ));
+        assert!(!tag_in_family(
+            "other/core-v1.2.3",
+            "core-v{{ Version }}",
+            Some("sub/")
+        ));
+        // An operator who spelled the namespace out in the template gets it
+        // once, not twice.
+        assert_eq!(
+            tag_family_prefix("sub/core-v{{ Version }}", Some("sub/")).as_deref(),
+            Some("sub/core-v")
+        );
+        // Minter half: the prefix a rolling nightly tag is glued onto lands
+        // inside the family the matcher tests.
+        let minted = format!(
+            "{}edge",
+            tag_family_prefix("core-v{{ Version }}", Some("sub/")).unwrap()
+        );
+        assert_eq!(minted, "sub/core-vedge");
+        assert!(tag_in_family(&minted, "core-v{{ Version }}", Some("sub/")));
     }
 }

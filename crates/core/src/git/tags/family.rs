@@ -190,16 +190,20 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 /// extracted prefix is the empty string, which matches every tag in the
 /// repository — including a sibling track's `core-v0.6.0` — and so would
 /// silently un-scope the search it was meant to narrow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TagFamilyScope<'a> {
+///
+/// The prefix is OWNED because a monorepo namespace and a template prefix
+/// compose into a string neither input contains (`sub/` + `core-v` →
+/// `sub/core-v`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TagFamilyScope {
     /// Tags starting with a literal prefix.
-    Prefix(&'a str),
+    Prefix(String),
     /// Tags that are a bare version (`0.6.0`), minted by a template whose
     /// version placeholder sits at position zero.
     BareVersion,
 }
 
-impl TagFamilyScope<'_> {
+impl TagFamilyScope {
     /// The glob for `git describe --match=<glob>`.
     pub(super) fn describe_glob(&self) -> String {
         match self {
@@ -219,7 +223,7 @@ impl TagFamilyScope<'_> {
     /// The tag with this family's prefix removed, ready for SemVer parsing.
     pub(super) fn strip<'t>(&self, tag: &'t str) -> &'t str {
         match self {
-            Self::Prefix(p) => strip_monorepo_prefix(tag, p),
+            Self::Prefix(p) => strip_monorepo_prefix(tag, p.as_str()),
             Self::BareVersion => tag,
         }
     }
@@ -276,11 +280,16 @@ pub fn tag_in_family(tag: &str, tag_template: &str, monorepo_prefix: Option<&str
 /// # use anodizer_core::git::tag_family_prefix;
 /// assert_eq!(tag_family_prefix("operator-v{{ Version }}", None).as_deref(), Some("operator-v"));
 /// assert_eq!(tag_family_prefix("{{ Version }}", Some("sub/")).as_deref(), Some("sub/"));
+/// // A namespace and a track compose; they do not replace one another.
+/// assert_eq!(
+///     tag_family_prefix("core-v{{ Version }}", Some("sub/")).as_deref(),
+///     Some("sub/core-v")
+/// );
 /// assert_eq!(tag_family_prefix("nightly", None), None);
 /// ```
 pub fn tag_family_prefix(tag_template: &str, monorepo_prefix: Option<&str>) -> Option<String> {
     match tag_family_scope(tag_template, monorepo_prefix)? {
-        TagFamilyScope::Prefix(p) => Some(p.to_string()),
+        TagFamilyScope::Prefix(p) => Some(p),
         TagFamilyScope::BareVersion => Some(String::new()),
     }
 }
@@ -313,23 +322,40 @@ pub fn tag_in_family_excluding_siblings(
     })
 }
 
-/// Resolve the family a crate's `tag_template` mints, falling back to the
-/// monorepo namespace when the template carries no usable scope of its own.
-pub(super) fn tag_family_scope<'a>(
-    tag_template: &'a str,
-    monorepo_prefix: Option<&'a str>,
-) -> Option<TagFamilyScope<'a>> {
+/// Resolve the family a crate's `tag_template` mints, COMPOSED with the
+/// monorepo namespace rather than replaced by it.
+///
+/// A monorepo namespace and a per-crate track are two independent coordinates
+/// of the same tag: `subproject1/` + `core-v` names `subproject1/core-v1.2.3`.
+/// Taking only the template's own prefix drops the namespace, so the family
+/// spans every subproject at once; taking only the namespace drops the track,
+/// so a `core-v` question is answered with the neighbouring `cli-v` tag. The
+/// namespace is skipped when the template already spells it out, so an
+/// operator who wrote the full `subproject1/core-v{{ Version }}` does not get
+/// it twice.
+pub(super) fn tag_family_scope(
+    tag_template: &str,
+    monorepo_prefix: Option<&str>,
+) -> Option<TagFamilyScope> {
+    let namespace = monorepo_prefix.filter(|p| !p.is_empty()).unwrap_or("");
     match tag_prefix_slice(tag_template) {
-        Some(p) if !p.is_empty() => Some(TagFamilyScope::Prefix(p)),
+        Some(p) if !p.is_empty() => Some(TagFamilyScope::Prefix(compose_prefix(namespace, p))),
         // A bare `{{ Version }}` under a monorepo namespace still lives inside
         // that namespace (`subproject1/0.6.0`), so the namespace is the family.
-        Some(_) => match monorepo_prefix.filter(|p| !p.is_empty()) {
-            Some(p) => Some(TagFamilyScope::Prefix(p)),
-            None => Some(TagFamilyScope::BareVersion),
-        },
-        None => monorepo_prefix
-            .filter(|p| !p.is_empty())
-            .map(TagFamilyScope::Prefix),
+        Some(_) if namespace.is_empty() => Some(TagFamilyScope::BareVersion),
+        // A template with no version placeholder mints one literal tag, not a
+        // track; only the namespace can still scope it.
+        None if namespace.is_empty() => None,
+        _ => Some(TagFamilyScope::Prefix(namespace.to_string())),
+    }
+}
+
+/// Glue a monorepo namespace onto a template prefix without doubling it.
+fn compose_prefix(namespace: &str, prefix: &str) -> String {
+    if namespace.is_empty() || prefix.starts_with(namespace) {
+        prefix.to_string()
+    } else {
+        format!("{namespace}{prefix}")
     }
 }
 
@@ -388,13 +414,13 @@ pub(super) enum IgnoreMatchTarget {
 /// tag (`false`) — preserving each call site's historical behavior.
 pub(super) fn semver_pairs_filtered(
     tags_output: &str,
-    scope: Option<TagFamilyScope<'_>>,
+    scope: Option<TagFamilyScope>,
     ignore_tag_globs: &[glob::Pattern],
     rendered_ignore_prefixes: &[String],
     ignore_target: IgnoreMatchTarget,
     skip_empty_ignore_prefix: bool,
 ) -> Vec<(SemVer, String)> {
-    let strip = |t: &str| -> String { scope.map(|s| s.strip(t)).unwrap_or(t).to_string() };
+    let strip = |t: &str| -> String { scope.as_ref().map(|s| s.strip(t)).unwrap_or(t).to_string() };
     let ignore_view = |t: &str| -> String {
         match ignore_target {
             IgnoreMatchTarget::Stripped => strip(t),
@@ -404,7 +430,7 @@ pub(super) fn semver_pairs_filtered(
     tags_output
         .lines()
         .filter(|t| !is_nightly_tag(t))
-        .filter(|t| scope.map(|s| s.contains(t)).unwrap_or(true))
+        .filter(|t| scope.as_ref().map(|s| s.contains(t)).unwrap_or(true))
         .filter(|t| {
             let view = ignore_view(t);
             !ignore_tag_globs.iter().any(|g| g.matches(&view))

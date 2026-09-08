@@ -158,7 +158,7 @@ pub fn find_latest_tag_matching_with_prefix_in(
     // preserving this site's historical behavior.
     let mut matching: Vec<(SemVer, String)> = semver_pairs_filtered(
         &tags_output,
-        monorepo_prefix.map(TagFamilyScope::Prefix),
+        monorepo_prefix.map(|p| TagFamilyScope::Prefix(p.to_string())),
         &ignore_tag_globs,
         &rendered_ignore_prefixes,
         IgnoreMatchTarget::Stripped,

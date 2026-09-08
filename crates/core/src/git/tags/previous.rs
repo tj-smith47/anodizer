@@ -107,7 +107,7 @@ pub fn find_previous_tag_with_prefix_in(
         current_tag,
         git_config,
         template_vars,
-        monorepo_prefix.map(TagFamilyScope::Prefix),
+        monorepo_prefix.map(|p| TagFamilyScope::Prefix(p.to_string())),
     )
 }
 
@@ -168,7 +168,7 @@ fn find_previous_tag_scoped_in(
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
-    scope: Option<TagFamilyScope<'_>>,
+    scope: Option<TagFamilyScope>,
 ) -> Result<Option<String>> {
     let tag_sort = git_config.and_then(|gc| gc.tag_sort.as_deref());
     if tag_sort == Some("smartsemver") {
@@ -239,7 +239,7 @@ fn smartsemver_previous_tag_in(
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
-    scope: Option<TagFamilyScope<'_>>,
+    scope: Option<TagFamilyScope>,
 ) -> Result<Option<String>> {
     let tags_output = git_output_in(cwd, &["tag", "--list"])?;
     if tags_output.is_empty() {
@@ -258,7 +258,10 @@ fn smartsemver_previous_tag_in(
     // from the candidate list so `v0.2.0` points its changelog at `v0.1.0`
     // rather than `v0.2.0-beta.3`.
     let skip_prereleases = {
-        let tag_for_signal = scope.map(|s| s.strip(current_tag)).unwrap_or(current_tag);
+        let tag_for_signal = scope
+            .as_ref()
+            .map(|s| s.strip(current_tag))
+            .unwrap_or(current_tag);
         parse_semver_tag(tag_for_signal)
             .map(|sv| !sv.is_prerelease())
             .unwrap_or(false)
