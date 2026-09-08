@@ -119,9 +119,8 @@ pub(crate) fn enforce_dirty_repo_gate(ctx: &Context) -> Result<()> {
 /// Apply nightly overrides after git vars are populated: render
 /// `nightly.version_template` (default
 /// `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`), then override
-/// `Version` / `RawVersion` / `Tag` / `IsNightly` / `ReleaseName` template
-/// vars. SDE-aware so the harness's two from-clean rebuilds stay
-/// byte-stable.
+/// `Version` / `RawVersion` / `IsNightly` template vars. SDE-aware so the
+/// harness's two from-clean rebuilds stay byte-stable.
 pub(crate) fn apply_nightly_template_vars(
     ctx: &mut Context,
     config: &Config,
@@ -129,9 +128,9 @@ pub(crate) fn apply_nightly_template_vars(
 ) -> Result<()> {
     let nightly_cfg = config.nightly.as_ref();
 
-    // `IsNightly` must be set first so `version_template`, `tag_name`,
-    // and `name_template` can all branch on `{{ if .IsNightly }}…{{ end }}`
-    // when rendered below.
+    // `IsNightly` must be set first so `version_template` — and the
+    // `tag_name` / `name_template` the release stage renders later — can all
+    // branch on `{{ if .IsNightly }}…{{ end }}`.
     ctx.template_vars_mut().set_bool("IsNightly", true);
 
     // Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
@@ -155,39 +154,14 @@ pub(crate) fn apply_nightly_template_vars(
     ctx.template_vars_mut().set("Version", &nightly_version);
     ctx.template_vars_mut().set("RawVersion", &nightly_version);
 
-    // Nightly templates `tag_name` (alongside `name_template`).
-    // Render after `Version` / `RawVersion` / `IsNightly` are populated so
-    // `{{ .Version }}` etc. resolve to the nightly-overridden values rather
-    // than the base semver. Default literal "nightly" stays template-safe.
-    let tag_tmpl = nightly_cfg
-        .and_then(|c| c.tag_name.as_deref())
-        .unwrap_or("nightly");
-    let nightly_tag = template::render(tag_tmpl, ctx.template_vars())
-        .with_context(|| format!("failed to render nightly tag_name: {tag_tmpl}"))?;
-    // Trim before both the empty-check and the `Tag` set: a template
-    // rendering to whitespace (e.g. `"  edge  "`) would otherwise pass
-    // the gate AND store padded whitespace into `Tag`, which GitHub's
-    // Releases API rejects.
-    let nightly_tag = nightly_tag.trim().to_string();
-    if nightly_tag.is_empty() {
-        anyhow::bail!(
-            "nightly tag_name rendered to an empty string (template: {tag_tmpl}). \
-             An empty tag would be rejected by GitHub's Releases API."
-        );
-    }
-    ctx.template_vars_mut().set("Tag", &nightly_tag);
-
-    let name_tmpl = nightly_cfg
-        .and_then(|c| c.name_template.as_deref())
-        .unwrap_or("{{ ProjectName }}-nightly");
-    let release_name = template::render(name_tmpl, ctx.template_vars())
-        .with_context(|| format!("failed to render nightly name_template: {name_tmpl}"))?;
-    ctx.template_vars_mut().set("ReleaseName", &release_name);
-
-    log.verbose(&format!(
-        "nightly version={}, tag={}, name={}",
-        nightly_version, nightly_tag, release_name
-    ));
+    // `nightly.tag_name` and `nightly.name_template` are resolved by the
+    // release stage, per crate, where the tag family that scopes the retention
+    // sweep is known. Setting `Tag` here would publish one answer and render
+    // another: with `tag_name` unset the release is created on the version's
+    // own tag (`v0.26.0-abc1234-nightly`) while every `{{ Tag }}` reference in
+    // the config — release header, blob directory, announce bodies — would
+    // still say whatever this function had guessed.
+    log.verbose(&format!("nightly version={nightly_version}"));
     Ok(())
 }
 
@@ -217,11 +191,7 @@ pub(crate) fn apply_snapshot_template_vars(
         anyhow::bail!("empty snapshot name after rendering version_template");
     }
     ctx.template_vars_mut().set("Version", &rendered_name);
-    ctx.template_vars_mut().set("ReleaseName", &rendered_name);
-    log.verbose(&format!(
-        "snapshot version={}, release_name={}",
-        rendered_name, rendered_name
-    ));
+    log.verbose(&format!("snapshot version={rendered_name}"));
     Ok(())
 }
 
