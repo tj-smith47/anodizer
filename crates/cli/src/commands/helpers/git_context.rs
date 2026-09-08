@@ -30,6 +30,86 @@ pub(super) fn resolve_tag_override(
         })
 }
 
+/// A crate's own full tag template: its raw `tag_template` when set, else the
+/// `{name}-v{{ Version }}` convention.
+///
+/// NOT `resolved_tag_template()`'s built-in `v{{ Version }}` default, which is
+/// the wrong family for a per-crate config that leaves the template unset.
+/// Every latest-tag probe here extracts from this SAME resolution so the
+/// families can never drift apart.
+fn full_tag_template(crate_cfg: &anodizer_core::config::CrateConfig) -> String {
+    crate_cfg
+        .tag_template
+        .clone()
+        .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", crate_cfg.name))
+}
+
+/// The newest tag, by semver, across the tag families of every crate this run
+/// covers (the explicit selection when there is one, else the whole crate
+/// universe).
+///
+/// Families are deduped by template, so a lockstep workspace performs exactly
+/// one probe and a single-crate config is unchanged. Returns `None` when no
+/// covered family has a tag.
+fn newest_tag_across_crates(
+    ctx: &Context,
+    config: &Config,
+    monorepo_prefix: Option<&str>,
+    log: &StageLogger,
+) -> Option<String> {
+    let selected = &ctx.options.selected_crates;
+    let covered: Vec<&anodizer_core::config::CrateConfig> = if selected.is_empty() {
+        config.crate_universe()
+    } else {
+        selected
+            .iter()
+            .filter_map(|name| config.find_crate(name))
+            .collect()
+    };
+
+    let mut seen_templates: Vec<String> = Vec::new();
+    let mut best: Option<(git::SemVer, String)> = None;
+    for crate_cfg in covered {
+        let template = full_tag_template(crate_cfg);
+        if seen_templates.contains(&template) {
+            continue;
+        }
+        seen_templates.push(template.clone());
+        let found = match git::find_latest_tag_matching_with_prefix(
+            &template,
+            config.git.as_ref(),
+            Some(ctx.template_vars()),
+            monorepo_prefix,
+        ) {
+            Ok(found) => found,
+            Err(e) => {
+                log.warn(&format!("error finding tags matching template: {e}"));
+                continue;
+            }
+        };
+        let Some(tag) = found else { continue };
+        let stripped = match monorepo_prefix {
+            Some(prefix) => git::strip_monorepo_prefix(&tag, prefix),
+            None => tag.as_str(),
+        };
+        let Ok(semver) = git::parse_semver_tag(stripped) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(bv, _)| semver > *bv) {
+            best = Some((semver, tag));
+        }
+    }
+    if let Some((_, ref tag)) = best
+        && seen_templates.len() > 1
+    {
+        log.verbose(&format!(
+            "synthesized version base '{tag}' — newest across {} tag families",
+            seen_templates.len()
+        ));
+    }
+    best.map(|(_, tag)| tag)
+}
+
 /// Resolve tag and populate git variables on the context.
 ///
 /// Finds the first selected crate (or the first crate in config), looks up
@@ -97,10 +177,7 @@ pub fn resolve_git_context(
         // the latest-tag matcher below and the previous-tag prefix filter
         // extract from this SAME resolved template so they never drift
         // into mismatched families for an unset-template crate.
-        let crate_tag_template = crate_cfg
-            .tag_template
-            .clone()
-            .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", crate_cfg.name));
+        let crate_tag_template = full_tag_template(crate_cfg);
         // An override is the operator NAMING the version this run targets;
         // everything else is an inference from what the repository happens to
         // hold. Gates that ask "is the resolved version the one being
@@ -120,16 +197,28 @@ pub fn resolve_git_context(
             override_tag.clone()
         } else {
             let monorepo_prefix = config.monorepo_tag_prefix();
-            let latest_tag = match git::find_latest_tag_matching_with_prefix(
-                &crate_tag_template,
-                config.git.as_ref(),
-                Some(ctx.template_vars()),
-                monorepo_prefix,
-            ) {
-                Ok(found) => found,
-                Err(e) => {
-                    log.warn(&format!("error finding tags matching template: {e}"));
-                    None
+            // A synthesized version (`--nightly` / `--snapshot`) is minted FROM
+            // a base rather than read off a tag at HEAD, so the base must not
+            // depend on which crate is declared first: a multi-track workspace
+            // whose first crate lags its siblings would stamp every track with
+            // the laggard's version. Take the newest tag across the covered
+            // crates' families instead — order-independent, and never older
+            // than any track's own last release. A single-crate or lockstep
+            // workspace has one family, so the answer is unchanged.
+            let latest_tag = if ctx.is_nightly() || ctx.is_snapshot() {
+                newest_tag_across_crates(ctx, config, monorepo_prefix, log)
+            } else {
+                match git::find_latest_tag_matching_with_prefix(
+                    &crate_tag_template,
+                    config.git.as_ref(),
+                    Some(ctx.template_vars()),
+                    monorepo_prefix,
+                ) {
+                    Ok(found) => found,
+                    Err(e) => {
+                        log.warn(&format!("error finding tags matching template: {e}"));
+                        None
+                    }
                 }
             };
             match latest_tag {

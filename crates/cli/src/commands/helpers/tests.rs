@@ -2535,3 +2535,154 @@ fn apply_workspace_scope_infers_and_returns_skip() {
     let names: Vec<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["a-one", "a-two"], "universe is ws-a's crates");
 }
+
+// ---- resolve_git_context — synthesized-version base across tag families --
+
+/// Seed one commit carrying every tag in `tags`, so a latest-tag probe per
+/// family has something to find. Hermetic committer identity via env.
+#[cfg(unix)]
+fn with_multi_family_tags_repo_cwd(tags: &[&str], body: impl FnOnce()) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let git = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@e")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@e");
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} must succeed");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(dir.join("f.txt"), "v1\n").unwrap();
+    git(&["add", "f.txt"]);
+    git(&["commit", "-q", "-m", "init"]);
+    for tag in tags {
+        git(&["tag", tag]);
+    }
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+    body();
+}
+
+/// The cfgd shape: three tracks, and the FIRST-declared one lags far behind
+/// its siblings. A nightly mints its version from a base rather than from a
+/// tag at HEAD, so taking the first crate's base stamped every track with
+/// `0.5.2` (incpatch of `crd-v0.5.1`) while the repo had shipped `v0.10.0`.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_base_is_newest_across_tag_families() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0", "operator-v0.8.0"], || {
+        let config = multi_family_config();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.10.0"),
+            "the nightly base must be the newest tag across families, not the \
+             first-declared crate's",
+        );
+    });
+}
+
+/// The same holds for `--snapshot`, the other mode that synthesizes a
+/// version from a base instead of reading a tag at HEAD.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_snapshot_base_is_newest_across_tag_families() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0", "operator-v0.8.0"], || {
+        let config = multi_family_config();
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log())
+            .expect("snapshot resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.10.0"),
+        );
+    });
+}
+
+/// A stable run still anchors on the selected crate's own family: its tag
+/// exists at HEAD and IS the release, so the newest-across-families rule
+/// (which exists only to pick a synthesis BASE) must not reach it.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_stable_run_keeps_the_selected_crates_family() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0", "operator-v0.8.0"], || {
+        let config = multi_family_config();
+        let mut ctx = empty_env_ctx(&config, ContextOptions::default());
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("stable resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Tag").map(String::as_str),
+            Some("crd-v0.5.1"),
+        );
+    });
+}
+
+/// A lockstep workspace mints ONE family, so every crate answers the same
+/// probe and the nightly base is unchanged by the sweep.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_lockstep_base_unchanged() {
+    with_multi_family_tags_repo_cwd(&["v0.10.0"], || {
+        let lockstep = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "one".to_string(),
+            crates: vec![lockstep("core"), lockstep("cli")],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("nightly resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.10.0"),
+        );
+    });
+}
+
+/// Three tracks whose first-declared crate is the laggard.
+#[cfg(unix)]
+fn multi_family_config() -> Config {
+    let track = |name: &str, template: &str| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some(template.to_string()),
+        ..Default::default()
+    };
+    Config {
+        project_name: "cfgd".to_string(),
+        crates: vec![
+            track("cfgd-crd", "crd-v{{ Version }}"),
+            track("cfgd", "v{{ Version }}"),
+            track("cfgd-operator", "operator-v{{ Version }}"),
+        ],
+        ..Default::default()
+    }
+}
