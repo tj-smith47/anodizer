@@ -306,6 +306,27 @@ impl Stage for SignStage {
     }
 }
 
+/// Seed the docker-image template variables from one image's build metadata
+/// and return that image's digest — empty when the build stage captured none.
+///
+/// `Digest` / `ArtifactID` are PascalCase because a Go-style `{{ .Digest }}`
+/// reference is preprocessed to `{{ Digest }}` and Tera is case-sensitive; the
+/// `digest` / `artifactID` spellings serve templates written against Tera
+/// directly. All four are set on every image, even to empty, so no value
+/// leaks from the previously rendered one.
+fn set_image_template_vars<'a>(
+    ctx: &mut anodizer_core::context::Context,
+    metadata: &'a std::collections::HashMap<String, String>,
+) -> &'a str {
+    let digest = metadata.get("digest").map(|s| s.as_str()).unwrap_or("");
+    let artifact_id = metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+    ctx.template_vars_mut().set("Digest", digest);
+    ctx.template_vars_mut().set("digest", digest);
+    ctx.template_vars_mut().set("ArtifactID", artifact_id);
+    ctx.template_vars_mut().set("artifactID", artifact_id);
+    digest
+}
+
 /// Pipeline stage for signing Docker images via `docker_signs` config.
 /// Must run after `DockerStage` so Docker image artifacts are present.
 pub struct DockerSignStage;
@@ -522,59 +543,52 @@ impl Stage for DockerSignStage {
                     ));
                 }
 
+                // Rendered up front, once, for two consumers: the spawn
+                // below reuses each entry, and a `TUF_ROOT` that depends on
+                // the image (`{{ .Digest }}`, `{{ .ArtifactID }}`) names a
+                // store that must be known — and locked — before the first
+                // signature is made. A dry run spawns nothing and renders
+                // nothing here, matching the loop, which skips both.
+                let per_image_env: Vec<Vec<(String, String)>> = if ctx.is_dry_run() {
+                    Vec::new()
+                } else {
+                    let mut rendered = Vec::with_capacity(image_paths.len());
+                    for (_, metadata) in &image_paths {
+                        set_image_template_vars(ctx, metadata);
+                        let mut env = anodizer_core::config::render_env_entries(
+                            docker_sign_cfg.env.as_deref().unwrap_or(&[]),
+                            |v| ctx.render_template(v),
+                        )
+                        .with_context(|| "docker-sign: render env entries")?;
+                        // docker image signing is cosign — suppress the sigstore
+                        // consent prompt so it never blocks/banners in CI.
+                        crate::process::ensure_cosign_consent_env(&cmd, &mut env);
+                        rendered.push(env);
+                    }
+                    rendered
+                };
+
                 // This loop is serial, but another anodizer process on the
                 // same host is not: keyless cosign invocations collide on
                 // the host's sigstore TUF trust store and the loser exits
                 // with `creating cached local store: resource temporarily
-                // unavailable`. Held across the loop so the post-sign verify
-                // is covered too.
-                let _tuf_lock = (!ctx.is_dry_run()
+                // unavailable`. Every store the images resolve to is locked
+                // across the whole loop, so the post-sign verify is covered
+                // too and a per-image `TUF_ROOT` leaves none of them racing.
+                let _tuf_locks = (!ctx.is_dry_run()
                     && crate::process::is_keyless_cosign(&cmd, &args))
                 .then(|| {
-                    // Per entry, not all-or-nothing: a docker `env:` may mix a
-                    // static `TUF_ROOT` with a per-image template (`{{ Digest }}`
-                    // is only set inside the loop below), and one unrenderable
-                    // entry must not discard the one that locates the cache.
-                    let mut overlay: Vec<(String, String)> = Vec::new();
-                    for entry in docker_sign_cfg.env.as_deref().unwrap_or(&[]) {
-                        match anodizer_core::config::render_env_entries(
-                            std::slice::from_ref(entry),
-                            |v| ctx.render_template(v),
-                        ) {
-                            Ok(pairs) => overlay.extend(pairs),
-                            Err(_) => log.verbose(&format!(
-                                "docker sign: env entry '{}' is only renderable per image; \
-                                 not used to locate the TUF cache",
-                                entry.split('=').next().unwrap_or(entry)
-                            )),
-                        }
-                    }
-                    crate::tuf_cache::keyless_cosign_host_lock(&overlay, ctx.env_source(), &log)
-                })
-                .flatten();
+                    let envs: Vec<&[(String, String)]> =
+                        per_image_env.iter().map(|e| e.as_slice()).collect();
+                    crate::tuf_cache::keyless_cosign_host_locks(&envs, ctx.env_source(), &log)
+                });
 
-                for (image_path, metadata) in &image_paths {
+                for (image_index, (image_path, metadata)) in image_paths.iter().enumerate() {
                     let image_str = image_path.to_string_lossy();
 
-                    // Set docker-specific template variables from artifact metadata.
-                    // `Digest` — the docker image digest (e.g., sha256:abc123...)
-                    // `ArtifactID` — the artifact's id field from metadata
-                    //
-                    // These use PascalCase because Go-style template references like
-                    // `{{ .Digest }}` are preprocessed by stripping the leading dot,
-                    // resulting in `{{ Digest }}`. The Tera template engine is case-
-                    // sensitive, so the variable name must match.
-                    //
-                    // Always set (even to empty) to avoid stale values from a
-                    // previous iteration leaking to this image.
-                    let digest_val = metadata.get("digest").map(|s| s.as_str()).unwrap_or("");
-                    let artifact_id_val = metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                    ctx.template_vars_mut().set("Digest", digest_val);
-                    // Also set lowercase for direct Tera usage ({{ digest }}).
-                    ctx.template_vars_mut().set("digest", digest_val);
-                    ctx.template_vars_mut().set("ArtifactID", artifact_id_val);
-                    // Also set camelCase for direct Tera usage ({{ artifactID }}).
-                    ctx.template_vars_mut().set("artifactID", artifact_id_val);
+                    // Re-seeded per image: the pre-pass above left the LAST
+                    // image's values in the template context.
+                    let digest_val = set_image_template_vars(ctx, metadata);
 
                     // Sign the digest-pinned reference (`<repo>:<tag>@<digest>`),
                     // never the bare tag: a tag can move between build and sign,
@@ -658,21 +672,11 @@ impl Stage for DockerSignStage {
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
 
-                    // Parse and render docker-sign env in one pass; propagate errors
-                    // instead of silently falling back to unrendered template strings.
-                    // The rendered pairs are reused for redaction below.
-                    let mut docker_rendered_env: Vec<(String, String)> =
-                        anodizer_core::config::render_env_entries(
-                            docker_sign_cfg.env.as_deref().unwrap_or(&[]),
-                            |v| ctx.render_template(v),
-                        )
-                        .with_context(|| "docker-sign: render env entries")?;
+                    // The env this image's TUF store was locked from, so the
+                    // child cannot reach a store the lock set does not cover.
+                    let docker_rendered_env = &per_image_env[image_index];
 
-                    // docker image signing is cosign — suppress the sigstore
-                    // consent prompt so it never blocks/banners in CI.
-                    crate::process::ensure_cosign_consent_env(&cmd, &mut docker_rendered_env);
-
-                    for (k, v) in &docker_rendered_env {
+                    for (k, v) in docker_rendered_env {
                         command.env(k, v);
                     }
 

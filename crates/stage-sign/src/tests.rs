@@ -6018,15 +6018,14 @@ mod cosign_tuf_race {
         cache.join(".anodizer-tuf-init.lock").is_file()
     }
 
-    /// A docker `env:` mixing a static `TUF_ROOT` with a per-image template
-    /// must still scope the lock: the unrenderable entry is dropped alone,
-    /// not the whole overlay.
+    /// A `TUF_ROOT` that renders per image puts each image on its own store.
+    /// Every one of them must be locked before the first signature is made —
+    /// a store left unlocked races a sibling anodizer process.
     #[test]
-    fn docker_env_with_a_digest_entry_still_scopes_the_lock_by_tuf_root() {
+    fn docker_per_image_tuf_root_locks_every_rendered_root() {
         use anodizer_core::config::DockerSignConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("child-root");
         let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 0\n");
 
         let docker_signs = vec![DockerSignConfig {
@@ -6038,10 +6037,10 @@ mod cosign_tuf_race {
             stdin: None,
             stdin_file: None,
             id: Some("image-cosign".to_string()),
-            env: Some(vec![
-                format!("TUF_ROOT={}", cache.display()),
-                "FOO={{ Digest }}".to_string(),
-            ]),
+            env: Some(vec![format!(
+                "TUF_ROOT={}/{{{{ ArtifactID }}}}",
+                tmp.path().display()
+            )]),
             output: None,
             if_condition: None,
             signature: None,
@@ -6055,33 +6054,40 @@ mod cosign_tuf_race {
         ctx.config.docker_signs = Some(docker_signs);
         let capture = anodizer_core::log::LogCapture::new();
         ctx.with_log_capture(capture.clone());
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::DockerImage,
-            name: String::new(),
-            path: std::path::PathBuf::from("ghcr.io/acme/app:latest"),
-            target: None,
-            crate_name: "app".to_string(),
-            metadata: Default::default(),
-            size: None,
-        });
+        for id in ["api", "worker"] {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("id".to_string(), id.to_string());
+            metadata.insert("digest".to_string(), format!("sha256:{id}"));
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::DockerImage,
+                name: String::new(),
+                path: std::path::PathBuf::from(format!("ghcr.io/acme/{id}:latest")),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata,
+                size: None,
+            });
+        }
         DockerSignStage
             .run(&mut ctx)
             .expect("stub docker sign succeeds");
 
+        for id in ["api", "worker"] {
+            assert!(
+                tmp.path()
+                    .join(id)
+                    .join(".anodizer-tuf-init.lock")
+                    .is_file(),
+                "every per-image TUF_ROOT must be locked, '{id}' was not: {:?}",
+                capture.all_messages()
+            );
+        }
         assert!(
-            cache.join(".anodizer-tuf-init.lock").is_file(),
-            "a per-image env entry must not discard the TUF_ROOT entry that \
-             locates the cache"
-        );
-        assert!(
-            capture.all_messages().iter().any(|(level, msg)| {
-                *level == anodizer_core::log::LogLevel::Verbose
-                    && msg.contains(
-                        "docker sign: env entry 'FOO' is only renderable per image; \
-                         not used to locate the TUF cache",
-                    )
-            }),
-            "the dropped entry must be named, not silently discarded: {:?}",
+            capture
+                .all_messages()
+                .iter()
+                .any(|(_, msg)| msg.contains("keyless jobs resolve 2 distinct TUF_ROOT values")),
+            "the run must name the roots it locked: {:?}",
             capture.all_messages()
         );
     }
