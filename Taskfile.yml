@@ -303,6 +303,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-log-status.sh
 
+  audit:tag-family:
+    desc: "Guard: a crate's tag family is read through CrateConfig::tag_family_template(), never the raw field."
+    cmds:
+      - .claude/scripts/audit-tag-family.sh
+
   audit:test-isolation:
     desc: "Guard: no unjustified process-global env mutation in tests (serial/seam/env-ok)."
     cmds:
@@ -351,6 +356,7 @@ tasks:
     cmds:
       - task: audit:log
       - task: audit:log-labels
+      - task: audit:tag-family
       - task: audit:test-isolation
       - task: audit:test-spawn
       - task: audit:repo-identity
