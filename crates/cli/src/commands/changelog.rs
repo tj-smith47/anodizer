@@ -269,21 +269,6 @@ fn predecessor_tag(workspace_root: &Path, prefix: &str, tag: &str) -> Result<Opt
     Ok(None)
 }
 
-/// The global tag prefix that `tag`/`bump` apply to the lockstep / single
-/// unit: the configured `tag.tag_prefix`, defaulting to `v`.
-///
-/// Shared by [`select_crates`] (lockstep range bounding) and the
-/// `run_release_notes` bare-lockstep synthesis so the default-`v` lives in one
-/// place; a hardcoded `v` at either site would miss a custom prefix (e.g.
-/// `release-v`) and silently degrade the range to full history.
-fn global_tag_prefix(config: &Config) -> String {
-    config
-        .tag
-        .as_ref()
-        .and_then(|t| t.tag_prefix.clone())
-        .unwrap_or_else(|| "v".to_string())
-}
-
 /// Enumerate the crates selected for rendering across all three config modes,
 /// honoring `--crate` and a single-tag crate pin.
 ///
@@ -300,7 +285,7 @@ fn select_crates(
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
         git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""))
     };
-    let global_prefix = global_tag_prefix(config);
+    let global_prefix = config.repo_tag_prefix().to_string();
     let entries: Vec<(String, PathBuf, String)> =
         match detect_repo_shape(workspace_root, Some(config), workspace) {
             RepoShape::Single => {
@@ -507,7 +492,7 @@ pub(crate) fn resolve_changelog_render_set(
     let universe: Vec<anodizer_core::config::CrateConfig> =
         config.crate_universe().into_iter().cloned().collect();
     if universe.is_empty() {
-        let global_prefix = global_tag_prefix(config);
+        let global_prefix = config.repo_tag_prefix();
         return Ok((
             vec![anodizer_core::config::CrateConfig {
                 name: config.project_name.clone(),

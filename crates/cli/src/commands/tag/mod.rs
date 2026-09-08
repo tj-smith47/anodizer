@@ -143,7 +143,10 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| "none".to_string()),
             bump_minor_pre_major: cfg.bump_minor_pre_major.unwrap_or(false),
             bump_patch_for_minor_pre_major: cfg.bump_patch_for_minor_pre_major.unwrap_or(false),
-            tag_prefix: cfg.tag_prefix.clone().unwrap_or_else(|| "v".to_string()),
+            tag_prefix: cfg
+                .tag_prefix
+                .clone()
+                .unwrap_or_else(|| anodizer_core::config::Config::DEFAULT_TAG_PREFIX.to_string()),
             release_branches: cfg.release_branches.clone().unwrap_or_default(),
             custom_tag: opts.custom_tag.clone().or_else(|| cfg.custom_tag.clone()),
             tag_context: cfg

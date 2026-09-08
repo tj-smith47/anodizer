@@ -289,9 +289,13 @@ pub(crate) fn guard_flat_aggregate_coherence(
     workspace_root: &Path,
 ) -> Result<()> {
     match detect_repo_shape(workspace_root, config, workspace) {
-        RepoShape::FlatAggregate(crates) => {
-            check_shared_prefix_version_coherence(&crates, workspace_root)
-        }
+        RepoShape::FlatAggregate(crates) => check_shared_prefix_version_coherence(
+            &crates,
+            workspace_root,
+            config
+                .and_then(|c| c.tag.as_ref())
+                .and_then(|t| t.tag_prefix.as_deref()),
+        ),
         RepoShape::PerCrate(_) => {
             let Some(config) = config else {
                 return Ok(());
@@ -306,9 +310,10 @@ pub(crate) fn guard_flat_aggregate_coherence(
             } else {
                 config.crates.clone()
             };
+            let repo_tag_prefix = config.tag.as_ref().and_then(|t| t.tag_prefix.as_deref());
             for group in prefix_groups(&candidates) {
                 if group.len() > 1 {
-                    check_shared_prefix_version_coherence(&group, workspace_root)?;
+                    check_shared_prefix_version_coherence(&group, workspace_root, repo_tag_prefix)?;
                 }
             }
             Ok(())
@@ -320,11 +325,17 @@ pub(crate) fn guard_flat_aggregate_coherence(
 /// The comparison body shared by [`guard_flat_aggregate_coherence`]'s two
 /// aggregate arms: every member with a readable literal `[package].version`
 /// must agree, or the shared tag namespace cannot carry the release.
+///
+/// `repo_tag_prefix` is the operator's explicit `tag.tag_prefix`, when set:
+/// it is what put template-less crates into one shared family, so the
+/// message names removing it as the second way out.
 pub(crate) fn check_shared_prefix_version_coherence(
     crates: &[CrateConfig],
     workspace_root: &Path,
+    repo_tag_prefix: Option<&str>,
 ) -> Result<()> {
-    let prefix = shared_tag_prefix(crates).unwrap_or_else(|| "v".to_string());
+    let prefix = shared_tag_prefix(crates)
+        .unwrap_or_else(|| anodizer_core::config::Config::DEFAULT_TAG_PREFIX.to_string());
     // Read each member's literal `[package].version`, keyed by crate name. Skip
     // members with no readable literal version (no value to compare).
     let mut versions: Vec<(String, String)> = Vec::new();
@@ -345,11 +356,17 @@ pub(crate) fn check_shared_prefix_version_coherence(
             .map(|(name, ver)| format!("'{name}' ({ver})"))
             .collect::<Vec<_>>()
             .join(", ");
+        let drop_prefix = match repo_tag_prefix {
+            Some(p) => format!(
+                " (or remove `tag.tag_prefix: \"{p}\"` so each crate's `<name>-v` family applies)"
+            ),
+            None => String::new(),
+        };
         bail!(
             "crates {listing} share tag prefix '{prefix}' but set different [package].version \
              values; one tag can't carry two versions. For lockstep set \
              [workspace.package].version; for independent releases give each crate a distinct \
-             tag_template prefix."
+             tag_template prefix{drop_prefix}."
         );
     }
     Ok(())

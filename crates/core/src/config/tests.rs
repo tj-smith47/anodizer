@@ -7234,6 +7234,19 @@ fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
     let yaml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.anodizer.yaml"));
     let mut config: Config = serde_yaml_ng::from_str(yaml).expect("parse real .anodizer.yaml");
     crate::defaults_merge::apply_defaults(&mut config);
+    // The real repo root: a lockstep workspace with `tag.tag_prefix: v`, so
+    // both derivation signals are present and must yield to the explicit
+    // `defaults.crates.tag_template`.
+    let repo_root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    config.populate_derived_tag_templates(repo_root);
+    assert_eq!(
+        config.derived_tag_template, None,
+        "every crate already carried a template; nothing may be derived"
+    );
+    assert!(
+        !config.mints_multiple_tag_families(),
+        "anodizer releases one family"
+    );
 
     assert_eq!(
         config.crates.len(),
@@ -7257,6 +7270,172 @@ fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
             c.name
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Derived tag family — `tag.tag_prefix` / Cargo lockstep fold at config load.
+// Every fixture uses a TempDir: anodizer's own root Cargo.toml declares
+// `[workspace.package].version`, so `Path::new(".")` would supply a false
+// lockstep signal.
+// ---------------------------------------------------------------------------
+
+fn cargo_workspace_dir(workspace_package_version: Option<&str>) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let package = workspace_package_version
+        .map(|v| format!("\n[workspace.package]\nversion = \"{v}\"\n"))
+        .unwrap_or_default();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        format!("[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\n{package}"),
+    )
+    .expect("write Cargo.toml");
+    dir
+}
+
+fn two_crate_config(extra_top_level: &str) -> Config {
+    let yaml = format!(
+        "project_name: app\n{extra_top_level}crates:\n  - {{ name: core, path: crates/core }}\n  - {{ name: cli, path: crates/cli }}\n"
+    );
+    let mut config: Config = serde_yaml_ng::from_str(&yaml).expect("two-crate config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    config
+}
+
+#[test]
+fn lockstep_workspace_derives_the_repo_tag_family() {
+    let dir = cargo_workspace_dir(Some("0.25.3"));
+    let mut config = two_crate_config("");
+    config.populate_derived_tag_templates(dir.path());
+    for c in &config.crates {
+        assert_eq!(
+            c.tag_family_template(),
+            "v{{ Version }}",
+            "crate '{}' must release under the one tag `tag` cuts",
+            c.name
+        );
+    }
+    assert_eq!(
+        config.derived_tag_template.as_deref(),
+        Some("v{{ Version }}")
+    );
+}
+
+#[test]
+fn explicit_tag_prefix_derives_the_repo_tag_family() {
+    let dir = cargo_workspace_dir(None);
+    let mut config = two_crate_config("tag:\n  tag_prefix: rel-\n");
+    config.populate_derived_tag_templates(dir.path());
+    for c in &config.crates {
+        assert_eq!(
+            c.tag_family_template(),
+            "rel-{{ Version }}",
+            "crate '{}'",
+            c.name
+        );
+    }
+}
+
+#[test]
+fn no_signal_keeps_the_per_crate_tag_family() {
+    let dir = cargo_workspace_dir(None);
+    let mut config = two_crate_config("");
+    config.populate_derived_tag_templates(dir.path());
+    for c in &config.crates {
+        assert_eq!(
+            c.tag_template, None,
+            "crate '{}' raw field must stay unset",
+            c.name
+        );
+        assert_eq!(
+            c.tag_family_template(),
+            format!("{}-v{{{{ Version }}}}", c.name),
+            "crate '{}' keeps its own family",
+            c.name
+        );
+    }
+    assert_eq!(config.derived_tag_template, None);
+}
+
+#[test]
+fn a_workspaces_config_derives_no_tag_family() {
+    let dir = cargo_workspace_dir(Some("1.4.0"));
+    let yaml = r#"
+project_name: cfgd
+tag:
+  tag_prefix: v
+workspaces:
+  - name: core
+    crates:
+      - { name: cfgd-core, path: crates/core, tag_template: "core-v{{ Version }}" }
+  - name: tools
+    crates:
+      - { name: cfgd-tools, path: crates/tools }
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("workspaces config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    config.populate_derived_tag_templates(dir.path());
+    let core = config.find_crate("cfgd-core").expect("cfgd-core");
+    let tools = config.find_crate("cfgd-tools").expect("cfgd-tools");
+    assert_eq!(core.tag_template.as_deref(), Some("core-v{{ Version }}"));
+    assert_eq!(
+        tools.tag_template, None,
+        "a `workspaces:` config releases several tracks; nothing may collapse one"
+    );
+    assert_eq!(tools.tag_family_template(), "cfgd-tools-v{{ Version }}");
+    assert_eq!(config.derived_tag_template, None);
+}
+
+#[test]
+fn an_explicit_tag_template_survives_the_derived_fold() {
+    let dir = cargo_workspace_dir(Some("0.25.3"));
+    let yaml = r#"
+project_name: app
+crates:
+  - { name: core, path: crates/core, tag_template: "core-v{{ Version }}" }
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    config.populate_derived_tag_templates(dir.path());
+    assert_eq!(
+        config.crates[0].tag_family_template(),
+        "core-v{{ Version }}",
+        "the operator's own template always wins"
+    );
+    assert_eq!(config.derived_tag_template, None);
+}
+
+/// The six cfgd families under `workspaces:` with `tag.tag_prefix: v`, on a
+/// lockstep Cargo root: every declared template survives verbatim.
+#[test]
+fn cfgd_shaped_config_is_unchanged_by_the_derived_fold() {
+    let dir = cargo_workspace_dir(Some("1.4.0"));
+    let families = [
+        ("cfgd-schema", "schema-v"),
+        ("cfgd-crd", "crd-v"),
+        ("cfgd-core", "core-v"),
+        ("cfgd", "v"),
+        ("cfgd-operator", "operator-v"),
+        ("cfgd-csi", "csi-v"),
+    ];
+    let mut yaml = String::from("project_name: cfgd\ntag:\n  tag_prefix: v\nworkspaces:\n");
+    for (name, prefix) in families {
+        yaml.push_str(&format!(
+            "  - name: {name}\n    crates:\n      - {{ name: {name}, path: crates/{name}, tag_template: \"{prefix}{{{{ Version }}}}\" }}\n"
+        ));
+    }
+    let mut config: Config = serde_yaml_ng::from_str(&yaml).expect("cfgd-shaped config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    config.populate_derived_tag_templates(dir.path());
+    for (name, prefix) in families {
+        let c = config.find_crate(name).expect(name);
+        assert_eq!(
+            c.tag_family_template(),
+            format!("{prefix}{{{{ Version }}}}"),
+            "crate '{name}' must keep the family it declared"
+        );
+    }
+    assert!(config.mints_multiple_tag_families());
+    assert_eq!(config.derived_tag_template, None);
 }
 
 /// The template-keyed sibling list must exclude exactly what the name-keyed

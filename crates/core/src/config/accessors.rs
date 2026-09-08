@@ -101,6 +101,20 @@ impl Config {
         out
     }
 
+    /// The tag prefix a repository releasing as one unit uses when the operator
+    /// names none.
+    pub const DEFAULT_TAG_PREFIX: &str = "v";
+
+    /// The prefix the repo-level tagging path prepends to a version: an explicit
+    /// `tag.tag_prefix`, else the canonical `v`. The one answer `tag`, `changelog`
+    /// and the derived tag family all read.
+    pub fn repo_tag_prefix(&self) -> &str {
+        self.tag
+            .as_ref()
+            .and_then(|t| t.tag_prefix.as_deref())
+            .unwrap_or(Self::DEFAULT_TAG_PREFIX)
+    }
+
     /// Return the monorepo tag prefix, if configured.
     ///
     /// Shorthand for `config.monorepo.as_ref().and_then(|m| m.tag_prefix.as_deref())`.
@@ -350,6 +364,58 @@ impl Config {
             let derived = derive_metadata_from_cargo_toml(&crate_dir);
             self.derived_metadata.insert(name, derived);
         }
+    }
+
+    /// Fill `tag_template` for every crate that omits one, from the tag family the
+    /// repository as a whole releases under.
+    ///
+    /// `anodizer tag` cuts one repo-level tag — `tag.tag_prefix` (default `v`) plus
+    /// the version — whenever the workspace releases as one unit. Left unfilled,
+    /// each crate's `tag_family_template()` answers `<name>-v{{ Version }}`
+    /// instead, so the release stage creates the release on a tag `tag` never cut
+    /// and crate selection matches nothing. Deriving it here gives `tag`, crate
+    /// selection, `bump`, `changelog` and the release stage one value to read.
+    ///
+    /// A crate that names its own `tag_template` (directly or through
+    /// `defaults.crates.tag_template`) is never touched, and nothing is derived for
+    /// a config declaring `workspaces:` — that block is an explicit statement that
+    /// the repository releases several tracks, so the per-crate `<name>-v` families
+    /// are what keeps them apart.
+    ///
+    /// Run after `defaults_merge::apply_defaults`, so an explicit
+    /// `defaults.crates.tag_template` has already landed. Records the family in
+    /// `derived_tag_template` when at least one crate was filled.
+    pub fn populate_derived_tag_templates(&mut self, base_dir: &std::path::Path) {
+        if self.workspaces.as_ref().is_some_and(|w| !w.is_empty()) {
+            return;
+        }
+        let Some(prefix) = self.derived_repo_tag_prefix(base_dir) else {
+            return;
+        };
+        let template = format!("{prefix}{{{{ Version }}}}");
+        let mut filled = false;
+        for c in self.crates.iter_mut() {
+            if c.tag_template.is_none() {
+                c.tag_template = Some(template.clone());
+                filled = true;
+            }
+        }
+        if filled {
+            self.derived_tag_template = Some(template);
+        }
+    }
+
+    /// The repo-wide tag family prefix, when the repository has one: an explicit
+    /// `tag.tag_prefix`, else `v` for a Cargo lockstep workspace. `None` when
+    /// neither holds — nothing states that these crates share a tag.
+    fn derived_repo_tag_prefix(&self, base_dir: &std::path::Path) -> Option<String> {
+        // The raw `Option`, not `repo_tag_prefix()`: "unset" is the signal that
+        // the operator named nothing, and the default only applies once the
+        // Cargo manifest says the workspace releases as one unit.
+        if let Some(p) = self.tag.as_ref().and_then(|t| t.tag_prefix.as_deref()) {
+            return Some(p.to_string());
+        }
+        workspace_package_version(base_dir).map(|_| Self::DEFAULT_TAG_PREFIX.to_string())
     }
 
     /// Populate `depends_on` for every crate entry that OMITS it, by reading

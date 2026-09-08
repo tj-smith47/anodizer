@@ -309,6 +309,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // whether the value was set per-crate or hoisted to defaults.
     anodizer_core::defaults_merge::apply_defaults(&mut config);
 
+    // Derive the tag family for every crate that still omits one, from the
+    // repo-level signal (`tag.tag_prefix`, or a Cargo lockstep workspace), so
+    // the release stage and crate selection read the tag `tag` actually cuts.
+    config.populate_derived_tag_templates(Path::new("."));
+
     // Derive per-crate publisher metadata (description / license / homepage /
     // authors) from each crate's `Cargo.toml [package]` so a plain Rust
     // project's publishers (winget/snapcraft/nfpm/homebrew/nix/...) resolve
@@ -370,6 +375,11 @@ pub fn emit_config_advisories_filtered(
             continue;
         }
         log.verbose(&advisory.message);
+    }
+    if let Some(template) = config.derived_tag_template.as_deref() {
+        log.verbose(&format!(
+            "derived tag family '{template}' for crates omitting tag_template"
+        ));
     }
 }
 

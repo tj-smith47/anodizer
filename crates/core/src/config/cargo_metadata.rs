@@ -97,6 +97,16 @@ pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
 
 type Table = toml::map::Map<String, Value>;
 
+/// The `[workspace.package].version` of the Cargo workspace `base_dir` belongs
+/// to, or `None` when no ancestor manifest declares one.
+///
+/// The lockstep signal: one manifest field driving every member's version means
+/// one shared release tag, which is what `anodizer tag` cuts for such a
+/// workspace.
+pub fn workspace_package_version(base_dir: &Path) -> Option<String> {
+    WorkspacePackage::resolve(base_dir).string("version")
+}
+
 /// The workspace root's `[workspace.package]` table, resolved once so
 /// `{ workspace = true }` field inheritance can be honoured.
 struct WorkspacePackage {

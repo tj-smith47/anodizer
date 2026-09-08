@@ -382,6 +382,14 @@ pub struct Config {
     #[serde(skip)]
     #[schemars(skip)]
     pub derived_metadata: BTreeMap<String, MetadataConfig>,
+    /// The tag family [`Config::populate_derived_tag_templates`] filled into
+    /// every crate that omitted `tag_template`, when it filled at least one.
+    /// NOT a user-facing YAML field — it lets the config loader report the
+    /// derivation, since a filled crate is indistinguishable from one the
+    /// operator wrote by hand once the fold has run.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub derived_tag_template: Option<String>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -484,6 +492,7 @@ impl Default for Config {
             pypis: None,
             homebrew_cores: None,
             derived_metadata: BTreeMap::new(),
+            derived_tag_template: None,
         }
     }
 }
@@ -698,7 +707,7 @@ mod snapshot_nightly;
 pub use snapshot_nightly::*;
 
 mod cargo_metadata;
-pub use cargo_metadata::derive_metadata_from_cargo_toml;
+pub use cargo_metadata::{derive_metadata_from_cargo_toml, workspace_package_version};
 
 mod workspace_deps;
 pub use workspace_deps::{

@@ -1330,6 +1330,75 @@ fn coherence_guard_rejects_divergent_versions() {
     );
 }
 
+/// Top-level `crates:` with independent `[package].version`s, no
+/// `tag_template`, and an explicit `tag.tag_prefix`: the operator named one
+/// repo-wide family, so the crates form one aggregate and must agree on a
+/// version. The fold runs against a non-lockstep TempDir root.
+fn independent_crates_with_repo_prefix_fixture(
+    core_ver: &str,
+    cli_ver: &str,
+) -> (tempfile::TempDir, anodizer_core::config::Config) {
+    let (tmp, mut config) = flat_aggregate_versions_fixture(core_ver, cli_ver);
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\n",
+    )
+    .unwrap();
+    for c in &mut config.crates {
+        c.tag_template = None;
+    }
+    config.tag = Some(anodizer_core::config::TagConfig {
+        tag_prefix: Some("v".to_string()),
+        ..Default::default()
+    });
+    config.populate_derived_tag_templates(tmp.path());
+    (tmp, config)
+}
+
+#[test]
+fn independent_crates_with_a_repo_tag_prefix_bail_with_both_remedies() {
+    let (tmp, config) = independent_crates_with_repo_prefix_fixture("0.5.0", "0.1.0");
+    assert!(
+        matches!(
+            detect_repo_shape(tmp.path(), Some(&config), Some(&ws_no_lockstep())),
+            RepoShape::FlatAggregate(ref crates) if crates.len() == 2
+        ),
+        "one derived family makes one aggregate"
+    );
+    let err = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("prefix 'v'"), "names the shared prefix: {err}");
+    assert!(
+        err.contains("distinct tag_template prefix"),
+        "first way out — a template per crate: {err}"
+    );
+    assert!(
+        err.contains("remove `tag.tag_prefix: \"v\"`"),
+        "second way out — drop the repo prefix so `<name>-v` applies: {err}"
+    );
+}
+
+#[test]
+fn independent_crates_with_a_repo_tag_prefix_and_one_version_cut_one_tag() {
+    let (tmp, config) = independent_crates_with_repo_prefix_fixture("0.2.0", "0.2.0");
+    let shape = detect_repo_shape(tmp.path(), Some(&config), Some(&ws_no_lockstep()));
+    let RepoShape::FlatAggregate(crates) = shape else {
+        panic!(
+            "one shared family must aggregate, got {:?}",
+            std::mem::discriminant(&shape)
+        );
+    };
+    assert_eq!(crates.len(), 2);
+    assert_eq!(
+        shared_tag_prefix(&crates).as_deref(),
+        Some("v"),
+        "the aggregate cuts one `v<version>` tag"
+    );
+    let res = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path());
+    assert!(res.is_ok(), "agreeing versions pass: {res:?}");
+}
+
 /// Mixed shape: top-level crates sharing one extractable prefix alongside
 /// `workspaces:` join as ONE aggregate group — separate singleton groups
 /// would cut divergent tags (v0.2.0 AND v0.1.1) into one `v*` namespace.
