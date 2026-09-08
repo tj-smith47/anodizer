@@ -1,5 +1,7 @@
-//! Helpers extracted from `run.rs` to reduce that file's god-function size
-//! while keeping behavior identical.
+//! Archive-stage output plumbing: config validation, archive-mtime
+//! resolution, per-format archive writing, per-binary output naming, the
+//! `templated_files` staging renderer, the produced-path claim that backs
+//! collision detection, and the per-run template-var teardown.
 
 use std::fs;
 use std::fs::File;

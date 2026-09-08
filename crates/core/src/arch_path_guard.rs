@@ -39,10 +39,11 @@ impl ArchPathGuard {
     /// Record `path` for this scope; error if a previous call already
     /// produced it.
     ///
-    /// `stage` is the config key (`"dmgs"`), `artifact` the user-facing noun
-    /// (`"image"`) — pluralized with a trailing `s` in the message,
-    /// `name_template` the offending template, `rendered` the rendered output
-    /// name, and `crate_name` the crate being built.
+    /// `stage` is the config key (`"dmgs"`), `artifact` the singular
+    /// user-facing noun the message interpolates as-is (`"image"` reads
+    /// `rendered the same image '<name>' more than once`), `name_template` the
+    /// offending template, `rendered` the rendered output name, and
+    /// `crate_name` the crate being built.
     pub fn check(
         &mut self,
         path: &Path,
