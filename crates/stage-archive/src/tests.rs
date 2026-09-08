@@ -6448,6 +6448,61 @@ mod archive_name_guard {
             names,
             vec!["myapp_1.0.0_linux_amd64", "myhelper_1.0.0_linux_amd64"]
         );
+
+        let helper = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UploadableBinary)
+            .into_iter()
+            .find(|b| b.name == "myhelper_1.0.0_linux_amd64")
+            .unwrap_or_else(|| panic!("helper artifact missing"));
+        assert_eq!(
+            helper.metadata.get("binary").map(String::as_str),
+            Some("myhelper"),
+            "fallback-named binary must carry the same `binary` metadata \
+             downstream stages read off every other binary: {:?}",
+            helper.metadata
+        );
+    }
+
+    #[test]
+    fn archive_stem_binary_var_falls_back_to_file_name() {
+        // The `.Binary` var backing the ARCHIVE stem needs the same fallback
+        // as the per-binary outputs: targets are walked in sorted order, so a
+        // binary with no `binary` metadata would otherwise render the stem of
+        // whichever target was processed before it.
+        let tmp = TempDir::new().unwrap();
+        let first = "aarch64-unknown-linux-gnu";
+        let second = "x86_64-unknown-linux-gnu";
+        let cfgs = [cfg(
+            "default",
+            Some("{{ .Binary }}_{{ .Arch }}"),
+            &["tar.gz"],
+        )];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[first], false, false);
+        let bin_dir = tmp.path().join(second);
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join("myhelper");
+        fs::write(&bin_path, b"helper").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(second.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Archive)
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["myapp_arm64.tar.gz", "myhelper_amd64.tar.gz"]);
     }
 
     #[test]

@@ -366,9 +366,11 @@ pub(crate) fn archive_one_config(
             // `{{ .CrateName }}`) can produce distinct archive stems.
             tvars.set("CrateName", crate_name);
 
-            // Set Binary to the first selected binary's name
-            if let Some(bin_name) = selected_bins.first().and_then(|b| b.metadata.get("binary")) {
-                tvars.set("Binary", bin_name);
+            // A binary carrying no `binary` metadata still has to name
+            // itself: leaving `Binary` at the previous target's value renders
+            // this target's stem from a different binary's name.
+            if let Some(bin) = selected_bins.first() {
+                tvars.set("Binary", &binary_var(bin));
             }
 
             // Render name
@@ -950,9 +952,7 @@ pub(crate) fn archive_one_config(
                     // created on disk.
                     for (stem, dest, bin) in &binary_outputs {
                         let mut per_bin_meta = metadata.clone();
-                        if let Some(bin_name) = bin.metadata.get("binary") {
-                            per_bin_meta.insert("binary".to_string(), bin_name.clone());
-                        }
+                        per_bin_meta.insert("binary".to_string(), binary_var(bin));
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::UploadableBinary,
                             name: stem.clone(),
