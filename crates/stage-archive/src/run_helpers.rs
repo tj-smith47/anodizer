@@ -1,6 +1,7 @@
 //! Helpers extracted from `run.rs` to reduce that file's god-function size
 //! while keeping behavior identical.
 
+use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -12,9 +13,11 @@ use anodizer_core::artifact::Artifact;
 use anodizer_core::config::{ArchiveConfig, VALID_ARCHIVE_FORMATS};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::template_file_render::render_templated_file_entry;
 
 use crate::entries::{ArchiveEntry, write_archive_entries, write_zip_entries};
 use crate::formats::{create_gz, create_xz};
+use crate::run::ARCHIVE_TEMPLATED_STAGING_DIR;
 
 pub(crate) fn validate_archive_configs(
     work: &[(String, std::path::PathBuf, Vec<ArchiveConfig>)],
@@ -291,4 +294,65 @@ pub(crate) fn clear_archive_template_vars(ctx: &mut anodizer_core::context::Cont
     tvars.set("ArtifactPath", "");
     tvars.set("ArtifactExt", "");
     tvars.set("ArtifactID", "");
+}
+
+/// Render every `archives[].templated_files[]` entry into a staging
+/// directory and return one [`ArchiveEntry`] per rendered file so the
+/// archive packer treats them as ordinary contents.
+///
+/// Per-entry `skip:` is consulted up front; the source path, content
+/// body, and destination path are all template-rendered so each archive
+/// can shape its dst based on `.Os`, `.Arch`, `.Format`, etc. Non-UTF8
+/// source files emit a clear error instead of the cryptic
+/// "stream did not contain valid UTF-8" surfaced by `read_to_string`.
+pub(crate) fn render_archive_templated_files(
+    ctx: &mut Context,
+    entries: &[anodizer_core::config::TemplateFileConfig],
+    archive_id: &str,
+    target: &str,
+    format: &str,
+    dist: &Path,
+) -> Result<Vec<ArchiveEntry>> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    // One staging dir per (archive_id, target, format) so multiple
+    // formats for the same archive write to distinct paths.
+    let staging = dist
+        .join(ARCHIVE_TEMPLATED_STAGING_DIR)
+        .join(archive_id)
+        .join(target)
+        .join(format);
+    fs::create_dir_all(&staging).with_context(|| {
+        format!(
+            "archive: create templated_files staging dir '{}'",
+            staging.display()
+        )
+    })?;
+
+    let mut out: Vec<ArchiveEntry> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let id = entry.id.as_deref().unwrap_or("default");
+        let label = format!("archives[{archive_id}].templated_files[{id}]");
+
+        let render = match render_templated_file_entry(ctx, entry, &label)? {
+            Some(r) => r,
+            None => continue,
+        };
+
+        let out_path = staging.join(&render.rendered_dst);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("{label}: create parent dir '{}'", parent.display()))?;
+        }
+        fs::write(&out_path, &render.rendered_contents)
+            .with_context(|| format!("{label}: write '{}'", out_path.display()))?;
+
+        out.push(ArchiveEntry {
+            src: out_path,
+            archive_name: PathBuf::from(&render.rendered_dst),
+            info: None,
+        });
+    }
+    Ok(out)
 }

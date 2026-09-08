@@ -5843,7 +5843,7 @@ mod no_binaries_skip_visibility {
 /// convergence over archives an earlier run left behind in `dist/`.
 mod archive_name_guard {
     use super::*;
-    use anodizer_core::config::{ArchiveConfig, CrateConfig};
+    use anodizer_core::config::{ArchiveConfig, CrateConfig, TemplateFileConfig};
     use anodizer_core::context::Context;
     use anodizer_core::log::{LogCapture, LogLevel};
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -6462,6 +6462,48 @@ mod archive_name_guard {
              downstream stages read off every other binary: {:?}",
             helper.metadata
         );
+    }
+
+    #[test]
+    fn binary_only_target_skips_templated_files() {
+        // A binary-only target packs no entries, so its templated_files are
+        // never read — rendering them anyway staged scratch files in dist/ and
+        // let a template that cannot render fail the release over a file the
+        // format discards. The same entry under a real archive format must
+        // still fail: there the rendered file IS packed.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-unknown-linux-gnu";
+        let tmpl = tmp.path().join("notes.tmpl");
+        fs::write(&tmpl, "{{ NoSuchVar }}\n").unwrap();
+        let templated = vec![TemplateFileConfig {
+            src: tmpl.to_string_lossy().to_string(),
+            dst: "notes.txt".to_string(),
+            ..Default::default()
+        }];
+
+        let mut binary_cfg = cfg("default", None, &["binary"]);
+        binary_cfg.templated_files = Some(templated.clone());
+        let mut ctx = build_ctx(&tmp, &["myapp"], &[binary_cfg], &[target], false, false);
+        let dist = ctx.config.dist.clone();
+        ArchiveStage.run(&mut ctx).unwrap();
+        assert!(
+            dist.join("myapp_1.0.0_linux_amd64").exists(),
+            "binary output missing: {:?}",
+            fs::read_dir(&dist).unwrap().flatten().collect::<Vec<_>>()
+        );
+        assert!(
+            !dist
+                .join(crate::run::ARCHIVE_TEMPLATED_STAGING_DIR)
+                .exists(),
+            "templated_files staging tree left in dist/"
+        );
+
+        let tmp2 = TempDir::new().unwrap();
+        let mut tar_cfg = cfg("default", None, &["tar.gz"]);
+        tar_cfg.templated_files = Some(templated);
+        let mut ctx2 = build_ctx(&tmp2, &["myapp"], &[tar_cfg], &[target], false, false);
+        let err = ArchiveStage.run(&mut ctx2).unwrap_err().to_string();
+        assert!(err.contains("templated_files"), "{err}");
     }
 
     #[test]

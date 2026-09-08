@@ -1,11 +1,10 @@
 //! Per-crate archive-config processing, split from `run.rs`.
 //!
-//! Holds the two heaviest helpers the [`crate::ArchiveStage`] driver calls
-//! into: [`archive_one_config`] (processes every `archives:` block on one
-//! crate) and the private templated-files renderer it uses.
+//! Holds [`archive_one_config`], the heaviest helper the
+//! [`crate::ArchiveStage`] driver calls into: it processes every `archives:`
+//! block attached to one crate.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
@@ -13,7 +12,6 @@ use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, FormatOverride};
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::target::map_target;
-use anodizer_core::template_file_render::render_templated_file_entry;
 use anyhow::{Context as _, Result, bail};
 
 use crate::entries::{ArchiveEntry, deduplicate_entries, sort_entries};
@@ -21,75 +19,14 @@ use crate::file_specs::{
     ResolvedExtraFile, render_file_info, resolve_default_extra_files, resolve_file_specs,
 };
 use crate::formats;
-use crate::run::{ARCHIVE_TEMPLATED_STAGING_DIR, resolve_host_binary};
+use crate::run::resolve_host_binary;
 use crate::run_helpers::{
-    binary_var, claim_output_path, render_binary_outputs, resolve_archive_mtime,
-    write_archive_in_format,
+    binary_var, claim_output_path, render_archive_templated_files, render_binary_outputs,
+    resolve_archive_mtime, write_archive_in_format,
 };
 use crate::{
     default_binary_name_template, default_name_template, default_name_template_multi_crate,
 };
-
-/// Render every `archives[].templated_files[]` entry into a staging
-/// directory and return one [`ArchiveEntry`] per rendered file so the
-/// archive packer treats them as ordinary contents.
-///
-/// Per-entry `skip:` is consulted up front; the source path, content
-/// body, and destination path are all template-rendered so each archive
-/// can shape its dst based on `.Os`, `.Arch`, `.Format`, etc. Non-UTF8
-/// source files emit a clear error instead of the cryptic
-/// "stream did not contain valid UTF-8" surfaced by `read_to_string`.
-fn render_archive_templated_files(
-    ctx: &mut Context,
-    entries: &[anodizer_core::config::TemplateFileConfig],
-    archive_id: &str,
-    target: &str,
-    format: &str,
-    dist: &Path,
-) -> Result<Vec<ArchiveEntry>> {
-    if entries.is_empty() {
-        return Ok(Vec::new());
-    }
-    // One staging dir per (archive_id, target, format) so multiple
-    // formats for the same archive write to distinct paths.
-    let staging = dist
-        .join(ARCHIVE_TEMPLATED_STAGING_DIR)
-        .join(archive_id)
-        .join(target)
-        .join(format);
-    fs::create_dir_all(&staging).with_context(|| {
-        format!(
-            "archive: create templated_files staging dir '{}'",
-            staging.display()
-        )
-    })?;
-
-    let mut out: Vec<ArchiveEntry> = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let id = entry.id.as_deref().unwrap_or("default");
-        let label = format!("archives[{archive_id}].templated_files[{id}]");
-
-        let render = match render_templated_file_entry(ctx, entry, &label)? {
-            Some(r) => r,
-            None => continue,
-        };
-
-        let out_path = staging.join(&render.rendered_dst);
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("{label}: create parent dir '{}'", parent.display()))?;
-        }
-        fs::write(&out_path, &render.rendered_contents)
-            .with_context(|| format!("{label}: write '{}'", out_path.display()))?;
-
-        out.push(ArchiveEntry {
-            src: out_path,
-            archive_name: PathBuf::from(&render.rendered_dst),
-            info: None,
-        });
-    }
-    Ok(out)
-}
 
 /// Process every `archives:` config attached to a single crate.
 /// Iterates the configs, applies per-config filters and format
@@ -728,14 +665,23 @@ pub(crate) fn archive_one_config(
                 // into the archive at its rendered `dst:` path. Skip
                 // semantics + non-UTF8 input handling match the
                 // top-level `template_files:` stage.
-                let templated_extra_entries = render_archive_templated_files(
-                    ctx,
-                    archive_cfg.templated_files.as_deref().unwrap_or(&[]),
-                    archive_id,
-                    target,
-                    format,
-                    dist,
-                )?;
+                //
+                // A binary-only target packs nothing, so rendering these
+                // would create a staging tree nobody reads and let a
+                // template that cannot render fail a release over a file
+                // the format discards.
+                let templated_extra_entries = if binary_only_target {
+                    Vec::new()
+                } else {
+                    render_archive_templated_files(
+                        ctx,
+                        archive_cfg.templated_files.as_deref().unwrap_or(&[]),
+                        archive_id,
+                        target,
+                        format,
+                        dist,
+                    )?
+                };
 
                 // Combine entries, dedup, and sort. Repeated per format
                 // because the templated_files set is format-specific.
