@@ -5843,7 +5843,7 @@ mod no_binaries_skip_visibility {
 /// convergence over archives an earlier run left behind in `dist/`.
 mod archive_name_guard {
     use super::*;
-    use anodizer_core::config::{ArchiveConfig, CrateConfig, TemplateFileConfig};
+    use anodizer_core::config::{ArchiveConfig, CrateConfig, TemplateFileConfig, WorkspaceConfig};
     use anodizer_core::context::Context;
     use anodizer_core::log::{LogCapture, LogLevel};
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -5863,16 +5863,8 @@ mod archive_name_guard {
     ) -> Context {
         let root = tmp.path().join("root");
         fs::create_dir_all(&root).unwrap();
-        let crate_cfgs: Vec<CrateConfig> = crates
-            .iter()
-            .map(|name| CrateConfig {
-                name: (*name).to_string(),
-                path: ".".to_string(),
-                tag_template: Some("v{{ .Version }}".to_string()),
-                archives: ArchivesConfig::Configs(archive_cfgs.to_vec()),
-                ..Default::default()
-            })
-            .collect();
+        let crate_cfgs: Vec<CrateConfig> =
+            crates.iter().map(|n| crate_cfg(n, archive_cfgs)).collect();
 
         let mut ctx = TestContextBuilder::new()
             .project_name("proj")
@@ -5884,6 +5876,64 @@ mod archive_name_guard {
             .crates(crate_cfgs)
             .build();
 
+        register_crate_binaries(&mut ctx, tmp, crates, targets);
+        ctx
+    }
+
+    /// The per-crate-workspaces variant of [`build_ctx`]: the same crates and
+    /// binaries, reached through `workspaces[]` rather than top-level
+    /// `crates[]`, so the guard is exercised on the config shape a repo with
+    /// independent release cadences actually uses.
+    fn build_ctx_workspaces(
+        tmp: &TempDir,
+        workspaces: &[(&str, &[&str])],
+        archive_cfgs: &[ArchiveConfig],
+        targets: &[&str],
+    ) -> Context {
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        let ws_cfgs: Vec<WorkspaceConfig> = workspaces
+            .iter()
+            .map(|(ws_name, members)| WorkspaceConfig {
+                name: (*ws_name).to_string(),
+                crates: members.iter().map(|n| crate_cfg(n, archive_cfgs)).collect(),
+                ..Default::default()
+            })
+            .collect();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("proj")
+            .tag("v1.0.0")
+            .dist(tmp.path().join("dist"))
+            .project_root(root.clone())
+            .workspaces(ws_cfgs)
+            .build();
+
+        let members: Vec<&str> = workspaces
+            .iter()
+            .flat_map(|(_, m)| m.iter().copied())
+            .collect();
+        register_crate_binaries(&mut ctx, tmp, &members, targets);
+        ctx
+    }
+
+    fn crate_cfg(name: &str, archive_cfgs: &[ArchiveConfig]) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            archives: ArchivesConfig::Configs(archive_cfgs.to_vec()),
+            ..Default::default()
+        }
+    }
+
+    /// Register one on-disk `Binary` artifact per (crate, target).
+    fn register_crate_binaries(
+        ctx: &mut Context,
+        tmp: &TempDir,
+        crates: &[&str],
+        targets: &[&str],
+    ) {
         for name in crates {
             for target in targets {
                 let bin_dir = tmp.path().join(target);
@@ -5904,7 +5954,6 @@ mod archive_name_guard {
                 });
             }
         }
-        ctx
     }
 
     fn cfg(id: &str, name_template: Option<&str>, formats: &[&str]) -> ArchiveConfig {
@@ -6462,6 +6511,64 @@ mod archive_name_guard {
              downstream stages read off every other binary: {:?}",
             helper.metadata
         );
+    }
+
+    #[test]
+    fn binary_format_names_each_binary_by_template_per_crate() {
+        // The per-crate-workspaces shape: each crate's binary is named from
+        // its own `.Binary`, so two workspace members across two targets land
+        // at four distinct dist/ paths — the same contract the top-level
+        // `crates:` shape gets, on the config layout that reaches the stage
+        // through `workspaces[]`.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["binary"])];
+        let mut ctx = build_ctx_workspaces(
+            &tmp,
+            &[("alpha-ws", &["alpha"]), ("beta-ws", &["beta"])],
+            &cfgs,
+            &TARGETS,
+        );
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UploadableBinary)
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "alpha_1.0.0_linux_amd64",
+                "alpha_1.0.0_linux_arm64",
+                "beta_1.0.0_linux_amd64",
+                "beta_1.0.0_linux_arm64",
+            ]
+        );
+        for name in &names {
+            assert!(ctx.config.dist.join(name).exists(), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn binary_format_collision_across_workspace_crates_bails() {
+        // The guard spans the whole run, workspaces included: two crates in
+        // SEPARATE workspaces sharing a template that names neither the crate
+        // nor the binary render one dist/ path, and the second would clobber
+        // the first.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("shared_{{ .Os }}"), &["binary"])];
+        let mut ctx = build_ctx_workspaces(
+            &tmp,
+            &[("alpha-ws", &["alpha"]), ("beta-ws", &["beta"])],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("shared_linux"), "{err}");
+        assert!(err.contains("more than once"), "{err}");
     }
 
     #[test]
