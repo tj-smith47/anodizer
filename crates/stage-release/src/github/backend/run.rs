@@ -567,7 +567,7 @@ pub(crate) fn run_github_backend(
             )
             .await?;
             let tag_template = crate_cfg.tag_family_template();
-            let sibling_templates = ctx.config.sibling_tag_family_templates(&crate_cfg.name);
+            let sibling_templates = ctx.config.sibling_tag_families_of(&tag_template);
             let family = NightlyRetentionFamily {
                 tag,
                 tag_template: &tag_template,

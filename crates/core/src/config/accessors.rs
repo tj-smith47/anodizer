@@ -81,17 +81,20 @@ impl Config {
         false
     }
 
-    /// Every OTHER crate's tag-family template, deduped — the sibling set a
-    /// family matcher needs so a narrower family reclaims the tags a broader
+    /// Every configured tag family EXCEPT `own_template`, deduped — the sibling
+    /// set a family matcher needs so a narrower family reclaims the tags a broader
     /// one would otherwise swallow.
-    pub fn sibling_tag_family_templates(&self, crate_name: &str) -> Vec<String> {
+    ///
+    /// Keyed by TEMPLATE, not crate name: a caller holding a resolved family (a
+    /// nightly base taken from a sibling track, a previous-tag look-back) has no
+    /// crate name to key on, and `excluded_sibling_prefixes` only ever keeps
+    /// strictly-longer prefixes, so a sibling that shares this family contributes
+    /// nothing either way.
+    pub fn sibling_tag_families_of(&self, own_template: &str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for c in self.crate_universe() {
-            if c.name == crate_name {
-                continue;
-            }
             let tmpl = c.tag_family_template();
-            if !out.contains(&tmpl) {
+            if tmpl != own_template && !out.contains(&tmpl) {
                 out.push(tmpl);
             }
         }

@@ -418,12 +418,14 @@ pub(crate) fn resolve_prev_tag(
             // whatever tag is nearest across every track — including a sibling
             // track's tag cut from this very commit, which yields a range
             // spanning zero commits and an empty changelog.
+            let family = crate_cfg.tag_family_template();
             let prev = anodizer_core::git::find_previous_tag_in_family(
                 t,
-                &crate_cfg.tag_family_template(),
+                &family,
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,
+                &ctx.config.sibling_tag_families_of(&family),
             )?;
             Ok(prev)
         }

@@ -7259,6 +7259,70 @@ fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
     }
 }
 
+/// The template-keyed sibling list must exclude exactly what the name-keyed
+/// walk excluded: `excluded_sibling_prefixes` only keeps strictly-longer
+/// prefixes, so a same-family sibling never mattered, and the own family is
+/// never its own sibling.
+#[test]
+fn sibling_tag_families_of_matches_the_name_keyed_answer() {
+    let yaml = r#"
+project_name: cfgd
+tag:
+  tag_prefix: v
+crates:
+  - { name: cfgd, path: crates/cfgd, tag_template: "v{{ Version }}" }
+  - { name: cfgd-cli, path: crates/cli, tag_template: "v{{ Version }}" }
+workspaces:
+  - name: schema
+    crates:
+      - { name: cfgd-schema, path: crates/schema, tag_template: "schema-v{{ Version }}" }
+  - name: crd
+    crates:
+      - { name: cfgd-crd, path: crates/crd, tag_template: "crd-v{{ Version }}" }
+  - name: core
+    crates:
+      - { name: cfgd-core, path: crates/core, tag_template: "core-v{{ Version }}" }
+  - name: operator
+    crates:
+      - { name: cfgd-operator, path: crates/operator, tag_template: "operator-v{{ Version }}" }
+  - name: csi
+    crates:
+      - { name: cfgd-csi, path: crates/csi, tag_template: "csi-v{{ Version }}" }
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("cfgd-shaped config parses");
+    for c in config.crate_universe() {
+        let family = c.tag_family_template();
+        let name_keyed: Vec<String> = config
+            .crate_universe()
+            .into_iter()
+            .filter(|o| o.name != c.name)
+            .map(|o| o.tag_family_template())
+            .fold(Vec::new(), |mut acc, t| {
+                if !acc.contains(&t) {
+                    acc.push(t);
+                }
+                acc
+            });
+        let template_keyed = config.sibling_tag_families_of(&family);
+        assert!(
+            !template_keyed.contains(&family),
+            "crate '{}': a family is never its own sibling: {template_keyed:?}",
+            c.name
+        );
+        assert_eq!(
+            crate::git::excluded_sibling_prefixes(&family, None, &template_keyed),
+            crate::git::excluded_sibling_prefixes(&family, None, &name_keyed),
+            "crate '{}': the two keyings must exclude the same prefixes",
+            c.name
+        );
+    }
+    assert_eq!(
+        config.sibling_tag_families_of("v{{ Version }}").len(),
+        5,
+        "the lockstep pair shares one family; only the five tracks are siblings"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // StringOrBool::try_evaluates_to_true — always-render normalization
 // ---------------------------------------------------------------------------

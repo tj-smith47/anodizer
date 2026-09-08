@@ -132,16 +132,20 @@ pub fn declared_tag(ctx: &Context) -> Option<&str> {
 /// The family test is what keeps that from over-reaching: the declared tag is
 /// one run-wide string, but a per-crate workspace releases several tracks in
 /// one run, so a pushed `operator-v1.2.3` must not become the tag `app`'s
-/// release is created on. Membership goes through the same matcher the
-/// retention sweep and the previous-tag search use, so all three agree on what
-/// "this crate's family" means.
+/// release is created on. Membership goes through the same sibling-aware
+/// matcher the retention sweep and the previous-tag search use, so all three
+/// agree on what "this crate's family" means — a bare `v` family does not
+/// take a nested `vault-v1.0.0` away from the `vault` track.
 fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
+    let family = crate_cfg.tag_family_template();
+    let siblings = ctx.config.sibling_tag_families_of(&family);
     declared_tag(ctx)
         .filter(|t| {
-            crate::git::tag_in_family(
+            crate::git::tag_in_family_excluding_siblings(
                 t,
-                &crate_cfg.tag_family_template(),
+                &family,
                 ctx.config.monorepo_tag_prefix(),
+                &siblings,
             )
         })
         .map(str::to_string)
@@ -193,12 +197,25 @@ fn scope_to_tag_family(ctx: &Context, crate_cfg: &CrateConfig, rendered: String)
 /// changelog range that spans two tracks.
 pub fn anchor_crate_tag(ctx: &mut Context, crate_cfg: &CrateConfig, tag: &str, log: &StageLogger) {
     let tag_template = crate_cfg.tag_family_template();
+    let siblings = ctx.config.sibling_tag_families_of(&tag_template);
+    let excluded = crate::git::excluded_sibling_prefixes(
+        &tag_template,
+        ctx.config.monorepo_tag_prefix(),
+        &siblings,
+    );
+    if !excluded.is_empty() {
+        log.verbose(&format!(
+            "previous-tag search for family '{tag_template}' excludes sibling prefixes: {}",
+            excluded.join(", ")
+        ));
+    }
     let previous = crate::git::find_previous_tag_in_family(
         tag,
         &tag_template,
         ctx.config.git.as_ref(),
         Some(ctx.template_vars()),
         ctx.config.monorepo_tag_prefix(),
+        &siblings,
     );
     ctx.template_vars_mut().set("Tag", tag);
     match previous {
@@ -327,6 +344,26 @@ mod tests {
             resolve_release_tag(&ctx, &app, None).unwrap(),
             "app-v1.0.0",
             "app must not be released under the operator track's tag",
+        );
+    }
+
+    /// A bare `v` family starts every `vault-v…` tag too. The declared tag
+    /// belongs to the narrowest configured family that claims it, so the `v`
+    /// crate must fall through to its own template.
+    #[test]
+    fn declared_tag_of_a_nested_sibling_family_is_not_used_for_this_crate() {
+        let app = crate_cfg("app", "v{{ Version }}");
+        let vault = crate_cfg("vault", "vault-v{{ Version }}");
+        let ctx = declared_ctx(vec![app.clone(), vault.clone()], "vault-v1.2.3");
+        assert_eq!(
+            resolve_release_tag(&ctx, &vault, None).unwrap(),
+            "vault-v1.2.3",
+            "the declared tag belongs to the vault family",
+        );
+        assert_eq!(
+            resolve_release_tag(&ctx, &app, None).unwrap(),
+            "v1.0.0",
+            "a `v` family must not swallow a nested sibling's tag",
         );
     }
 

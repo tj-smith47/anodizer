@@ -320,6 +320,7 @@ pub fn resolve_git_context(
                         config.git.as_ref(),
                         Some(ctx.template_vars()),
                         config.monorepo_tag_prefix(),
+                        &config.sibling_tag_families_of(&base_tag_template),
                     )
                     .ok()
                     .flatten();

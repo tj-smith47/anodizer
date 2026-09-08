@@ -16,8 +16,8 @@ use crate::git::semver::{SemVer, parse_semver_tag};
 use crate::template::TemplateVars;
 
 use super::family::{
-    IgnoreMatchTarget, TagFamilyScope, nightly_exclude_describe_args, render_ignore_patterns,
-    semver_pairs_filtered, tag_family_scope,
+    IgnoreMatchTarget, TagFamilyScope, excluded_sibling_prefixes, nightly_exclude_describe_args,
+    render_ignore_patterns, semver_pairs_filtered, tag_family_scope,
 };
 use super::git_output_in;
 use super::position::rev_parse_verify_in;
@@ -108,6 +108,7 @@ pub fn find_previous_tag_with_prefix_in(
         git_config,
         template_vars,
         monorepo_prefix.map(|p| TagFamilyScope::Prefix(p.to_string())),
+        &[],
     )
 }
 
@@ -125,12 +126,21 @@ pub fn find_previous_tag_with_prefix_in(
 ///
 /// `monorepo_prefix` is the fallback family for templates with no version
 /// placeholder, and the namespace for a bare `{{ Version }}` template.
+///
+/// `sibling_templates` are the workspace's OTHER configured families. A
+/// family's prefix test alone is a `starts_with`, so a `v` family's look-back
+/// would land on a nested `vault-v1.5.0` and bound a range spanning two
+/// tracks; every configured sibling strictly narrower than this family is
+/// excluded, through the same
+/// [`excluded_sibling_prefixes`] rule
+/// the retention sweep and the declared-tag rung apply.
 pub fn find_previous_tag_in_family(
     current_tag: &str,
     tag_template: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
     monorepo_prefix: Option<&str>,
+    sibling_templates: &[String],
 ) -> Result<Option<String>> {
     find_previous_tag_in_family_in(
         &std::env::current_dir()?,
@@ -139,6 +149,7 @@ pub fn find_previous_tag_in_family(
         git_config,
         template_vars,
         monorepo_prefix,
+        sibling_templates,
     )
 }
 
@@ -150,6 +161,7 @@ pub fn find_previous_tag_in_family_in(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
     monorepo_prefix: Option<&str>,
+    sibling_templates: &[String],
 ) -> Result<Option<String>> {
     find_previous_tag_scoped_in(
         cwd,
@@ -157,22 +169,32 @@ pub fn find_previous_tag_in_family_in(
         git_config,
         template_vars,
         tag_family_scope(tag_template, monorepo_prefix),
+        &excluded_sibling_prefixes(tag_template, monorepo_prefix, sibling_templates),
     )
 }
 
 /// Shared implementation behind both previous-tag entry points: dispatches to
 /// the `smartsemver` list path or the ancestry-walking `git describe` path,
-/// with `scope` narrowing the candidate set in either.
+/// with `scope` narrowing the candidate set in either and `excluded_prefixes`
+/// (narrower sibling families) removed from it in either.
 fn find_previous_tag_scoped_in(
     cwd: &Path,
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
     scope: Option<TagFamilyScope>,
+    excluded_prefixes: &[String],
 ) -> Result<Option<String>> {
     let tag_sort = git_config.and_then(|gc| gc.tag_sort.as_deref());
     if tag_sort == Some("smartsemver") {
-        return smartsemver_previous_tag_in(cwd, current_tag, git_config, template_vars, scope);
+        return smartsemver_previous_tag_in(
+            cwd,
+            current_tag,
+            git_config,
+            template_vars,
+            scope,
+            excluded_prefixes,
+        );
     }
 
     let parent_ref = format!("{}^", current_tag);
@@ -189,6 +211,11 @@ fn find_previous_tag_scoped_in(
         .map(|t| format!("--exclude={}", t))
         .collect();
     for pfx in &rendered_ignore_prefixes {
+        exclude_args.push(format!("--exclude={}*", pfx));
+    }
+    // A sibling family's tags sit inside this family's `--match` glob (`v*`
+    // covers `vault-v*`), so they are carved back out here.
+    for pfx in excluded_prefixes {
         exclude_args.push(format!("--exclude={}*", pfx));
     }
     // Unconditional nightly exclusion (see `is_nightly_tag`): git-side globs
@@ -240,6 +267,7 @@ fn smartsemver_previous_tag_in(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
     scope: Option<TagFamilyScope>,
+    excluded_prefixes: &[String],
 ) -> Result<Option<String>> {
     let tags_output = git_output_in(cwd, &["tag", "--list"])?;
     if tags_output.is_empty() {
@@ -282,6 +310,9 @@ fn smartsemver_previous_tag_in(
     )
     .into_iter()
     .filter(|(_, t)| t != current_tag)
+    // Explicit, not left to a stripped `ault-v1.5.0` failing the SemVer
+    // parse: the two search paths must reject a sibling for the same reason.
+    .filter(|(_, t)| !excluded_prefixes.iter().any(|p| t.starts_with(p.as_str())))
     .filter(|(sv, _)| !skip_prereleases || !sv.is_prerelease())
     .collect();
 

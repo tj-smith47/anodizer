@@ -1038,6 +1038,57 @@ fn init_repo_with_tagged_commits(dir: &std::path::Path, tags: &[&str]) {
     }
 }
 
+/// `--match=v*` covers `vault-v1.5.0` too, so without the sibling exclusion
+/// the `v` family's look-back lands on another track and the changelog
+/// range spans both.
+#[test]
+#[serial(path_env)]
+fn previous_tag_in_family_skips_a_nested_sibling_track() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["v1.0.0", "vault-v1.5.0", "v2.0.0"]);
+
+    let siblings = vec!["vault-v{{ Version }}".to_string()];
+    let prev = crate::git::find_previous_tag_in_family_in(
+        dir,
+        "v2.0.0",
+        "v{{ Version }}",
+        None,
+        None,
+        None,
+        &siblings,
+    )
+    .unwrap();
+    assert_eq!(prev, Some("v1.0.0".to_string()));
+}
+
+/// The same fixture on the flat-list path: the sibling is dropped by rule,
+/// not because a stripped `ault-v1.5.0` happens to fail the SemVer parse.
+#[test]
+#[serial(path_env)]
+fn smartsemver_previous_tag_skips_a_nested_sibling_track() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["v1.0.0", "vault-v1.5.0", "v2.0.0"]);
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    };
+    let siblings = vec!["vault-v{{ Version }}".to_string()];
+    let prev = crate::git::find_previous_tag_in_family_in(
+        dir,
+        "v2.0.0",
+        "v{{ Version }}",
+        Some(&gc),
+        None,
+        None,
+        &siblings,
+    )
+    .unwrap();
+    assert_eq!(prev, Some("v1.0.0".to_string()));
+}
+
 #[test]
 #[serial(cwd, path_env)]
 fn test_find_previous_tag_with_ignore_tags() {
