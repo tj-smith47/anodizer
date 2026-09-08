@@ -1826,14 +1826,15 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
 /// substrings in [`is_index_propagation_failure`] were last verified.
 ///
 /// If CI upgrades to a different cargo major.minor this test fails,
-/// signalling that a maintainer must re-run `cargo publish` against a
-/// fixture that triggers each error substring and confirm the wording
-/// matches before bumping `VERIFIED_CARGO_MINOR` below.
+/// signalling that a maintainer must confirm all three substrings still
+/// appear verbatim in the new cargo before bumping `VERIFIED_CARGO_MINOR`
+/// below.
 ///
-/// The substrings were last verified against cargo 1.97.x (rust-lang/cargo
-/// branch rust-1.97.0 source, 2026-07-10). Bump `VERIFIED_CARGO_MINOR` only after
-/// manually confirming all three substrings still appear verbatim in
-/// the new cargo's publish output.
+/// Last verified against cargo 1.98.0 on 2026-09-08 by checking that each
+/// substring is still present in the shipped cargo binary
+/// (`strings $(rustup which cargo) | grep -F "<substring>"`). That proves the
+/// wording survives in 1.98; it does not prove cargo emits it for an
+/// index-propagation failure, which would need a live crates.io publish race.
 #[test]
 fn cargo_version_matches_pinned_discriminator_strings() {
     // Last-verified cargo minor. Update together with re-verification.
