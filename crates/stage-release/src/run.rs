@@ -236,13 +236,16 @@ fn release_one_crate(
 
     ctx.refresh_artifacts_var();
 
-    let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
-
     let tag = resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
     // Every `{{ Tag }}` this crate's release renders — header, footer, blob
     // directory, announce body, compare link — must name the tag the release
-    // is created on, not the run-wide base tag another family supplied.
+    // is created on, not the run-wide base tag another family supplied. The
+    // body is the biggest consumer of it, so it is composed AFTER the anchor;
+    // composing first left each crate's header and footer showing whichever
+    // tag the previous crate in the loop anchored.
     anchor_crate_tag(ctx, crate_cfg, &tag, log);
+
+    let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
 
     warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
 
@@ -288,6 +291,7 @@ fn release_one_crate(
                 skip_upload: flags.skip_upload,
                 retention_keep_last: flags.retention_keep_last,
                 publish_repo_override: flags.publish_repo_override.clone(),
+                release_body: &release_body,
                 artifact_entries: &artifact_entries,
             },
         )?;
@@ -1712,6 +1716,64 @@ mod tests {
         assert!(
             err.to_string().contains("nightly.tag_name"),
             "the bail must name the knob that rendered empty: {err}"
+        );
+    }
+
+    /// Each crate's release body must render ITS tag. The body is composed
+    /// from the same template vars the anchor writes, so composing before the
+    /// anchor left every crate after the first titled with its predecessor's
+    /// tag.
+    #[test]
+    fn per_crate_release_body_renders_its_own_tag() {
+        use anodizer_core::config::{ContentSource, ReleaseConfig};
+
+        fn track(name: &str, prefix: &str) -> anodizer_core::config::CrateConfig {
+            anodizer_core::config::CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: Some(format!("{prefix}-v{{{{ Version }}}}")),
+                release: Some(ReleaseConfig {
+                    header: Some(ContentSource::Inline("header {{ Tag }}".to_string())),
+                    footer: Some(ContentSource::Inline("footer {{ Tag }}".to_string())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .crates(vec![track("app", "app"), track("operator", "operator")])
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage
+            .run(&mut ctx)
+            .expect("dry-run release over two tag families");
+
+        let notes: Vec<String> = capture
+            .all_messages()
+            .into_iter()
+            .filter(|(_, m)| m.contains("(dry-run) release notes"))
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(notes.len(), 2, "one notes block per crate, got: {notes:?}");
+        assert!(
+            notes[0].contains("header app-v1.2.3") && notes[0].contains("footer app-v1.2.3"),
+            "app's body must render app's tag: {}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("header operator-v1.2.3")
+                && notes[1].contains("footer operator-v1.2.3"),
+            "operator's body must render operator's tag: {}",
+            notes[1]
+        );
+        assert!(
+            !notes[1].contains("app-v1.2.3"),
+            "operator's body must not carry the previous crate's tag: {}",
+            notes[1]
         );
     }
 }

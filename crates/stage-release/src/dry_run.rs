@@ -19,6 +19,8 @@ pub(crate) struct DryRunSummary<'a> {
     pub(crate) skip_upload: bool,
     pub(crate) retention_keep_last: Option<usize>,
     pub(crate) publish_repo_override: Option<(String, String)>,
+    /// The release notes exactly as they would be posted.
+    pub(crate) release_body: &'a str,
     pub(crate) artifact_entries: &'a [(std::path::PathBuf, Option<String>)],
 }
 
@@ -114,6 +116,14 @@ pub(crate) fn handle_dry_run(
         s.release_mode,
         s.crate_name,
     ));
+    // The notes are the part of a release a dry run cannot otherwise show,
+    // and the part most likely to render a template wrong.
+    if !s.release_body.is_empty() {
+        log.verbose(&format!(
+            "(dry-run) release notes for crate '{}':\n{}",
+            s.crate_name, s.release_body
+        ));
+    }
     if let Some((owner, repo)) = &s.publish_repo_override {
         log.status(&format!(
             "(dry-run) would publish to override repo '{owner}/{repo}' (nightly.publish_repo)",
