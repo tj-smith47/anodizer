@@ -75,11 +75,20 @@ Signing commands run one subprocess per artifact, in parallel, bounded by
 `--parallelism`. Two cosign-specific behaviors keep fresh CI runners from
 flaking:
 
-- **Cold-cache warm-up** — a keyless cosign config (no `--key` argument) signs
-  its *first* artifact serially before fanning out. cosign initializes the
-  `~/.sigstore` TUF trust root under an exclusive lock on its first run per
-  host; parallel first-wave workers would race that lock and lose with
-  `creating cached local store: resource temporarily unavailable`.
+- **Keyless cosign is serialized** — a keyless config (no `--key` argument)
+  runs one invocation at a time regardless of `--parallelism`, and holds a
+  host-level advisory lock (`~/.sigstore/root/.anodizer-tuf-init.lock`, or
+  `$TUF_ROOT`) so a second anodizer process on the same host queues rather
+  than races. Concurrent keyless cosign invocations collide on the sigstore
+  TUF trust store and the loser exits with `creating cached local store:
+  resource temporarily unavailable` — an already-initialized store does not
+  prevent it. Keyed cosign (`--key=…`) never contacts Fulcio/Rekor and keeps
+  the full `--parallelism`.
+
+      $ anodizer release -v
+      [sign] signing 27 artifacts with parallelism=1
+      [sign] keyless cosign: serializing 27 invocation(s) — concurrent invocations collide on the sigstore TUF trust store
+
 - **Transient retry** — failed cosign invocations are retried up to 5 attempts
   with jittered exponential backoff (2s base, 15s cap; ~29s total spread),
   since cosign depends on network infrastructure (Fulcio, Rekor, the TUF CDN).

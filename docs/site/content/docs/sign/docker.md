@@ -32,3 +32,8 @@ docker_signs:
 | `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |
 | `if` | string | | Template-conditional: skip this config when the rendered result is `false` or empty. |
+
+Images are signed one at a time. A keyless config (no `--key` argument) also
+takes the same host-level advisory lock as keyless
+[binary/archive signing](@/docs/sign/binaries-archives.md), so two anodizer processes on
+one host queue on the sigstore TUF trust store instead of colliding on it.
