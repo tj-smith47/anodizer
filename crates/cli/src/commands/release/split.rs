@@ -484,17 +484,18 @@ fn check_split_worker_completeness(
 
 /// Outcome of a split-context load — flags which loader the caller
 /// hit so downstream behaviour (e.g. metadata-write fall-through) can
-/// branch on legacy-vs-modern shape without a second filesystem walk.
+/// branch on manifest-vs-context shape without a second filesystem walk.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SplitLoadOutcome {
-    /// Loaded artifacts from `dist/<subdir>/context.json` files (modern format).
+    /// Loaded artifacts from `dist/<subdir>/context.json` files.
     Modern,
-    /// Fell back to the legacy `artifacts.json` format.
-    Legacy,
+    /// Fell back to the `artifacts.json` manifests a full run writes.
+    Manifest,
 }
 
-/// Load every split-shard `dist/<subdir>/context.json` (or, as a legacy
-/// fallback, every `dist/[<subdir>/]artifacts.json`) into `ctx`. Used by
+/// Load every split-shard `dist/<subdir>/context.json` (or, when no shard
+/// context exists, every `dist/[<subdir>/]artifacts.json` manifest a full
+/// run writes) into `ctx`. Used by
 /// `release --merge`, `continue --merge`, `publish --merge`, and
 /// `announce --merge` so all four entry points share one loader.
 ///
@@ -524,8 +525,8 @@ pub fn load_split_contexts_into(
     // pipeline runs.
     ctx.options.merge = true;
 
-    // Find all context.json files in dist/ subdirectories (new format).
-    // Fall back to artifacts.json for backward compat with old split format.
+    // Find all context.json files in dist/ subdirectories. Without any,
+    // resume from the artifacts.json manifest(s) an earlier full run wrote.
     let context_files = find_split_contexts(dist)?;
     if context_files.is_empty() {
         let artifact_files = find_split_artifacts(dist)?;
@@ -536,8 +537,8 @@ pub fn load_split_contexts_into(
                 dist.display()
             );
         }
-        load_legacy_artifacts(ctx, log, &artifact_files)?;
-        return Ok(SplitLoadOutcome::Legacy);
+        load_artifact_manifests(ctx, log, &artifact_files)?;
+        return Ok(SplitLoadOutcome::Manifest);
     }
 
     // Worker-completeness pre-flight: matrix.json (written by `release --split`)
@@ -661,21 +662,19 @@ pub fn load_split_contexts_into(
     Ok(SplitLoadOutcome::Modern)
 }
 
-/// Load every legacy `artifacts.json` shard into `ctx`. Split out from
-/// [`load_split_contexts_into`] so the modern path can fall through here
-/// when no `context.json` is present (older splits or non-anodizer
-/// producers).
-fn load_legacy_artifacts(
+/// Load every `artifacts.json` manifest into `ctx`. The manifest is the
+/// bare array [`ArtifactRegistry::to_artifacts_json`](anodizer_core::artifact::ArtifactRegistry::to_artifacts_json)
+/// writes at the end of a full run, so a resumed `--merge` over a dist that
+/// carries no shard `context.json` reads anodizer's own output. Split out
+/// from [`load_split_contexts_into`] so the context path can fall through
+/// here.
+fn load_artifact_manifests(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     artifact_files: &[PathBuf],
 ) -> Result<usize> {
     #[derive(serde::Deserialize)]
-    struct LegacyOutput {
-        artifacts: Vec<LegacyArtifact>,
-    }
-    #[derive(serde::Deserialize)]
-    struct LegacyArtifact {
+    struct ManifestArtifact {
         kind: String,
         path: String,
         target: Option<String>,
@@ -690,10 +689,10 @@ fn load_legacy_artifacts(
     for artifact_file in artifact_files {
         let content = std::fs::read_to_string(artifact_file)
             .with_context(|| format!("read split artifacts: {}", artifact_file.display()))?;
-        let output: LegacyOutput = serde_json::from_str(&content)
+        let manifest: Vec<ManifestArtifact> = serde_json::from_str(&content)
             .with_context(|| format!("parse split artifacts: {}", artifact_file.display()))?;
 
-        for sa in &output.artifacts {
+        for sa in &manifest {
             if !seen_paths.insert(sa.path.clone()) {
                 continue;
             }
@@ -713,7 +712,7 @@ fn load_legacy_artifacts(
     }
 
     log.status(&format!(
-        "loaded {} artifact(s) from {} file(s) (legacy merge mode)",
+        "loaded {} artifact(s) from {} artifacts.json manifest(s)",
         total_loaded,
         artifact_files.len()
     ));
@@ -734,8 +733,8 @@ pub fn run_merge(
     let dist = dist_override.unwrap_or(&config.dist);
 
     let outcome = load_split_contexts_into(ctx, dist, log)?;
-    if outcome == SplitLoadOutcome::Legacy {
-        return run_merge_legacy_tail(ctx, config, log, dry_run);
+    if outcome == SplitLoadOutcome::Manifest {
+        return run_merge_manifest_tail(ctx, config, log, dry_run);
     }
 
     let p = pipeline::build_merge_pipeline();
@@ -757,10 +756,10 @@ pub fn run_merge(
     result
 }
 
-/// Run the post-load tail of the legacy merge path (artifacts already
-/// rehydrated into `ctx` by [`load_split_contexts_into`]'s legacy
+/// Run the post-load tail of the manifest merge path (artifacts already
+/// rehydrated into `ctx` by [`load_split_contexts_into`]'s `artifacts.json`
 /// branch).
-fn run_merge_legacy_tail(
+fn run_merge_manifest_tail(
     ctx: &mut Context,
     config: &Config,
     log: &anodizer_core::log::StageLogger,
@@ -772,7 +771,7 @@ fn run_merge_legacy_tail(
         super::run_post_pipeline(ctx, config, dry_run, super::RootAfterHooks::Fire, log)?;
     }
     // See `release::gate_required_failures` — required-publisher
-    // failures must surface as non-zero exit even on the legacy merge
+    // failures must surface as non-zero exit even on the manifest merge
     // path.
     if result.is_ok() {
         super::gate_required_failures(ctx)?;
@@ -814,7 +813,7 @@ pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Find all artifacts.json files in dist/ (legacy split format).
+/// Find all `artifacts.json` manifests in dist/ (top level and one level deep).
 ///
 /// Returns the list sorted by path for the same reason as
 /// [`find_split_contexts`].
@@ -1914,10 +1913,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // load_legacy_artifacts via the public loader's fallback branch
+    // load_artifact_manifests via the public loader's fallback branch
     // -----------------------------------------------------------------
 
-    fn write_legacy_artifacts(dist: &Path, subdir: Option<&str>, body: &str) {
+    fn write_artifacts_manifest(dist: &Path, subdir: Option<&str>, body: &str) {
         let dir = match subdir {
             Some(s) => {
                 let d = dist.join(s);
@@ -1929,28 +1928,46 @@ mod tests {
         std::fs::write(dir.join("artifacts.json"), body).unwrap();
     }
 
+    /// The bare array `ArtifactRegistry::to_artifacts_json` writes at the
+    /// end of a full run — produced by that very function, so the shape the
+    /// loader accepts is anodizer's own by construction.
+    fn own_manifest(entries: &[(&str, &str)]) -> String {
+        let mut reg = artifact::ArtifactRegistry::new();
+        for (path, target) in entries {
+            reg.add(artifact::Artifact {
+                kind: artifact::ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(path),
+                target: Some((*target).to_string()),
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("binary".to_string(), "app".to_string())]),
+                size: Some(3),
+            });
+        }
+        serde_json::to_string(&reg.to_artifacts_json().unwrap()).unwrap()
+    }
+
     #[test]
-    fn loader_falls_back_to_legacy_artifacts_json() {
+    fn merge_reads_a_bare_artifacts_array() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();
-        // Two legacy shards, each one binary, distinct paths.
-        write_legacy_artifacts(
+        write_artifacts_manifest(
             dist,
             Some("linux"),
-            r#"{"artifacts":[{"kind":"binary","path":"/dist/linux/app","target":"x86_64-unknown-linux-gnu","crate_name":"app"}]}"#,
+            &own_manifest(&[("/dist/linux/app", "x86_64-unknown-linux-gnu")]),
         );
-        write_legacy_artifacts(
+        write_artifacts_manifest(
             dist,
             Some("darwin"),
-            r#"{"artifacts":[{"kind":"binary","path":"/dist/darwin/app","target":"x86_64-apple-darwin","crate_name":"app"}]}"#,
+            &own_manifest(&[("/dist/darwin/app", "x86_64-apple-darwin")]),
         );
 
         let mut ctx = make_bare_context();
         let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
         assert_eq!(
             outcome,
-            SplitLoadOutcome::Legacy,
-            "no context.json present → legacy fallback"
+            SplitLoadOutcome::Manifest,
+            "no context.json present → artifacts.json fallback"
         );
         let paths: Vec<String> = ctx
             .artifacts
@@ -1958,43 +1975,51 @@ mod tests {
             .iter()
             .map(|a| a.path.to_string_lossy().into_owned())
             .collect();
-        assert!(paths.contains(&"/dist/linux/app".to_string()));
-        assert!(paths.contains(&"/dist/darwin/app".to_string()));
+        assert!(paths.contains(&"/dist/linux/app".to_string()), "{paths:?}");
+        assert!(paths.contains(&"/dist/darwin/app".to_string()), "{paths:?}");
         assert_eq!(paths.len(), 2);
+        assert_eq!(
+            ctx.artifacts.all()[0]
+                .metadata
+                .get("binary")
+                .map(String::as_str),
+            Some("app"),
+            "metadata rides along"
+        );
     }
 
     #[test]
-    fn legacy_loader_dedups_repeated_paths_across_shards() {
+    fn manifest_loader_dedups_repeated_paths_across_shards() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();
-        // Same path claimed by two legacy shards — legacy path silently
-        // dedups (HashSet) rather than erroring like the modern path.
-        let body = r#"{"artifacts":[{"kind":"binary","path":"/dist/app","target":"x86_64-unknown-linux-gnu","crate_name":"app"}]}"#;
-        write_legacy_artifacts(dist, Some("a"), body);
-        write_legacy_artifacts(dist, Some("b"), body);
+        // Same path claimed by two manifests — this path silently dedups
+        // (HashSet) rather than erroring like the context path.
+        let body = own_manifest(&[("/dist/app", "x86_64-unknown-linux-gnu")]);
+        write_artifacts_manifest(dist, Some("a"), &body);
+        write_artifacts_manifest(dist, Some("b"), &body);
 
         let mut ctx = make_bare_context();
         let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
-        assert_eq!(outcome, SplitLoadOutcome::Legacy);
+        assert_eq!(outcome, SplitLoadOutcome::Manifest);
         assert_eq!(
             ctx.artifacts.all().len(),
             1,
-            "duplicate legacy path must be deduplicated, not double-counted"
+            "duplicate manifest path must be deduplicated, not double-counted"
         );
     }
 
     #[test]
-    fn legacy_loader_errors_on_unknown_kind() {
+    fn manifest_loader_errors_on_unknown_kind() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();
-        write_legacy_artifacts(
+        write_artifacts_manifest(
             dist,
             Some("linux"),
-            r#"{"artifacts":[{"kind":"not_a_kind","path":"/dist/x","target":null,"crate_name":"app"}]}"#,
+            r#"[{"kind":"not_a_kind","path":"/dist/x","target":null,"crate_name":"app"}]"#,
         );
         let mut ctx = make_bare_context();
         let err = load_split_contexts_into(&mut ctx, dist, &null_logger())
-            .expect_err("legacy loader must reject an unknown artifact kind");
+            .expect_err("manifest loader must reject an unknown artifact kind");
         assert!(
             err.to_string().contains("unknown artifact kind"),
             "got: {}",
@@ -2019,7 +2044,7 @@ mod tests {
     #[test]
     fn modern_loader_skips_unknown_kind_but_loads_the_rest() {
         // The modern (context.json) path WARNS-and-skips an unknown kind
-        // rather than erroring (unlike legacy), so a forward-compat shard
+        // rather than erroring (unlike the manifest path), so a forward-compat shard
         // from a newer producer still merges its recognized artifacts.
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();

@@ -77,6 +77,19 @@ anodizer release --split
 
 Loads all `context.json` files from `dist/*/` subdirectories, merges the artifact lists, and runs the full post-build pipeline (archives, checksums, signing, release, blob storage, publish, announce).
 
+When `dist/` holds no `context.json` at all, `--merge` resumes from the
+`artifacts.json` manifest(s) a full run wrote instead — the same bare JSON
+array `anodizer release` writes at the end of every run, at `dist/` or one
+level down — so a completed build can be re-driven through the post-build
+stages without a split leg:
+
+```console
+$ anodizer release --snapshot                # writes dist/artifacts.json
+$ anodizer release --snapshot --merge
+   • running in merge mode (post-build stages)...
+   • loaded 6 artifact(s) from 1 artifacts.json manifest(s)
+```
+
 ```
 anodizer release --merge
 ```
