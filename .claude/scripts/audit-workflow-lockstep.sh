@@ -22,7 +22,10 @@
 #      every literal `artifact-workflow:` names the producer workflow's own
 #      filename (the NAME and the producing FILE are both load-bearing). Scans
 #      release.yml AND publish-oidc.yml (both install anodizer from the CI build).
-#   6. Post-release gate: dispatch-oidc and advance-master share one success if:.
+#   6. Atomic tag topology: the auto-tag step pushes the bump commit and the
+#      tag together (`--push`, never `--push-tags-only`) and no job re-introduces
+#      a deferred branch fast-forward — the shape whose publish-then-advance
+#      window raced any push to master.
 #   7. Cross-OS suite fallback: the go-task-less fallback in test-os-suite.sh
 #      reproduces every cargo pass of the Taskfile `test` target verbatim.
 #   8. skip_publishers prose + hosted set: the static input description still
@@ -163,11 +166,24 @@ for f in "$CI" "$REL" "$OIDC"; do
     done < <(yqr -r '.. | select(tag == "!!map" and has("artifact-workflow")) | .["artifact-workflow"]' "$f")
 done
 
-# --- 6. Post-release gate --------------------------------------------------
-disp_if=$(yqr -r '.jobs["dispatch-oidc"].if' "$REL")
-adv_if=$(yqr -r '.jobs["advance-master"].if' "$REL")
-if [[ "$disp_if" != "$adv_if" ]]; then
-    fail "post-release gate drift: dispatch-oidc if [${disp_if}] != advance-master if [${adv_if}]."
+# --- 6. Atomic tag topology ------------------------------------------------
+# `--push-tags-only` leaves the version-sync bump commit reachable only from the
+# tag and needs a separate post-publish branch fast-forward; any push landing on
+# master inside that window makes the fast-forward impossible (422, release half
+# landed). `--push` is atomic — branch HEAD and tag land together, or the tag job
+# fails before anything publishes.
+tag_args=$(yqr -r '.jobs.tag.steps[] | select(.name == "Auto-tag release") | .with.args' "$REL")
+case "$tag_args" in
+    "" | null)
+        fail "tag topology: could not read the auto-tag step args from ${REL}." ;;
+    *--push-tags-only*)
+        fail "tag topology: the auto-tag step passes --push-tags-only [${tag_args}] — the deferred-branch shape races any push to master. Use --push." ;;
+    *--push*) ;;
+    *)
+        fail "tag topology: the auto-tag step args [${tag_args}] push nothing — the cut tag would never reach the remote." ;;
+esac
+if [[ "$(yqr -r '.jobs | has("advance-master")' "$REL")" != "false" ]]; then
+    fail "tag topology: ${REL} re-introduces an advance-master job — with an atomic tag push there is no stranded bump commit left to fast-forward onto."
 fi
 
 # --- 7. Cross-OS suite fallback parity -------------------------------------
@@ -222,4 +238,4 @@ if [[ -n "$failures" ]]; then
     exit 1
 fi
 
-echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, release/nightly mutex, bootstrap artifact (name + workflow file), post-release gate, cross-OS suite fallback, and skip_publishers prose are in lockstep."
+echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, and skip_publishers prose are in lockstep."

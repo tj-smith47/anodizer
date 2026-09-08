@@ -238,7 +238,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The persisted credential authenticates the atomic branch+tag push
+          # below, and master-protection grants the PR + signature bypass to the
+          # RepositoryRole-admin actor only — the github-actions bot cannot be a
+          # bypass actor on a user repo.
+          token: ${{ secrets.GH_PAT }}
           ref: ${{ env.RELEASE_REF }}
 
       - name: Configure git identity
@@ -246,24 +250,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # advance-master fast-forwards master onto the tag's bump-writeback commit
-      # AFTER publish; a run cancelled/failed before that step (or master moving
-      # in between) leaves the writeback reachable only through its tag. master
-      # enforces required_linear_history + non_fast_forward, so a stranded
-      # writeback can be neither merged nor force-reconciled onto master — the
-      # only safe recovery is to cut forward. That is valid IFF master has
-      # advanced past the tag's parent with new commits: a higher version cuts,
-      # never colliding with the existing tag, and the tag's feature commits are
-      # already present (only the mechanical writeback diverged, and it
-      # regenerates on the next cut). If master still sits at the tag's pre-bump
-      # parent, re-cutting recomputes the SAME version and dies on a bare
-      # non-fast-forward tag push — that case must still block for a hand
-      # reconcile.
-      - name: Guard against a stranded bump commit
+      # The atomic branch+tag push makes an orphan tag unrepresentable, so a
+      # release tag that is not an ancestor of the release branch can only come
+      # from an out-of-band tag push. Cutting forward on top of that would
+      # publish artifacts against history the branch does not contain, so stop
+      # and make the operator reconcile. Prereleases are excluded: a nightly tag
+      # names a transient build, never a branch-reachable release.
+      - name: Guard against a tag that is not on the release branch
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
         run: |
           git fetch --tags --force --quiet origin
-          latest="$(git tag --list 'v[0-9]*' | sort -V | tail -n1)"
+          latest="$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
           if [ -z "$latest" ]; then
             exit 0
           fi
@@ -271,13 +268,7 @@ jobs:
           if git merge-base --is-ancestor "$sha" HEAD; then
             exit 0
           fi
-          parent="$(git rev-parse "${sha}^" 2>/dev/null || echo '')"
-          if [ -n "$parent" ] && git merge-base --is-ancestor "$parent" HEAD \
-             && [ "$(git rev-list --count "${parent}..HEAD")" -gt 0 ]; then
-            echo "::warning::release tag ${latest} bump-writeback (${sha}) is not on ${RELEASE_REF}: its advance-master step was skipped, but ${RELEASE_REF} has advanced past the tag's parent by $(git rev-list --count "${parent}..HEAD") commit(s). The tag's feature content is present and a new, higher version will be cut. Proceeding."
-            exit 0
-          fi
-          echo "::error::release tag ${latest} (${sha}) is not an ancestor of ${RELEASE_REF} and ${RELEASE_REF} has not advanced past the tag's parent: a prior run stranded the bump commit. Reconcile with: git push origin ${sha}:refs/heads/${RELEASE_REF}  — then re-run this workflow."
+          echo "::error::release tag ${latest} (${sha}) is not an ancestor of ${RELEASE_REF}: it was pushed outside this workflow, so cutting a new version here would publish against history ${RELEASE_REF} does not contain. Reconcile with: git push origin ${sha}:refs/heads/${RELEASE_REF}  — then re-run this workflow."
           exit 1
 
       - name: Auto-tag release
@@ -288,12 +279,16 @@ jobs:
           from-artifact: anodizer-linux
           artifact-workflow: ci.yml
           artifact-run-id: auto
-          # Deferred-branch pattern (lockstep): push the tag now, advance
-          # master onto the bump commit post-publish, below.
-          args: tag --changelog --push-tags-only
+          # --push routes through the atomic branch+tag push: the bump commit
+          # and the tag land together or not at all, so neither an orphan tag
+          # nor a bump commit stranded off master is representable. A push that
+          # races master is rejected here, before anything is published.
+          args: tag --changelog --push
         env:
-          # GITHUB_TOKEN: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT push DOES retrigger CI on master; the trigger gate ignores the
+          # tool's own 'chore(release): bump' subject so the pipeline cannot
+          # loop back onto itself.
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Resolve release target
         id: resolve
@@ -464,8 +459,7 @@ jobs:
     # skip_determinism dispatch skips determinism-check, and without always()
     # this job is auto-skipped even when `release` succeeded — which would
     # silently drop npm/pypi/cargo from the release set. The explicit
-    # `&& result == 'success'` keeps it gated on a real publish. Held byte-equal
-    # to advance-master's if: by audit-workflow-lockstep.sh.
+    # `&& result == 'success'` keeps it gated on a real publish.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -493,33 +487,3 @@ jobs:
             dist_run_id=${{ needs.tag.outputs.dist_run_id || github.run_id }}
             publish_from_artifact=${{ needs.tag.outputs.publish_from_artifact }}
             publish_version=${{ needs.tag.outputs.publish_version }}
-
-  # Fast-forward master onto the published bump commit once publish succeeds.
-  # tag pushed the tag (not the branch); the bump commit is reachable via the
-  # tag, so a failed release advances neither master nor publishes a release.
-  # force=false makes GitHub enforce the fast-forward server-side.
-  advance-master:
-    name: Advance master
-    needs: [tag, release]
-    # always() for the same reason as publish-oidc: a skipped determinism-check
-    # must not auto-skip this job when `release` itself succeeded. This if: must
-    # stay byte-equal to publish-oidc's (audit-workflow-lockstep.sh enforces it),
-    # so a one-sided edit can't split the two post-publish jobs' verdicts.
-    if: ${{ always() && needs.release.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Fast-forward master onto the published bump commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ needs.tag.outputs.sha }}
-        run: |
-          if ! gh api -X PATCH "repos/${{ github.repository }}/git/refs/heads/master" \
-                 -f sha="$SHA" -F force=false; then
-            echo "::error::Could not fast-forward master to $SHA (master moved during release?). \
-              The version IS published — do NOT re-cut. Reconcile by hand: \
-              git fetch origin && git push origin $SHA:refs/heads/master"
-            exit 1
-          fi

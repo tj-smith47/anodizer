@@ -197,7 +197,7 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
     name: Dispatch OIDC publish
     needs: [tag, release]
     # always() + explicit result check: gated on a real publish, not skipped-need
-    # propagation. Byte-equal to advance-master's if: (audit-workflow-lockstep.sh).
+    # propagation.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
