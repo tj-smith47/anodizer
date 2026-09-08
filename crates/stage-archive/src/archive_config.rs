@@ -107,6 +107,7 @@ pub(crate) fn archive_one_config(
     crate_dir: &Path,
     all_binaries: &[Artifact],
     new_artifacts: &mut Vec<Artifact>,
+    name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
 ) -> Result<()> {
     for archive_cfg in archive_cfgs {
         // The archive id labels every diagnostic + staging path for this
@@ -726,20 +727,24 @@ pub(crate) fn archive_one_config(
                 let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
                 let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                // Duplicate archive name detection: prevent silent overwrites.
-                // Real runs only — a dry-run writes nothing, so a file left by
-                // an earlier run is not a collision this run can cause. The
-                // check is also incapable of doing its stated job under
-                // dry-run: it detects a two-artifacts-one-name template by
-                // seeing the FIRST artifact on disk, and in dry-run no artifact
-                // is ever written, so it can fire on nothing but stale state.
-                // Leaving it unguarded made `task snapshot` fail after any real
-                // build populated dist/ — the gate refusing on prior output.
-                if !dry_run && archive_path.exists() {
-                    bail!(
-                        "archive named '{}' already exists. Check your archive name template.",
-                        archive_filename
-                    );
+                // `binary` format with more than one source writes per-binary
+                // copies into dist/ rather than to `archive_path`, so that path
+                // is never produced and must not enter the produced-path set.
+                let writes_archive_path = format != "binary" || path_refs.len() == 1;
+                if writes_archive_path {
+                    name_guard.check(
+                        &archive_path,
+                        "archives",
+                        "archive",
+                        name_tmpl,
+                        &archive_filename,
+                        crate_name,
+                    )?;
+                    if !dry_run && archive_path.exists() {
+                        log.verbose(&format!(
+                            "replacing existing archive '{archive_filename}' left by an earlier run"
+                        ));
+                    }
                 }
 
                 if dry_run {

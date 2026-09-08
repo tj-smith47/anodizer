@@ -39,6 +39,13 @@ impl Stage for ArchiveStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let multi_crate = work.len() > 1;
 
+        // Run-scoped, spanning every crate: two `archives:` entries — of one
+        // crate or of two — that render one filename are a name-template
+        // defect, and the guard is the only scope wide enough to see both.
+        // A path this pass did NOT produce is by construction leftover state,
+        // which `archive_one_config` overwrites instead of refusing.
+        let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
+
         let original_project_name = ctx
             .template_vars()
             .get("ProjectName")
@@ -79,6 +86,7 @@ impl Stage for ArchiveStage {
                     crate_dir,
                     &all_binaries,
                     &mut new_artifacts,
+                    &mut name_guard,
                 )?;
             }
             Ok(())

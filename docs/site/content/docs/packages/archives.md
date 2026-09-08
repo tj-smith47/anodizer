@@ -156,6 +156,29 @@ archives:
     name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
+## Re-running over a populated `dist/`
+
+Archiving is idempotent. A re-run — `release` after `release --prepare`, a
+retried `release --merge`, or any run over a `dist/` a previous attempt already
+populated — rewrites its own archives rather than refusing:
+
+```console
+$ anodizer release --prepare        # writes dist/myapp-1.0.0-linux-amd64.tar.gz
+$ anodizer release -v               # converges over it
+[archive] replacing existing archive 'myapp-1.0.0-linux-amd64.tar.gz' left by an earlier run
+[archive] creating ./dist/myapp-1.0.0-linux-amd64.tar.gz
+```
+
+A `name_template` that renders the same filename twice **within one run** is
+still a hard error — that is a config defect, not leftover state, and it is
+caught in `--dry-run` and `--snapshot` too:
+
+```text
+archives: name template '{{ ProjectName }}' rendered the same archive
+'myapp.tar.gz' more than once for crate 'myapp', so one build target would
+silently overwrite another. Add '{{ .Arch }}' to the `name` …
+```
+
 ## Disabling archives
 
 ```yaml

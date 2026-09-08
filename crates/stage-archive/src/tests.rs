@@ -5858,3 +5858,235 @@ mod no_binaries_skip_visibility {
         assert_eq!(lines[0].0, LogLevel::Status, "{lines:?}");
     }
 }
+
+/// Collision detection over the paths ONE archive-stage pass produced, and
+/// convergence over archives an earlier run left behind in `dist/`.
+mod archive_name_guard {
+    use super::*;
+    use anodizer_core::config::{ArchiveConfig, CrateConfig};
+    use anodizer_core::context::Context;
+    use anodizer_core::log::{LogCapture, LogLevel};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    const TARGETS: [&str; 2] = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+
+    /// Build a stage-ready context: every crate in `crates` carries
+    /// `archive_cfgs`, and one on-disk `Binary` artifact is registered per
+    /// (crate, target). Returns the context; `tmp/dist` is the dist dir.
+    fn build_ctx(
+        tmp: &TempDir,
+        crates: &[&str],
+        archive_cfgs: &[ArchiveConfig],
+        targets: &[&str],
+        dry_run: bool,
+        verbose: bool,
+    ) -> Context {
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        let crate_cfgs: Vec<CrateConfig> = crates
+            .iter()
+            .map(|name| CrateConfig {
+                name: (*name).to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                archives: ArchivesConfig::Configs(archive_cfgs.to_vec()),
+                ..Default::default()
+            })
+            .collect();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("proj")
+            .tag("v1.0.0")
+            .dist(tmp.path().join("dist"))
+            .project_root(root.clone())
+            .dry_run(dry_run)
+            .verbose(verbose)
+            .crates(crate_cfgs)
+            .build();
+
+        for name in crates {
+            for target in targets {
+                let bin_dir = tmp.path().join(target);
+                fs::create_dir_all(&bin_dir).unwrap();
+                let bin_path = bin_dir.join(name);
+                fs::write(&bin_path, format!("binary {name} {target}")).unwrap();
+                ctx.artifacts.add(Artifact {
+                    kind: ArtifactKind::Binary,
+                    name: String::new(),
+                    path: bin_path,
+                    target: Some((*target).to_string()),
+                    crate_name: (*name).to_string(),
+                    metadata: HashMap::from([
+                        ("binary".to_string(), (*name).to_string()),
+                        ("id".to_string(), (*name).to_string()),
+                    ]),
+                    size: None,
+                });
+            }
+        }
+        ctx
+    }
+
+    fn cfg(id: &str, name_template: Option<&str>, formats: &[&str]) -> ArchiveConfig {
+        ArchiveConfig {
+            id: Some(id.to_string()),
+            name_template: name_template.map(str::to_string),
+            formats: Some(formats.iter().map(|f| (*f).to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn intra_run_archive_name_collision_still_bails() {
+        // Two `archives:` entries whose shared constant template omits
+        // `{{ Arch }}`: every (entry, target) pair renders one filename, so
+        // one build target would silently overwrite another. That is a config
+        // defect, not leftover state, and must stay a hard error.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [
+            cfg("a", Some("{{ .ProjectName }}"), &["tar.gz"]),
+            cfg("b", Some("{{ .ProjectName }}"), &["tar.gz"]),
+        ];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &TARGETS, false, false);
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("archives:"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn stale_archive_from_prior_run_is_overwritten() {
+        // The known-bugs shape: an earlier attempt left its archive in dist/.
+        // A re-run must rebuild over it, not refuse — and must ship the bytes
+        // it produced, never the stale ones.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["tar.gz"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        let dist = ctx.config.dist.clone();
+        fs::create_dir_all(&dist).unwrap();
+        let stale = dist.join("proj_1.0.0_linux_amd64.tar.gz");
+        fs::write(&stale, b"STALE").unwrap();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1, "{archives:?}");
+        assert_eq!(archives[0].path, stale, "{archives:?}");
+        let bytes = fs::read(&stale).unwrap();
+        assert_ne!(
+            bytes.as_slice(),
+            b"STALE",
+            "stale bytes survived the re-run"
+        );
+        assert!(bytes.len() > 2, "empty archive: {} bytes", bytes.len());
+        assert_eq!(
+            &bytes[..2],
+            b"\x1f\x8b",
+            "not a gzip stream: {:?}",
+            &bytes[..2]
+        );
+    }
+
+    #[test]
+    fn stale_archive_overwrite_logs_at_verbose() {
+        // The overwrite is subprocess-grade internal detail, not a produced
+        // artifact, so it belongs to the verbose register. `LogCapture`
+        // records every level regardless of the logger's verbosity, so the
+        // assertion is on the recorded LEVEL — which is exactly what decides
+        // whether the line is printed at default verbosity.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", None, &["tar.gz"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            true,
+        );
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let dist = ctx.config.dist.clone();
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(dist.join("proj_1.0.0_linux_amd64.tar.gz"), b"STALE").unwrap();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let lines = cap.all_messages();
+        let hit = lines
+            .iter()
+            .find(|(_, m)| m.contains("replacing existing archive"))
+            .unwrap_or_else(|| panic!("no overwrite note recorded: {lines:?}"));
+        assert_eq!(hit.0, LogLevel::Verbose, "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|(l, m)| *l == LogLevel::Status && m.contains("replacing existing archive")),
+            "overwrite note must not reach the default-visible register: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn dry_run_detects_intra_run_collision() {
+        // A produced-path set works where the old filesystem probe could not:
+        // nothing is written in a dry run, so the probe had to be disabled and
+        // a name-template collision only ever surfaced on a real release.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [
+            cfg("a", Some("{{ .ProjectName }}"), &["tar.gz"]),
+            cfg("b", Some("{{ .ProjectName }}"), &["tar.gz"]),
+        ];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &TARGETS, true, false);
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn cross_crate_archive_name_collision_bails() {
+        // The guard is run-scoped, not per-crate: two crates sharing a custom
+        // template that references neither `{{ CrateName }}` nor
+        // `{{ ProjectName }}` render one filename, and the second crate would
+        // clobber the first.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("shared_{{ .Os }}"), &["tar.gz"])];
+        let mut ctx = build_ctx(
+            &tmp,
+            &["alpha", "beta"],
+            &cfgs,
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("shared_linux.tar.gz"), "{err}");
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn binary_format_multi_source_does_not_enter_the_guard() {
+        // `format: binary` with more than one source (the binary plus an
+        // auto-included LICENSE) writes per-binary copies into dist/ rather
+        // than to `archive_path`, so that path is never produced and must not
+        // be recorded — strict parity with the filesystem probe, which never
+        // fired here either.
+        let tmp = TempDir::new().unwrap();
+        let cfgs = [cfg("default", Some("{{ .Binary }}_bin"), &["binary"])];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &TARGETS, false, false);
+        fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+
+        ArchiveStage
+            .run(&mut ctx)
+            .expect("multi-source binary format must not collide");
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::UploadableBinary).len(),
+            TARGETS.len()
+        );
+    }
+}
