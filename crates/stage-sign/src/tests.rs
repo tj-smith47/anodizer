@@ -5377,12 +5377,38 @@ mod cosign_tuf_race {
         );
     }
 
-    /// Pins the serialization itself: the FIRST cosign invocation must
-    /// complete before any second one starts. The stub logs start/end
-    /// wall-clock nanos per invocation; without the serial warm-up, a
-    /// parallelism-4 fan-out records 4 starts before the earliest end.
+    /// Count how many cosign invocations started before the first one ended
+    /// — 1 under serialization, `parallelism` under a fan-out.
+    fn starts_before_first_end(state: &Path) -> usize {
+        let (starts, ends) = read_events(state);
+        let first_end = *ends.iter().min().expect("at least one end");
+        starts.iter().filter(|s| **s < first_end).count()
+    }
+
+    /// Assert no two cosign invocations overlapped: with both sequences
+    /// sorted, every start must land at or after the preceding end.
+    fn assert_no_overlap(state: &Path, expected: usize) {
+        let (mut starts, mut ends) = read_events(state);
+        assert_eq!(starts.len(), expected, "one start per artifact");
+        assert_eq!(ends.len(), expected, "one end per artifact");
+        starts.sort_unstable();
+        ends.sort_unstable();
+        for i in 1..starts.len() {
+            assert!(
+                starts[i] >= ends[i - 1],
+                "keyless cosign invocations must never overlap: start {} \
+                 preceded end {}",
+                starts[i],
+                ends[i - 1]
+            );
+        }
+    }
+
+    /// Pins the serialization itself: NO two keyless cosign invocations may
+    /// overlap, not merely the first. The stub logs start/end wall-clock
+    /// nanos per invocation; a parallelism-4 fan-out interleaves them.
     #[test]
-    fn keyless_cosign_first_invocation_completes_before_fan_out() {
+    fn keyless_cosign_invocations_never_overlap() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
@@ -5392,48 +5418,196 @@ mod cosign_tuf_race {
         add_archives(&mut ctx, tmp.path(), 6);
         SignStage.run(&mut ctx).expect("all stub signs succeed");
 
-        let (starts, ends) = read_events(&state);
-        assert_eq!(starts.len(), 6, "one start per artifact");
-        assert_eq!(ends.len(), 6, "one end per artifact");
-        let first_end = *ends.iter().min().expect("at least one end");
-        let early = starts.iter().filter(|s| **s < first_end).count();
-        assert_eq!(
-            early, 1,
-            "exactly one cosign invocation may start before the first one \
-             completes (the TUF warm-up must run alone); got {early} early \
-             starts"
+        assert_no_overlap(&state, 6);
+    }
+
+    /// Keyed cosign (`--key=`) never contacts Fulcio/Rekor and never touches
+    /// the sigstore TUF store, so it must keep the full `--parallelism`.
+    #[test]
+    fn keyed_cosign_keeps_full_parallelism() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .args
+            .as_mut()
+            .unwrap()
+            // Appended, not inserted: the stub writes its signature to the
+            // third argv slot, which the sign-blob prefix must keep.
+            .push("--key=env://COSIGN_KEY".to_string());
+        // The signature bytes are a stub's, so the verify leg would only
+        // measure the stub again; parallelism is what this pins.
+        signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(signs)
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        let early = starts_before_first_end(&state);
+        assert!(
+            early > 1,
+            "keyed cosign must fan out at the configured parallelism; got \
+             {early} start(s) before the first completion"
         );
     }
 
-    /// Populate `cache` as a warm sigstore TUF store: trusted root, one
-    /// fetched target, and a timestamp expiring `expires_offset_hours` from
-    /// now (negative = already expired).
-    fn populate_tuf_cache(cache: &Path, expires_offset_hours: i64) {
+    /// The host TUF lock must be held for the WHOLE keyless run, not just a
+    /// priming first job: a neighbour that starts polling once the first
+    /// cosign is in flight may not win the lock until the stage is done.
+    #[test]
+    fn keyless_sign_holds_host_lock_for_the_whole_run() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let sentinel = cache.join(".anodizer-tuf-init.lock");
+        let events = state.join("events");
+        let acquired_at = Arc::new(AtomicU64::new(0));
+        let acquired = Arc::clone(&acquired_at);
+        let neighbour = std::thread::spawn(move || {
+            // Wait for the first cosign to be in flight; before that the
+            // stage has not taken the lock yet and a win proves nothing.
+            while !events.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            loop {
+                if let Ok(file) = std::fs::File::options().write(true).open(&sentinel)
+                    && fs4::FileExt::try_lock(&file).is_ok()
+                {
+                    acquired.store(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos() as u64,
+                        Ordering::SeqCst,
+                    );
+                    let _ = fs4::FileExt::unlock(&file);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(&stub, &state))
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+        neighbour.join().expect("neighbour thread");
+
+        let (_, ends) = read_events(&state);
+        let last_end = *ends.iter().max().expect("at least one end");
+        let acquired_ns = acquired_at.load(Ordering::SeqCst) as u128;
+        assert!(
+            acquired_ns > last_end,
+            "the host TUF lock must stay held until the last cosign finished \
+             (neighbour acquired at {acquired_ns}, last cosign ended at \
+             {last_end})"
+        );
+    }
+
+    /// The default-visible status line must report the parallelism the run
+    /// actually uses — a keyless config says 1, a keyed one says 4.
+    #[test]
+    fn sign_status_line_reports_effective_parallelism() {
+        fn status_lines(keyed: bool) -> Vec<String> {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let state = tmp.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            let stub = write_events_stub(tmp.path());
+
+            let mut signs = stub_signs(&stub, &state);
+            if keyed {
+                signs[0]
+                    .args
+                    .as_mut()
+                    .unwrap()
+                    .push("--key=env://COSIGN_KEY".to_string());
+                signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+                    enabled: Some(false),
+                    ..Default::default()
+                });
+            }
+
+            let mut ctx = TestContextBuilder::new()
+                .dry_run(false)
+                .parallelism(4)
+                .signs(signs)
+                .sealed_env()
+                .build();
+            let capture = anodizer_core::log::LogCapture::new();
+            ctx.with_log_capture(capture.clone());
+            add_archives(&mut ctx, tmp.path(), 2);
+            SignStage.run(&mut ctx).expect("all stub signs succeed");
+            capture
+                .all_messages()
+                .into_iter()
+                .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Status)
+                .map(|(_, msg)| msg)
+                .collect()
+        }
+
+        let keyless = status_lines(false);
+        assert!(
+            keyless
+                .iter()
+                .any(|m| m.contains("signing 2 artifacts with parallelism=1")),
+            "a keyless config runs serialized and must say so: {keyless:?}"
+        );
+        let keyed = status_lines(true);
+        assert!(
+            keyed
+                .iter()
+                .any(|m| m.contains("signing 2 artifacts with parallelism=4")),
+            "a keyed config keeps the configured parallelism: {keyed:?}"
+        );
+    }
+
+    /// Populate `cache` the way a completed cosign TUF init leaves it:
+    /// trusted root, one fetched target, and unexpired timestamp metadata.
+    fn populate_tuf_cache(cache: &Path) {
         std::fs::create_dir_all(cache.join("targets")).unwrap();
         std::fs::write(cache.join("root.json"), "{}").unwrap();
         std::fs::write(cache.join("targets").join("rekor.pub"), "key").unwrap();
-        let expires =
-            (chrono::Utc::now() + chrono::Duration::hours(expires_offset_hours)).to_rfc3339();
         std::fs::write(
             cache.join("timestamp.json"),
-            format!(r#"{{"signed":{{"expires":"{expires}"}}}}"#),
+            r#"{"signed":{"expires":"2999-01-01T00:00:00Z"}}"#,
         )
         .unwrap();
     }
 
-    /// A pre-populated TUF cache (root.json + a fetched target + unexpired
-    /// timestamp under `TUF_ROOT`) makes cosign's init a no-op, so the
-    /// serialized warm-up must be skipped: with parallelism 4 and a 150ms
-    /// stub, several invocations start before the first one ends.
+    /// A populated TUF store is NOT a licence to fan out: concurrent keyless
+    /// cosign invocations collide on it even after a completed init, so the
+    /// serialization must hold regardless of what is already on disk.
     #[test]
-    fn warm_tuf_cache_skips_serialized_warm_up() {
+    fn warm_tuf_cache_still_serializes() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
         let stub = write_events_stub(tmp.path());
 
         let cache = tmp.path().join("tuf-root");
-        populate_tuf_cache(&cache, 1);
+        populate_tuf_cache(&cache);
 
         let mut ctx = TestContextBuilder::new()
             .dry_run(false)
@@ -5445,14 +5619,7 @@ mod cosign_tuf_race {
         add_archives(&mut ctx, tmp.path(), 6);
         SignStage.run(&mut ctx).expect("all stub signs succeed");
 
-        let (starts, ends) = read_events(&state);
-        let first_end = *ends.iter().min().expect("at least one end");
-        let early = starts.iter().filter(|s| **s < first_end).count();
-        assert!(
-            early > 1,
-            "a warm TUF cache must fan out immediately (no solo first sign); \
-             got {early} start(s) before the first completion"
-        );
+        assert_no_overlap(&state, 6);
     }
 
     /// A cold cache under `TUF_ROOT` keeps the serialized warm-up AND takes
@@ -5481,102 +5648,60 @@ mod cosign_tuf_race {
             cache.join(".anodizer-tuf-init.lock").is_file(),
             "cold init must create the advisory-lock sentinel in the cache dir"
         );
-        let (starts, ends) = read_events(&state);
-        let first_end = *ends.iter().min().expect("at least one end");
-        let early = starts.iter().filter(|s| **s < first_end).count();
+        let early = starts_before_first_end(&state);
         assert_eq!(
             early, 1,
-            "cold cache must keep the serialized warm-up; got {early} early starts"
+            "a keyless config must serialize; got {early} early starts"
         );
     }
 
-    /// The warm probe must consult the env the cosign CHILD sees: a
+    /// The host lock must scope to the cache the cosign CHILD will use: a
     /// `TUF_ROOT` in the sign config's `env:` entries shadows the process
-    /// env. Here the process env points at a cold dir while the config env
-    /// points at a warm cache — the stage must fan out immediately.
+    /// env, so the sentinel belongs in the config-env directory.
     #[test]
-    fn config_env_tuf_root_shadows_process_env_for_warm_probe() {
+    fn config_env_tuf_root_scopes_the_host_lock() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
         let stub = write_events_stub(tmp.path());
 
-        let warm = tmp.path().join("warm-root");
-        populate_tuf_cache(&warm, 1);
-        let cold = tmp.path().join("cold-root");
+        let child_root = tmp.path().join("child-root");
+        let process_root = tmp.path().join("process-root");
 
         let mut signs = stub_signs(&stub, &state);
         signs[0]
             .env
             .as_mut()
             .unwrap()
-            .push(format!("TUF_ROOT={}", warm.display()));
+            .push(format!("TUF_ROOT={}", child_root.display()));
 
         let mut ctx = TestContextBuilder::new()
             .dry_run(false)
             .parallelism(4)
             .signs(signs)
-            .env("TUF_ROOT", cold.to_string_lossy())
+            .env("TUF_ROOT", process_root.to_string_lossy())
             .sealed_env()
             .build();
         add_archives(&mut ctx, tmp.path(), 6);
         SignStage.run(&mut ctx).expect("all stub signs succeed");
 
-        let (starts, ends) = read_events(&state);
-        let first_end = *ends.iter().min().expect("at least one end");
-        let early = starts.iter().filter(|s| **s < first_end).count();
         assert!(
-            early > 1,
-            "config-env TUF_ROOT points at a warm cache, so the child sees a \
-             warm store and the stage must fan out; got {early} early start(s)"
+            child_root.join(".anodizer-tuf-init.lock").is_file(),
+            "the lock must land in the cache dir the child's TUF_ROOT names"
         );
         assert!(
-            !cold.join(".anodizer-tuf-init.lock").exists(),
+            !process_root.join(".anodizer-tuf-init.lock").exists(),
             "the lock must scope to the cache the child will use, not the \
              process-env dir"
         );
     }
 
-    /// An otherwise-populated cache whose `timestamp.json` has expired makes
-    /// cosign refresh through the same locked store as a cold init, so the
-    /// warm probe must classify it COLD and keep the serialized warm-up.
-    #[test]
-    fn expired_tuf_timestamp_keeps_serialized_warm_up() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = tmp.path().join("state");
-        std::fs::create_dir(&state).unwrap();
-        let stub = write_events_stub(tmp.path());
-
-        let cache = tmp.path().join("tuf-root");
-        populate_tuf_cache(&cache, -1);
-
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(false)
-            .parallelism(4)
-            .signs(stub_signs(&stub, &state))
-            .env("TUF_ROOT", cache.to_string_lossy())
-            .sealed_env()
-            .build();
-        add_archives(&mut ctx, tmp.path(), 6);
-        SignStage.run(&mut ctx).expect("all stub signs succeed");
-
-        let (starts, ends) = read_events(&state);
-        let first_end = *ends.iter().min().expect("at least one end");
-        let early = starts.iter().filter(|s| **s < first_end).count();
-        assert_eq!(
-            early, 1,
-            "expired timestamp must be treated as cold (serialized warm-up); \
-             got {early} early starts"
-        );
-    }
-
-    /// The warm probe must run AFTER the host lock is granted: while a
-    /// neighbor holds the init lock (mid-initialization), the stage must
-    /// wait it out rather than trusting an unlocked warm reading. The
+    /// A keyless run must wait for the host lock before spawning any
+    /// cosign: while a neighbour holds it, no invocation may start. The
     /// holder releases after 400ms; every cosign start must land after that
     /// release.
     #[test]
-    fn warm_probe_waits_for_host_init_lock() {
+    fn keyless_sign_waits_for_host_init_lock() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5586,7 +5711,7 @@ mod cosign_tuf_race {
         let stub = write_events_stub(tmp.path());
 
         let cache = tmp.path().join("tuf-root");
-        populate_tuf_cache(&cache, 1);
+        populate_tuf_cache(&cache);
 
         // Acquire before the stage runs so there is no startup race; flock
         // excludes across separate descriptors even within one process.
@@ -5627,6 +5752,153 @@ mod cosign_tuf_race {
             "no cosign may start while another holder owns the TUF init lock \
              (earliest start {earliest} < release {release_ns})"
         );
+    }
+
+    /// Run `DockerSignStage` with a stub `cosign` and `TUF_ROOT` pointed at
+    /// `cache`, and report whether the host lock sentinel was created.
+    fn docker_sign_creates_sentinel(keyed: bool) -> bool {
+        use anodizer_core::config::DockerSignConfig;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("tuf-root");
+        let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 0\n");
+
+        let mut args = vec!["sign".to_string(), "{{ .Artifact }}".to_string()];
+        if keyed {
+            args.push("--key=env://COSIGN_KEY".to_string());
+        }
+        let docker_signs = vec![DockerSignConfig {
+            verify: None,
+            cmd: Some(stub.to_string_lossy().into_owned()),
+            args: Some(args),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            id: Some("image-cosign".to_string()),
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        ctx.config.docker_signs = Some(docker_signs);
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: String::new(),
+            path: std::path::PathBuf::from("ghcr.io/acme/app:latest"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        DockerSignStage
+            .run(&mut ctx)
+            .expect("stub docker sign succeeds");
+
+        cache.join(".anodizer-tuf-init.lock").is_file()
+    }
+
+    /// Docker image signing is a keyless cosign spawn site too: the loop is
+    /// serial within one process, but a second anodizer on the same host
+    /// contends the same TUF store, so it must take the host lock.
+    #[test]
+    fn docker_sign_keyless_takes_host_lock() {
+        assert!(
+            docker_sign_creates_sentinel(false),
+            "keyless docker signing must take the host-level TUF lock"
+        );
+    }
+
+    /// Keyed docker signing never contacts Fulcio/Rekor, so serializing it
+    /// across processes would be pure contention for nothing.
+    #[test]
+    fn docker_sign_keyed_takes_no_host_lock() {
+        assert!(
+            !docker_sign_creates_sentinel(true),
+            "keyed docker signing must not take the host-level TUF lock"
+        );
+    }
+
+    /// Walk the keyless cosign spawn sites in source: any function that both
+    /// decides keyless-ness and spawns a process must take the shared host
+    /// lock, so a NEW spawn site added without it fails here rather than in
+    /// a nightly.
+    #[test]
+    fn every_keyless_cosign_site_takes_the_host_lock() {
+        const SOURCES: [&str; 3] = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/process/sign_configs.rs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/verify_assets.rs"),
+        ];
+        // A function decides keyless-ness with one of these …
+        const KEYLESS: [&str; 2] = ["is_keyless_cosign(", "ConfigVerifyMode::CosignKeyless"];
+        // … and spawns cosign through one of these.
+        const SPAWNS: [&str; 5] = [
+            "run_parallel_chunks(",
+            "execute_verify_job(",
+            "execute_verify_job_classified(",
+            "execute_sign_job(",
+            ".spawn()",
+        ];
+
+        let mut checked = 0usize;
+        for source in SOURCES {
+            let text = std::fs::read_to_string(source).expect("read source");
+            // Test modules stub cosign rather than spawning it for real.
+            let production = text.split("\n#[cfg(").next().expect("production half");
+            for body in function_bodies(production) {
+                if !KEYLESS.iter().any(|m| body.contains(m)) {
+                    continue;
+                }
+                if !SPAWNS.iter().any(|m| body.contains(m)) {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    body.contains("keyless_cosign_host_lock"),
+                    "a keyless cosign spawn site in {source} does not take \
+                     tuf_cache::keyless_cosign_host_lock"
+                );
+            }
+        }
+        assert_eq!(
+            checked, 3,
+            "expected exactly the three known keyless cosign spawn sites \
+             (sign fan-out, docker signing, release re-verification)"
+        );
+    }
+
+    /// Split Rust source into function bodies: a `fn` line opens a body that
+    /// ends at the first line closing a brace at the `fn`'s own indent.
+    fn function_bodies(src: &str) -> Vec<String> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut bodies = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if !(trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub fn ")
+                || trimmed.starts_with("pub(crate) fn ")
+                || trimmed.starts_with("pub(super) fn "))
+            {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            let closing = format!("{}}}", " ".repeat(indent));
+            let end = lines[i + 1..]
+                .iter()
+                .position(|l| *l == closing)
+                .map(|p| i + 1 + p)
+                .unwrap_or(lines.len() - 1);
+            bodies.push(lines[i..=end].join("\n"));
+        }
+        bodies
     }
 
     /// A transiently-failing cosign (fails the first attempt with the

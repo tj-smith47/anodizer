@@ -522,6 +522,26 @@ impl Stage for DockerSignStage {
                     ));
                 }
 
+                // This loop is serial, but another anodizer process on the
+                // same host is not: keyless cosign invocations collide on
+                // the host's sigstore TUF trust store and the loser exits
+                // with `creating cached local store: resource temporarily
+                // unavailable`. Held across the loop so the post-sign verify
+                // is covered too. The `env:` overlay only locates the cache
+                // directory, so a render failure degrades to the process env
+                // rather than failing the sign.
+                let _tuf_lock = (!ctx.is_dry_run()
+                    && crate::process::is_keyless_cosign(&cmd, &args))
+                .then(|| {
+                    let overlay = anodizer_core::config::render_env_entries(
+                        docker_sign_cfg.env.as_deref().unwrap_or(&[]),
+                        |v| ctx.render_template(v),
+                    )
+                    .unwrap_or_default();
+                    crate::tuf_cache::keyless_cosign_host_lock(&overlay, ctx.env_source(), &log)
+                })
+                .flatten();
+
                 for (image_path, metadata) in &image_paths {
                     let image_str = image_path.to_string_lossy();
 

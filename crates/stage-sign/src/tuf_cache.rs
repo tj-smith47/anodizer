@@ -1,26 +1,26 @@
-//! Host-level coordination for cosign's lazy sigstore TUF trust-root init.
+//! Host-level coordination for keyless cosign's sigstore TUF trust store.
 //!
-//! Keyless cosign initializes a TUF trust-root cache on its first run per
-//! host (default `~/.sigstore/root`, overridable via `TUF_ROOT`). Concurrent
-//! cold initializations contend cosign's internal flock and the losers fail
-//! with `creating cached local store: resource temporarily unavailable`.
-//! This module supplies the two host-side guards around that first run:
+//! Keyless cosign reads — and lazily initializes — a TUF trust-root cache
+//! per host (default `~/.sigstore/root`, overridable via `TUF_ROOT`).
+//! Concurrent keyless cosign invocations on one host collide on that store
+//! and the losers fail with `creating cached local store: resource
+//! temporarily unavailable`. A populated store does not make the collision
+//! go away: a read-only `cosign verify-blob` has been observed failing that
+//! way while sibling workers were live, under a second after a completed
+//! initialization.
 //!
-//! - [`tuf_cache_is_warm`] — detect an already-initialized, still-fresh
-//!   cache so a warm host skips the serialized warm-up entirely. Two cache
-//!   layouts are recognized: cosign v2.4.3's legacy go-tuf store
-//!   (`remote.json` + `targets/` + a LevelDB at `tuf.db/`, as observed on a
-//!   real `cosign initialize`) and the sigstore-go JSON store (top-level
-//!   `root.json`/`timestamp.json` metadata next to `targets/`);
-//! - [`TufInitLock`] — an advisory file lock scoped to the cache directory,
-//!   held across the initializing invocation so two anodizer *processes* on
-//!   one host cannot both drive a cold init. Advisory locks are released by
-//!   the OS on process exit, so a killed holder never wedges later runs.
+//! The host-side guard is therefore [`TufInitLock`] — an advisory file lock
+//! scoped to the cache directory and held across a whole keyless run, so two
+//! anodizer *processes* on one host queue rather than race.
+//! [`keyless_cosign_host_lock`] is the seam every keyless spawn site takes it
+//! through. Advisory locks are released by the OS on process exit, so a
+//! killed holder never wedges later runs.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::env_source::EnvSource;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 /// Lock-sentinel filename created inside the TUF cache directory. cosign
@@ -63,103 +63,33 @@ pub(crate) fn tuf_cache_dir(
     Some(Path::new(&home).join(".sigstore").join("root"))
 }
 
-/// True when the TUF cache at `dir` is populated enough that cosign's init
-/// is a no-op. Two on-disk layouts are recognized, both requiring a
-/// non-empty `targets/` directory plus fresh metadata:
+/// Take the host-level TUF lock for the duration of a keyless cosign run.
 ///
-/// - **JSON layout** (sigstore-go): top-level `root.json`, `snapshot.json`,
-///   `targets.json`, `timestamp.json` next to `targets/`. Warm iff
-///   `root.json` is a file and `timestamp.json` carries an unexpired
-///   `signed.expires`.
-/// - **Legacy go-tuf layout** (empirically what cosign v2.4.3 writes:
-///   `remote.json`, `targets/`, and a LevelDB at `tuf.db/`): warm iff
-///   `tuf.db/CURRENT` is a file and the newest mtime directly under
-///   `tuf.db/` is within 24 hours (see [`tuf_db_recently_refreshed`]).
+/// Concurrent keyless cosign invocations on one host collide on the sigstore
+/// TUF trust store and the losers exit with `creating cached local store:
+/// resource temporarily unavailable`, whether or not the store is already
+/// populated. Every keyless spawn site takes this lock so a second anodizer
+/// process on the same host queues behind the first instead of racing it.
 ///
-/// Conservative on purpose — a partially-written cache, missing metadata, or
-/// expired/unparseable/stale metadata all classify COLD, so the run warms up
-/// serially rather than fanning out onto a store cosign will (re-)initialize
-/// or refresh under its internal flock. The cost asymmetry drives every
-/// tie-break: a fresh cache mis-classified cold merely re-serializes one
-/// sign, while a stale cache mis-classified warm re-races the refresh lock.
-pub(crate) fn tuf_cache_is_warm(dir: &Path) -> bool {
-    let has_target = match std::fs::read_dir(dir.join("targets")) {
-        Ok(mut entries) => entries.next().is_some(),
-        Err(_) => false,
-    };
-    if !has_target {
-        return false;
+/// `None` when the cache directory cannot be resolved (no `TUF_ROOT`, no
+/// home) or the lock cannot be taken — signing must never fail on lock
+/// plumbing, so both degrade to a verbose note and an unserialized run.
+pub(crate) fn keyless_cosign_host_lock(
+    config_env: &[(String, String)],
+    env: &dyn EnvSource,
+    log: &StageLogger,
+) -> Option<TufInitLock> {
+    let dir = tuf_cache_dir(config_env, env)?;
+    match TufInitLock::acquire(&dir) {
+        Ok(lock) => Some(lock),
+        Err(err) => {
+            log.verbose(&format!(
+                "could not acquire host-level TUF init lock ({err:#}); \
+                 keyless cosign runs unserialized across processes"
+            ));
+            None
+        }
     }
-    if dir.join("root.json").is_file() && timestamp_is_fresh(&dir.join("timestamp.json")) {
-        return true;
-    }
-    dir.join("tuf.db").join("CURRENT").is_file() && tuf_db_recently_refreshed(&dir.join("tuf.db"))
-}
-
-/// True when the newest mtime among the entries directly under the go-tuf
-/// LevelDB directory `db_dir` is within 24 hours.
-///
-/// In cosign's legacy go-tuf layout the metadata — including its expiry —
-/// lives inside the LevelDB, snappy-compressed and unreadable without a db
-/// dependency, so the newest `tuf.db/` mtime (the last successful metadata
-/// refresh) stands in for it. The live sigstore timestamp validity window is
-/// 7 days, so 24 hours guarantees freshness with wide margin; the asymmetry
-/// makes the tight window cheap (stale-classified-cold re-serializes one
-/// sign, stale-classified-warm re-races the refresh lock). Any read/metadata
-/// error, or an empty `tuf.db/`, classifies COLD.
-fn tuf_db_recently_refreshed(db_dir: &Path) -> bool {
-    const FRESH_WINDOW: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-    let Ok(entries) = std::fs::read_dir(db_dir) else {
-        return false;
-    };
-    let mut newest: Option<std::time::SystemTime> = None;
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return false;
-        };
-        let Ok(meta) = entry.metadata() else {
-            return false;
-        };
-        let Ok(mtime) = meta.modified() else {
-            return false;
-        };
-        newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
-    }
-    let Some(newest) = newest else {
-        return false;
-    };
-    match std::time::SystemTime::now().duration_since(newest) {
-        Ok(age) => age <= FRESH_WINDOW,
-        // An mtime ahead of the clock means the refresh just happened (or
-        // minor skew) — fresh either way.
-        Err(_) => true,
-    }
-}
-
-/// True when the TUF `timestamp.json` at `path` exists, parses, and its
-/// `signed.expires` (RFC 3339) lies in the future.
-///
-/// This covers the sigstore-go JSON cache layout, where the top-level
-/// metadata files (`root.json`, `snapshot.json`, `targets.json`,
-/// `timestamp.json`) sit directly in the cache root next to `targets/`.
-/// Timestamp metadata carries the shortest validity window, so an expired
-/// one means cosign will refresh the store through the same locked path as
-/// a cold init. No signature verification here — this is a freshness
-/// heuristic, not a trust decision (cosign re-verifies).
-fn timestamp_is_fresh(path: &Path) -> bool {
-    let Ok(raw) = std::fs::read(path) else {
-        return false;
-    };
-    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&raw) else {
-        return false;
-    };
-    let Some(expires) = doc.pointer("/signed/expires").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    let Ok(expires) = chrono::DateTime::parse_from_rfc3339(expires) else {
-        return false;
-    };
-    expires > chrono::Utc::now()
 }
 
 /// RAII exclusive advisory lock on the TUF cache's init sentinel.
@@ -284,166 +214,6 @@ mod tests {
             tuf_cache_dir(&blank, &process),
             Some(Path::new("/home/u").join(".sigstore").join("root"))
         );
-    }
-
-    /// Write a `timestamp.json` whose `signed.expires` is `offset` from now.
-    fn write_timestamp(cache: &Path, offset: chrono::Duration) {
-        let expires = (chrono::Utc::now() + offset).to_rfc3339();
-        std::fs::write(
-            cache.join("timestamp.json"),
-            format!(r#"{{"signed":{{"expires":"{expires}"}}}}"#),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn warm_detection_requires_root_json_and_nonempty_targets() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-
-        assert!(!tuf_cache_is_warm(&cache), "missing dir is cold");
-
-        std::fs::create_dir_all(&cache).unwrap();
-        assert!(!tuf_cache_is_warm(&cache), "empty dir is cold");
-
-        std::fs::write(cache.join("root.json"), "{}").unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "root.json without targets is cold"
-        );
-
-        std::fs::create_dir(cache.join("targets")).unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "empty targets dir is still cold (no fetched target)"
-        );
-
-        std::fs::write(cache.join("targets").join("rekor.pub"), "key").unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "populated cache without timestamp.json is cold"
-        );
-
-        write_timestamp(&cache, chrono::Duration::hours(1));
-        assert!(
-            tuf_cache_is_warm(&cache),
-            "root.json + fetched target + unexpired timestamp is warm"
-        );
-    }
-
-    #[test]
-    fn warm_detection_rejects_expired_or_unparseable_timestamp() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-        std::fs::create_dir_all(cache.join("targets")).unwrap();
-        std::fs::write(cache.join("root.json"), "{}").unwrap();
-        std::fs::write(cache.join("targets").join("rekor.pub"), "key").unwrap();
-
-        write_timestamp(&cache, chrono::Duration::hours(-1));
-        assert!(!tuf_cache_is_warm(&cache), "expired timestamp is cold");
-
-        std::fs::write(cache.join("timestamp.json"), "not json").unwrap();
-        assert!(!tuf_cache_is_warm(&cache), "unparseable timestamp is cold");
-
-        std::fs::write(cache.join("timestamp.json"), r#"{"signed":{}}"#).unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "timestamp without signed.expires is cold"
-        );
-
-        std::fs::write(
-            cache.join("timestamp.json"),
-            r#"{"signed":{"expires":"tomorrow-ish"}}"#,
-        )
-        .unwrap();
-        assert!(!tuf_cache_is_warm(&cache), "non-RFC3339 expires is cold");
-
-        write_timestamp(&cache, chrono::Duration::hours(1));
-        assert!(tuf_cache_is_warm(&cache), "fresh timestamp restores warm");
-    }
-
-    /// Lay down cosign v2.4.3's legacy go-tuf store shape: `remote.json`,
-    /// a fetched target, and a LevelDB-ish `tuf.db/` with CURRENT + MANIFEST.
-    fn populate_legacy_cache(cache: &Path) {
-        std::fs::create_dir_all(cache.join("targets")).unwrap();
-        std::fs::create_dir_all(cache.join("tuf.db")).unwrap();
-        std::fs::write(cache.join("remote.json"), "{}").unwrap();
-        std::fs::write(cache.join("targets").join("fulcio.crt.pem"), "cert").unwrap();
-        std::fs::write(cache.join("tuf.db").join("CURRENT"), "MANIFEST-000001\n").unwrap();
-        std::fs::write(cache.join("tuf.db").join("MANIFEST-000001"), "m").unwrap();
-    }
-
-    /// Backdate every entry directly under `tuf.db/` by `hours`.
-    fn age_tuf_db(cache: &Path, hours: u64) {
-        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 3600);
-        for entry in std::fs::read_dir(cache.join("tuf.db")).unwrap() {
-            let file = File::options()
-                .write(true)
-                .open(entry.unwrap().path())
-                .unwrap();
-            file.set_modified(stale).unwrap();
-        }
-    }
-
-    #[test]
-    fn warm_detection_accepts_fresh_legacy_tuf_db_layout() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-        populate_legacy_cache(&cache);
-        assert!(
-            tuf_cache_is_warm(&cache),
-            "tuf.db/CURRENT + fresh mtimes + fetched target is warm"
-        );
-    }
-
-    #[test]
-    fn warm_detection_rejects_stale_legacy_tuf_db() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-        populate_legacy_cache(&cache);
-        age_tuf_db(&cache, 25);
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "tuf.db older than 24h is cold (metadata may be expired)"
-        );
-
-        // One fresh entry (a refresh touched the db) restores warm.
-        std::fs::write(cache.join("tuf.db").join("000002.ldb"), "l").unwrap();
-        assert!(
-            tuf_cache_is_warm(&cache),
-            "newest tuf.db entry within 24h is warm again"
-        );
-    }
-
-    #[test]
-    fn warm_detection_rejects_incomplete_legacy_layout() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-        populate_legacy_cache(&cache);
-
-        std::fs::remove_file(cache.join("targets").join("fulcio.crt.pem")).unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "legacy layout with empty targets is cold"
-        );
-        std::fs::write(cache.join("targets").join("fulcio.crt.pem"), "cert").unwrap();
-
-        std::fs::remove_file(cache.join("tuf.db").join("CURRENT")).unwrap();
-        assert!(
-            !tuf_cache_is_warm(&cache),
-            "tuf.db without CURRENT is cold (LevelDB never finished a write)"
-        );
-    }
-
-    #[test]
-    fn warm_detection_rejects_root_json_directory() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache = tmp.path().join("root");
-        std::fs::create_dir_all(cache.join("root.json")).unwrap();
-        std::fs::create_dir_all(cache.join("targets")).unwrap();
-        std::fs::write(cache.join("targets").join("t"), "x").unwrap();
-        write_timestamp(&cache, chrono::Duration::hours(1));
-        assert!(!tuf_cache_is_warm(&cache), "root.json must be a file");
     }
 
     #[test]

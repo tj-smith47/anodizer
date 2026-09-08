@@ -41,8 +41,8 @@ fn qualify_basename_with_target(name: &str, target: &str) -> String {
 /// [`anodizer_core::parallel::run_parallel_chunks`], bounded by
 /// `ctx.options.parallelism` like every other subprocess-per-job stage, since
 /// each signing invocation is an independent external process. Keyless cosign
-/// fan-outs sign their first artifact alone before parallelizing (see the
-/// TUF warm-up below).
+/// is the exception: its invocations run one at a time regardless of
+/// `--parallelism` (see the host TUF lock below).
 pub(crate) fn process_sign_configs(
     sign_configs: &[SignConfig],
     ctx: &mut Context,
@@ -641,11 +641,38 @@ pub(crate) fn process_sign_configs(
             });
         }
 
+        // Keyless cosign contends a host-exclusive sigstore TUF trust store:
+        // two concurrent invocations on one host collide and the loser exits
+        // with `creating cached local store: resource temporarily
+        // unavailable`, whether or not the store is already populated. So a
+        // keyless config runs one invocation at a time and holds the
+        // host-level advisory lock for its whole run, which also queues a
+        // second anodizer process behind this one instead of racing it.
+        // Keyed cosign (`--key=`) never contacts Fulcio/Rekor and keeps the
+        // full parallelism.
+        let keyless = is_keyless_cosign(&cmd, &args) && !sign_jobs.is_empty();
+        let tuf_init_lock = if keyless {
+            log.verbose(&format!(
+                "keyless cosign: serializing {} invocation(s) — concurrent invocations \
+                 collide on the sigstore TUF trust store",
+                sign_jobs.len()
+            ));
+            // The cache dir must be resolved from the env the cosign CHILD
+            // sees: the sign config's rendered `env:` entries can set
+            // TUF_ROOT (or HOME) and shadow the process env, and job 0
+            // carries that rendered env.
+            let overlay: &[(String, String)] = sign_jobs[0].env.as_deref().unwrap_or(&[]);
+            crate::tuf_cache::keyless_cosign_host_lock(overlay, ctx.env_source(), log)
+        } else {
+            None
+        };
+        let effective_parallelism = if keyless { 1 } else { parallelism };
+
         if !sign_jobs.is_empty() {
             log.status(&format!(
                 "signing {} artifacts with parallelism={}",
                 sign_jobs.len(),
-                parallelism
+                effective_parallelism
             ));
         }
 
@@ -672,10 +699,9 @@ pub(crate) fn process_sign_configs(
             } else {
                 execute_sign_job(job, &thread_log)?;
             }
-            // Verification runs after the sign in the same worker, so the
-            // keyless TUF warm-up below covers it too: the first job's
-            // verify completes serially before the parallel fan-out. A bad
-            // signature is a deterministic failure — `retry_transient`
+            // Verification runs after the sign in the same worker, so a
+            // keyless config's host TUF lock covers its cosign verify too.
+            // A bad signature is a deterministic failure — `retry_transient`
             // fast-fails it via `is_deterministic_sign_failure` — while the
             // ladder still absorbs the transient network/TUF class a
             // tlog-checking cosign verify can hit.
@@ -693,78 +719,9 @@ pub(crate) fn process_sign_configs(
             }
             Ok(())
         };
-        // Keyless cosign lazily initializes the TUF trust root (default
-        // `~/.sigstore/root`, `TUF_ROOT` override) under an exclusive flock
-        // on its FIRST run per host. Fanning out onto a cold cache makes
-        // every first-wave worker race that lock and the losers die with
-        // `creating cached local store: resource temporarily unavailable`
-        // (flock EAGAIN). On a cold cache: hold a host-level advisory lock —
-        // so a second anodizer process on the same host can't drive a
-        // parallel cold init — and sign one artifact alone to warm the
-        // cache, then parallelize the rest. On a warm cache the init is a
-        // no-op, so the serialized first sign is skipped.
-        //
-        // The lock is taken BEFORE the warm probe: an unlocked probe can
-        // observe a cache another process is mid-initializing (root.json and
-        // a first target already written, the rest in flight under cosign's
-        // internal flock), classify it warm, and fan out straight into the
-        // race. Acquiring first means a warm verdict is only reached after
-        // any in-flight init finished; an uncontended acquire costs
-        // microseconds, so warm runs barely pay for it.
-        let mut tuf_init_lock: Option<crate::tuf_cache::TufInitLock> = None;
-        let parallel_jobs = if is_keyless_cosign(&cmd, &args) && !sign_jobs.is_empty() {
-            // The cache dir must be resolved from the env the cosign CHILD
-            // sees: the sign config's rendered `env:` entries can set
-            // TUF_ROOT (or HOME) and shadow the process env. Job 0 carries
-            // that rendered env, and it is also the invocation that would
-            // drive the init.
-            let overlay: &[(String, String)] = sign_jobs[0].env.as_deref().unwrap_or(&[]);
-            let cache_dir = crate::tuf_cache::tuf_cache_dir(overlay, ctx.env_source());
-            if let Some(dir) = cache_dir.as_deref() {
-                match crate::tuf_cache::TufInitLock::acquire(dir) {
-                    Ok(lock) => tuf_init_lock = Some(lock),
-                    // Signing must not fail on lock plumbing: degrade to the
-                    // process-local serialization below (and a best-effort
-                    // unlocked warm probe).
-                    Err(err) => log.verbose(&format!(
-                        "could not acquire host-level TUF init lock ({err:#}); \
-                         falling back to process-local serialization only"
-                    )),
-                }
-            }
-            if cache_dir
-                .as_deref()
-                .is_some_and(crate::tuf_cache::tuf_cache_is_warm)
-            {
-                // Warm needs no init: release immediately so other processes
-                // stop queueing behind this run's fan-out.
-                tuf_init_lock = None;
-                log.verbose(
-                    "keyless cosign: sigstore TUF trust root already cached; \
-                     skipping serialized warm-up",
-                );
-                &sign_jobs[..]
-            } else if sign_jobs.len() > 1 {
-                log.verbose(
-                    "keyless cosign: signing first artifact serially to initialize \
-                     the sigstore TUF trust root before parallel fan-out",
-                );
-                run_job(&sign_jobs[0])?;
-                // Init is complete after the first sign; release so other
-                // processes stop queueing behind the fan-out.
-                tuf_init_lock = None;
-                &sign_jobs[1..]
-            } else {
-                // A single job IS the initializing invocation; the lock is
-                // held across the parallel runner (one job) and dropped after.
-                &sign_jobs[..]
-            }
-        } else {
-            &sign_jobs[..]
-        };
         anodizer_core::parallel::run_parallel_chunks(
-            parallel_jobs,
-            parallelism,
+            &sign_jobs,
+            effective_parallelism,
             stage_name,
             log,
             run_job,
