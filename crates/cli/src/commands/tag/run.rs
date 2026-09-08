@@ -136,8 +136,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         && matches!(repo_shape, RepoShape::Single)
         && let [only] = loaded_config.crate_universe().as_slice()
     {
-        cfg.tag_prefix =
-            git::per_crate_tag_prefix(&only.name, only.tag_template.as_deref().unwrap_or(""));
+        cfg.tag_prefix = git::per_crate_tag_prefix(&only.name, &only.tag_family_template());
     }
 
     // custom_tag is incompatible with per-crate mode: the whole point of a
