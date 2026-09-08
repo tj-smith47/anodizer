@@ -32,6 +32,8 @@ set -euo pipefail
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
 # Candidate files: any source under crates/ that spawns git or node. The awk
 # pass then decides per-file whether each call site is in test context.
 mapfile -t FILES < <(
@@ -48,14 +50,13 @@ fi
 
 # Per-file awk scan. State resets at FNR==1 (awk carries vars across files).
 #
-# Test-region detection mirrors audit-test-isolation.sh: a file's production
-# prologue precedes its `#[cfg(test)]` / `mod tests {` boundary; everything from
-# that boundary to EOF is test code. A `tests.rs` file or a `crates/*/tests/**`
-# integration file is test code in its entirety (in_test forced on at FNR==1).
-# `in_test` latches on and never resets: a production spawn placed *below* a
-# test mod would false-positive, but that errs safe (a loud, fixable commit
-# block) — brace-depth tracking over Rust raw strings could miscount and let a
-# real test spawn slip through, which is the failure mode that must never occur.
+# Test-region detection is the shared lib's (lib/test-regions.awk), the same
+# one audit-test-isolation.sh and the god-file scanner use: a `tests.rs` or a
+# `crates/*/tests/**` integration file is test code in its entirety, and inside
+# any other file a `#[cfg(test)]` item is test code from the attribute to the
+# close of its brace block — counted on `strip_code` output, so a brace inside
+# a raw string cannot end the region early. Production code that FOLLOWS an
+# inline test module is production again.
 #
 # A test-context `Command::new("git"|"node")` PASSES iff:
 #   - it is inside an `output_with_spawn_retry(` closure — tracked by a small
@@ -64,20 +65,16 @@ fi
 #   - a `// spawn-retry-ok: <non-space>` marker sits on its line or the line
 #     directly above it.
 report() {
-    awk '
-        function is_test_file(f) {
-            return (f ~ /\/tests\.rs$/) || (f ~ /\/crates\/[^/]+\/tests\//)
-        }
-
+    awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
         FNR == 1 {
-            in_test = is_test_file(FILENAME)
+            whole_file_is_test = is_test_file(FILENAME)
             prev_ok = 0; this_ok = 0
             retry_window = 0
-            pending_cfg_test = 0
         }
 
         {
             line = $0
+            in_test = (whole_file_is_test || in_test_region)
             is_comment = (line ~ /^[[:space:]]*\/\//) ? 1 : 0
             # A `// spawn-retry-ok:` marker arms an exemption that stays live
             # across the contiguous comment block directly above the spawn (a
@@ -91,23 +88,6 @@ report() {
             if (line ~ /output_with_spawn_retry[[:space:]]*\(/ || line ~ /\|\|[[:space:]]*\{/) {
                 if (retry_window < 8) retry_window = 8
             }
-        }
-
-        # Enter test context only when a `#[cfg(test)]` attribute introduces an
-        # INLINE module/item (the next code line opens a `{` block), NOT an
-        # external `mod tests;` declaration (its body is a separate tests.rs,
-        # already covered by the is_test_file path). The attribute and the item
-        # sit on adjacent lines, so a one-line `pending_cfg_test` latch bridges
-        # them; an intervening `mod NAME;` cancels it (external module).
-        /#\[cfg\(test\)\]/ {
-            if (line ~ /\{[[:space:]]*$/) in_test = 1   # same-line `#[cfg(test)] mod x {`
-            else if (line ~ /;[[:space:]]*$/) { }       # same-line external decl — ignore
-            else pending_cfg_test = 1
-            next
-        }
-        pending_cfg_test {
-            if (line ~ /\{[[:space:]]*$/) in_test = 1    # inline block follows the attr
-            pending_cfg_test = 0
         }
 
         /Command::new\("(git|node)"\)/ {
@@ -131,7 +111,7 @@ report() {
         { if (retry_window > 0) retry_window-- }
 
         END { exit bad ? 2 : 0 }
-    ' "$@"
+AWK
 }
 
 violations="$(report "${FILES[@]}" || true)"

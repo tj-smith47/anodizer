@@ -20,7 +20,7 @@
 # Not scanned: Cargo test targets (crates/*/tests/**), sibling test files
 # (`tests.rs`, `*_tests.rs`), test-only gated items — an inline
 # `#[cfg(test)] mod … { … }` body through its closing brace, with scanning
-# resuming after it (lib/skip-test-regions.awk) — and comment lines.
+# resuming after it (lib/test-regions.awk) — and comment lines.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -45,7 +45,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 violations="$(
-awk -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/skip-test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+awk -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip_test_regions=1 -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
     BEGIN {
         n = split(allow, keys, "\n")
         for (i = 1; i <= n; i++) ok[keys[i]] = 1
