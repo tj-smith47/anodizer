@@ -19,7 +19,7 @@ pub(crate) use workspace_bump::*;
 #[cfg(test)]
 mod tests;
 
-use anodizer_core::config::{CrateConfig, GitConfig, TagConfig};
+use anodizer_core::config::{Config, CrateConfig, GitConfig, TagConfig};
 use anodizer_core::git;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -134,7 +134,9 @@ pub(crate) struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    fn from_tag_config(cfg: &TagConfig, opts: &TagOpts) -> Self {
+    fn from_tag_config(config: &Config, opts: &TagOpts) -> Self {
+        let default_tag = TagConfig::default();
+        let cfg = config.tag.as_ref().unwrap_or(&default_tag);
         ResolvedConfig {
             default_bump: opts
                 .default_bump
@@ -143,10 +145,7 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| "none".to_string()),
             bump_minor_pre_major: cfg.bump_minor_pre_major.unwrap_or(false),
             bump_patch_for_minor_pre_major: cfg.bump_patch_for_minor_pre_major.unwrap_or(false),
-            tag_prefix: cfg
-                .tag_prefix
-                .clone()
-                .unwrap_or_else(|| anodizer_core::config::Config::DEFAULT_TAG_PREFIX.to_string()),
+            tag_prefix: config.repo_tag_prefix().to_string(),
             release_branches: cfg.release_branches.clone().unwrap_or_default(),
             custom_tag: opts.custom_tag.clone().or_else(|| cfg.custom_tag.clone()),
             tag_context: cfg

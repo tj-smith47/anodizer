@@ -369,7 +369,13 @@ fn cfg_with_pre_major(minor_pre_major: bool, patch_for_minor: bool) -> ResolvedC
         bump_patch_for_minor_pre_major: Some(patch_for_minor),
         ..Default::default()
     };
-    ResolvedConfig::from_tag_config(&tag_cfg, &push_opts(false, false))
+    ResolvedConfig::from_tag_config(
+        &Config {
+            tag: Some(tag_cfg),
+            ..Default::default()
+        },
+        &push_opts(false, false),
+    )
 }
 
 #[test]
@@ -489,7 +495,13 @@ fn detect_bump_demoted_honors_custom_tokens() {
         bump_minor_pre_major: Some(true),
         ..Default::default()
     };
-    let cfg = ResolvedConfig::from_tag_config(&tag_cfg, &push_opts(false, false));
+    let cfg = ResolvedConfig::from_tag_config(
+        &Config {
+            tag: Some(tag_cfg),
+            ..Default::default()
+        },
+        &push_opts(false, false),
+    );
     // Custom #breaking token drives Major and is not demoted.
     assert_eq!(
         detect_bump_demoted(&["rework #breaking".to_string()], &cfg, Some("v0.5.0")),
@@ -599,7 +611,13 @@ fn test_resolved_config_defaults() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
+    let resolved = ResolvedConfig::from_tag_config(
+        &Config {
+            tag: Some(cfg),
+            ..Default::default()
+        },
+        &opts,
+    );
     assert_eq!(resolved.default_bump, "none");
     assert_eq!(resolved.tag_prefix, "v");
     assert_eq!(resolved.tag_context, "repo");
@@ -641,7 +659,13 @@ fn test_resolved_config_cli_overrides() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
+    let resolved = ResolvedConfig::from_tag_config(
+        &Config {
+            tag: Some(cfg),
+            ..Default::default()
+        },
+        &opts,
+    );
     assert_eq!(resolved.default_bump, "major");
     assert_eq!(resolved.custom_tag, Some("v9.9.9".to_string()));
 }
@@ -694,7 +718,13 @@ fn test_resolved_config_full_config() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
+    let resolved = ResolvedConfig::from_tag_config(
+        &Config {
+            tag: Some(cfg),
+            ..Default::default()
+        },
+        &opts,
+    );
     assert_eq!(resolved.default_bump, "patch");
     assert_eq!(resolved.tag_prefix, "release-v");
     assert_eq!(resolved.release_branches.len(), 2);

@@ -25,6 +25,13 @@
 # The prefix form of the accessor is `git::per_crate_tag_prefix(name, &family)`;
 # `Config::repo_tag_prefix()` is the repo-level prefix. Anything else that
 # answers "family for a crate" is the defect this guard exists to catch.
+#
+# Second rule, same shape: the repo-level prefix is composed ONCE, in
+# `Config::repo_tag_prefix()` ("tag.tag_prefix else v"). Any other
+# `unwrap_or("v")` / `unwrap_or_else(|| "v")` / `DEFAULT_TAG_PREFIX` fallback
+# in production code is a second copy of that composition and fails unless its
+# enclosing function is listed in TAG_PREFIX_RAW_OK or the line carries the
+# same `// tag-family-ok: <why>` marker.
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -44,23 +51,33 @@ TAG_FAMILY_RAW_OK=(
     "crates/stage-release/src/github/spec.rs::describe — NightlyRetentionFamily's own &str field, not CrateConfig"
 )
 
+# `<file>::<fn>` — the only functions allowed to spell "<prefix> else v".
+TAG_PREFIX_RAW_OK=(
+    "crates/core/src/config/accessors.rs::repo_tag_prefix — the composition itself"
+    "crates/core/src/config/accessors.rs::derived_repo_tag_prefix — the fold's lockstep rung mints the v family from the same constant"
+    "crates/cli/src/commands/tag/repo_shape.rs::check_shared_prefix_version_coherence — message-only: the DECLARED shared prefix else v, a different question from the repo prefix"
+)
+
 allow_keys="$(printf '%s\n' "${TAG_FAMILY_RAW_OK[@]}" | sed 's/ — .*$//')"
+prefix_keys="$(printf '%s\n' "${TAG_PREFIX_RAW_OK[@]}" | sed 's/ — .*$//')"
 
 mapfile -t FILES < <(
-    grep -rlE '\.tag_template' crates/*/src --include='*.rs' 2>/dev/null \
+    grep -rlE '\.tag_template|DEFAULT_TAG_PREFIX|unwrap_or(_else)?\((\|\| *)?"v"' crates/*/src --include='*.rs' 2>/dev/null \
         | grep -vE '(/tests/|/tests\.rs$|_tests\.rs$)' \
         || true
 )
 if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo "audit-tag-family: no raw tag_template reads found."
+    echo "audit-tag-family: no raw tag_template reads or tag-prefix compositions found."
     exit 0
 fi
 
 violations="$(
-awk -v allow="$allow_keys" '
+awk -v allow="$allow_keys" -v pallow="$prefix_keys" '
     BEGIN {
         n = split(allow, keys, "\n")
         for (i = 1; i <= n; i++) ok[keys[i]] = 1
+        n = split(pallow, keys, "\n")
+        for (i = 1; i <= n; i++) pok[keys[i]] = 1
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); return s }
 
@@ -89,6 +106,13 @@ awk -v allow="$allow_keys" '
             printf("%s:%d (fn %s): %s\n", FILENAME, FNR, fname, trim($0))
     }
 
+    # The constant declaration is the one place the literal is allowed to live.
+    (/DEFAULT_TAG_PREFIX/ || /unwrap_or(_else)?\((\|\| *)?"v"/) && $0 !~ /^[[:space:]]*\/\// && $0 !~ /const DEFAULT_TAG_PREFIX/ {
+        key = FILENAME "::" fname
+        if (!(key in pok) && $0 !~ /tag-family-ok:/ && prev !~ /tag-family-ok:/)
+            printf("%s:%d (fn %s): [prefix composition] %s\n", FILENAME, FNR, fname, trim($0))
+    }
+
     { prev = $0 }
 ' "${FILES[@]}"
 )"
@@ -98,19 +122,22 @@ if [[ -n "$violations" ]]; then
     echo
     echo "$violations"
     echo
-    echo "These lines read CrateConfig.tag_template directly. The field is an Option"
-    echo "that two config-load folds fill; a raw read supplies its own fallback and"
-    echo "puts this surface in a different tag family from every other one."
+    echo "These lines read CrateConfig.tag_template directly, or re-compose the"
+    echo "repo tag prefix (\"tag.tag_prefix else v\", marked [prefix composition])."
+    echo "The field is an Option that two config-load folds fill; a raw read supplies"
+    echo "its own fallback and puts this surface in a different tag family from every"
+    echo "other one. A second prefix composition drifts the same way."
     echo
     echo "Fix: read crate_cfg.tag_family_template() (or"
     echo "git::per_crate_tag_prefix(&name, &crate_cfg.tag_family_template()) for the"
-    echo "prefix form). A read that must see the WRITTEN value — the accessor, a fold"
-    echo "that writes the field, shape detection, config validation — is listed in"
-    echo "TAG_FAMILY_RAW_OK in .claude/scripts/audit-tag-family.sh by file::fn; a"
-    echo "one-off exemption tags the line, or the line directly above it, with"
+    echo "prefix form) and config.repo_tag_prefix() for the repo-level prefix. A read"
+    echo "that must see the WRITTEN value — the accessor, a fold that writes the"
+    echo "field, shape detection, config validation — is listed in TAG_FAMILY_RAW_OK"
+    echo "(or TAG_PREFIX_RAW_OK) in .claude/scripts/audit-tag-family.sh by file::fn;"
+    echo "a one-off exemption tags the line, or the line directly above it, with"
     echo "  // tag-family-ok: <why>"
     echo "See .claude/rules/tag-family-ssot.md."
     exit 1
 fi
 
-echo "audit-tag-family: every production tag-family read goes through the accessor."
+echo "audit-tag-family: every production tag-family read goes through the accessor; the repo tag prefix is composed once."
