@@ -6053,6 +6053,8 @@ mod cosign_tuf_race {
             .sealed_env()
             .build();
         ctx.config.docker_signs = Some(docker_signs);
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
             name: String::new(),
@@ -6071,6 +6073,17 @@ mod cosign_tuf_race {
             "a per-image env entry must not discard the TUF_ROOT entry that \
              locates the cache"
         );
+        assert!(
+            capture.all_messages().iter().any(|(level, msg)| {
+                *level == anodizer_core::log::LogLevel::Verbose
+                    && msg.contains(
+                        "docker sign: env entry 'FOO' is only renderable per image; \
+                         not used to locate the TUF cache",
+                    )
+            }),
+            "the dropped entry must be named, not silently discarded: {:?}",
+            capture.all_messages()
+        );
     }
 
     /// A second holder of the host lock must produce ONE default-visible
@@ -6078,21 +6091,30 @@ mod cosign_tuf_race {
     /// the run must still complete once the holder releases.
     #[test]
     fn contended_host_lock_reports_the_wait() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        let stub = write_events_stub(tmp.path());
+        // Each invocation records whether the holder had already released
+        // when it started: only the stub's own view proves the stage waited.
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "if [ -f \"$STUB_STATE/holder-released\" ]; then echo yes; else echo no; fi \
+                 >> \"$STUB_STATE/holder\"\n",
+                "case \"$3\" in /*) ;; *) echo \"stub: refusing non-absolute output '$3'\" >&2; exit 3;; esac\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        );
         let cache = tmp.path().join("tuf-root");
 
         let lock = crate::tuf_cache::TufInitLock::acquire(&cache).expect("holder acquire");
-        let released = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&released);
+        let marker = state.join("holder-released");
         let holder = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            flag.store(true, Ordering::SeqCst);
+            std::fs::write(&marker, "released").expect("write release marker");
             drop(lock);
         });
 
@@ -6109,9 +6131,11 @@ mod cosign_tuf_race {
         SignStage.run(&mut ctx).expect("all stub signs succeed");
         holder.join().expect("holder thread");
 
-        assert!(
-            released.load(Ordering::SeqCst),
-            "the stage must not have signed before the holder released"
+        let record = std::fs::read_to_string(state.join("holder")).expect("stub holder record");
+        assert_eq!(
+            record.lines().collect::<Vec<_>>(),
+            ["yes", "yes"],
+            "every invocation must have started after the holder released"
         );
         let waits = capture
             .all_messages()
@@ -6265,11 +6289,17 @@ mod cosign_tuf_race {
             ".spawn()",
         ];
 
-        let mut checked = 0usize;
-        for source in rust_sources(std::path::Path::new(concat!(
+        let sources = rust_sources(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src"
-        ))) {
+        )));
+        assert!(
+            !sources.iter().any(|p| p.ends_with("tests.rs")),
+            "the walk must exclude test sources by name: {sources:?}"
+        );
+
+        let mut checked = 0usize;
+        for source in sources {
             let text = std::fs::read_to_string(&source).expect("read source");
             // Test modules stub cosign rather than spawning it for real.
             let production = text.split("\n#[cfg(").next().expect("production half");
@@ -6297,14 +6327,24 @@ mod cosign_tuf_race {
         );
     }
 
-    /// Every `.rs` file under `dir`, recursively.
+    /// Every production `.rs` file under `dir`, recursively.
+    ///
+    /// Test sources are excluded by name — a sibling `tests.rs` and anything
+    /// under a `tests/` directory — rather than by hoping their content
+    /// splits on `#[cfg(`: test modules stub cosign instead of spawning it,
+    /// so a stub's argv would otherwise read as an unlocked spawn site.
     fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).expect("read src dir") {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
                 found.extend(rust_sources(&path));
-            } else if path.extension().is_some_and(|e| e == "rs") {
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path.file_name().is_some_and(|n| n == "tests.rs")
+            {
                 found.push(path);
             }
         }
