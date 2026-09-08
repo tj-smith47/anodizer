@@ -6140,6 +6140,54 @@ mod archive_name_guard {
     }
 
     #[test]
+    fn meta_archive_under_binary_format_produces_nothing() {
+        // A meta archive holds only extra files, and `binary` carries none, so
+        // the pair produces no artifact at all — GoReleaser's archive pipe
+        // reaches the same place, iterating binaries the meta entry does not
+        // have. Pinned because the outcome is an empty dist/, not an error.
+        let tmp = TempDir::new().unwrap();
+        let mut c = cfg("default", None, &["binary"]);
+        c.meta = Some(true);
+        c.files = Some(vec![anodizer_core::config::ArchiveFileSpec::Glob(
+            tmp.path()
+                .join("root")
+                .join("LICENSE")
+                .to_string_lossy()
+                .to_string(),
+        )]);
+        let mut ctx = build_ctx(
+            &tmp,
+            &["myapp"],
+            &[c],
+            &["x86_64-unknown-linux-gnu"],
+            false,
+            false,
+        );
+        fs::write(tmp.path().join("root").join("LICENSE"), b"MIT").unwrap();
+        let dist = ctx.config.dist.clone();
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        assert!(
+            ctx.artifacts
+                .by_kind(ArtifactKind::UploadableBinary)
+                .is_empty()
+        );
+        assert!(ctx.artifacts.by_kind(ArtifactKind::Archive).is_empty());
+        let left_in_dist: Vec<String> = fs::read_dir(&dist)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            left_in_dist.is_empty(),
+            "a meta binary-format entry must leave dist/ untouched, found {left_in_dist:?}"
+        );
+    }
+
+    #[test]
     fn binary_format_collision_across_targets_bails() {
         // A custom `name_template` carrying neither `{{ Os }}` nor
         // `{{ Arch }}` renders one dist/ path for every target, so the second
