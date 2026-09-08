@@ -110,3 +110,70 @@ pub(crate) fn check_id(id: Option<&str>) -> anyhow::Result<()> {
         None => anyhow::bail!("schema is missing a `$id` (SchemaStore requires an http(s) `$id`)"),
     }
 }
+
+/// The `format` names ajv-formats registers, i.e. every format SchemaStore's
+/// `validate` job resolves without a per-file `unknownFormat` declaration.
+/// Source: `ajv-formats`' `src/formats.ts` (the `fullFormats` /
+/// `fastFormats` key set plus the `int32`/`int64`/`float`/`double` numeric
+/// formats).
+pub(crate) const AJV_KNOWN_FORMATS: &[&str] = &[
+    "date",
+    "time",
+    "date-time",
+    "iso-time",
+    "iso-date-time",
+    "duration",
+    "uri",
+    "uri-reference",
+    "uri-template",
+    "url",
+    "email",
+    "hostname",
+    "ipv4",
+    "ipv6",
+    "regex",
+    "uuid",
+    "json-pointer",
+    "json-pointer-uri-fragment",
+    "relative-json-pointer",
+    "byte",
+    "int32",
+    "int64",
+    "float",
+    "double",
+    "password",
+    "binary",
+];
+
+/// Every `"format"` value anywhere in `schema` that [`AJV_KNOWN_FORMATS`] does
+/// not list, sorted and deduplicated.
+///
+/// The walk covers the whole JSON tree because a schema may declare a format at
+/// any depth (`$defs`, `properties`, `items`, `oneOf`, …), and SchemaStore's
+/// validator reports every one it cannot resolve.
+pub(crate) fn unknown_formats(schema: &serde_json::Value) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    collect_unknown_formats(schema, &mut found);
+    found.into_iter().collect()
+}
+
+fn collect_unknown_formats(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(f) = m.get("format").and_then(serde_json::Value::as_str)
+                && !AJV_KNOWN_FORMATS.contains(&f)
+            {
+                out.insert(f.to_string());
+            }
+            for child in m.values() {
+                collect_unknown_formats(child, out);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for child in a {
+                collect_unknown_formats(child, out);
+            }
+        }
+        _ => {}
+    }
+}

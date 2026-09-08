@@ -1353,7 +1353,8 @@ fn upstream_versions_returns_err_on_malformed_catalog() {
     // catalog; a malformed catalog must surface as `Some(Err)` (which
     // `plan_schema` `?`-propagates) rather than silently dropping the
     // carry-forward and orphaning older versioned files.
-    let got = catalog::upstream_versions_by_file_match("{ not json", &["cfgd.yaml".to_string()]);
+    let got =
+        catalog::upstream_versions_for("{ not json", "cfgd-config", &["cfgd.yaml".to_string()]);
     match got {
         Some(Err(_)) => {}
         other => panic!("malformed catalog must yield Some(Err); got {other:?}"),
@@ -1366,7 +1367,7 @@ fn upstream_versions_none_when_entry_absent_or_unversioned() {
     // Entry absent ⇒ None (no prior versions to carry).
     let empty = catalog_with(&[]);
     assert!(
-        catalog::upstream_versions_by_file_match(&empty, &fm).is_none(),
+        catalog::upstream_versions_for(&empty, "cfgd-config", &fm).is_none(),
         "absent entry must yield None, not an error"
     );
     // Entry present but with no `versions` map ⇒ None.
@@ -1377,7 +1378,7 @@ fn upstream_versions_none_when_entry_absent_or_unversioned() {
         "url": "https://www.schemastore.org/cfgd-config.json",
     })]);
     assert!(
-        catalog::upstream_versions_by_file_match(&no_versions, &fm).is_none(),
+        catalog::upstream_versions_for(&no_versions, "cfgd-config", &fm).is_none(),
         "an entry without a versions map must yield None"
     );
 }
@@ -1873,5 +1874,191 @@ fn write_vendor_schema_propagates_allowlist_error_on_missing_array() {
         err.to_string().contains("allowlist high-dialect schema")
             || err.to_string().contains("cfgd-config.json"),
         "expected the allowlist-failure context naming the key; got {err}"
+    );
+}
+
+// --- per-file validator options (`schema-validation.jsonc` `options`) ---
+//
+// The fixtures model cfgd's real upstream state: a `cfgd-config-0.5.0.json`
+// options block written by the previous release's PR, and a schema whose
+// `uint32` format SchemaStore's ajv does not know.
+
+/// A draft-07 schema using a format ajv-formats does not register, so it needs
+/// an `unknownFormat` declaration or SchemaStore's `validate` fails it.
+const UINT32_SCHEMA: &str = r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"object","properties":{"port":{"type":"integer","format":"uint32"}}}"#;
+
+/// The upstream allowlist file with the previous release's options block.
+const PRIOR_VALIDATION_JSONC: &str = r#"{
+  // dialect allowlist
+  "highSchemaVersion": [],
+  "options": {
+    "cfgd-config-0.5.0.json": {
+      "unknownFormat": ["uint32"],
+      "unknownKeywords": ["x-taplo"]
+    }
+  }
+}
+"#;
+
+/// An upstream catalog holding the versioned vendor entry as the previous
+/// release left it (one `versions` entry for 0.5.0), so a plan built against it
+/// carries that version forward.
+fn catalog_with_prior_version() -> String {
+    catalog_with(&[serde_json::json!({
+        "name": "cfgd-config",
+        "description": "cfgd machine configuration",
+        "fileMatch": ["cfgd.yaml"],
+        "url": "https://www.schemastore.org/cfgd-config-0.5.0.json",
+        "versions": { "0.5.0": "https://www.schemastore.org/cfgd-config-0.5.0.json" },
+    })])
+}
+
+/// A versioned vendor plan for 0.10.0 whose `versions` map still lists 0.5.0.
+fn versioned_plan_010() -> SchemaPlan {
+    plan_schema(
+        &vendor_entry(),
+        "cfgd machine configuration",
+        true,
+        Some("0.10.0"),
+        Some(&catalog_with_prior_version()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn desired_options_derives_unknown_format_from_the_schema() {
+    let block = desired_options_block(&versioned_plan_010(), UINT32_SCHEMA, None);
+    assert_eq!(
+        block.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"]),
+        "a `uint32` format must be declared for the new versioned file"
+    );
+}
+
+#[test]
+fn desired_options_empty_when_every_format_is_known() {
+    let block = desired_options_block(&versioned_plan_010(), DRAFT07_SCHEMA, None);
+    assert!(
+        block.is_empty(),
+        "a schema with no unknown format needs no options block; got {block:?}"
+    );
+}
+
+#[test]
+fn desired_options_carry_sibling_options_from_the_previous_version() {
+    let block = desired_options_block(
+        &versioned_plan_010(),
+        UINT32_SCHEMA,
+        Some(PRIOR_VALIDATION_JSONC),
+    );
+    assert_eq!(
+        block.get("unknownKeywords").unwrap(),
+        &serde_json::json!(["x-taplo"]),
+        "every non-derived option from the previous version's block carries forward"
+    );
+    assert_eq!(
+        block.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"])
+    );
+}
+
+/// The second release re-keys: the new versioned filename gets its own block
+/// and the previous one is left alone (its file is retained upstream, so
+/// removing its block would leave that file undeclared).
+#[test]
+fn second_release_keys_a_new_block_without_duplicating_the_prior_one() {
+    let plan = versioned_plan_010();
+    let block = desired_options_block(&plan, UINT32_SCHEMA, Some(PRIOR_VALIDATION_JSONC));
+    let name = allowlist_name_for(&plan).unwrap();
+    assert_eq!(name, "cfgd-config-0.10.0.json");
+
+    let out = catalog::upsert_schema_options(PRIOR_VALIDATION_JSONC, &name, &block).unwrap();
+    assert_eq!(
+        out.matches("cfgd-config-0.10.0.json").count(),
+        1,
+        "exactly one block for the new file; got:\n{out}"
+    );
+    assert!(
+        catalog::schema_options_block(&out, "cfgd-config-0.5.0.json").is_some(),
+        "the retained 0.5.0 file keeps its block; got:\n{out}"
+    );
+    // Running the same release again is idempotent.
+    let again = catalog::upsert_schema_options(&out, &name, &block).unwrap();
+    assert_eq!(again, out, "a re-run must not append a second block");
+}
+
+/// The change-decision must not call a vendor schema current while its
+/// `options` block is missing: that is exactly the state whose PR fails
+/// SchemaStore's `validate` with `unknown format "uint32" ignored in schema`.
+#[test]
+fn change_needed_when_the_options_block_is_missing() {
+    let plan = versioned_plan_010();
+    let local = manifest::format_vendor_schema(UINT32_SCHEMA).unwrap();
+    let catalog_json = catalog_with(std::slice::from_ref(&plan.desired_entry));
+
+    let no_options = "{\n  \"highSchemaVersion\": [],\n  \"options\": {}\n}\n";
+    assert!(
+        schema_change_needed(
+            &plan,
+            Some(&local),
+            &RemoteState {
+                catalog_json: &catalog_json,
+                vendor_file: Some(&local),
+                jsonc: Some(no_options),
+            }
+        ),
+        "a matching catalog + file is NOT current while the options block is absent"
+    );
+
+    let block = desired_options_block(&plan, &local, Some(no_options));
+    let with_options =
+        catalog::upsert_schema_options(no_options, &allowlist_name_for(&plan).unwrap(), &block)
+            .unwrap();
+    assert!(
+        !schema_change_needed(
+            &plan,
+            Some(&local),
+            &RemoteState {
+                catalog_json: &catalog_json,
+                vendor_file: Some(&local),
+                jsonc: Some(&with_options),
+            }
+        ),
+        "once the block is written the schema is a certain no-op"
+    );
+}
+
+/// `write_vendor_schema` stages the options block into the cloned tree's
+/// `schema-validation.jsonc` — the seam `run_real` calls — carrying the prior
+/// version's sibling options and preserving the file's comments.
+#[cfg(unix)]
+#[test]
+fn write_vendor_schema_stages_the_options_block() {
+    let clone = tempfile::tempdir().expect("clone");
+    let allow_abs = clone.path().join(DIALECT_ALLOWLIST_PATH);
+    std::fs::create_dir_all(allow_abs.parent().unwrap()).unwrap();
+    std::fs::write(&allow_abs, PRIOR_VALIDATION_JSONC).unwrap();
+
+    let entry = vendor_entry();
+    let plan = versioned_plan_010();
+    let formatted = manifest::format_vendor_schema(UINT32_SCHEMA).unwrap();
+    write_vendor_schema(clone.path(), &entry, &plan, &formatted, &quiet_log())
+        .expect("stage the vendor file and its validator options");
+
+    let staged = std::fs::read_to_string(&allow_abs).unwrap();
+    assert!(
+        staged.contains("// dialect allowlist"),
+        "comments must survive; got:\n{staged}"
+    );
+    let block = catalog::schema_options_block(&staged, "cfgd-config-0.10.0.json")
+        .expect("the new versioned file must get an options block");
+    assert_eq!(
+        block.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"])
+    );
+    assert_eq!(
+        block.get("unknownKeywords").unwrap(),
+        &serde_json::json!(["x-taplo"]),
+        "the previous version's sibling options carry forward"
     );
 }

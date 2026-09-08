@@ -86,6 +86,17 @@ impl JsonScan {
 /// `JsonScan` state machine, so a `[` inside an intervening string or `//`
 /// comment is skipped.
 pub(crate) fn find_array_open_after(text: &str, key: &str) -> anyhow::Result<usize> {
+    find_open_after(text, key, b'[', "an array")
+}
+
+/// Locate the `"<key>"` key and return the byte index of the `{` that opens the
+/// object immediately following it. Comment- and string-aware, like
+/// [`find_array_open_after`].
+pub(crate) fn find_object_open_after(text: &str, key: &str) -> anyhow::Result<usize> {
+    find_open_after(text, key, b'{', "an object")
+}
+
+fn find_open_after(text: &str, key: &str, open_b: u8, what: &str) -> anyhow::Result<usize> {
     let needle = format!("\"{key}\"");
     let key_at = text
         .find(&needle)
@@ -96,11 +107,13 @@ pub(crate) fn find_array_open_after(text: &str, key: &str) -> anyhow::Result<usi
     // quotes do not desync the string-state tracker.
     let resume = key_at + needle.len();
     for (i, &b) in bytes.iter().enumerate().skip(resume) {
-        if let Some(b'[') = scan.step(b) {
+        if let Some(b) = scan.step(b)
+            && b == open_b
+        {
             return Ok(i);
         }
     }
-    anyhow::bail!("`{key}` key is not followed by an array")
+    anyhow::bail!("`{key}` key is not followed by {what}")
 }
 
 /// Locate the `"schemas"` key and return the byte index of its opening `[`.
@@ -116,24 +129,97 @@ pub(crate) fn find_schemas_array_open(catalog: &str) -> anyhow::Result<usize> {
 /// JSONC comment must not affect depth). The closing index is the `]` that
 /// brings the depth back to zero.
 pub(crate) fn find_bracket_close(text: &str, open_bracket_idx: usize) -> anyhow::Result<usize> {
+    find_close(text, open_bracket_idx, b'[', b']')
+}
+
+/// Starting at the `{` at `open_brace_idx`, return the byte index of the `}`
+/// that closes it at depth 0. Comment- and string-aware, like
+/// [`find_bracket_close`].
+pub(crate) fn find_brace_close(text: &str, open_brace_idx: usize) -> anyhow::Result<usize> {
+    find_close(text, open_brace_idx, b'{', b'}')
+}
+
+fn find_close(text: &str, open_idx: usize, open_b: u8, close_b: u8) -> anyhow::Result<usize> {
     let bytes = text.as_bytes();
     let mut scan = JsonScan::new();
     let mut depth = 0i32;
-    for (i, &b) in bytes.iter().enumerate().skip(open_bracket_idx) {
+    for (i, &b) in bytes.iter().enumerate().skip(open_idx) {
         if let Some(s) = scan.step(b) {
-            match s {
-                b'[' => depth += 1,
-                b']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(i);
-                    }
+            if s == open_b {
+                depth += 1;
+            } else if s == close_b {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(i);
                 }
-                _ => {}
             }
         }
     }
-    anyhow::bail!("array opened at byte {open_bracket_idx} is not closed")
+    anyhow::bail!("bracket opened at byte {open_idx} is not closed")
+}
+
+/// Byte span of the `"<key>": <value>` member inside the object whose braces
+/// sit at `open`/`close`, or `None` when the object holds no such member.
+/// `start` is the index of the key's opening quote; `end` is one past the last
+/// byte of its value. The value must be an object or an array — the only
+/// member shapes the publisher rewrites.
+///
+/// Members are enumerated by brace/bracket-balanced scanning of the object's
+/// interior (string- and comment-aware), so a `"key":` appearing inside a
+/// nested object, a string value, or a `//` comment is never mistaken for a
+/// top-level member of this object.
+pub(crate) fn find_object_member_span(
+    text: &str,
+    open: usize,
+    close: usize,
+    key: &str,
+) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut scan = JsonScan::new();
+    let mut depth = 0i32;
+    // The most recent string literal that closed at depth 0 — the candidate
+    // member key, held until its `:` value is seen.
+    let mut pending: Option<(usize, String)> = None;
+    let mut str_start: Option<usize> = None;
+    let mut was_in_string = false;
+    let mut member_start: Option<usize> = None;
+    for i in open + 1..close {
+        let b = bytes[i];
+        let structural = scan.step(b);
+        if scan.in_string && !was_in_string {
+            str_start = Some(i + 1);
+        } else if !scan.in_string
+            && was_in_string
+            && let Some(s) = str_start.take()
+            && depth == 0
+            && member_start.is_none()
+        {
+            pending = decode_json_string(&text[s..i]).map(|d| (s - 1, d));
+        }
+        was_in_string = scan.in_string;
+
+        match structural {
+            Some(b'{') | Some(b'[') => {
+                if depth == 0
+                    && member_start.is_none()
+                    && pending.as_ref().is_some_and(|(_, k)| k == key)
+                {
+                    member_start = pending.as_ref().map(|(s, _)| *s);
+                }
+                depth += 1;
+            }
+            Some(b'}') | Some(b']') => {
+                depth -= 1;
+                if depth == 0
+                    && let Some(s) = member_start
+                {
+                    return Some((s, i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Return the byte index of the `]` that closes the `schemas` array.

@@ -4,8 +4,9 @@
 use serde_json::{Map, Value};
 
 use crate::schemastore::scan::{
-    JsonScan, array_contains_element, find_array_close, find_array_open_after, find_bracket_close,
-    find_schemas_array_open, first_element_indent, interior_has_element, line_indent,
+    JsonScan, array_contains_element, find_array_close, find_array_open_after, find_brace_close,
+    find_bracket_close, find_object_member_span, find_object_open_after, find_schemas_array_open,
+    first_element_indent, interior_has_element, line_indent,
 };
 
 /// What the publisher should do about one schema entry, given the upstream catalog.
@@ -45,12 +46,6 @@ fn file_match_globs(entry: &Value) -> Vec<String> {
 
 /// True when `existing`'s `fileMatch` array shares at least one glob string
 /// with `desired_file_match`.
-///
-/// SchemaStore's real catalog uniqueness key is `fileMatch`, not `name`: its
-/// `validate` CI rejects any two entries that share a `fileMatch` glob. Keying
-/// add/update identity on a non-empty `fileMatch` intersection (rather than an
-/// exact `name`) is therefore what prevents a case- or title-only name drift
-/// from appending a duplicate entry the validator then rejects.
 fn filematch_overlaps(existing: &Value, desired_file_match: &[String]) -> bool {
     let theirs = file_match_globs(existing);
     desired_file_match
@@ -58,14 +53,45 @@ fn filematch_overlaps(existing: &Value, desired_file_match: &[String]) -> bool {
         .any(|d| theirs.iter().any(|t| t == d))
 }
 
+/// True when `existing`'s `name` equals `desired_name` ignoring ASCII case.
+fn name_matches(existing: &Value, desired_name: &str) -> bool {
+    existing
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.eq_ignore_ascii_case(desired_name))
+}
+
+/// The desired entry's `name`, or `""` when it carries none (which then
+/// matches no upstream entry).
+fn entry_name(entry: &Value) -> &str {
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// True when the upstream catalog entry `existing` IS the registration
+/// `desired_name`/`desired_file_match` describes.
+///
+/// SchemaStore's catalog uniqueness rule is BOTH halves: its `validate` CI
+/// rejects two entries sharing a `fileMatch` glob AND two entries sharing a
+/// `name`. Identity therefore has to be the union — `fileMatch` overlap alone
+/// misses an upstream entry submitted with no `fileMatch` at all (nothing can
+/// overlap it), and appending beside such an entry is rejected as a duplicate
+/// name; `name` alone misses an entry whose name drifted in case or title.
+/// The name half is case-insensitive so a title-case upstream rename is
+/// updated in place rather than duplicated.
+fn same_entry(existing: &Value, desired_name: &str, desired_file_match: &[String]) -> bool {
+    filematch_overlaps(existing, desired_file_match)
+        || (!desired_name.is_empty() && name_matches(existing, desired_name))
+}
+
 /// Decide add/update/no-op for the desired entry `want` against `catalog_json`.
 ///
-/// Identity is by `fileMatch`-overlap, not `name`: an existing catalog entry is
-/// "ours" when its `fileMatch` array shares any glob with `want`'s. This matches
-/// SchemaStore's own uniqueness rule (its `validate` CI rejects duplicate
-/// `fileMatch` globs) and is robust to a `name` that differs only in case from
-/// the merged upstream entry. Comparison of a matched entry against `want` is
-/// structural (key order irrelevant).
+/// An existing catalog entry is "ours" when [`same_entry`] holds — its
+/// `fileMatch` overlaps `want`'s or its `name` matches case-insensitively.
+/// Comparison of a matched entry against `want` is structural (key order
+/// irrelevant).
 pub(crate) fn verdict(catalog_json: &str, want: &Value) -> anyhow::Result<Verdict> {
     let cat: Value = serde_json::from_str(catalog_json)?;
     let entries = cat
@@ -73,25 +99,28 @@ pub(crate) fn verdict(catalog_json: &str, want: &Value) -> anyhow::Result<Verdic
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("catalog.json has no `schemas` array"))?;
     let want_fm = file_match_globs(want);
-    match entries.iter().find(|e| filematch_overlaps(e, &want_fm)) {
+    let want_name = entry_name(want);
+    match entries.iter().find(|e| same_entry(e, want_name, &want_fm)) {
         None => Ok(Verdict::Add),
         Some(existing) if existing == want => Ok(Verdict::NoOp),
         Some(_) => Ok(Verdict::Update),
     }
 }
 
-/// Extract the existing `versions` map of the catalog entry that overlaps
-/// `desired_file_match` on `fileMatch`, if present. Returns `None` when no
-/// entry overlaps or the matched entry has no `versions`; `Some(Err)` only on
+/// Extract the existing `versions` map of the catalog entry that IS this
+/// registration ([`same_entry`]), if present. Returns `None` when no entry
+/// matches or the matched entry has no `versions`; `Some(Err)` only on
 /// malformed catalog JSON.
 ///
-/// Identity is by `fileMatch`-overlap, not `name`, so a versioned-vendor entry
-/// whose upstream `name` drifted in case still has its prior versions carried
-/// forward — a name-keyed lookup would miss it, drop the map, and rebuild from
-/// scratch, silently losing older versioned URLs (which SchemaStore CI then
-/// rejects as unresolvable listed files).
-pub(crate) fn upstream_versions_by_file_match(
+/// The lookup uses the same union identity as [`verdict`], so the carry-forward
+/// reads the very entry the splice will rewrite. Missing that entry — because
+/// its upstream name drifted in case, or because it carries no `fileMatch` at
+/// all — would drop the map and rebuild from scratch, silently losing older
+/// versioned URLs (which SchemaStore CI then rejects as unresolvable listed
+/// files).
+pub(crate) fn upstream_versions_for(
     catalog_json: &str,
+    desired_name: &str,
     desired_file_match: &[String],
 ) -> Option<anyhow::Result<Map<String, Value>>> {
     let cat: Value = match serde_json::from_str(catalog_json) {
@@ -102,7 +131,7 @@ pub(crate) fn upstream_versions_by_file_match(
         .get("schemas")
         .and_then(Value::as_array)?
         .iter()
-        .find(|e| filematch_overlaps(e, desired_file_match))?;
+        .find(|e| same_entry(e, desired_name, desired_file_match))?;
     let versions = entry.get("versions").and_then(Value::as_object)?;
     Some(Ok(versions.clone()))
 }
@@ -152,7 +181,7 @@ fn render_entry(entry: &Value, indent: usize) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// Insert or replace the catalog entry matching `entry` by `fileMatch`-overlap,
+/// Insert or replace the catalog entry matching `entry` by [`same_entry`],
 /// preserving every other byte of the original file.
 ///
 /// SchemaStore's `catalog.json` is ~1 MB, insertion-ordered, and reformatted
@@ -160,8 +189,9 @@ fn render_entry(entry: &Value, indent: usize) -> anyhow::Result<String> {
 /// produce an unreviewable diff, so this edits only the targeted entry's byte
 /// span (replace) or appends before the array's closing `]` (add).
 ///
-/// The match is by `fileMatch`-overlap, not `name`, so an upstream entry whose
-/// name drifted in case (e.g. `Anodizer` vs `anodizer`) is replaced in place
+/// The match is the union of `fileMatch`-overlap and case-insensitive `name`,
+/// so an upstream entry whose name drifted in case (e.g. `Anodizer` vs
+/// `anodizer`) or that carries no `fileMatch` at all is replaced in place
 /// rather than appended as a SchemaStore-rejected duplicate.
 pub(crate) fn splice_entry(catalog: &str, entry: &Value) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(catalog)?;
@@ -174,8 +204,9 @@ pub(crate) fn splice_entry(catalog: &str, entry: &Value) -> anyhow::Result<Strin
     let entry_indent = 4usize;
 
     let want_fm = file_match_globs(entry);
-    if arr.iter().any(|e| filematch_overlaps(e, &want_fm)) {
-        let (start, end) = find_entry_span(catalog, &want_fm)?;
+    let want_name = entry_name(entry);
+    if arr.iter().any(|e| same_entry(e, want_name, &want_fm)) {
+        let (start, end) = find_entry_span(catalog, want_name, &want_fm)?;
         let rendered = render_entry(entry, entry_indent)?;
         // The span already begins at the object's `{` indentation, so strip
         // the leading pad render_entry added to the first line.
@@ -256,15 +287,94 @@ pub(crate) fn add_high_schema_version(jsonc: &str, name: &str) -> anyhow::Result
     Ok(out)
 }
 
-/// Return the `(start, end)` byte span of the entry object whose `fileMatch`
-/// array overlaps `want_fm`. `start` is the index of the object's opening `{`;
-/// `end` is the index just past its closing `}`.
+/// The per-file validator `options` block `schema-validation.jsonc` records for
+/// the vendored file `filename`, or `None` when the file has no `options`
+/// object, no block for that name, or a block that does not parse as plain
+/// JSON (a block carrying `//` comments). A `None` from an unparseable block is
+/// the conservative answer everywhere it is used: the caller then treats the
+/// options as absent and rewrites them.
+pub(crate) fn schema_options_block(jsonc: &str, filename: &str) -> Option<Map<String, Value>> {
+    let open = find_object_open_after(jsonc, "options").ok()?;
+    let close = find_brace_close(jsonc, open).ok()?;
+    let (start, end) = find_object_member_span(jsonc, open, close, filename)?;
+    // Re-wrap the member in braces so serde parses it as a one-key object; that
+    // decodes the key's own escapes instead of scanning for a `:` by hand.
+    let obj: Value = serde_json::from_str(&format!("{{{}}}", &jsonc[start..end])).ok()?;
+    obj.get(filename).and_then(Value::as_object).cloned()
+}
+
+/// Insert or replace the per-file validator `options` block for the vendored
+/// file `filename` in `schema-validation.jsonc`, preserving comments and all
+/// other bytes.
+///
+/// SchemaStore's `validate` job fails a schema whose `format` values its ajv
+/// does not know unless the file has an `options` block declaring them under
+/// `unknownFormat`. The file is JSONC, so — like
+/// [`add_high_schema_version`] — the member's byte span is located with a
+/// comment- and string-aware scan and rewritten in place rather than the file
+/// being reserialized.
+pub(crate) fn upsert_schema_options(
+    jsonc: &str,
+    filename: &str,
+    block: &Map<String, Value>,
+) -> anyhow::Result<String> {
+    let open = find_object_open_after(jsonc, "options")?;
+    let close = find_brace_close(jsonc, open)?;
+    let interior = &jsonc[open + 1..close];
+
+    // Anchor indentation off the key line, matching `add_high_schema_version`:
+    // the member sits at key-indent + 2 and the `}` at key-indent, which stays
+    // prettier-correct for a multi-line object, an empty `{}`, and a
+    // single-line one.
+    let key_indent = line_indent(jsonc, open);
+    let member_indent =
+        first_element_indent(jsonc, open, interior).unwrap_or_else(|| format!("{key_indent}  "));
+    let rendered = render_member(filename, block, member_indent.len())?;
+
+    if let Some((start, end)) = find_object_member_span(jsonc, open, close, filename) {
+        let mut out = String::with_capacity(jsonc.len() + rendered.len());
+        out.push_str(&jsonc[..start]);
+        out.push_str(rendered.trim_start());
+        out.push_str(&jsonc[end..]);
+        return Ok(out);
+    }
+
+    let before = jsonc[..close].trim_end();
+    let mut out = String::with_capacity(jsonc.len() + rendered.len() + 2);
+    out.push_str(before);
+    if interior_has_element(interior) {
+        out.push(',');
+    }
+    out.push('\n');
+    out.push_str(&rendered);
+    out.push('\n');
+    out.push_str(&key_indent);
+    out.push_str(&jsonc[close..]);
+    Ok(out)
+}
+
+/// Render `"<key>": { … }` as a prettier-style object member at the given
+/// indentation.
+fn render_member(key: &str, block: &Map<String, Value>, indent: usize) -> anyhow::Result<String> {
+    let body = render_entry(&Value::Object(block.clone()), indent)?;
+    let quoted = serde_json::to_string(&Value::String(key.to_string()))?;
+    let pad = " ".repeat(indent);
+    Ok(format!("{pad}{quoted}: {}", body.trim_start()))
+}
+
+/// Return the `(start, end)` byte span of the entry object that IS this
+/// registration ([`same_entry`]). `start` is the index of the object's opening
+/// `{`; `end` is the index just past its closing `}`.
 ///
 /// Top-level entry objects inside the array are enumerated by brace-balanced
 /// scanning (tracking string/escape state so braces inside string values do
-/// not perturb the count); each candidate slice is parsed on its own and its
-/// `fileMatch` compared for overlap. The first match wins.
-fn find_entry_span(catalog: &str, want_fm: &[String]) -> anyhow::Result<(usize, usize)> {
+/// not perturb the count); each candidate slice is parsed on its own and
+/// tested for identity. The first match wins.
+fn find_entry_span(
+    catalog: &str,
+    want_name: &str,
+    want_fm: &[String],
+) -> anyhow::Result<(usize, usize)> {
     let open = find_schemas_array_open(catalog)?;
     let close = find_array_close(catalog)?;
     let bytes = catalog.as_bytes();
@@ -292,7 +402,7 @@ fn find_entry_span(catalog: &str, want_fm: &[String]) -> anyhow::Result<(usize, 
                         };
                         let end = i + 1;
                         if let Ok(obj) = serde_json::from_str::<Value>(&catalog[s_idx..end])
-                            && filematch_overlaps(&obj, want_fm)
+                            && same_entry(&obj, want_name, want_fm)
                         {
                             return Ok((s_idx, end));
                         }
@@ -302,5 +412,5 @@ fn find_entry_span(catalog: &str, want_fm: &[String]) -> anyhow::Result<(usize, 
             }
         }
     }
-    anyhow::bail!("no entry with overlapping `fileMatch` found in `schemas` array")
+    anyhow::bail!("no entry matching `{want_name}` found in `schemas` array")
 }

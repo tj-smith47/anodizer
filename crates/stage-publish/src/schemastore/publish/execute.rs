@@ -113,12 +113,11 @@ fn probe_remote_all_noop_inner(
             // error is uncertainty ⇒ change-needed. Both are `None`, which the
             // decision reads as change-needed.
             let vendor_file = fetch_raw_optional(&client, &vendor_url)?;
-            let jsonc = if raw_dialect(&local) == Dialect::TooHigh {
-                let jsonc_url = format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}");
-                fetch_raw_optional(&client, &jsonc_url)?
-            } else {
-                None
-            };
+            // Fetched for every vendor schema, not just a too-high dialect:
+            // the same file also carries the per-file `unknownFormat` options a
+            // draft-07 schema can need.
+            let jsonc_url = format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}");
+            let jsonc = fetch_raw_optional(&client, &jsonc_url)?;
             (Some(local), vendor_file, jsonc)
         } else {
             (None, None, None)
@@ -539,28 +538,48 @@ pub(super) fn write_vendor_schema(
         vendor_rel.display()
     ));
 
-    // A 2019-09 / 2020-12 schema fails SchemaStore CI unless its catalog name
-    // is allowlisted under `highSchemaVersion` — add it in this same PR so the
-    // schema lands as-authored. The `$schema` survives reformatting, so the
-    // dialect read off `formatted` matches the source.
+    // Two `schema-validation.jsonc` obligations land in this same PR, or
+    // SchemaStore CI rejects the schema: a 2019-09 / 2020-12 dialect must be
+    // listed under `highSchemaVersion`, and any `format` its validator does not
+    // know must be declared in the file's `options` block. The `$schema` and
+    // the `format` values both survive reformatting, so both are read off
+    // `formatted`.
+    let allow_abs = repo_path.join(DIALECT_ALLOWLIST_PATH);
+    let jsonc = std::fs::read_to_string(&allow_abs).ok();
     let dialect = raw_dialect(formatted);
+    let options = desired_options_block(plan, formatted, jsonc.as_deref());
+    if dialect != Dialect::TooHigh && options.is_empty() {
+        return Ok(());
+    }
+
+    let mut jsonc = jsonc.with_context(|| format!("schemastore: read {}", allow_abs.display()))?;
+    // SchemaStore matches both maps against `path.basename(schemaPath)`
+    // (cli.js: `highSchemaVersion.includes(schema.name)`), i.e. the vendored
+    // file's basename WITH `.json` (`cfgd-module.json`, `cfgd-module-0.4.2.json`)
+    // — NOT the catalog display name. Keying on the display name never
+    // matches the file and hard-fails SchemaStore CI.
+    let allow_name = allowlist_name_for(plan)?;
     if dialect == Dialect::TooHigh {
-        let allow_abs = repo_path.join(DIALECT_ALLOWLIST_PATH);
-        let jsonc = std::fs::read_to_string(&allow_abs)
-            .with_context(|| format!("schemastore: read {}", allow_abs.display()))?;
-        // SchemaStore matches the allowlist against `path.basename(schemaPath)`
-        // (cli.js: `highSchemaVersion.includes(schema.name)`), i.e. the vendored
-        // file's basename WITH `.json` (`cfgd-module.json`, `cfgd-module-0.4.2.json`)
-        // — NOT the catalog display name. Keying on the display name never
-        // matches the file and hard-fails SchemaStore CI.
-        let allow_name = allowlist_name_for(plan)?;
-        let updated = catalog::add_high_schema_version(&jsonc, &allow_name).with_context(|| {
+        jsonc = catalog::add_high_schema_version(&jsonc, &allow_name).with_context(|| {
             format!("schemastore: allowlist high-dialect schema `{allow_name}`")
         })?;
-        std::fs::write(&allow_abs, &updated)
-            .with_context(|| format!("schemastore: write {}", allow_abs.display()))?;
+    }
+    if !options.is_empty() {
+        jsonc =
+            catalog::upsert_schema_options(&jsonc, &allow_name, &options).with_context(|| {
+                format!("schemastore: write validator options for schema `{allow_name}`")
+            })?;
+    }
+    std::fs::write(&allow_abs, &jsonc)
+        .with_context(|| format!("schemastore: write {}", allow_abs.display()))?;
+    if dialect == Dialect::TooHigh {
         log.status(&format!(
             "allowlisted high-dialect schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
+        ));
+    }
+    if let Some(formats) = options.get("unknownFormat") {
+        log.status(&format!(
+            "declared unknown format(s) {formats} for schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
         ));
     }
     Ok(())

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anodizer_core::config::{SchemaEntry, SchemaMode, SchemastoreConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::super::manifest::{self, Dialect};
 use super::super::{catalog, entry_label};
@@ -125,7 +125,7 @@ pub(crate) fn plan_schema(
             // their catalog references (SchemaStore CI requires every listed
             // `versions` URL to resolve to a present file).
             let prior = catalog_json
-                .and_then(|c| catalog::upstream_versions_by_file_match(c, &entry.file_match))
+                .and_then(|c| catalog::upstream_versions_for(c, &entry.name, &entry.file_match))
                 .transpose()?;
             let versions = catalog::merge_versions(prior.as_ref(), ver, &url);
             (
@@ -249,7 +249,88 @@ pub(crate) fn schema_change_needed(
         }
     }
 
+    // The per-file validator options must already match: a vendored schema
+    // using a `format` ajv does not know fails SchemaStore's `validate` unless
+    // `schema-validation.jsonc` carries an `options` block keyed by the
+    // vendored filename. A block we cannot read (jsonc not fetched, name not
+    // derivable) is uncertainty ⇒ change-needed.
+    let want_options = desired_options_block(plan, local, remote.jsonc);
+    if !want_options.is_empty() {
+        let (Some(jsonc), Ok(allow_name)) = (remote.jsonc, allowlist_name_for(plan)) else {
+            return true;
+        };
+        if catalog::schema_options_block(jsonc, &allow_name).as_ref() != Some(&want_options) {
+            return true;
+        }
+    }
+
     false
+}
+
+/// The `options` block `schema-validation.jsonc` must carry for this plan's
+/// vendored file: `unknownFormat` derived from the schema's own `format`
+/// values, plus every other option carried forward from the block the entry's
+/// previous release wrote. An empty map means the file needs no block at all.
+///
+/// `jsonc` is the upstream `schema-validation.jsonc` when available; without it
+/// only the derived half is known, which is the conservative direction (the
+/// caller then sees a mismatch and rewrites the block).
+pub(super) fn desired_options_block(
+    plan: &SchemaPlan,
+    local_schema: &str,
+    jsonc: Option<&str>,
+) -> Map<String, Value> {
+    let Ok(schema) = serde_json::from_str::<Value>(local_schema) else {
+        return Map::new();
+    };
+    let mut block = jsonc
+        .and_then(|j| prior_options_block(plan, j))
+        .unwrap_or_default();
+    // The derived list is authoritative for `unknownFormat` — a format the
+    // schema no longer uses must not be carried forward — while every sibling
+    // option (`unknownKeywords`, `externalSchema`, …) is the reviewer's, and
+    // survives untouched.
+    block.remove("unknownFormat");
+    let unknown = manifest::unknown_formats(&schema);
+    if !unknown.is_empty() {
+        block.insert(
+            "unknownFormat".into(),
+            Value::Array(unknown.into_iter().map(Value::String).collect()),
+        );
+    }
+    block
+}
+
+/// The `options` block to carry forward: this plan's own vendored filename when
+/// it already has one, else the newest prior versioned filename that does.
+fn prior_options_block(plan: &SchemaPlan, jsonc: &str) -> Option<Map<String, Value>> {
+    let current = allowlist_name_for(plan).ok()?;
+    if let Some(block) = catalog::schema_options_block(jsonc, &current) {
+        return Some(block);
+    }
+    prior_versioned_filenames(plan)
+        .iter()
+        .rev()
+        .find_map(|f| catalog::schema_options_block(jsonc, f))
+}
+
+/// Vendored filenames of the entry's earlier versioned releases, read off the
+/// `versions` map the plan carries forward (oldest first, mirroring the
+/// catalog's insertion order). The filename being published is excluded.
+fn prior_versioned_filenames(plan: &SchemaPlan) -> Vec<String> {
+    let current = allowlist_name_for(plan).unwrap_or_default();
+    plan.desired_entry
+        .get("versions")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.values()
+                .filter_map(Value::as_str)
+                .filter_map(|u| u.rsplit('/').next())
+                .filter(|f| *f != current)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Effective schemas after the per-entry `skip` and `if:` gates, paired with

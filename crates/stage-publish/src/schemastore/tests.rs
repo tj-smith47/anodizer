@@ -1,9 +1,10 @@
 use crate::schemastore::catalog::{
-    Verdict, add_high_schema_version, build_entry_json, merge_versions, splice_entry, verdict,
+    Verdict, add_high_schema_version, build_entry_json, merge_versions, schema_options_block,
+    splice_entry, upsert_schema_options, upstream_versions_for, verdict,
 };
 use crate::schemastore::manifest::{
     DescriptionError, Dialect, check_id, classify_dialect, format_vendor_schema,
-    sanitize_description, slugify,
+    sanitize_description, slugify, unknown_formats,
 };
 use crate::schemastore::scan::jsonc_array_contains;
 
@@ -88,28 +89,27 @@ fn verdict_update_when_filematch_overlaps_but_name_and_fields_differ() {
     assert_eq!(verdict(CATALOG, &want).unwrap(), Verdict::Update);
 }
 
-/// An empty/absent `fileMatch` can never overlap any catalog entry (the
-/// intersection is vacuously empty), so the verdict is always `Add` — never a
-/// false `Update`/`NoOp` against an unrelated entry. Exercises the
-/// `filematch_overlaps` vacuous-false branch via the public `verdict` surface.
+/// With neither half of the identity rule satisfied — no `fileMatch` overlap
+/// (the intersection is vacuously empty) and no `name` match — the verdict is
+/// `Add`, never a false `Update`/`NoOp` against an unrelated entry.
 #[test]
-fn verdict_add_when_desired_filematch_is_empty_or_absent() {
-    // Desired entry carries an empty `fileMatch` array.
+fn verdict_add_when_neither_filematch_nor_name_matches() {
+    // Desired entry carries an empty `fileMatch` array and an unrelated name.
     let empty_fm = serde_json::json!({
-        "name": "Anodizer", "description": "d", "fileMatch": [],
+        "name": "Unrelated", "description": "d", "fileMatch": [],
         "url": "https://tj-smith47.github.io/anodizer/schema.json"
     });
     assert_eq!(verdict(CATALOG, &empty_fm).unwrap(), Verdict::Add);
 
     // Desired entry omits `fileMatch` entirely (treated as empty).
     let no_fm = serde_json::json!({
-        "name": "Anodizer", "description": "d",
+        "name": "Unrelated", "description": "d",
         "url": "https://tj-smith47.github.io/anodizer/schema.json"
     });
     assert_eq!(verdict(CATALOG, &no_fm).unwrap(), Verdict::Add);
 
     // A catalog entry whose own `fileMatch` is empty is likewise never matched
-    // by a real desired glob.
+    // by a real desired glob under a different name.
     let cat = r#"{ "schemas": [
         { "name": "NoGlobs", "description": "x", "fileMatch": [], "url": "https://x/n.json" }
     ] }"#;
@@ -117,6 +117,114 @@ fn verdict_add_when_desired_filematch_is_empty_or_absent() {
         "name": "Other", "description": "y", "fileMatch": ["only.yaml"], "url": "https://x/o.json"
     });
     assert_eq!(verdict(cat, &want).unwrap(), Verdict::Add);
+}
+
+/// cfgd's merged upstream `cfgd Profile` entry was hand-written with NO
+/// `fileMatch`, so nothing can overlap it. Keyed on `fileMatch` alone the
+/// publisher read that as `Add` and appended a SECOND `cfgd Profile`, which
+/// SchemaStore's `validate` rejects ("two schema entries with duplicate
+/// name"). The name half of the identity rule makes it an `Update`, and the
+/// splice rewrites the glob-less entry in place.
+#[test]
+fn glob_less_upstream_entry_is_updated_in_place_not_duplicated() {
+    let upstream = serde_json::json!({
+        "name": "cfgd Profile",
+        "description": "cfgd profile file",
+        "url": "https://www.schemastore.org/cfgd-profile-0.5.0.json",
+        "versions": { "0.5.0": "https://www.schemastore.org/cfgd-profile-0.5.0.json" }
+    });
+    let catalog =
+        serde_json::to_string_pretty(&serde_json::json!({ "schemas": [upstream] })).unwrap();
+
+    let fm = vec!["*.cfgd-profile.yaml".to_string()];
+    let mut versions = serde_json::Map::new();
+    versions.insert(
+        "0.10.0".into(),
+        serde_json::json!("https://www.schemastore.org/cfgd-profile-0.10.0.json"),
+    );
+    let want = build_entry_json(
+        "cfgd Profile",
+        "cfgd profile file",
+        &fm,
+        "https://www.schemastore.org/cfgd-profile-0.10.0.json",
+        Some(&versions),
+    );
+
+    assert_eq!(verdict(&catalog, &want).unwrap(), Verdict::Update);
+
+    let out = splice_entry(&catalog, &want).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let names: Vec<&str> = parsed["schemas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.get("name").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["cfgd Profile"],
+        "the glob-less upstream entry must be replaced, never duplicated"
+    );
+    assert_eq!(
+        parsed["schemas"][0]["url"],
+        "https://www.schemastore.org/cfgd-profile-0.10.0.json"
+    );
+}
+
+/// The name half of the identity rule is case-insensitive: an upstream entry
+/// renamed in review (`CFGD Profile`) and carrying no `fileMatch` is still ours.
+#[test]
+fn glob_less_upstream_entry_matches_name_case_insensitively() {
+    let catalog = r#"{ "schemas": [
+        { "name": "CFGD Profile", "description": "cfgd profile file", "url": "https://www.schemastore.org/cfgd-profile-0.5.0.json" }
+    ] }"#;
+    let want = build_entry_json(
+        "cfgd Profile",
+        "cfgd profile file",
+        &["*.cfgd-profile.yaml".to_string()],
+        "https://www.schemastore.org/cfgd-profile-0.10.0.json",
+        None,
+    );
+    assert_eq!(verdict(catalog, &want).unwrap(), Verdict::Update);
+
+    let out = splice_entry(catalog, &want).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        parsed["schemas"].as_array().unwrap().len(),
+        1,
+        "a case-drifted glob-less entry must be replaced in place: {out}"
+    );
+}
+
+/// The `versions` carry-forward reads the entry the splice will rewrite, so a
+/// glob-less upstream entry's older versioned URLs survive the release. Keyed
+/// on `fileMatch` alone the lookup missed it and the map was rebuilt from
+/// scratch, orphaning `0.5.0` (SchemaStore CI then rejects the entry).
+#[test]
+fn versions_carry_forward_reads_the_name_matched_entry() {
+    let catalog = r#"{ "schemas": [
+        { "name": "cfgd Profile", "description": "cfgd profile file",
+          "url": "https://www.schemastore.org/cfgd-profile-0.5.0.json",
+          "versions": { "0.5.0": "https://www.schemastore.org/cfgd-profile-0.5.0.json" } }
+    ] }"#;
+    let prior = upstream_versions_for(
+        catalog,
+        "cfgd Profile",
+        &["*.cfgd-profile.yaml".to_string()],
+    )
+    .expect("the name-matched entry must be found")
+    .expect("well-formed catalog");
+    assert_eq!(
+        prior.get("0.5.0").unwrap(),
+        "https://www.schemastore.org/cfgd-profile-0.5.0.json"
+    );
+
+    let merged = merge_versions(
+        Some(&prior),
+        "0.10.0",
+        "https://www.schemastore.org/cfgd-profile-0.10.0.json",
+    );
+    assert_eq!(merged.len(), 2, "both versions must be listed: {merged:?}");
 }
 
 #[test]
@@ -431,6 +539,124 @@ fn add_high_schema_version_handles_empty_array() {
     assert!(
         out.contains("\n    \"cfgd-module\"\n  ]"),
         "element at key-indent+2, closing ] at key-indent; got:\n{out}"
+    );
+}
+
+// --- per-file validator `options` --------------------------------------
+//
+// The fixture models the shape SchemaStore's `src/schema-validation.jsonc`
+// really has when cfgd is already registered: comments, a `highSchemaVersion`
+// array, and an `options` map whose only member is the block the previous
+// release's PR hand-wrote for `cfgd-config-0.5.0.json`.
+
+const VALIDATION_JSONC: &str = r#"{
+  // Only add here when the schema is not draft-07 compatible
+  "highSchemaVersion": [
+    "cfgd-config-0.5.0.json"
+  ],
+  "options": {
+    "cfgd-config-0.5.0.json": {
+      "unknownFormat": ["uint32"],
+      "unknownKeywords": ["x-taplo"]
+    }
+  }
+}
+"#;
+
+#[test]
+fn upsert_schema_options_adds_a_block_for_a_new_file() {
+    let mut block = serde_json::Map::new();
+    block.insert("unknownFormat".into(), serde_json::json!(["uint32"]));
+    let out = upsert_schema_options(VALIDATION_JSONC, "cfgd-config-0.10.0.json", &block).unwrap();
+
+    assert!(
+        out.contains("// Only add here when"),
+        "comments must survive the textual splice; got:\n{out}"
+    );
+    let got = schema_options_block(&out, "cfgd-config-0.10.0.json").expect("new block present");
+    assert_eq!(
+        got.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"])
+    );
+    assert!(
+        schema_options_block(&out, "cfgd-config-0.5.0.json").is_some(),
+        "the retained prior version's file keeps its block; got:\n{out}"
+    );
+    // Formatting is pinned: members sit at the existing member indent (4) and
+    // the object closes at the key indent (2).
+    assert!(
+        out.contains("\n    \"cfgd-config-0.10.0.json\": {"),
+        "new member at the existing member indent; got:\n{out}"
+    );
+}
+
+#[test]
+fn upsert_schema_options_rewrites_an_existing_block_in_place() {
+    let mut block = serde_json::Map::new();
+    block.insert(
+        "unknownFormat".into(),
+        serde_json::json!(["uint32", "uint64"]),
+    );
+    let out = upsert_schema_options(VALIDATION_JSONC, "cfgd-config-0.5.0.json", &block).unwrap();
+    assert_eq!(
+        out.matches("\"cfgd-config-0.5.0.json\": {").count(),
+        1,
+        "an existing block is rewritten, never duplicated; got:\n{out}"
+    );
+    let got = schema_options_block(&out, "cfgd-config-0.5.0.json").unwrap();
+    assert_eq!(
+        got.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32", "uint64"])
+    );
+}
+
+#[test]
+fn upsert_schema_options_handles_an_empty_options_object() {
+    let jsonc = "{\n  \"options\": {}\n}\n";
+    let mut block = serde_json::Map::new();
+    block.insert("unknownFormat".into(), serde_json::json!(["uint32"]));
+    let out = upsert_schema_options(jsonc, "cfgd-config-0.10.0.json", &block).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v["options"]["cfgd-config-0.10.0.json"]["unknownFormat"],
+        serde_json::json!(["uint32"]),
+        "an empty options object takes no leading comma; got:\n{out}"
+    );
+}
+
+#[test]
+fn schema_options_block_is_absent_for_an_unlisted_file() {
+    assert!(schema_options_block(VALIDATION_JSONC, "cfgd-config-0.10.0.json").is_none());
+    assert!(schema_options_block("{ \"highSchemaVersion\": [] }", "any.json").is_none());
+}
+
+// --- unknown `format` derivation ---------------------------------------
+
+#[test]
+fn unknown_formats_finds_formats_at_any_depth() {
+    let schema = serde_json::json!({
+        "$defs": {
+            "port": { "type": "integer", "format": "uint32" },
+            "list": { "items": [{ "format": "uint16" }] }
+        },
+        "properties": { "when": { "type": "string", "format": "date-time" } }
+    });
+    assert_eq!(unknown_formats(&schema), vec!["uint16", "uint32"]);
+}
+
+#[test]
+fn unknown_formats_empty_when_every_format_is_known_to_ajv() {
+    let schema = serde_json::json!({
+        "properties": {
+            "when": { "format": "date-time" },
+            "who": { "format": "email" },
+            "where": { "format": "uri" },
+            "id": { "format": "uuid" }
+        }
+    });
+    assert!(
+        unknown_formats(&schema).is_empty(),
+        "ajv-formats knows every one of these"
     );
 }
 
