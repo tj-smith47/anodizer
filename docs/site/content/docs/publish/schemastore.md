@@ -237,6 +237,20 @@ The schema's `$id` field must be an absolute `http(s)://` URL. Relative or urn-f
 - **Draft-04, draft-06, draft-07**: accepted unconditionally.
 - **Draft 2019-09 or 2020-12**: allowed, but anodizer automatically adds the vendored filename (`<slug>.json`, or `<slug>-<VER>.json` when `versioned`) to the `highSchemaVersion` allowlist in `src/schema-validation.jsonc` in the same PR. SchemaStore CI matches that allowlist on the file's basename, so the entry is the filename — not the catalog display name. This keeps your schema as-authored; the allowlist entry satisfies SchemaStore CI.
 
+### `format` values
+
+SchemaStore's validator rejects a schema that uses a `format` its ajv does not register (`unknown format "uint32" ignored in schema`). Anodizer walks the vendored schema for every `format` value outside ajv-formats and `@hyperupcall/ajv-formats-draft2019`, and writes them as an `unknownFormat` list in the file's `options` block in `src/schema-validation.jsonc` — keyed on the vendored filename, in the same PR:
+
+```jsonc
+"options": {
+  "cfgd-config-0.10.0.json": {
+    "unknownFormat": ["uint32"]
+  }
+}
+```
+
+For a `versioned` entry, every other option in the previous version's block (`unknownKeywords`, `strict`, …) carries forward to the new filename's block, and an `externalSchema` reference to an older file of the same schema family is re-pointed at the version being published. The previous version's block is left in place, because its vendored file stays in the repo. A schema whose formats are all known gets no `options` block at all.
+
 > A failed `$schema` check on one entry fails the **entire PR**, including any good entries. Anodizer catches dialect mismatches at preflight so the PR lands clean.
 
 ## Authentication
@@ -281,7 +295,7 @@ If the release fails after the SchemaStore PR is opened, anodizer closes it (`PA
 
 ## Dry-run
 
-`anodizer release --dry-run` renders the planned catalog diff (new or updated entries, any vendor files, `highSchemaVersion` additions) and logs the intended PR without cloning, committing, or pushing:
+`anodizer release --dry-run` renders the planned catalog diff (new or updated entries, any vendor files, `highSchemaVersion` additions, `options` blocks) and logs the intended PR without cloning, committing, or pushing:
 
 The dry-run path does not fetch the upstream catalog, so each line reports the
 planned mode and URL (the verb is `register/refresh`, since no add/refresh
@@ -340,5 +354,5 @@ schemastore:
 In this config:
 - The **Anodizer** entry is external — SchemaStore gets only the catalog entry; no file changes on version bumps.
 - The **cfgd-config** entry is vendored — the schema file is copied to `src/schemas/json/cfgd-config.json` on each release.
-- The **cfgd-module** entry is vendored + versioned — emits `cfgd-module-<VER>.json` and merges the version into `versions`. Because it is draft-2020-12, anodizer automatically adds the vendored filename (`cfgd-module-<VER>.json`) to the `highSchemaVersion` allowlist in the same PR — SchemaStore CI matches that allowlist on the file's basename.
+- The **cfgd-module** entry is vendored + versioned — emits `cfgd-module-<VER>.json` and merges the version into `versions`. Because it is draft-2020-12, anodizer automatically adds the vendored filename (`cfgd-module-<VER>.json`) to the `highSchemaVersion` allowlist in the same PR — SchemaStore CI matches that allowlist on the file's basename. If the schema uses a `format` SchemaStore's ajv does not know, its `options` block is written under the same filename.
 - `repository` and `commit_author` are block-level defaults shared across all three entries; one PR carries all three changes.

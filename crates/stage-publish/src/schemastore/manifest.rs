@@ -111,11 +111,14 @@ pub(crate) fn check_id(id: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-/// The `format` names ajv-formats registers, i.e. every format SchemaStore's
+/// The `format` names SchemaStore's validator registers, i.e. every format its
 /// `validate` job resolves without a per-file `unknownFormat` declaration.
-/// Source: `ajv-formats`' `src/formats.ts` (the `fullFormats` /
-/// `fastFormats` key set plus the `int32`/`int64`/`float`/`double` numeric
-/// formats).
+///
+/// Two sources, both registered by SchemaStore's `cli.js`: `ajv-formats`'
+/// `src/formats.ts` (the `fullFormats` / `fastFormats` key set plus the
+/// `int32`/`int64`/`float`/`double` numeric formats), and
+/// `@hyperupcall/ajv-formats-draft2019`, which adds the four draft-2019-09
+/// string formats (`iri`, `iri-reference`, `idn-email`, `idn-hostname`).
 pub(crate) const AJV_KNOWN_FORMATS: &[&str] = &[
     "date",
     "time",
@@ -143,14 +146,25 @@ pub(crate) const AJV_KNOWN_FORMATS: &[&str] = &[
     "double",
     "password",
     "binary",
+    "iri",
+    "iri-reference",
+    "idn-email",
+    "idn-hostname",
 ];
+
+/// Keys whose values are DATA, not subschemas: a `"format"` string inside one
+/// is a sample value, not a format declaration, and collecting it would emit a
+/// bogus `unknownFormat` entry.
+const NON_SCHEMA_KEYS: &[&str] = &["default", "const", "examples", "enum"];
 
 /// Every `"format"` value anywhere in `schema` that [`AJV_KNOWN_FORMATS`] does
 /// not list, sorted and deduplicated.
 ///
 /// The walk covers the whole JSON tree because a schema may declare a format at
 /// any depth (`$defs`, `properties`, `items`, `oneOf`, …), and SchemaStore's
-/// validator reports every one it cannot resolve.
+/// validator reports every one it cannot resolve. Data-carrying subtrees
+/// ([`NON_SCHEMA_KEYS`]) are skipped so a sample value that happens to hold a
+/// `format` key is not mistaken for a declaration.
 pub(crate) fn unknown_formats(schema: &serde_json::Value) -> Vec<String> {
     let mut found = std::collections::BTreeSet::new();
     collect_unknown_formats(schema, &mut found);
@@ -165,8 +179,10 @@ fn collect_unknown_formats(v: &serde_json::Value, out: &mut std::collections::BT
             {
                 out.insert(f.to_string());
             }
-            for child in m.values() {
-                collect_unknown_formats(child, out);
+            for (key, child) in m {
+                if !NON_SCHEMA_KEYS.contains(&key.as_str()) {
+                    collect_unknown_formats(child, out);
+                }
             }
         }
         serde_json::Value::Array(a) => {

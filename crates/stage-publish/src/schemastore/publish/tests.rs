@@ -2062,3 +2062,42 @@ fn write_vendor_schema_stages_the_options_block() {
         "the previous version's sibling options carry forward"
     );
 }
+
+/// `externalSchema` values are vendored FILENAMES, so carrying them verbatim
+/// would leave the new version's block pointing at a file of an older release.
+/// A value naming an older file of the SAME family is re-pointed at the file
+/// being published; a sibling family's file and a non-versioned name carry
+/// forward untouched, because nothing here knows what version they publish.
+#[test]
+fn external_schema_refs_are_rekeyed_only_within_the_same_family() {
+    let jsonc = r#"{
+  "highSchemaVersion": [],
+  "options": {
+    "cfgd-config-0.5.0.json": {
+      "unknownFormat": ["uint32"],
+      "externalSchema": [
+        "cfgd-config-0.5.0.json",
+        "cfgd-profile-0.5.0.json",
+        "some-plain.json"
+      ],
+      "unknownKeywords": ["x-taplo"]
+    }
+  }
+}
+"#;
+    let block = desired_options_block(&versioned_plan_010(), UINT32_SCHEMA, Some(jsonc));
+    assert_eq!(
+        block.get("externalSchema").unwrap(),
+        &serde_json::json!([
+            "cfgd-config-0.10.0.json",
+            "cfgd-profile-0.5.0.json",
+            "some-plain.json"
+        ]),
+        "own family re-keyed; sibling family and unversioned names verbatim"
+    );
+    assert_eq!(
+        block.get("unknownKeywords").unwrap(),
+        &serde_json::json!(["x-taplo"]),
+        "every other sibling option still carries forward verbatim"
+    );
+}

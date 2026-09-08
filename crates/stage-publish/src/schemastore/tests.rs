@@ -542,6 +542,44 @@ fn add_high_schema_version_handles_empty_array() {
     );
 }
 
+// --- rollback touches no catalog ---------------------------------------
+
+/// SchemaStore rollback closes the registration PR and nothing else: it must
+/// never edit `catalog.json`, because a name-matched upstream entry the publish
+/// UPDATED in place was not created by us and unwinding it would delete
+/// somebody else's registration.
+///
+/// Pinned two ways — running the rollback path leaves a catalog file's bytes
+/// untouched, and the module carries no reference to the catalog editors at
+/// all, so a future `catalog::splice_entry` / `upsert_schema_options` call in
+/// `rollback.rs` trips this test rather than shipping.
+#[test]
+fn rollback_never_edits_the_catalog() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let catalog_path = dir.path().join("catalog.json");
+    std::fs::write(&catalog_path, CATALOG).unwrap();
+
+    let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+    let evidence = anodizer_core::PublishEvidence::new("schemastore");
+    crate::schemastore::rollback::rollback_publish(&mut ctx, &evidence).expect("rollback Ok");
+
+    assert_eq!(
+        std::fs::read_to_string(&catalog_path).unwrap(),
+        CATALOG,
+        "rollback must not rewrite a catalog file"
+    );
+
+    let src = include_str!("rollback.rs");
+    for editor in ["catalog::", "splice_entry", "upsert_schema_options"] {
+        assert!(
+            !src.contains(editor),
+            "rollback.rs must not reach for `{editor}` — closing the PR is the \
+             whole unwind; editing the catalog would delete an upstream entry \
+             the publish only updated"
+        );
+    }
+}
+
 // --- per-file validator `options` --------------------------------------
 //
 // The fixture models the shape SchemaStore's `src/schema-validation.jsonc`
@@ -624,6 +662,72 @@ fn upsert_schema_options_handles_an_empty_options_object() {
     );
 }
 
+/// A `//` comment naming `"options"` precedes the real key, one string value
+/// spells it inside escaped quotes, and another IS the bare word. A plain
+/// `text.find("\"options\"")` would anchor
+/// on the comment and splice into the wrong object; matching any decoded
+/// string would anchor on the value. Only a match in KEY position (followed by
+/// `:`) is the map.
+#[test]
+fn options_key_is_located_past_comments_and_string_values() {
+    let jsonc = r#"{
+  // "options": { "decoy.json": { "unknownFormat": ["nope"] } } is NOT the map
+  "note": "the word \"options\" appears here too",
+  "kind": "options",
+  "unrelated": { "not": "the map" },
+  "options": {
+    "cfgd-config-0.5.0.json": {
+      "unknownFormat": ["uint32"]
+    }
+  }
+}
+"#;
+    let got = schema_options_block(jsonc, "cfgd-config-0.5.0.json")
+        .expect("the structural `options` key must be found past decoys");
+    assert_eq!(
+        got.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"])
+    );
+
+    let mut block = serde_json::Map::new();
+    block.insert("unknownFormat".into(), serde_json::json!(["uint64"]));
+    let out = upsert_schema_options(jsonc, "cfgd-config-0.10.0.json", &block).unwrap();
+    let v: serde_json::Value = serde_json::from_str(
+        &out.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("the splice must leave parseable JSONC");
+    assert_eq!(
+        v["options"]["cfgd-config-0.10.0.json"]["unknownFormat"],
+        serde_json::json!(["uint64"]),
+        "the new block must land in the real options map; got:\n{out}"
+    );
+    assert!(
+        v["note"].is_string(),
+        "the decoy string value must be untouched; got:\n{out}"
+    );
+}
+
+/// The same decoy rule governs `highSchemaVersion`, whose key hunt shares the
+/// scanner: a commented-out key must not capture the insert.
+#[test]
+fn high_schema_version_key_is_located_past_a_comment_decoy() {
+    let jsonc = "{\n  // \"highSchemaVersion\": [ \"decoy.json\" ]\n  \"highSchemaVersion\": [\n    \"real.json\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module.json").unwrap();
+    let v: serde_json::Value = serde_json::from_str(
+        &out.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("the splice must leave parseable JSONC");
+    let arr = v["highSchemaVersion"].as_array().unwrap();
+    assert_eq!(arr.len(), 2, "insert into the real array; got:\n{out}");
+    assert_eq!(arr[1], "cfgd-module.json");
+}
+
 #[test]
 fn schema_options_block_is_absent_for_an_unlisted_file() {
     assert!(schema_options_block(VALIDATION_JSONC, "cfgd-config-0.10.0.json").is_none());
@@ -642,6 +746,57 @@ fn unknown_formats_finds_formats_at_any_depth() {
         "properties": { "when": { "type": "string", "format": "date-time" } }
     });
     assert_eq!(unknown_formats(&schema), vec!["uint16", "uint32"]);
+}
+
+/// SchemaStore's `cli.js` registers `@hyperupcall/ajv-formats-draft2019`
+/// alongside `ajv-formats`, so the four draft-2019-09 string formats resolve
+/// and must NOT be declared as unknown.
+#[test]
+fn unknown_formats_empty_for_the_draft2019_formats() {
+    let schema = serde_json::json!({
+        "properties": {
+            "a": { "format": "iri" },
+            "b": { "format": "iri-reference" },
+            "c": { "format": "idn-email" },
+            "d": { "format": "idn-hostname" }
+        }
+    });
+    assert!(
+        unknown_formats(&schema).is_empty(),
+        "ajv-formats-draft2019 registers all four: {:?}",
+        unknown_formats(&schema)
+    );
+}
+
+/// A `"format"` key inside a data-carrying subtree (`default`, `const`,
+/// `examples`, `enum`) is a sample VALUE, not a declaration. Collecting it
+/// would emit a bogus `unknownFormat` entry for a format the schema never uses.
+#[test]
+fn unknown_formats_ignores_data_carrying_subtrees() {
+    let schema = serde_json::json!({
+        "properties": {
+            "out": {
+                "type": "object",
+                "default": { "format": "bogus" },
+                "const": { "format": "alsobogus" },
+                "examples": [{ "format": "examplebogus" }],
+                "enum": [{ "format": "enumbogus" }]
+            }
+        }
+    });
+    assert!(
+        unknown_formats(&schema).is_empty(),
+        "sample values must not become format declarations; got {:?}",
+        unknown_formats(&schema)
+    );
+
+    // A real declaration beside the data subtrees is still collected.
+    let mixed = serde_json::json!({
+        "properties": {
+            "port": { "type": "integer", "format": "uint32", "default": { "format": "bogus" } }
+        }
+    });
+    assert_eq!(unknown_formats(&mixed), vec!["uint32"]);
 }
 
 #[test]

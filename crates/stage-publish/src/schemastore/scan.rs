@@ -82,9 +82,10 @@ impl JsonScan {
 }
 
 /// Locate the `"<key>"` key and return the byte index of the `[` that opens the
-/// array immediately following it. The search for `[` runs through the
-/// `JsonScan` state machine, so a `[` inside an intervening string or `//`
-/// comment is skipped.
+/// array immediately following it. Both the key hunt and the `[` hunt run
+/// through the `JsonScan` state machine, and the match must sit in KEY position
+/// (followed by `:`), so a `"<key>"` mentioned inside a `//` comment, or spelt
+/// by a string VALUE, is skipped — as is a `[` inside either.
 pub(crate) fn find_array_open_after(text: &str, key: &str) -> anyhow::Result<usize> {
     find_open_after(text, key, b'[', "an array")
 }
@@ -97,23 +98,43 @@ pub(crate) fn find_object_open_after(text: &str, key: &str) -> anyhow::Result<us
 }
 
 fn find_open_after(text: &str, key: &str, open_b: u8, what: &str) -> anyhow::Result<usize> {
-    let needle = format!("\"{key}\"");
-    let key_at = text
-        .find(&needle)
-        .ok_or_else(|| anyhow::anyhow!("no `{key}` key found"))?;
     let bytes = text.as_bytes();
     let mut scan = JsonScan::new();
-    // Resume scanning just past the key token's closing quote so the key's own
-    // quotes do not desync the string-state tracker.
-    let resume = key_at + needle.len();
-    for (i, &b) in bytes.iter().enumerate().skip(resume) {
-        if let Some(b) = scan.step(b)
-            && b == open_b
+    let mut str_start: Option<usize> = None;
+    let mut was_in_string = false;
+    let mut found_key = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        let structural = scan.step(b);
+        if found_key {
+            // Past the key: the first structural open of the wanted kind is the
+            // container it introduces.
+            if structural == Some(open_b) {
+                return Ok(i);
+            }
+        } else if scan.in_string && !was_in_string {
+            str_start = Some(i + 1);
+        } else if !scan.in_string
+            && was_in_string
+            && let Some(start) = str_start.take()
+            && decode_json_string(&text[start..i]).as_deref() == Some(key)
+            && is_object_key(bytes, i)
         {
-            return Ok(i);
+            found_key = true;
         }
+        was_in_string = scan.in_string;
     }
-    anyhow::bail!("`{key}` key is not followed by {what}")
+    if found_key {
+        anyhow::bail!("`{key}` key is not followed by {what}")
+    }
+    anyhow::bail!("no `{key}` key found")
+}
+
+/// Whether the string literal whose closing quote sits at `quote` is an object
+/// KEY, i.e. the next non-whitespace byte after it is the `:` that separates a
+/// key from its value. A string VALUE that happens to spell the key name is
+/// therefore not mistaken for the key itself.
+fn is_object_key(bytes: &[u8], quote: usize) -> bool {
+    bytes[quote + 1..].iter().find(|b| !b.is_ascii_whitespace()) == Some(&b':')
 }
 
 /// Locate the `"schemas"` key and return the byte index of its opening `[`.

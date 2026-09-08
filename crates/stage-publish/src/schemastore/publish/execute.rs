@@ -91,6 +91,9 @@ fn probe_remote_all_noop_inner(
     );
     let catalog_url = format!("{raw_base}/{CATALOG_PATH}");
     let catalog_json = fetch_raw_required(&client, &catalog_url)?;
+    // One fetch for the whole run: every vendor entry consults the same
+    // allowlist file, for both `highSchemaVersion` and its `options` block.
+    let jsonc = fetch_raw_optional(&client, &format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}"))?;
 
     let project_root = ctx
         .options
@@ -101,9 +104,9 @@ fn probe_remote_all_noop_inner(
     for (entry, description) in effective {
         let plan = plan_schema_scoped(ctx, cfg, entry, description, Some(&catalog_json))?;
 
-        // Vendor: format the LOCAL file and fetch the upstream copy + (for a
-        // too-high dialect) the allowlist. External: no file.
-        let (local_schema, vendor_file, jsonc) = if plan.mode == SchemaMode::Vendor {
+        // Vendor: format the LOCAL file and fetch the upstream copy.
+        // External: no file.
+        let (local_schema, vendor_file) = if plan.mode == SchemaMode::Vendor {
             let local = read_local_vendor_schema(&project_root, entry)?;
             let vendor_url = match plan.vendor_path.as_ref() {
                 Some(rel) => format!("{raw_base}/{}", rel.display()),
@@ -113,20 +116,17 @@ fn probe_remote_all_noop_inner(
             // error is uncertainty ⇒ change-needed. Both are `None`, which the
             // decision reads as change-needed.
             let vendor_file = fetch_raw_optional(&client, &vendor_url)?;
-            // Fetched for every vendor schema, not just a too-high dialect:
-            // the same file also carries the per-file `unknownFormat` options a
-            // draft-07 schema can need.
-            let jsonc_url = format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}");
-            let jsonc = fetch_raw_optional(&client, &jsonc_url)?;
-            (Some(local), vendor_file, jsonc)
+            (Some(local), vendor_file)
         } else {
-            (None, None, None)
+            (None, None)
         };
 
         let remote = RemoteState {
             catalog_json: &catalog_json,
             vendor_file: vendor_file.as_deref(),
-            jsonc: jsonc.as_deref(),
+            // External entries carry no file, so the allowlist is irrelevant
+            // to them; the decision only reads it for a vendor plan.
+            jsonc: local_schema.as_ref().and(jsonc.as_deref()),
         };
         if schema_change_needed(&plan, local_schema.as_deref(), &remote) {
             return Ok(false);

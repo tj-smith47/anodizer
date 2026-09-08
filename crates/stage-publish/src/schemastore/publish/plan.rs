@@ -201,13 +201,16 @@ pub(crate) struct RemoteState<'a> {
 /// - **vendor:** the catalog entry matches AND the upstream vendored file byte-
 ///   equals `local_schema` AND, when the schema's `$schema` dialect is
 ///   [`Dialect::TooHigh`], the vendored filename is already listed in the
-///   upstream `highSchemaVersion` allowlist.
+///   upstream `highSchemaVersion` allowlist AND, when the schema needs a
+///   per-file `options` block ([`desired_options_block`] is non-empty), the
+///   upstream `schema-validation.jsonc` already carries exactly that block
+///   under the vendored filename.
 ///
 /// Any uncertainty is reported as change-needed (`true`): a malformed/absent
 /// catalog, a vendor schema whose upstream file was not fetched
-/// (`vendor_file: None`), or a too-high vendor whose `schema-validation.jsonc`
-/// was not fetched (`jsonc: None`). A no-op verdict is therefore always
-/// CERTAIN — never assumed on missing data.
+/// (`vendor_file: None`), or a vendor needing an allowlist or `options` entry
+/// whose `schema-validation.jsonc` was not fetched (`jsonc: None`). A no-op
+/// verdict is therefore always CERTAIN — never assumed on missing data.
 pub(crate) fn schema_change_needed(
     plan: &SchemaPlan,
     local_schema: Option<&str>,
@@ -288,8 +291,10 @@ pub(super) fn desired_options_block(
         .unwrap_or_default();
     // The derived list is authoritative for `unknownFormat` — a format the
     // schema no longer uses must not be carried forward — while every sibling
-    // option (`unknownKeywords`, `externalSchema`, …) is the reviewer's, and
-    // survives untouched.
+    // option (`unknownKeywords`, `strict`, …) is the reviewer's and survives
+    // verbatim. `externalSchema` is the exception: its values are vendored
+    // FILENAMES, so a stale version of this schema's own family is re-pointed
+    // at the file being published (see [`rekey_external_schema`]).
     block.remove("unknownFormat");
     let unknown = manifest::unknown_formats(&schema);
     if !unknown.is_empty() {
@@ -298,7 +303,39 @@ pub(super) fn desired_options_block(
             Value::Array(unknown.into_iter().map(Value::String).collect()),
         );
     }
+    if let Ok(current) = allowlist_name_for(plan)
+        && let Some(refs) = block.get_mut("externalSchema")
+        && let Some(list) = refs.as_array_mut()
+    {
+        for r in list.iter_mut() {
+            if let Some(name) = r.as_str()
+                && let Some(fresh) = rekey_external_schema(name, &current)
+            {
+                *r = Value::String(fresh);
+            }
+        }
+    }
     block
+}
+
+/// Re-point one `externalSchema` value at `current` when it names an older
+/// versioned file of the SAME schema family, i.e. it shares `current`'s
+/// `<slug>-<version>.json` stem. Returns `None` when the value is already
+/// `current`, names another family, or is not a versioned filename — those
+/// carry forward verbatim, since nothing here knows what version a sibling
+/// family is publishing.
+fn rekey_external_schema(value: &str, current: &str) -> Option<String> {
+    if value == current {
+        return None;
+    }
+    (versioned_stem(value)? == versioned_stem(current)?).then(|| current.to_string())
+}
+
+/// The family stem of a `<slug>-<version>.json` vendored filename, or `None`
+/// when the name carries no `-<version>` suffix.
+fn versioned_stem(filename: &str) -> Option<&str> {
+    let (stem, _version) = filename.strip_suffix(".json")?.rsplit_once('-')?;
+    (!stem.is_empty()).then_some(stem)
 }
 
 /// The `options` block to carry forward: this plan's own vendored filename when
