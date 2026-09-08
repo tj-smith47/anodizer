@@ -420,6 +420,8 @@ impl Stage for NsisStage {
                             name_template,
                             &exe_filename,
                             &krate.name,
+                            target.as_deref(),
+                            amd64_variant.as_deref(),
                         )?;
 
                         let binary_name = binary_name_raw;

@@ -403,6 +403,8 @@ impl Stage for PkgStage {
                             name_template,
                             &pkg_filename,
                             &krate.name,
+                            target.as_deref(),
+                            amd64_variant.as_deref(),
                         )?;
 
                         if dry_run {

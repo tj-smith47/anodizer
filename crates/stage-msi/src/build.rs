@@ -258,6 +258,8 @@ fn build_msi_target(
         msi_cfg.name.as_deref().unwrap_or(default_name),
         &msi_filename,
         crate_name,
+        target.as_deref(),
+        amd64_variant,
     )?;
 
     let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);

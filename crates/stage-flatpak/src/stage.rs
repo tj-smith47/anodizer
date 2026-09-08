@@ -90,6 +90,8 @@ pub(crate) fn process_binary_iteration(
         &resolved_template,
         &output_name,
         &krate.name,
+        target.as_deref(),
+        amd64_variant,
     )?;
 
     // Disambiguate the work dir per amd64 variant so two non-baseline variants

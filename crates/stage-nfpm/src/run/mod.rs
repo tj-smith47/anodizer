@@ -365,6 +365,8 @@ fn process_nfpm_format(
             name_template,
             &pkg_filename,
             crate_name,
+            target.as_deref(),
+            amd64_variant,
         )?,
         None => name_guard.check_conventional(
             &pkg_path,
@@ -372,6 +374,8 @@ fn process_nfpm_format(
             "package",
             &pkg_filename,
             crate_name,
+            target.as_deref(),
+            amd64_variant,
         )?,
     }
 

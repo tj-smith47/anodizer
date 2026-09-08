@@ -498,6 +498,8 @@ impl Stage for AppBundleStage {
                             name_template,
                             &app_name,
                             &krate.name,
+                            target.as_deref(),
+                            amd64_variant.as_deref(),
                         )?;
 
                         // Derive the binary name from the file path

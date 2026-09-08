@@ -414,6 +414,8 @@ fn process_snap_target(
         name_template,
         &snap_filename,
         crate_name,
+        target.as_deref(),
+        amd64_variant,
     )?;
 
     let artifact_metadata = {

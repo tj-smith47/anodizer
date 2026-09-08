@@ -6793,6 +6793,10 @@ mod archive_name_guard {
             "{err}"
         );
         assert!(err.contains("more than once"), "{err}");
+        // Both binaries come from one target: the only variable that
+        // separates them is `.Binary`, and `.Arch` would be a false lead.
+        assert!(err.contains("{{ .Binary }}"), "{err}");
+        assert!(!err.contains("{{ .Arch }}'"), "{err}");
     }
 
     #[test]
@@ -6806,6 +6810,10 @@ mod archive_name_guard {
         let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("archives:"), "{err}");
         assert!(err.contains("more than once"), "{err}");
+        // Across targets the remedy is an architecture variable, never
+        // `.Binary` (the template already carries it).
+        assert!(err.contains("Add '{{ .Arch }}'"), "{err}");
+        assert!(!err.contains("add '{{ .Binary }}'"), "{err}");
     }
 }
 

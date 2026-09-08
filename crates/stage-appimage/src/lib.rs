@@ -547,6 +547,8 @@ fn collect_config_jobs(
             &resolved_template,
             &filename,
             &primary.crate_name,
+            primary.target.as_deref(),
+            amd64_variant.as_deref(),
         )?;
 
         // Disambiguate the AppDir per amd64 variant so two non-baseline

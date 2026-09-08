@@ -723,6 +723,8 @@ fn build_makeself_platform_job(
         name_template,
         &filename,
         &primary.crate_name,
+        primary.target.as_deref(),
+        amd64_variant,
     )?;
 
     let rendered_description = cfg

@@ -291,13 +291,14 @@ pub(crate) fn archive_one_config(
             // as the installer stages; the group carries one variant (the
             // first binary's, matching the metadata propagation below).
             let (_, group_arch) = map_target(target);
+            let group_variant: Option<String> = selected_bins
+                .first()
+                .and_then(|b| b.metadata.get("amd64_variant"))
+                .cloned();
             anodizer_core::archive_name::seed_amd64_variant_var(
                 ctx.template_vars_mut(),
                 &group_arch,
-                selected_bins
-                    .first()
-                    .and_then(|b| b.metadata.get("amd64_variant"))
-                    .map(String::as_str),
+                group_variant.as_deref(),
             );
             let tvars = ctx.template_vars_mut();
             // CrateName is set per-crate so the multi-crate default
@@ -743,6 +744,8 @@ pub(crate) fn archive_one_config(
                             binary_name_tmpl,
                             stem,
                             crate_name,
+                            target,
+                            group_variant.as_deref(),
                         )?;
                         if replacing && !dry_run {
                             log.verbose(&format!(
@@ -764,6 +767,8 @@ pub(crate) fn archive_one_config(
                         name_tmpl,
                         &archive_filename,
                         crate_name,
+                        target,
+                        group_variant.as_deref(),
                     )?;
                     if replacing && !dry_run {
                         log.verbose(&format!(

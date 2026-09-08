@@ -524,6 +524,8 @@ impl Stage for DmgStage {
                             name_template,
                             &dmg_filename,
                             &krate.name,
+                            target.as_deref(),
+                            amd64_variant.as_deref(),
                         )?;
 
                         let vol_name = resolve_volume_name(ctx, dmg_cfg, &crate_project_name)?;

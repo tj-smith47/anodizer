@@ -139,6 +139,7 @@ pub(crate) fn render_binary_outputs<'a>(
 /// `artifact` is the user-facing noun for what this path holds (`"archive"`,
 /// `"binary"`), used in the collision message. Returns whether the path is
 /// already on disk, so the caller can note the overwrite in its own words.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn claim_output_path(
     name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
     path: &Path,
@@ -146,6 +147,8 @@ pub(crate) fn claim_output_path(
     name_template: &str,
     rendered: &str,
     crate_name: &str,
+    target: &str,
+    amd64_variant: Option<&str>,
 ) -> Result<bool> {
     name_guard.check(
         path,
@@ -154,6 +157,8 @@ pub(crate) fn claim_output_path(
         name_template,
         rendered,
         crate_name,
+        Some(target),
+        amd64_variant,
     )?;
     Ok(path.exists())
 }

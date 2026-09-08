@@ -222,7 +222,20 @@ archives:
 
 A template without `{{ .Binary }}` renders one path for every binary the entry
 selects, so an entry shipping two or more binaries is rejected rather than
-letting one overwrite the other.
+letting one overwrite the other:
+
+```text
+archives: name template '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+rendered the same binary 'myapp_1.0.0_linux_amd64' more than once for crate
+'myapp' on build target 'x86_64-unknown-linux-gnu', so one binary would
+silently overwrite another. Both come from the same build target, so no
+architecture variable can separate them: add '{{ .Binary }}' to the `name` …
+```
+
+The remedy names the one variable that separates the two outputs: `{{ .Binary }}`
+when both belong to the same build target (two binaries through one template),
+`{{ .Amd64 }}` when they are two amd64 micro-architecture variants of one
+target, `{{ .Arch }}` when they come from different targets.
 
 ## Re-running over a populated `dist/`
 
@@ -244,7 +257,9 @@ caught in `--dry-run` and `--snapshot` too:
 ```text
 archives: name template '{{ ProjectName }}' rendered the same archive
 'myapp.tar.gz' more than once for crate 'myapp', so one build target would
-silently overwrite another. Add '{{ .Arch }}' to the `name` …
+silently overwrite another. Add '{{ .Arch }}' to the `name`
+(e.g. "{{ .ProjectName }}_{{ .Arch }}") so each build target's archive gets a
+distinct path.
 ```
 
 ## Disabling archives
