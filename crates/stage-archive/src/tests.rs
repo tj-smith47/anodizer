@@ -6652,17 +6652,22 @@ mod archive_name_guard {
         binary_cfg.templated_files = Some(templated.clone());
         let mut ctx = build_ctx(&tmp, &["myapp"], &[binary_cfg], &[target], false, false);
         let dist = ctx.config.dist.clone();
+        // A FILE where the staging tree would go: the renderer's
+        // create_dir_all cannot succeed over it, so a clean run proves the
+        // renderer never ran. The stage removes the tree at the end of every
+        // run, which makes its post-run absence prove nothing.
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(
+            dist.join(crate::run::ARCHIVE_TEMPLATED_STAGING_DIR),
+            b"blocked",
+        )
+        .unwrap();
+
         ArchiveStage.run(&mut ctx).unwrap();
         assert!(
             dist.join("myapp_1.0.0_linux_amd64").exists(),
             "binary output missing: {:?}",
             fs::read_dir(&dist).unwrap().flatten().collect::<Vec<_>>()
-        );
-        assert!(
-            !dist
-                .join(crate::run::ARCHIVE_TEMPLATED_STAGING_DIR)
-                .exists(),
-            "templated_files staging tree left in dist/"
         );
 
         let tmp2 = TempDir::new().unwrap();
@@ -6751,6 +6756,43 @@ mod archive_name_guard {
         .unwrap_err()
         .to_string();
         assert!(err.contains("empty stem for binary 'myapp'"), "{err}");
+    }
+
+    #[test]
+    fn multi_binary_entry_with_a_binary_less_template_bails() {
+        // The escape hatch the docs offer -- pin the old asset name with an
+        // explicit name_template -- only holds for an entry shipping ONE
+        // binary. Two binaries through a template carrying no `.Binary`
+        // render one path, and the second would overwrite the first.
+        let tmp = TempDir::new().unwrap();
+        let target = "x86_64-unknown-linux-gnu";
+        let cfgs = [cfg(
+            "default",
+            Some("{{ .ProjectName }}_{{ .Os }}"),
+            &["binary"],
+        )];
+        let mut ctx = build_ctx(&tmp, &["myapp"], &cfgs, &[target], false, false);
+        let bin_path = tmp.path().join(target).join("myhelper");
+        fs::write(&bin_path, b"helper").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myhelper".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+
+        let err = ArchiveStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("rendered the same binary 'proj_linux'"),
+            "{err}"
+        );
+        assert!(err.contains("more than once"), "{err}");
     }
 
     #[test]
