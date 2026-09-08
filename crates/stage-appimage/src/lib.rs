@@ -28,7 +28,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -540,16 +540,18 @@ fn collect_config_jobs(
         // Reject a `filename:` that renders the same `.AppImage` path for two
         // targets / amd64 variants (an override lacking `{{ .Arch }}` /
         // `{{ .Amd64 }}`): the second would silently overwrite the first.
-        arch_guard.check(
-            &output_path,
-            "appimage",
-            "image",
-            &resolved_template,
-            &filename,
-            &primary.crate_name,
-            primary.target.as_deref(),
-            amd64_variant.as_deref(),
-        )?;
+        arch_guard.check(Claim {
+            path: &output_path,
+            stage: "appimage",
+            artifact: "image",
+            template_key: "filename",
+            name_template: Some(&resolved_template),
+            rendered: &filename,
+            crate_name: &primary.crate_name,
+            target: primary.target.as_deref(),
+            amd64_variant: amd64_variant.as_deref(),
+            exposed: &ctx.template_vars().defined_names(),
+        })?;
 
         // Disambiguate the AppDir per amd64 variant so two non-baseline
         // variants of one platform don't stage into (and clobber) the same dir.

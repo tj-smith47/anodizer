@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use anodizer_core::arch_path_guard::Claim;
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, FormatOverride};
 use anodizer_core::context::Context;
@@ -740,17 +741,23 @@ pub(crate) fn archive_one_config(
                     // collision on the second binary must refuse the whole
                     // entry, not leave the first binary already copied into
                     // dist/ under the contested name.
+                    let exposed = ctx.template_vars().defined_names();
                     let mut replacing_outputs = Vec::with_capacity(binary_outputs.len());
                     for (stem, dest, _) in &binary_outputs {
                         replacing_outputs.push(claim_output_path(
                             name_guard,
-                            dest,
-                            "binary",
-                            binary_name_tmpl,
-                            stem,
-                            crate_name,
-                            target,
-                            group_variant.as_deref(),
+                            Claim {
+                                path: dest,
+                                stage: "archives",
+                                artifact: "binary",
+                                template_key: "name_template",
+                                name_template: Some(binary_name_tmpl),
+                                rendered: stem,
+                                crate_name,
+                                target: Some(target),
+                                amd64_variant: group_variant.as_deref(),
+                                exposed: &exposed,
+                            },
                         )?);
                     }
                     for ((stem, dest, bin), replacing) in
@@ -771,13 +778,18 @@ pub(crate) fn archive_one_config(
                 } else {
                     let replacing = claim_output_path(
                         name_guard,
-                        &archive_path,
-                        "archive",
-                        name_tmpl,
-                        &archive_filename,
-                        crate_name,
-                        target,
-                        group_variant.as_deref(),
+                        Claim {
+                            path: &archive_path,
+                            stage: "archives",
+                            artifact: "archive",
+                            template_key: "name_template",
+                            name_template: Some(name_tmpl),
+                            rendered: &archive_filename,
+                            crate_name,
+                            target: Some(target),
+                            amd64_variant: group_variant.as_deref(),
+                            exposed: &ctx.template_vars().defined_names(),
+                        },
                     )?;
                     if replacing && !dry_run {
                         log.verbose(&format!(

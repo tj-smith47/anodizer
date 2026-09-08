@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -517,16 +517,18 @@ impl Stage for DmgStage {
                         let output_dir = dist.join("macos");
                         let dmg_path = output_dir.join(&dmg_filename);
 
-                        arch_guard.check(
-                            &dmg_path,
-                            "dmgs",
-                            "image",
-                            name_template,
-                            &dmg_filename,
-                            &krate.name,
-                            target.as_deref(),
-                            amd64_variant.as_deref(),
-                        )?;
+                        arch_guard.check(Claim {
+                            path: &dmg_path,
+                            stage: "dmgs",
+                            artifact: "image",
+                            template_key: "name",
+                            name_template: Some(name_template),
+                            rendered: &dmg_filename,
+                            crate_name: &krate.name,
+                            target: target.as_deref(),
+                            amd64_variant: amd64_variant.as_deref(),
+                            exposed: &ctx.template_vars().defined_names(),
+                        })?;
 
                         let vol_name = resolve_volume_name(ctx, dmg_cfg, &crate_project_name)?;
 
@@ -2903,7 +2905,13 @@ crates:
         let msg = err.to_string();
         assert!(msg.contains("dmgs:"), "{msg}");
         assert!(msg.contains("crate 'myapp'"), "{msg}");
-        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+        // One target through two entries: the default template already
+        // carries `{{ Arch }}`, and `.Binary` is not a variable this stage defines.
+        assert!(
+            msg.contains("give each config entry a distinct `name`"),
+            "{msg}"
+        );
+        assert!(!msg.contains(".Binary"), "{msg}");
     }
 
     #[test]

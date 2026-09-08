@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
@@ -491,16 +491,18 @@ impl Stage for AppBundleStage {
                         let output_dir = dist.join("macos");
                         let app_dir = output_dir.join(&app_name);
 
-                        arch_guard.check(
-                            &app_dir,
-                            "app_bundles",
-                            "bundle",
-                            name_template,
-                            &app_name,
-                            &krate.name,
-                            target.as_deref(),
-                            amd64_variant.as_deref(),
-                        )?;
+                        arch_guard.check(Claim {
+                            path: &app_dir,
+                            stage: "app_bundles",
+                            artifact: "bundle",
+                            template_key: "name",
+                            name_template: Some(name_template),
+                            rendered: &app_name,
+                            crate_name: &krate.name,
+                            target: target.as_deref(),
+                            amd64_variant: amd64_variant.as_deref(),
+                            exposed: &ctx.template_vars().defined_names(),
+                        })?;
 
                         // Derive the binary name from the file path
                         let binary_name = binary_path
@@ -2577,7 +2579,15 @@ crates:
         let msg = err.to_string();
         assert!(msg.contains("app_bundles:"), "{msg}");
         assert!(msg.contains("crate 'myapp'"), "{msg}");
-        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+        // Both entries render one target through the default template, which
+        // already carries `{{ Arch }}`: advising it again would reproduce the
+        // collision, and `.Binary` is not a variable this stage defines.
+        assert!(
+            msg.contains("give each config entry a distinct `name`"),
+            "{msg}"
+        );
+        assert!(!msg.contains(".Binary"), "{msg}");
+        assert!(!msg.contains("add '{{ .Arch }}'"), "{msg}");
     }
 
     #[test]

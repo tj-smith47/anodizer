@@ -357,27 +357,18 @@ fn process_nfpm_format(
     // the user sees the template at fault; the conventional default has no real
     // template, so its dedicated path names "the conventional default filename"
     // and advises `{{ .Amd64 }}` (the default already carries `{{ .Arch }}`).
-    match nfpm_cfg.file_name_template.as_deref() {
-        Some(name_template) => name_guard.check(
-            &pkg_path,
-            "nfpms",
-            "package",
-            name_template,
-            &pkg_filename,
-            crate_name,
-            target.as_deref(),
-            amd64_variant,
-        )?,
-        None => name_guard.check_conventional(
-            &pkg_path,
-            "nfpms",
-            "package",
-            &pkg_filename,
-            crate_name,
-            target.as_deref(),
-            amd64_variant,
-        )?,
-    }
+    name_guard.check(anodizer_core::arch_path_guard::Claim {
+        path: &pkg_path,
+        stage: "nfpms",
+        artifact: "package",
+        template_key: "file_name_template",
+        name_template: nfpm_cfg.file_name_template.as_deref(),
+        rendered: &pkg_filename,
+        crate_name,
+        target: target.as_deref(),
+        amd64_variant,
+        exposed: &ctx.template_vars().defined_names(),
+    })?;
 
     let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
     if let Some(ref id) = nfpm_cfg.id {

@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -716,16 +716,18 @@ fn build_makeself_platform_job(
     // or two amd64 variants (a constant override lacking `{{ .Arch }}` /
     // `{{ .Amd64 }}`): the second job would silently overwrite the first.
     let output_path = dist.join(&filename);
-    arch_guard.check(
-        &output_path,
-        "makeself",
-        "package",
-        name_template,
-        &filename,
-        &primary.crate_name,
-        primary.target.as_deref(),
+    arch_guard.check(Claim {
+        path: &output_path,
+        stage: "makeself",
+        artifact: "package",
+        template_key: "filename",
+        name_template: Some(name_template),
+        rendered: &filename,
+        crate_name: &primary.crate_name,
+        target: primary.target.as_deref(),
         amd64_variant,
-    )?;
+        exposed: &ctx.template_vars().defined_names(),
+    })?;
 
     let rendered_description = cfg
         .description
@@ -1542,7 +1544,13 @@ crates:
         let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("makeself:"), "{err}");
         assert!(err.contains("crate 'proj'"), "{err}");
-        assert!(err.contains("{{ .Arch }}"), "{err}");
+        // One target through two entries: the default template already
+        // carries `{{ Arch }}`, and `.Binary` is not a variable this stage defines.
+        assert!(
+            err.contains("give each config entry a distinct `filename`"),
+            "{err}"
+        );
+        assert!(!err.contains(".Binary"), "{err}");
     }
 
     #[test]

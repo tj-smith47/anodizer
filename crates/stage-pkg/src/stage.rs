@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -396,16 +396,18 @@ impl Stage for PkgStage {
                         let output_dir = dist.join("macos");
                         let pkg_path = output_dir.join(&pkg_filename);
 
-                        arch_guard.check(
-                            &pkg_path,
-                            "pkgs",
-                            "package",
-                            name_template,
-                            &pkg_filename,
-                            &krate.name,
-                            target.as_deref(),
-                            amd64_variant.as_deref(),
-                        )?;
+                        arch_guard.check(Claim {
+                            path: &pkg_path,
+                            stage: "pkgs",
+                            artifact: "package",
+                            template_key: "name",
+                            name_template: Some(name_template),
+                            rendered: &pkg_filename,
+                            crate_name: &krate.name,
+                            target: target.as_deref(),
+                            amd64_variant: amd64_variant.as_deref(),
+                            exposed: &ctx.template_vars().defined_names(),
+                        })?;
 
                         if dry_run {
                             log.status(&format!(

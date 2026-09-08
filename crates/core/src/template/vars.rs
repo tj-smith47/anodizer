@@ -83,6 +83,17 @@ impl TemplateVars {
         self.vars.get(key)
     }
 
+    /// Names of the string variables currently defined with a non-empty
+    /// value — what a `{{ .Name }}` reference in a template would render
+    /// as something other than the empty string.
+    pub fn defined_names(&self) -> std::collections::BTreeSet<String> {
+        self.vars
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     pub fn set_env(&mut self, key: &str, value: &str) {
         self.env.insert(key.to_string(), value.to_string());
     }

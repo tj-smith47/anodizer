@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::Artifact;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -83,16 +83,18 @@ pub(crate) fn process_binary_iteration(
     // Reject a `name_template` that renders the same `.flatpak` path for two
     // build targets / amd64 variants (an override lacking `{{ .Arch }}` /
     // `{{ .Amd64 }}`): the second bundle would silently overwrite the first.
-    arch_guard.check(
-        &output_path,
-        "flatpak",
-        "bundle",
-        &resolved_template,
-        &output_name,
-        &krate.name,
-        target.as_deref(),
+    arch_guard.check(Claim {
+        path: &output_path,
+        stage: "flatpak",
+        artifact: "bundle",
+        template_key: "name_template",
+        name_template: Some(&resolved_template),
+        rendered: &output_name,
+        crate_name: &krate.name,
+        target: target.as_deref(),
         amd64_variant,
-    )?;
+        exposed: &ctx.template_vars().defined_names(),
+    })?;
 
     // Disambiguate the work dir per amd64 variant so two non-baseline variants
     // of one flatpak arch don't stage into (and race over) the same build dir.

@@ -407,16 +407,18 @@ fn process_snap_target(
         .name_template
         .as_deref()
         .unwrap_or(DEFAULT_SNAP_NAME_TEMPLATE);
-    name_guard.check(
-        &snap_path,
-        "snapcrafts",
-        "snap",
-        name_template,
-        &snap_filename,
+    name_guard.check(anodizer_core::arch_path_guard::Claim {
+        path: &snap_path,
+        stage: "snapcrafts",
+        artifact: "snap",
+        template_key: "name_template",
+        name_template: Some(name_template),
+        rendered: &snap_filename,
         crate_name,
-        target.as_deref(),
+        target: target.as_deref(),
         amd64_variant,
-    )?;
+        exposed: &ctx.template_vars().defined_names(),
+    })?;
 
     let artifact_metadata = {
         let mut m = HashMap::new();

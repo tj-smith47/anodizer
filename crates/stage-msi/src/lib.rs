@@ -2770,7 +2770,13 @@ crates:
         let msg = err.to_string();
         assert!(msg.contains("msis:"), "{msg}");
         assert!(msg.contains("crate 'myapp'"), "{msg}");
-        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+        // One target through two entries: the default template already
+        // carries `{{ MsiArch }}`, and `.Binary` is not a variable this stage defines.
+        assert!(
+            msg.contains("give each config entry a distinct `name`"),
+            "{msg}"
+        );
+        assert!(!msg.contains(".Binary"), "{msg}");
     }
 
     #[test]

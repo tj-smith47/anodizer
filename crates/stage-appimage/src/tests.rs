@@ -995,7 +995,13 @@ fn two_configs_same_default_name_bail_across_configs() {
 
     assert!(err.contains("appimage:"), "{err}");
     assert!(err.contains("crate 'myapp'"), "{err}");
-    assert!(err.contains("{{ .Arch }}"), "{err}");
+    // One target through two entries: no target variable separates them,
+    // and `.Binary` is not one this stage defines.
+    assert!(
+        err.contains("give each config entry a distinct `filename`"),
+        "{err}"
+    );
+    assert!(!err.contains(".Binary"), "{err}");
 }
 
 #[test]

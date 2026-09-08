@@ -910,7 +910,13 @@ fn test_flatpak_two_configs_same_default_name_bail_across_configs() {
     let err = FlatpakStage.run(&mut ctx).unwrap_err().to_string();
     assert!(err.contains("flatpak:"), "{err}");
     assert!(err.contains("crate 'myapp'"), "{err}");
-    assert!(err.contains("{{ .Arch }}"), "{err}");
+    // One target through two entries: the default template already
+    // carries `{{ Arch }}`, and `.Binary` is not a variable this stage defines.
+    assert!(
+        err.contains("give each config entry a distinct `name_template`"),
+        "{err}"
+    );
+    assert!(!err.contains(".Binary"), "{err}");
 }
 
 // -----------------------------------------------------------------------

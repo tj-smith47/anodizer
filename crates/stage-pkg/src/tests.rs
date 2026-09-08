@@ -2148,7 +2148,13 @@ fn test_two_configs_same_crate_same_arch_default_name_bails() {
     let msg = err.to_string();
     assert!(msg.contains("pkgs:"), "{msg}");
     assert!(msg.contains("crate 'myapp'"), "{msg}");
-    assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    // One target through two entries: the default template already
+    // carries `{{ Arch }}`, and `.Binary` is not a variable this stage defines.
+    assert!(
+        msg.contains("give each config entry a distinct `name`"),
+        "{msg}"
+    );
+    assert!(!msg.contains(".Binary"), "{msg}");
 }
 
 #[test]

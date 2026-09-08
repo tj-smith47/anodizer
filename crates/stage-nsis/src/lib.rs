@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -413,16 +413,18 @@ impl Stage for NsisStage {
                         // real `dist/windows/` location regardless of its chdir.
                         let exe_path = absolutize_output_path(exe_path);
 
-                        arch_guard.check(
-                            &exe_path,
-                            "nsis",
-                            "installer",
-                            name_template,
-                            &exe_filename,
-                            &krate.name,
-                            target.as_deref(),
-                            amd64_variant.as_deref(),
-                        )?;
+                        arch_guard.check(Claim {
+                            path: &exe_path,
+                            stage: "nsis",
+                            artifact: "installer",
+                            template_key: "name",
+                            name_template: Some(name_template),
+                            rendered: &exe_filename,
+                            crate_name: &krate.name,
+                            target: target.as_deref(),
+                            amd64_variant: amd64_variant.as_deref(),
+                            exposed: &name_vars.defined_names(),
+                        })?;
 
                         let binary_name = binary_name_raw;
 

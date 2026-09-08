@@ -6824,7 +6824,7 @@ mod archive_name_guard {
         assert!(err.contains("more than once"), "{err}");
         // Across targets the remedy is an architecture variable, never
         // `.Binary` (the template already carries it).
-        assert!(err.contains("Add '{{ .Arch }}'"), "{err}");
+        assert!(err.contains("add '{{ .Arch }}'"), "{err}");
         assert!(!err.contains("add '{{ .Binary }}'"), "{err}");
     }
 }

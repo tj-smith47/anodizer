@@ -9,7 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::ArchPathGuard;
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::util::{parse_mod_timestamp, set_file_mtime};
@@ -251,16 +251,18 @@ fn build_msi_target(
     let msi_filename = compute_msi_filename(ctx, msi_cfg, crate_name, target.as_deref())?;
     let msi_path = output_dir.join(&msi_filename);
 
-    arch_guard.check(
-        &msi_path,
-        "msis",
-        "installer",
-        msi_cfg.name.as_deref().unwrap_or(default_name),
-        &msi_filename,
+    arch_guard.check(Claim {
+        path: &msi_path,
+        stage: "msis",
+        artifact: "installer",
+        template_key: "name",
+        name_template: Some(msi_cfg.name.as_deref().unwrap_or(default_name)),
+        rendered: &msi_filename,
         crate_name,
-        target.as_deref(),
+        target: target.as_deref(),
         amd64_variant,
-    )?;
+        exposed: &ctx.template_vars().defined_names(),
+    })?;
 
     let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);
 

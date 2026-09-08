@@ -6044,7 +6044,14 @@ fn test_nfpm_two_configs_same_default_name_bail_across_configs() {
     assert!(err.contains("nfpms:"), "{err}");
     assert!(err.contains("crate 'myapp'"), "{err}");
     assert!(err.contains("conventional default filename"), "{err}");
-    assert!(err.contains("{{ .Amd64 }}"), "{err}");
+    // Two entries, one target, one amd64 variant: `.Amd64` renders the same
+    // for both, so only distinct per-entry templates separate them.
+    assert!(
+        err.contains("give each config entry a distinct `file_name_template`"),
+        "{err}"
+    );
+    assert!(!err.contains("{{ .Amd64 }}"), "{err}");
+    assert!(!err.contains(".Binary"), "{err}");
 }
 
 /// With no top-level `metadata:` block and a bare `nfpm:` config (no
