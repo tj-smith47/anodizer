@@ -79,7 +79,15 @@ jobs:
   # job can never be forgotten here and fail post-tag on the irreversible leg.
   preflight:
     name: Preflight secrets
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    # workflow_run leg gated to same-repo push CI: a fork PR's CI run is
+    # event 'pull_request' with head_repository = the fork, so secrets never
+    # reach fork head_sha.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       !startsWith(github.event.workflow_run.head_commit.message, 'chore(release): bump'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # id-token: write so the OIDC request vars (ACTIONS_ID_TOKEN_REQUEST_URL /
@@ -176,7 +184,13 @@ jobs:
   # needed — the same reason the github-hosted gate cannot validate them.
   blob-preflight:
     name: Preflight in-cluster endpoints
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    # Same fork guard as preflight — keep the in-cluster runner off fork head_sha.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       !startsWith(github.event.workflow_run.head_commit.message, 'chore(release): bump'))
     runs-on: arc-anodizer
     timeout-minutes: 10
     permissions:
