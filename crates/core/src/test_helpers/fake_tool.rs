@@ -105,7 +105,6 @@ impl FakeToolDir {
             exit: 0,
             script: None,
             creates: Vec::new(),
-            drains_stdin: false,
         }
     }
 
@@ -189,7 +188,6 @@ pub struct ToolSpec<'a> {
     exit: i32,
     script: Option<String>,
     creates: Vec<(String, String)>,
-    drains_stdin: bool,
 }
 
 impl ToolSpec<'_> {
@@ -217,19 +215,6 @@ impl ToolSpec<'_> {
     /// Unix only.
     pub fn creates(mut self, rel_path: impl Into<String>, contents: impl Into<String>) -> Self {
         self.creates.push((rel_path.into(), contents.into()));
-        self
-    }
-
-    /// Drain stdin to EOF before emitting output.
-    ///
-    /// Only for a stub whose PRODUCER actually pipes it input (a kms CLI fed
-    /// plaintext, say): without the drain the producer's write hits a broken
-    /// pipe when the stub exits first. Off by default, because a stub that
-    /// drains stdin the caller never closes blocks until the caller does —
-    /// and a caller using `Command::status()` hands the stub the test
-    /// process's own stdin, which nothing ever closes.
-    pub fn drains_stdin(mut self) -> Self {
-        self.drains_stdin = true;
         self
     }
 
@@ -287,9 +272,6 @@ impl ToolSpec<'_> {
                 s.push('\n');
             }
         } else {
-            if self.drains_stdin {
-                s.push_str("cat >/dev/null 2>&1\n");
-            }
             if !self.stdout.is_empty() {
                 s.push_str(&format!("printf '%s' {}\n", sh_quote(&self.stdout)));
             }
