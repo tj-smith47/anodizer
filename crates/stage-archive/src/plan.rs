@@ -53,6 +53,10 @@ pub(crate) struct ConfigPlan {
 /// One build target of an entry.
 pub(crate) struct TargetPlan {
     pub target: String,
+    /// The `Binary` this target's naming context renders — the first
+    /// selected binary, matching [`seed_target_context`]. Empty for a meta
+    /// entry, which selects none.
+    pub binary: Option<String>,
     pub selected_bins: Vec<Artifact>,
     pub group_variant: Option<String>,
     pub archive_stem: String,
@@ -82,6 +86,9 @@ pub(crate) struct FormatPlan {
 pub(crate) struct BinaryOutput {
     pub stem: String,
     pub dest: PathBuf,
+    /// The binary this output was named after, as `{{ .Binary }}` rendered
+    /// it — the per-binary naming context each output is rendered under.
+    pub binary: Option<String>,
     pub bin: Artifact,
     /// `dest` was already on disk before this run wrote anything.
     pub replacing: bool,
@@ -107,6 +114,7 @@ impl CratePlan {
                             target: Some(&tp.target),
                             amd64_variant: tp.group_variant.as_deref(),
                             entry: cfg.index,
+                            binary: tp.binary.as_deref(),
                             exposed: &fp.exposed,
                         };
                         if fp.format == "binary" {
@@ -115,6 +123,7 @@ impl CratePlan {
                                 artifact: "binary",
                                 name_template: Some(&cfg.binary_name_tmpl),
                                 rendered: &out.stem,
+                                binary: out.binary.as_deref(),
                                 ..common
                             })) as Box<dyn Iterator<Item = Claim<'_>>>
                         } else {
@@ -335,6 +344,7 @@ pub(crate) fn plan_crate(
                         replacing: dest.exists(),
                         stem,
                         dest,
+                        binary: bin.binary_name(),
                         bin: bin.clone(),
                     })
                     .collect()
@@ -364,6 +374,7 @@ pub(crate) fn plan_crate(
             plan.targets.push(TargetPlan {
                 target: target.clone(),
                 binary_only: formats.iter().all(|f| f.format == "binary"),
+                binary: selected_bins.first().and_then(|b| b.binary_name()),
                 selected_bins,
                 group_variant,
                 archive_stem,

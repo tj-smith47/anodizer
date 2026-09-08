@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
@@ -502,6 +502,7 @@ impl Stage for AppBundleStage {
                             target: target.as_deref(),
                             amd64_variant: amd64_variant.as_deref(),
                             entry,
+                            binary: binary_var(ctx.template_vars()),
                             exposed: &ctx.template_vars().defined_names(),
                         })?;
 

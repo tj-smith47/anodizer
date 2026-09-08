@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -407,6 +407,7 @@ impl Stage for PkgStage {
                             target: target.as_deref(),
                             amd64_variant: amd64_variant.as_deref(),
                             entry,
+                            binary: binary_var(ctx.template_vars()),
                             exposed: &ctx.template_vars().defined_names(),
                         })?;
 

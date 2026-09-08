@@ -9,7 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::util::{parse_mod_timestamp, set_file_mtime};
@@ -264,6 +264,7 @@ fn build_msi_target(
         target: target.as_deref(),
         amd64_variant,
         entry,
+        binary: binary_var(ctx.template_vars()),
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

@@ -420,6 +420,7 @@ fn process_snap_target(
         target: target.as_deref(),
         amd64_variant,
         entry,
+        binary: anodizer_core::arch_path_guard::binary_var(ctx.template_vars()),
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

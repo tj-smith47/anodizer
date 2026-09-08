@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::Artifact;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -95,6 +95,7 @@ pub(crate) fn process_binary_iteration(
         target: target.as_deref(),
         amd64_variant,
         entry,
+        binary: binary_var(ctx.template_vars()),
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

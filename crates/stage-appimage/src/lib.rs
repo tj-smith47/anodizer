@@ -28,7 +28,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -553,6 +553,7 @@ fn collect_config_jobs(
             target: primary.target.as_deref(),
             amd64_variant: amd64_variant.as_deref(),
             entry,
+            binary: binary_var(ctx.template_vars()),
             exposed: &ctx.template_vars().defined_names(),
         })?;
 

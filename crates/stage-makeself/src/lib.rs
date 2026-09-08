@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::arch_path_guard::{ArchPathGuard, Claim};
+use anodizer_core::arch_path_guard::{ArchPathGuard, Claim, binary_var};
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -731,6 +731,7 @@ fn build_makeself_platform_job(
         target: primary.target.as_deref(),
         amd64_variant,
         entry,
+        binary: binary_var(ctx.template_vars()),
         exposed: &ctx.template_vars().defined_names(),
     })?;
 

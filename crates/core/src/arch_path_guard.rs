@@ -21,7 +21,7 @@
 //! | prior vs new claim | remedy |
 //! |---|---|
 //! | different crate | `{{ .CrateName }}` |
-//! | same crate, target and amd64 variant, different config entry | a distinct name template per entry |
+//! | same crate, target and amd64 variant, different config entry | a distinct name template per entry (plus `{{ .Binary }}` when the entries select different binaries) |
 //! | same crate, target, amd64 variant and config entry | `{{ .Binary }}` |
 //! | same crate and target, different amd64 variant | `{{ .Amd64 }}` |
 //! | same crate, OS and architecture, different triple (gnu vs musl) | `{{ .Target }}` |
@@ -29,9 +29,11 @@
 //! | otherwise | `{{ .Arch }}` |
 //!
 //! The config-entry row matters because a stage's config is a `Vec`: two
-//! entries of one crate render the same `.Binary`, so advising `{{ .Binary }}`
-//! there would reproduce the collision. Only a collision INSIDE one entry is
-//! one the binary name can separate.
+//! entries of one crate that select the SAME binary render the same
+//! `.Binary`, so advising `{{ .Binary }}` there would reproduce the
+//! collision. When the two entries select different binaries (an
+//! `archives:` pair filtered by `builds:`, say) the message says so and
+//! names `{{ .Binary }}` as a second way out.
 //!
 //! A variable is only advised when the claim's [`Claim::exposed`] set — the
 //! names the stage's naming context defines with a non-empty value — carries
@@ -77,6 +79,12 @@ pub struct Claim<'a> {
     /// so the remedy for a collision between them is a distinct name
     /// template rather than a template variable.
     pub entry: usize,
+    /// The binary this output was named after — the value `{{ .Binary }}`
+    /// renders to in the claim's naming context (see [`binary_var`]);
+    /// `None` when the context defines none. Two entries that select
+    /// different binaries CAN be separated by `{{ .Binary }}`, so the
+    /// diagnostic reads it before telling the user no variable will do.
+    pub binary: Option<&'a str>,
     /// The amd64 micro-architecture level (`v3`); `None` for the baseline
     /// or a non-amd64 target.
     pub amd64_variant: Option<&'a str>,
@@ -96,6 +104,7 @@ struct Prior {
     target: Option<String>,
     amd64_variant: Option<String>,
     entry: usize,
+    binary: Option<String>,
 }
 
 /// Tracks the output paths one guarded scope has produced across every
@@ -120,6 +129,7 @@ impl ArchPathGuard {
             target: claim.target.map(str::to_string),
             amd64_variant: claim.amd64_variant.map(str::to_string),
             entry: claim.entry,
+            binary: claim.binary.map(str::to_string),
         };
         let Some(prev) = self.seen.get(claim.path) else {
             self.seen.insert(claim.path.to_path_buf(), prior);
@@ -127,6 +137,17 @@ impl ArchPathGuard {
         };
         anyhow::bail!("{}", collision_message(&claim, prev));
     }
+}
+
+/// The `Binary` a naming context renders — what a `{{ .Binary }}` in the
+/// name template would expand to — or `None` when the context defines none.
+///
+/// Stages pass the result as [`Claim::binary`] so a collision between two
+/// config entries can say whether the binary name separates them.
+pub fn binary_var(vars: &crate::template::TemplateVars) -> Option<&str> {
+    vars.get("Binary")
+        .map(String::as_str)
+        .filter(|b| !b.is_empty())
 }
 
 /// `{{ .Name }}` when the naming context exposes `name`.
@@ -169,12 +190,29 @@ fn collision_message(claim: &Claim<'_>, prev: &Prior) -> String {
         && prev.amd64_variant.as_deref() == claim.amd64_variant
         && prev.entry != claim.entry
     {
-        let reason = format!(
-            "The collision is between two `{stage}` entries on the same build target '{}', \
-             which render the same binary name, so no template variable can separate them",
-            claim.target.unwrap_or("host"),
-            stage = claim.stage,
-        );
+        let target = claim.target.unwrap_or("host");
+        let stage = claim.stage;
+        let reason = match (prev.binary.as_deref() == claim.binary, var(claim, "Binary")) {
+            (true, _) => format!(
+                "The collision is between two `{stage}` entries on the same build target \
+                 '{target}', which render the same binary name, so no template variable can \
+                 separate them"
+            ),
+            (false, Some(v)) => format!(
+                "The collision is between two `{stage}` entries on the same build target \
+                 '{target}', which select different binaries ('{prior}' and '{now}'), so \
+                 '{v}' would also separate them",
+                prior = prev.binary.as_deref().unwrap_or("none"),
+                now = claim.binary.unwrap_or("none"),
+            ),
+            (false, None) => format!(
+                "The collision is between two `{stage}` entries on the same build target \
+                 '{target}', which select different binaries ('{prior}' and '{now}'), but the \
+                 `{stage}` naming context exposes no binary variable",
+                prior = prev.binary.as_deref().unwrap_or("none"),
+                now = claim.binary.unwrap_or("none"),
+            ),
+        };
         (reason, distinct("each config entry"))
     } else if same_target && prev.amd64_variant.as_deref() == claim.amd64_variant {
         let reason = format!(
@@ -269,6 +307,7 @@ mod tests {
             target,
             amd64_variant: variant,
             entry: 0,
+            binary: None,
             exposed,
         }
     }
@@ -533,6 +572,7 @@ mod tests {
             None,
             &all,
         );
+        c.binary = Some("app");
         guard.check(c).expect("first path must pass");
         c.entry = 1;
         let err = guard.check(c).unwrap_err().to_string();
@@ -541,7 +581,8 @@ mod tests {
         assert!(err.contains("crate 'app'"), "{err}");
         assert!(
             err.contains(
-                "two `archives` entries on the same build target 'x86_64-unknown-linux-gnu'"
+                "two `archives` entries on the same build target 'x86_64-unknown-linux-gnu', \
+                 which render the same binary name, so no template variable can separate them"
             ),
             "{err}"
         );
@@ -552,6 +593,81 @@ mod tests {
         assert!(
             !err.contains("{{ .Binary }}"),
             "two entries render the same binary: {err}"
+        );
+    }
+
+    /// Two entries of one crate that select DIFFERENT binaries (an
+    /// `archives:` pair filtered by `builds:`) are separable by the binary
+    /// name, so the message must not claim no variable can do it.
+    #[test]
+    fn two_config_entries_selecting_different_binaries_name_the_binary_var() {
+        let all = exposed(&ALL);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/proj_linux");
+        let mut c = claim(
+            path,
+            "{{ .ProjectName }}_{{ .Os }}",
+            "app",
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            &all,
+        );
+        c.binary = Some("app");
+        guard.check(c).expect("first path must pass");
+        c.entry = 1;
+        c.binary = Some("appctl");
+        let err = guard.check(c).unwrap_err().to_string();
+
+        assert!(
+            err.contains(
+                "two `archives` entries on the same build target 'x86_64-unknown-linux-gnu', \
+                 which select different binaries ('app' and 'appctl'), so '{{ .Binary }}' \
+                 would also separate them"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("give each config entry a distinct `name_template`"),
+            "{err}"
+        );
+    }
+
+    /// Same split, but on a stage whose naming context defines no `Binary`:
+    /// the message still refuses to claim the binaries match, and advises no
+    /// variable the templates cannot see.
+    #[test]
+    fn different_binaries_without_the_binary_var_advise_no_variable() {
+        let installer = exposed(&["Os", "Arch", "Target", "Amd64"]);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/linux/app.deb");
+        let mut c = claim(
+            path,
+            "{{ .ProjectName }}",
+            "app",
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            &installer,
+        );
+        c.stage = "nfpms";
+        c.artifact = "package";
+        c.template_key = "file_name_template";
+        c.binary = Some("app");
+        guard.check(c).expect("first path must pass");
+        c.entry = 1;
+        c.binary = Some("appctl");
+        let err = guard.check(c).unwrap_err().to_string();
+
+        assert!(
+            err.contains(
+                "which select different binaries ('app' and 'appctl'), but the `nfpms` \
+                 naming context exposes no binary variable"
+            ),
+            "{err}"
+        );
+        assert!(!err.contains(".Binary"), "{err}");
+        assert!(
+            err.contains("give each config entry a distinct `file_name_template`"),
+            "{err}"
         );
     }
 
@@ -695,6 +811,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu"),
             amd64_variant: None,
             entry: 0,
+            binary: None,
             exposed: &nfpm,
         };
         guard.check(c).expect("first path must pass");
