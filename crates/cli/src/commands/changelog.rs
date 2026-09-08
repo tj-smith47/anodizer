@@ -230,7 +230,7 @@ fn resolve_start_bound(
 fn resolve_tag_owner(config: &Config, tag: &str) -> Result<(String, String)> {
     let mut best: Option<(&str, String)> = None;
     for c in config.crate_universe() {
-        let prefix = git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""));
+        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_family_template());
         if let Some(remainder) = tag.strip_prefix(&prefix) {
             let is_version = remainder
                 .split('.')
@@ -283,24 +283,18 @@ fn select_crates(
     crate_filter: Option<&str>,
 ) -> Vec<(String, PathBuf, String)> {
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
-        git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""))
+        git::per_crate_tag_prefix(&c.name, &c.tag_family_template())
     };
     let global_prefix = config.repo_tag_prefix().to_string();
     let entries: Vec<(String, PathBuf, String)> =
         match detect_repo_shape(workspace_root, Some(config), workspace) {
             RepoShape::Single => {
-                // The sole crate (or a config-less single crate): one
-                // global-prefixed target at its directory (workspace root when no
-                // crate is defined). A crate's own `tag_template` still wins when
-                // it sets one; otherwise it inherits the global prefix.
+                // The sole crate (or a config-less single crate): one target
+                // at its directory (workspace root when no crate is defined),
+                // in the crate's own family — the same one `tag` cuts under.
                 let universe = config.crate_universe();
                 match universe.first() {
-                    Some(c) => vec![(
-                        c.name.clone(),
-                        workspace_root.join(&c.path),
-                        git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
-                            .unwrap_or_else(|| global_prefix.clone()),
-                    )],
+                    Some(c) => vec![(c.name.clone(), workspace_root.join(&c.path), prefix_for(c))],
                     None => vec![(
                         config.project_name.clone(),
                         workspace_root.to_path_buf(),

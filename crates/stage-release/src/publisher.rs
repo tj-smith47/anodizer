@@ -1371,7 +1371,7 @@ mod publisher_tests {
     fn collect_release_targets_uses_the_nightly_tag_name_the_release_was_created_on() {
         let track = |name: &str, tmpl: &str| {
             let mut c = github_release_crate(name);
-            c.tag_template = Some(tmpl.to_string());
+            c.tag_template = Some(tmpl.to_string()); // tag-family-ok: test fixture
             c
         };
         let mut ctx = TestContextBuilder::new()
@@ -1665,7 +1665,7 @@ mod publisher_tests {
         let track = |name: &str, tmpl: &str| {
             let mut c = tripwire_release_crate();
             c.name = name.to_string();
-            c.tag_template = Some(tmpl.to_string());
+            c.tag_template = Some(tmpl.to_string()); // tag-family-ok: test fixture
             c
         };
         let mut ctx = TestContextBuilder::new()

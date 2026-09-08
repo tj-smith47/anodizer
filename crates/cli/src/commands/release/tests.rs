@@ -254,6 +254,83 @@ fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
 }
 
 // -----------------------------------------------------------------------
+// Crate selection from tags at HEAD reads every crate's tag FAMILY, so a
+// template-less crate is selectable by the `<name>-v` tag it releases under
+// and a derived lockstep family selects the whole workspace.
+// -----------------------------------------------------------------------
+
+fn family_crate(name: &str, tag_template: Option<&str>) -> CrateConfig {
+    CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: tag_template.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_lockstep_tag_selects_every_crate() {
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    let lockstep: Vec<CrateConfig> = ["app", "core", "cli"]
+        .iter()
+        .map(|n| family_crate(n, Some("v{{ Version }}")))
+        .collect();
+    assert_eq!(
+        select_crates_for_tags(&["v0.25.3".to_string()], &lockstep, &log),
+        vec!["app".to_string(), "core".to_string(), "cli".to_string()],
+        "one shared family: the pushed tag names all of them"
+    );
+
+    let template_less: Vec<CrateConfig> = ["app", "core", "cli"]
+        .iter()
+        .map(|n| family_crate(n, None))
+        .collect();
+    assert_eq!(
+        select_crates_for_tags(&["app-v0.25.3".to_string()], &template_less, &log),
+        vec!["app".to_string()],
+        "a template-less crate is selected by its `<name>-v` family"
+    );
+}
+
+/// `anodizer resolve-tag` and `--publish-only` crate selection must answer a
+/// tag identically; a second prefix walk with its own fallback is how they
+/// once disagreed.
+#[test]
+fn resolve_tag_command_and_release_selection_agree() {
+    use crate::commands::resolve_tag::resolve_owner;
+
+    let lockstep: Vec<CrateConfig> = ["app", "core"]
+        .iter()
+        .map(|n| family_crate(n, Some("v{{ Version }}")))
+        .collect();
+    let per_crate = vec![
+        family_crate("app", Some("v{{ Version }}")),
+        family_crate("vault", Some("vault-v{{ Version }}")),
+        family_crate("tools", None),
+    ];
+    for (crates, tag) in [
+        (&lockstep, "v0.25.3"),
+        (&per_crate, "v1.0.0"),
+        (&per_crate, "vault-v1.0.0"),
+        (&per_crate, "tools-v1.0.0"),
+        (&per_crate, "nope-1.0.0"),
+    ] {
+        let owner = resolve_owner(tag, crates).map(|c| c.name.as_str());
+        let selected = resolve_tag_to_crates(tag, crates);
+        assert_eq!(
+            owner,
+            selected.first().map(|c| c.name.as_str()),
+            "tag '{tag}': resolve-tag and selection disagree"
+        );
+    }
+    assert_eq!(
+        resolve_owner("tools-v1.0.0", &per_crate).map(|c| c.name.as_str()),
+        Some("tools"),
+        "a template-less crate owns its `<name>-v` tag"
+    );
+}
+
+// -----------------------------------------------------------------------
 // resolve_host_targets (--host-targets) — all three config modes
 // -----------------------------------------------------------------------
 

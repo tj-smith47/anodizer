@@ -153,9 +153,8 @@ pub(crate) fn resolve_tag_to_crates<'a>(
     let mut best_len: Option<usize> = None;
     let mut matched: Vec<(&CrateConfig, usize)> = Vec::new();
     for c in crates {
-        if let Some(prefix) = git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
-            && tag.starts_with(&prefix)
-        {
+        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_family_template());
+        if tag.starts_with(&prefix) {
             let remainder = &tag[prefix.len()..];
             let is_version = remainder
                 .split('.')

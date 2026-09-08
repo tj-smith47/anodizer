@@ -20,10 +20,7 @@ pub(crate) fn load_crate_tag_info(
 ) -> Option<CrateTagInfo> {
     let crate_cfg = config.find_crate(crate_name)?;
 
-    let tag_prefix = git::per_crate_tag_prefix(
-        &crate_cfg.name,
-        crate_cfg.tag_template.as_deref().unwrap_or(""),
-    );
+    let tag_prefix = git::per_crate_tag_prefix(&crate_cfg.name, &crate_cfg.tag_family_template());
     let version_sync = crate_cfg
         .version_sync
         .as_ref()

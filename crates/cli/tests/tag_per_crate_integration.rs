@@ -678,6 +678,91 @@ fn flat_two_crate_workspace_with_tag_section(tmp: &Path, tag_section: &str) {
     fs::write(tmp.join(".anodizer.yaml"), format!("{cfg}{tag_section}")).unwrap();
 }
 
+/// Two `workspaces:` groups with NO `tag_template` and no `tag.tag_prefix`:
+/// each group releases under its own `<name>-v` family, never one shared
+/// `v` tag that the second group would collide with.
+fn template_less_workspaces(tmp: &Path) {
+    fs::write(
+        tmp.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/alpha", "crates/beta"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+    for name in ["alpha", "beta"] {
+        let path = format!("crates/{name}");
+        fs::create_dir_all(tmp.join(&path).join("src")).unwrap();
+        fs::write(
+            tmp.join(&path).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(tmp.join(&path).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        tmp.join(".anodizer.yaml"),
+        r#"project_name: twin
+workspaces:
+  - name: alpha
+    crates:
+      - name: alpha
+        path: crates/alpha
+  - name: beta
+    crates:
+      - name: beta
+        path: crates/beta
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn per_crate_groups_tag_in_their_own_family_without_a_template() {
+    let tmp = TempDir::new().unwrap();
+    template_less_workspaces(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "alpha-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "beta-v0.1.0"]);
+
+    fs::write(tmp.path().join("crates/alpha/src/lib.rs"), "// a\n").unwrap();
+    git_add_commit(tmp.path(), "fix: alpha");
+    fs::write(tmp.path().join("crates/beta/src/lib.rs"), "// b\n").unwrap();
+    git_add_commit(tmp.path(), "fix: beta");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    assert!(
+        git_tag_exists(tmp.path(), "alpha-v0.1.1"),
+        "alpha must be tagged in its own family: {stdout}\n{stderr}"
+    );
+    assert!(
+        git_tag_exists(tmp.path(), "beta-v0.1.1"),
+        "beta must be tagged in its own family: {stdout}\n{stderr}"
+    );
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args(["tag", "-l", "v*"]);
+            cmd
+        },
+        "git",
+    );
+    let bare_v = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        bare_v.trim().is_empty(),
+        "no group may mint a bare `v` tag it would collide on: {bare_v}"
+    );
+}
+
 #[test]
 fn per_crate_release_branches_guard_skips_off_release_branch() {
     // The release_branches guard must protect the per-crate path too —

@@ -73,7 +73,7 @@ pub(super) fn crates_versioned_by_tag<'c>(
     };
     let mut out = Vec::new();
     for c in config.crate_universe() {
-        let prefix = git::per_crate_tag_prefix(&c.name, c.tag_template.as_deref().unwrap_or(""));
+        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_family_template());
         let Some(version) = stripped.strip_prefix(&prefix) else {
             continue;
         };

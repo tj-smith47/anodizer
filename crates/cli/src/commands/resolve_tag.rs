@@ -20,32 +20,10 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
         None => bail!("no anodizer config found"),
     };
 
-    // Collect all crates from top-level and workspaces.
-    let all_crates = config.crate_universe();
-
-    // Match the tag against each crate's tag_template prefix.
-    // Prefer the longest matching prefix (most specific) to avoid ambiguity
-    // when one prefix is a substring of another (e.g. "v" vs "v2-").
-    let mut best: Option<(&anodizer_core::config::CrateConfig, usize)> = None;
-    for c in &all_crates {
-        if let Some(prefix) =
-            anodizer_core::git::extract_tag_prefix(c.tag_template.as_deref().unwrap_or(""))
-            && opts.tag.starts_with(&prefix)
-        {
-            let remainder = &opts.tag[prefix.len()..];
-            let is_version = remainder
-                .split('.')
-                .next()
-                .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
-            if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
-                best = Some((c, prefix.len()));
-            }
-        }
-    }
-
-    let crate_cfg = match best {
-        Some((c, _)) => c,
-        None => bail!("no crate matches tag '{}'", opts.tag),
+    let all_crates: Vec<anodizer_core::config::CrateConfig> =
+        config.crate_universe().into_iter().cloned().collect();
+    let Some(crate_cfg) = resolve_owner(&opts.tag, &all_crates) else {
+        bail!("no crate matches tag '{}'", opts.tag)
     };
 
     let has_builds = crate_cfg
@@ -69,6 +47,19 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The crate a tag belongs to: the first of the tier
+/// [`resolve_tag_to_crates`](crate::commands::release::resolve_tag_to_crates)
+/// selects for it, so this command and `--publish-only` crate selection can
+/// never answer a tag differently.
+pub(crate) fn resolve_owner<'a>(
+    tag: &str,
+    crates: &'a [anodizer_core::config::CrateConfig],
+) -> Option<&'a anodizer_core::config::CrateConfig> {
+    crate::commands::release::resolve_tag_to_crates(tag, crates)
+        .into_iter()
+        .next()
 }
 
 #[cfg(test)]

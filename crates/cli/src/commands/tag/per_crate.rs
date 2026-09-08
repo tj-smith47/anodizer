@@ -65,8 +65,7 @@ pub(crate) fn compute_per_crate_tags(
         }
 
         let first = &group[0];
-        let tag_prefix = git::extract_tag_prefix(first.tag_template.as_deref().unwrap_or(""))
-            .unwrap_or_else(|| cfg.tag_prefix.clone());
+        let tag_prefix = git::per_crate_tag_prefix(&first.name, &first.tag_family_template());
 
         // Determine the previous tag for this group (use first crate's template).
         // Per-group only the tag_prefix (from this group's template) and
@@ -166,8 +165,7 @@ pub(crate) fn compute_per_crate_tags(
         let mut crate_version_files: Vec<Vec<String>> = Vec::new();
         for crate_cfg in group {
             let crate_prefix =
-                git::extract_tag_prefix(crate_cfg.tag_template.as_deref().unwrap_or(""))
-                    .unwrap_or_else(|| tag_prefix.clone());
+                git::per_crate_tag_prefix(&crate_cfg.name, &crate_cfg.tag_family_template());
             let new_tag = format!("{}{}", crate_prefix, new_version);
             let message = format!("Release {}", new_tag);
             new_tags.push((new_tag, message));
