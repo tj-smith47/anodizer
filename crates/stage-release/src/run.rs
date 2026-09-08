@@ -236,11 +236,6 @@ fn release_one_crate(
 
     ctx.refresh_artifacts_var();
 
-    // Captured BEFORE the anchor: the divergence warning compares the tag the
-    // operator pushed against the one `release.tag` resolved, and the anchor
-    // overwrites `Tag` with the latter.
-    let pushed_tag = ctx.template_vars().get("Tag").cloned();
-
     let tag = resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
     // Every `{{ Tag }}` this crate's release renders — header, footer, blob
     // directory, announce body, compare link — must name the tag the release
@@ -254,7 +249,7 @@ fn release_one_crate(
 
     warn_tag_override_divergence(
         release_cfg,
-        pushed_tag.as_deref(),
+        anodizer_core::release_tag::declared_tag(ctx),
         &tag,
         &crate_cfg.name,
         log,
@@ -345,9 +340,10 @@ fn release_one_crate(
 /// Warn when `release.tag` resolves to a value different from the pushed
 /// git tag.
 ///
-/// `pushed_tag` must be read BEFORE `anchor_crate_tag` runs: the anchor
-/// replaces `Tag` with the resolved tag, after which the comparison can only
-/// ever find the two equal.
+/// `pushed_tag` is the ref the operator declared for the run
+/// ([`anodizer_core::release_tag::declared_tag`]), never the `Tag` template
+/// variable: every crate's anchor rewrites that variable, so on the second
+/// crate it would hold the first crate's resolved tag.
 fn warn_tag_override_divergence(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     pushed_tag: Option<&str>,
@@ -1802,6 +1798,7 @@ mod tests {
         let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new()
             .dry_run(true)
+            .tag_source(anodizer_core::git::TagSource::Declared)
             .crates(vec![anodizer_core::config::CrateConfig {
                 name: "app".to_string(),
                 path: ".".to_string(),
@@ -1813,7 +1810,6 @@ mod tests {
                 ..Default::default()
             }])
             .build();
-        ctx.template_vars_mut().set("Tag", "v1.2.3");
         ctx.with_log_capture(capture.clone());
 
         crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
@@ -1827,6 +1823,125 @@ mod tests {
         );
     }
 
+    /// An inferred tag is the newest ref found on the repository, not one the
+    /// operator pushed: nothing was pushed, so "differs from pushed git tag"
+    /// would warn about a divergence that does not exist.
+    #[test]
+    fn inferred_tag_does_not_trigger_the_divergence_warning() {
+        use anodizer_core::config::ReleaseConfig;
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .crates(vec![anodizer_core::config::CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(ReleaseConfig {
+                    tag: Some("release-{{ Version }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
+
+        let warns = capture.warn_messages();
+        assert!(
+            !warns
+                .iter()
+                .any(|m| m.contains("differs from pushed git tag")),
+            "an inferred tag was never pushed, so no divergence is due: {warns:?}"
+        );
+    }
+
+    /// Two crates, both overriding, one pushed tag: each crate's override
+    /// diverges from it, so each crate warns. The second crate must compare
+    /// against the pushed ref, not against whatever the first crate anchored
+    /// `Tag` to.
+    #[test]
+    fn every_crate_warns_when_its_override_diverges() {
+        use anodizer_core::config::ReleaseConfig;
+
+        fn lockstep(name: &str) -> anodizer_core::config::CrateConfig {
+            anodizer_core::config::CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(ReleaseConfig {
+                    tag: Some("release-{{ Version }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .tag("v1.2.3")
+            .tag_source(anodizer_core::git::TagSource::Declared)
+            .crates(vec![lockstep("app"), lockstep("cli")])
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
+
+        let warns: Vec<String> = capture
+            .warn_messages()
+            .into_iter()
+            .filter(|m| m.contains("differs from pushed git tag"))
+            .collect();
+        assert_eq!(warns.len(), 2, "one warning per crate, got: {warns:?}");
+        assert!(
+            warns.iter().any(|m| m.contains("(crate 'app')")),
+            "app must warn: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|m| m.contains("(crate 'cli')")),
+            "cli must warn against the pushed tag, not app's anchored one: {warns:?}"
+        );
+    }
+
+    /// Nothing was pushed, so nothing diverges: the second crate must not be
+    /// told its override differs from the tag the first crate anchored.
+    #[test]
+    fn no_divergence_warning_without_a_pushed_tag() {
+        use anodizer_core::config::ReleaseConfig;
+
+        fn track(name: &str) -> anodizer_core::config::CrateConfig {
+            anodizer_core::config::CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: Some(format!("{name}-v{{{{ Version }}}}")),
+                release: Some(ReleaseConfig {
+                    tag: Some(format!("{name}-v{{{{ Version }}}}")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .crates(vec![track("app"), track("operator")])
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        crate::ReleaseStage.run(&mut ctx).expect("dry-run release");
+
+        let warns = capture.warn_messages();
+        assert!(
+            !warns
+                .iter()
+                .any(|m| m.contains("differs from pushed git tag")),
+            "no tag was pushed, so no crate may warn about one: {warns:?}"
+        );
+    }
+
     /// An override that resolves to the pushed tag is not a divergence, and a
     /// warning there would train operators to ignore the real one.
     #[test]
@@ -1836,6 +1951,7 @@ mod tests {
         let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new()
             .dry_run(true)
+            .tag_source(anodizer_core::git::TagSource::Declared)
             .crates(vec![anodizer_core::config::CrateConfig {
                 name: "app".to_string(),
                 path: ".".to_string(),
@@ -1847,7 +1963,6 @@ mod tests {
                 ..Default::default()
             }])
             .build();
-        ctx.template_vars_mut().set("Tag", "v1.2.3");
         ctx.with_log_capture(capture.clone());
 
         crate::ReleaseStage.run(&mut ctx).expect("dry-run release");

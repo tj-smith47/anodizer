@@ -105,14 +105,29 @@ pub const EMPTY_RELEASE_TAG_HELP: &str = concat!(
     "fallback).",
 );
 
+/// The tag the operator named for this run, before any per-crate scoping.
+///
+/// `ANODIZER_CURRENT_TAG` (and a tag-push `GITHUB_REF_NAME`) states the tag
+/// being released outright; anything else on `git_info` is a guess read off
+/// the repository. Callers that need "the tag that was pushed" — the release
+/// tag's declared rung, the `release.tag` divergence warning — read it here
+/// rather than from the `Tag` template var, which every crate's
+/// [`anchor_crate_tag`] rewrites.
+pub fn declared_tag(ctx: &Context) -> Option<&str> {
+    ctx.git_info
+        .as_ref()
+        .filter(|g| g.tag_source == crate::git::TagSource::Declared)
+        .map(|g| g.tag.as_str())
+        .filter(|t| !t.is_empty())
+}
+
 /// The tag the operator named for this run, when they named one AND it belongs
 /// to this crate's tag family.
 ///
-/// `ANODIZER_CURRENT_TAG` (and the tag-push `GITHUB_REF_NAME`) states the tag
-/// being released outright. Re-deriving it from a template answers a question
-/// nobody asked and can answer it differently — a repo whose tags carry a
-/// suffix the template does not know about would have its release created on
-/// a tag that is not the one pushed.
+/// Re-deriving a declared tag from a template answers a question nobody asked
+/// and can answer it differently — a repo whose tags carry a suffix the
+/// template does not know about would have its release created on a tag that
+/// is not the one pushed.
 ///
 /// The family test is what keeps that from over-reaching: the declared tag is
 /// one run-wide string, but a per-crate workspace releases several tracks in
@@ -121,11 +136,7 @@ pub const EMPTY_RELEASE_TAG_HELP: &str = concat!(
 /// retention sweep and the previous-tag search use, so all three agree on what
 /// "this crate's family" means.
 fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
-    ctx.git_info
-        .as_ref()
-        .filter(|g| g.tag_source == crate::git::TagSource::Declared)
-        .map(|g| g.tag.clone())
-        .filter(|t| !t.is_empty())
+    declared_tag(ctx)
         .filter(|t| {
             crate::git::tag_in_family(
                 t,
@@ -133,6 +144,7 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
                 ctx.config.monorepo_tag_prefix(),
             )
         })
+        .map(str::to_string)
 }
 
 /// The tag TEMPLATE a crate's release is minted from: an explicit
