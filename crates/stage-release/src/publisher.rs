@@ -511,11 +511,21 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
-        // Existing ReleaseStage::run body is unchanged per the
-        // release-resilience contract. We delegate to it for the
-        // publish itself, then enumerate (owner, repo, tag) targets
-        // from config and ask GitHub for each release's numeric ID.
-        <ReleaseStage as Stage>::run(&ReleaseStage, ctx)?;
+        // The publish itself is the release stage's job; this wrapper adds
+        // the (owner, repo, tag) enumeration and the numeric-ID lookup that
+        // rollback evidence needs.
+        //
+        // Unless the pipeline already ran that stage this run: a full
+        // `anodizer release` runs `release` and then dispatches this
+        // publisher, and delegating a second time creates each release —
+        // and fires each nightly retention sweep — twice. Only ID capture
+        // is owed in that case.
+        if ctx.stage_outputs.release_stage_ran {
+            ctx.logger("publish")
+                .verbose("github-release: release stage already ran this run; capturing ids only");
+        } else {
+            <ReleaseStage as Stage>::run(&ReleaseStage, ctx)?;
+        }
 
         let mut targets = collect_release_targets(ctx)?;
         // Skip ID capture in dry-run / snapshot — no release was created
@@ -1556,6 +1566,101 @@ mod publisher_tests {
             mock.delete_release_call_count(),
             0,
             "no release_id => no DELETE is issued for this row"
+        );
+    }
+
+    /// A crate whose release block trips `validate_release_flags` the moment
+    /// the release stage enters its per-crate loop. That makes "did the
+    /// publisher delegate to the stage?" observable without a live SCM:
+    /// `Err` means it delegated, `Ok` means it did not.
+    fn tripwire_release_crate() -> CrateConfig {
+        CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            release: Some(ReleaseConfig {
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                    token: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A full `anodizer release` runs the release stage AND dispatches this
+    /// publisher, which wraps that same stage. Delegating a second time
+    /// creates every release twice and fires the nightly retention sweep
+    /// twice — the sweep's second pass seeing its own first-pass release.
+    #[test]
+    fn publisher_run_skips_delegation_when_the_release_stage_already_ran() {
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![tripwire_release_crate()])
+            .build();
+        ctx.options.dry_run = true;
+        ctx.stage_outputs.release_stage_ran = true;
+        let p = GithubReleasePublisher::with_client(Arc::new(MockGitHubClient::new()));
+        let evidence = p
+            .run(&mut ctx)
+            .expect("the already-ran marker must stop a second delegation");
+        assert_eq!(
+            evidence.primary_ref.as_deref(),
+            Some("https://github.com/acme/widget/releases/tag/v1.0.0"),
+            "id capture still runs — only the delegation is skipped"
+        );
+    }
+
+    /// Multitrack shape — the one C1's sweep and C2's double-create both
+    /// bite hardest. Three tracks, one publisher dispatch: every track's id
+    /// is captured and NONE of them is released a second time.
+    #[test]
+    fn publisher_run_captures_every_track_without_re_releasing_any() {
+        let track = |name: &str, tmpl: &str| {
+            let mut c = tripwire_release_crate();
+            c.name = name.to_string();
+            c.tag_template = Some(tmpl.to_string());
+            c
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![
+                track("app", "v{{ Version }}"),
+                track("operator", "operator-v{{ Version }}"),
+                track("csi", "csi-v{{ Version }}"),
+            ])
+            .build();
+        ctx.options.dry_run = true;
+        ctx.stage_outputs.release_stage_ran = true;
+        let p = GithubReleasePublisher::with_client(Arc::new(MockGitHubClient::new()));
+        let evidence = p.run(&mut ctx).expect("no second delegation for any track");
+        let targets = decode_github_release_targets(&evidence.extra);
+        assert_eq!(
+            targets.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>(),
+            vec!["v1.0.0", "operator-v1.0.0", "csi-v1.0.0"],
+        );
+    }
+
+    /// The other half: with no marker (the `--publish-only` shape, where the
+    /// release stage never ran) the publisher MUST still delegate.
+    #[test]
+    fn publisher_run_delegates_when_the_release_stage_has_not_run() {
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![tripwire_release_crate()])
+            .build();
+        ctx.options.dry_run = true;
+        let p = GithubReleasePublisher::with_client(Arc::new(MockGitHubClient::new()));
+        let err = p
+            .run(&mut ctx)
+            .expect_err("without the marker the publisher owns the release");
+        assert!(
+            err.to_string().contains("replace_existing_draft"),
+            "the delegated stage must have entered its per-crate loop; got: {err}"
         );
     }
 }

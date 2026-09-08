@@ -43,6 +43,11 @@ pub struct StageOutputs {
     /// stably). Empty when polling was disabled or no eligible
     /// publishers ran.
     pub post_publish_results: Vec<serde_json::Value>,
+    /// Set by the release stage once its per-crate loop has run. The
+    /// `github-release` publisher delegates to that same stage, so without
+    /// this marker a pipeline that runs both creates every release — and
+    /// fires every nightly retention sweep — twice per run.
+    pub release_stage_ran: bool,
 }
 
 /// Callback that re-runs release-content verification against the already

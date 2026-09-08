@@ -106,6 +106,8 @@ impl Stage for super::ReleaseStage {
             )?;
         }
 
+        ctx.stage_outputs.release_stage_ran = true;
+
         Ok(())
     }
 }
