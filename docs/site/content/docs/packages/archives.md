@@ -174,14 +174,55 @@ targets and is rejected, the same way it is for container formats.
 
 Extra files are ignored under this format — a raw binary has no container to
 carry a `LICENSE` in — so `files:`, `templated_files:` and the auto-included
-LICENSE/README/CHANGELOG are dropped with a `-v` note:
+LICENSE/README/CHANGELOG are all dropped. Configuring them explicitly is not an
+error (`--strict` included); it earns a `-v` note:
+
+```yaml
+archives:
+  - formats: [binary]
+    files:
+      - LICENSE
+```
 
 ```console
-[archive] binary format ignores 1 extra file(s) for crate 'myapp' target 'x86_64-unknown-linux-gnu'
+[archive] binary format ignores the files: entries for crate 'myapp' target 'x86_64-unknown-linux-gnu'
 ```
 
 Windows targets keep the `.exe` suffix. `before:` / `after:` archive hooks do
-not fire for `binary`, since there is no archive to post-process.
+not fire for `binary`, since there is no archive to post-process. An `archives:`
+entry that selects no binaries at all (`meta: true`) produces nothing under
+`binary` and says so:
+
+```console
+[archive] skipped archive for myapp/unknown — meta archive under format: binary carries no binaries
+```
+
+### Changed in this release
+
+`binary` outputs are now named per binary from `{{ .Binary }}`, where they were
+previously named from the archive `name_template` (`{{ .ProjectName }}`) for a
+single binary and from the bare file name for several:
+
+| Entry ships… | Old asset | New asset |
+|---|---|---|
+| one binary `myapp`, project `myapp` | `dist/myapp_1.0.0_linux_amd64` | `dist/myapp_1.0.0_linux_amd64` |
+| one binary `mytool`, project `my-tool` | `dist/my-tool_1.0.0_linux_amd64` | `dist/mytool_1.0.0_linux_amd64` |
+| binaries `myapp` + `myhelper` | `dist/myapp`, `dist/myhelper` | `dist/myapp_1.0.0_linux_amd64`, `dist/myhelper_1.0.0_linux_amd64` |
+
+Anything that hard-codes the old asset name — a `cargo binstall` `pkg_url`, an
+install script, a download URL in a README — must be updated to the new one.
+Setting `name_template:` on the entry still wins, so an entry shipping a single
+binary can pin its old name in one line:
+
+```yaml
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+```
+
+A template without `{{ .Binary }}` renders one path for every binary the entry
+selects, so an entry shipping two or more binaries is rejected rather than
+letting one overwrite the other.
 
 ## Re-running over a populated `dist/`
 
