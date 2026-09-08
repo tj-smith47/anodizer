@@ -10,11 +10,14 @@
 //! initialization.
 //!
 //! The host-side guard is therefore [`TufInitLock`] — an advisory file lock
-//! scoped to the cache directory and held across a whole keyless run, so two
-//! anodizer *processes* on one host queue rather than race.
-//! [`keyless_cosign_host_lock`] is the seam every keyless spawn site takes it
-//! through. Advisory locks are released by the OS on process exit, so a
-//! killed holder never wedges later runs.
+//! keyed on the cache directory's canonical path and held across a whole
+//! keyless run, so two anodizer *processes* on one host queue rather than
+//! race. Two seams take it: [`keyless_cosign_host_locks`] for a run whose
+//! jobs can name several stores (a `TUF_ROOT` templated per artifact or per
+//! image), which locks every distinct one in sorted path order, and
+//! [`keyless_cosign_host_lock`] for a run with a single config-level env.
+//! Advisory locks are released by the OS on process exit, so a killed holder
+//! never wedges later runs.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -63,13 +66,15 @@ pub(crate) fn tuf_cache_dir(
     Some(Path::new(&home).join(".sigstore").join("root"))
 }
 
-/// Take the host-level TUF lock for the duration of a keyless cosign run.
+/// Take the host-level TUF lock for the one cache directory a config-level
+/// env resolves to, for the duration of a keyless cosign run.
 ///
 /// Concurrent keyless cosign invocations on one host collide on the sigstore
 /// TUF trust store and the losers exit with `creating cached local store:
 /// resource temporarily unavailable`, whether or not the store is already
-/// populated. Every keyless spawn site takes this lock so a second anodizer
-/// process on the same host queues behind the first instead of racing it.
+/// populated. Holding this lock makes a second anodizer process on the same
+/// host queue behind the first instead of racing it. A run whose jobs can
+/// resolve DIFFERENT stores takes [`keyless_cosign_host_locks`] instead.
 ///
 /// `None` when the cache directory cannot be resolved (no `TUF_ROOT`, no
 /// home) or the lock cannot be taken — signing must never fail on lock
@@ -201,8 +206,9 @@ impl TufInitLock {
     }
 
     /// Create the cache directory (and parents) if needed, then take an
-    /// exclusive blocking lock on the sentinel file inside it. Production
-    /// goes through [`keyless_cosign_host_lock`], which probes first.
+    /// exclusive blocking lock on the sentinel file inside it, with no
+    /// non-blocking probe first — production instead reaches
+    /// [`host_lock_for_dir`], which probes and explains the wait.
     #[cfg(test)]
     pub(crate) fn acquire(cache_dir: &Path) -> Result<Self> {
         let file = Self::open_sentinel(cache_dir)?;

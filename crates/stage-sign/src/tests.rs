@@ -6339,6 +6339,8 @@ mod cosign_tuf_race {
     /// under a `tests/` directory — rather than by hoping their content
     /// splits on `#[cfg(`: test modules stub cosign instead of spawning it,
     /// so a stub's argv would otherwise read as an unlocked spawn site.
+    /// Skipping a `tests.rs` is only sound while it really is test-only, so
+    /// each one skipped is checked against its parent module's declaration.
     fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).expect("read src dir") {
@@ -6348,13 +6350,46 @@ mod cosign_tuf_race {
                     continue;
                 }
                 found.extend(rust_sources(&path));
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !path.file_name().is_some_and(|n| n == "tests.rs")
-            {
-                found.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if path.file_name().is_some_and(|n| n == "tests.rs") {
+                    assert_declared_cfg_test(&path);
+                } else {
+                    found.push(path);
+                }
             }
         }
         found
+    }
+
+    /// Assert the parent module declares `mod tests;` directly under a
+    /// `#[cfg(test)]` attribute — the premise that makes skipping the file
+    /// by name equivalent to skipping test code.
+    fn assert_declared_cfg_test(tests_rs: &std::path::Path) {
+        let dir = tests_rs.parent().expect("tests.rs has a parent directory");
+        let parent = ["mod.rs", "lib.rs", "main.rs"]
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("no parent module file beside {}", tests_rs.display()));
+        let text = std::fs::read_to_string(&parent).expect("read parent module");
+        let lines: Vec<&str> = text.lines().collect();
+        let decl = lines
+            .iter()
+            .position(|line| line.trim().trim_end_matches(';').ends_with("mod tests"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} declares no `mod tests;` for {}",
+                    parent.display(),
+                    tests_rs.display()
+                )
+            });
+        assert!(
+            decl > 0 && lines[decl - 1].trim() == "#[cfg(test)]",
+            "{} must be declared under #[cfg(test)] in {} — the keyless-site \
+             walk skips it by name and would otherwise skip production code",
+            tests_rs.display(),
+            parent.display()
+        );
     }
 
     /// Split Rust source into function bodies: a `fn` line opens a body that
