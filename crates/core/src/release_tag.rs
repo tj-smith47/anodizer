@@ -19,7 +19,10 @@ use crate::log::StageLogger;
 ///
 /// 1. `nightly.tag_name` — nightly runs only, so the narrower knob wins.
 /// 2. `release.tag` — the Pro `release.tag` override, on every run.
-/// 3. the crate's [`tag_family_template`](crate::config::CrateConfig::tag_family_template).
+/// 3. the tag the operator declared for this run (`ANODIZER_CURRENT_TAG`, or a
+///    tag-push `GITHUB_REF_NAME`) — already the exact tag, so it is taken, not
+///    re-derived.
+/// 4. the crate's [`tag_family_template`](crate::config::CrateConfig::tag_family_template).
 ///
 /// A `nightly.tag_name` is prefixed with the crate's own tag family in a
 /// workspace that mints more than one (`operator-v` + `edge` →
@@ -60,6 +63,8 @@ pub fn resolve_release_tag(
             scope_to_tag_family(ctx, crate_cfg, rendered),
             "nightly.tag_name",
         )
+    } else if let Some(declared) = declared_tag(ctx) {
+        (declared, "the declared current tag")
     } else {
         let source = if release_tag_override.is_some() {
             "release.tag"
@@ -86,6 +91,21 @@ pub fn resolve_release_tag(
         );
     }
     Ok(rendered)
+}
+
+/// The tag the operator named for this run, when they named one.
+///
+/// `ANODIZER_CURRENT_TAG` (and the tag-push `GITHUB_REF_NAME`) states the tag
+/// being released outright. Re-deriving it from a template answers a question
+/// nobody asked and can answer it differently — a repo whose tags carry a
+/// suffix the template does not know about would have its release created on
+/// a tag that is not the one pushed.
+fn declared_tag(ctx: &Context) -> Option<String> {
+    ctx.git_info
+        .as_ref()
+        .filter(|g| g.tag_source == crate::git::TagSource::Declared)
+        .map(|g| g.tag.clone())
+        .filter(|t| !t.is_empty())
 }
 
 /// The tag TEMPLATE a crate's release is minted from: an explicit
@@ -163,6 +183,45 @@ mod tests {
             tag_template: Some(tmpl.to_string()),
             ..Default::default()
         }
+    }
+
+    /// An operator-declared tag IS the tag being released. Re-rendering the
+    /// template would answer a question nobody asked, and can answer it with
+    /// a different string than the ref that was pushed.
+    #[test]
+    fn declared_tag_is_not_rederived() {
+        let cfg = crate_cfg("app", "v{{ Version }}");
+        let config = Config {
+            crates: vec![cfg.clone()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let mut info = crate::test_helpers::make_git_info(false, None);
+        info.tag = "v1.0.0+build.7".to_string();
+        info.tag_source = crate::git::TagSource::Declared;
+        ctx.git_info = Some(info);
+        assert_eq!(
+            resolve_release_tag(&ctx, &cfg, None).unwrap(),
+            "v1.0.0+build.7",
+        );
+    }
+
+    /// An INFERRED tag is a guess the template must still win over: it is the
+    /// crate's own family that decides what this run mints.
+    #[test]
+    fn an_inferred_tag_still_goes_through_the_template() {
+        let cfg = crate_cfg("app", "v{{ Version }}");
+        let config = Config {
+            crates: vec![cfg.clone()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let mut info = crate::test_helpers::make_git_info(false, None);
+        info.tag = "v0.9.0".to_string();
+        ctx.git_info = Some(info);
+        assert_eq!(resolve_release_tag(&ctx, &cfg, None).unwrap(), "v1.0.0");
     }
 
     /// The whole point of the helper: after it runs, `Tag` names the tag the

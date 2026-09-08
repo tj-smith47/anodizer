@@ -124,6 +124,22 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         loaded_workspace.as_ref(),
     );
 
+    // A one-entry `crates:` repo tags in that crate's OWN family. Without
+    // this the repo-level path minted `v<version>` from `tag.tag_prefix`'s
+    // default while `bump`, `changelog`, `--crate <name>` and the release
+    // stage all resolved the crate's `tag_family_template()` — one crate with
+    // two answers, so the tag `tag` cut was in a family nothing else scanned.
+    // An explicit `tag.tag_prefix` is the operator naming the family and
+    // still wins.
+    if opts.crate_name.is_none()
+        && tag_config.tag_prefix.is_none()
+        && matches!(repo_shape, RepoShape::Single)
+        && let [only] = loaded_config.crate_universe().as_slice()
+    {
+        cfg.tag_prefix =
+            git::per_crate_tag_prefix(&only.name, only.tag_template.as_deref().unwrap_or(""));
+    }
+
     // custom_tag is incompatible with per-crate mode: the whole point of a
     // custom tag is to override version computation for one unit. In per-crate
     // mode there is no single unit — use --crate to target a specific crate.
