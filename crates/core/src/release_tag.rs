@@ -21,7 +21,10 @@ use crate::log::StageLogger;
 /// 2. `release.tag` — the Pro `release.tag` override, on every run.
 /// 3. the tag the operator declared for this run (`ANODIZER_CURRENT_TAG`, or a
 ///    tag-push `GITHUB_REF_NAME`) — already the exact tag, so it is taken, not
-///    re-derived.
+///    re-derived, but ONLY for the crate whose family that tag belongs to. The
+///    declared tag is run-wide while a release is per-crate, so a push of
+///    `operator-v1.2.3` names the `operator` release and says nothing about
+///    `app`'s.
 /// 4. the crate's [`tag_family_template`](crate::config::CrateConfig::tag_family_template).
 ///
 /// A `nightly.tag_name` is prefixed with the crate's own tag family in a
@@ -63,49 +66,73 @@ pub fn resolve_release_tag(
             scope_to_tag_family(ctx, crate_cfg, rendered),
             "nightly.tag_name",
         )
-    } else if let Some(declared) = declared_tag(ctx) {
+    } else if let Some(tmpl) = release_tag_override {
+        let source = "the release.tag override";
+        let rendered = ctx
+            .render_template(tmpl)
+            .with_context(|| format!("release: render {source} for crate '{crate_name}'"))?;
+        (rendered, source)
+    } else if let Some(declared) = declared_tag_for_crate(ctx, crate_cfg) {
         (declared, "the declared current tag")
     } else {
-        let source = if release_tag_override.is_some() {
-            "the release.tag override"
-        } else {
-            "tag_template"
-        };
-        let tmpl = release_tag_template(crate_cfg, release_tag_override);
+        let source = "tag_template";
         let rendered = ctx
-            .render_template(&tmpl)
+            .render_template(&crate_cfg.tag_family_template())
             .with_context(|| format!("release: render {source} for crate '{crate_name}'"))?;
         (rendered, source)
     };
     if rendered.is_empty() {
         anyhow::bail!(
-            "release: {} for crate '{}' rendered to an empty tag. The GitHub / \
-             GitLab / Gitea Releases REST API requires a non-empty `tag_name`; \
-             posting an empty value returns a confusing 422 (`tag_name is too \
-             short`) that hides the real cause. Verify the template references \
-             a variable that is populated on this run (e.g. `{{{{ Tag }}}}` is \
-             unset during `--snapshot` without a `tag_template` fallback) or \
-             set an explicit `release.tag:` override.",
-            source,
-            crate_name
+            "release: {source} for crate '{crate_name}' rendered to an empty tag. \
+             {EMPTY_RELEASE_TAG_HELP}"
         );
     }
     Ok(rendered)
 }
 
-/// The tag the operator named for this run, when they named one.
+/// What to tell the operator when a release tag resolves to nothing.
+///
+/// Shared verbatim by every surface that needs a tag — the release stage, the
+/// `curl | sh` installer and cargo-binstall's `pkg_url` — so the same config
+/// bug reads the same way wherever it surfaces first.
+pub const EMPTY_RELEASE_TAG_HELP: &str = concat!(
+    "A release cannot be created, downloaded or installed without a tag: the ",
+    "GitHub / GitLab / Gitea Releases REST API rejects an empty `tag_name` with ",
+    "a confusing 422 (`tag_name is too short`) that hides the real cause. Check ",
+    "that `release.tag:` is not set to an empty string, and that the template it ",
+    "or the crate's `tag_template` uses references a variable that is populated ",
+    "on this run (`{{ Tag }}` is unset under `--snapshot` with no `tag_template` ",
+    "fallback).",
+);
+
+/// The tag the operator named for this run, when they named one AND it belongs
+/// to this crate's tag family.
 ///
 /// `ANODIZER_CURRENT_TAG` (and the tag-push `GITHUB_REF_NAME`) states the tag
 /// being released outright. Re-deriving it from a template answers a question
 /// nobody asked and can answer it differently — a repo whose tags carry a
 /// suffix the template does not know about would have its release created on
 /// a tag that is not the one pushed.
-fn declared_tag(ctx: &Context) -> Option<String> {
+///
+/// The family test is what keeps that from over-reaching: the declared tag is
+/// one run-wide string, but a per-crate workspace releases several tracks in
+/// one run, so a pushed `operator-v1.2.3` must not become the tag `app`'s
+/// release is created on. Membership goes through the same matcher the
+/// retention sweep and the previous-tag search use, so all three agree on what
+/// "this crate's family" means.
+fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
     ctx.git_info
         .as_ref()
         .filter(|g| g.tag_source == crate::git::TagSource::Declared)
         .map(|g| g.tag.clone())
         .filter(|t| !t.is_empty())
+        .filter(|t| {
+            crate::git::tag_in_family(
+                t,
+                &crate_cfg.tag_family_template(),
+                ctx.config.monorepo_tag_prefix(),
+            )
+        })
 }
 
 /// The tag TEMPLATE a crate's release is minted from: an explicit
@@ -226,6 +253,69 @@ mod tests {
         info.tag = "v0.9.0".to_string();
         ctx.git_info = Some(info);
         assert_eq!(resolve_release_tag(&ctx, &cfg, None).unwrap(), "v1.0.0");
+    }
+
+    /// Build a context whose git info declares `tag`, over `crates`.
+    fn declared_ctx(crates: Vec<CrateConfig>, tag: &str) -> Context {
+        let config = Config {
+            crates,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let mut info = crate::test_helpers::make_git_info(false, None);
+        info.tag = tag.to_string();
+        info.tag_source = crate::git::TagSource::Declared;
+        ctx.git_info = Some(info);
+        ctx
+    }
+
+    /// `release.tag` is the operator naming the tag for THIS crate; the
+    /// declared tag is whatever ref the run started from. The narrower knob
+    /// wins, or a tag-push run silently ignores the override entirely.
+    #[test]
+    fn release_tag_override_beats_a_declared_tag() {
+        let cfg = crate_cfg("app", "v{{ Version }}");
+        let ctx = declared_ctx(vec![cfg.clone()], "v1.0.0");
+        assert_eq!(
+            resolve_release_tag(&ctx, &cfg, Some("release-{{ Version }}")).unwrap(),
+            "release-1.0.0",
+        );
+    }
+
+    /// The empty-override bail must fire on a tag-push run too: a declared tag
+    /// standing in for an empty `release.tag` hides the config bug instead of
+    /// reporting it.
+    #[test]
+    fn empty_release_tag_bails_on_a_declared_tag_run() {
+        let cfg = crate_cfg("app", "v{{ Version }}");
+        let ctx = declared_ctx(vec![cfg.clone()], "v1.0.0");
+        let err = resolve_release_tag(&ctx, &cfg, Some(""))
+            .expect_err("an empty release.tag must bail even with a declared tag")
+            .to_string();
+        assert!(err.contains("release.tag"), "got: {err}");
+        assert!(err.contains("app"), "got: {err}");
+    }
+
+    /// A declared tag is ONE run-wide string while a release is per crate. In
+    /// a two-family workspace a pushed `operator-v1.2.3` names the operator
+    /// release and says nothing about `app`'s, which must still come from its
+    /// own family.
+    #[test]
+    fn declared_tag_of_another_family_is_not_used_for_this_crate() {
+        let app = crate_cfg("app", "app-v{{ Version }}");
+        let operator = crate_cfg("operator", "operator-v{{ Version }}");
+        let ctx = declared_ctx(vec![app.clone(), operator.clone()], "operator-v1.2.3");
+        assert_eq!(
+            resolve_release_tag(&ctx, &operator, None).unwrap(),
+            "operator-v1.2.3",
+            "the declared tag belongs to the operator family",
+        );
+        assert_eq!(
+            resolve_release_tag(&ctx, &app, None).unwrap(),
+            "app-v1.0.0",
+            "app must not be released under the operator track's tag",
+        );
     }
 
     /// The whole point of the helper: after it runs, `Tag` names the tag the
