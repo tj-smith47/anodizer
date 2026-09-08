@@ -786,15 +786,19 @@ pub(crate) fn archive_one_config(
                         }
                     }
                     for (stem, dest, bin) in &binary_outputs {
-                        claim_output_path(
+                        let replacing = claim_output_path(
                             name_guard,
-                            log,
                             dest,
+                            "binary",
                             binary_name_tmpl,
                             stem,
                             crate_name,
-                            dry_run,
                         )?;
+                        if replacing && !dry_run {
+                            log.verbose(&format!(
+                                "replacing existing binary '{stem}' left by an earlier run"
+                            ));
+                        }
                         if dry_run {
                             log.status(&format!("(dry-run) would create {}", dest.display()));
                         } else {
@@ -803,15 +807,20 @@ pub(crate) fn archive_one_config(
                         }
                     }
                 } else {
-                    claim_output_path(
+                    let replacing = claim_output_path(
                         name_guard,
-                        log,
                         &archive_path,
+                        "archive",
                         name_tmpl,
                         &archive_filename,
                         crate_name,
-                        dry_run,
                     )?;
+                    if replacing && !dry_run {
+                        log.verbose(&format!(
+                            "replacing existing archive '{archive_filename}' \
+                             left by an earlier run"
+                        ));
+                    }
                     if dry_run {
                         log.status(&format!(
                             "(dry-run) would create {} with {} files",

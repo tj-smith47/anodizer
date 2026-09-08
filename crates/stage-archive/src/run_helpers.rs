@@ -144,30 +144,27 @@ pub(crate) fn render_binary_outputs<'a>(
 /// from an earlier attempt, and every archive writer truncates, so it is
 /// rewritten. A second claim on one path within a single pass is a
 /// `name_template` defect and hard-errors.
-#[allow(clippy::too_many_arguments)]
+///
+/// `artifact` is the user-facing noun for what this path holds (`"archive"`,
+/// `"binary"`), used in the collision message. Returns whether the path is
+/// already on disk, so the caller can note the overwrite in its own words.
 pub(crate) fn claim_output_path(
     name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
-    log: &StageLogger,
     path: &Path,
+    artifact: &str,
     name_template: &str,
     rendered: &str,
     crate_name: &str,
-    dry_run: bool,
-) -> Result<()> {
+) -> Result<bool> {
     name_guard.check(
         path,
         "archives",
-        "archive",
+        artifact,
         name_template,
         rendered,
         crate_name,
     )?;
-    if !dry_run && path.exists() {
-        log.verbose(&format!(
-            "replacing existing archive '{rendered}' left by an earlier run"
-        ));
-    }
-    Ok(())
+    Ok(path.exists())
 }
 
 pub(crate) fn write_archive_in_format(

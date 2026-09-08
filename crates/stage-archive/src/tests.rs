@@ -6321,7 +6321,7 @@ mod archive_name_guard {
         let lines = cap.all_messages();
         assert!(
             lines.iter().any(|(l, m)| *l == LogLevel::Verbose
-                && m == "replacing existing archive 'myapp_1.0.0_linux_amd64' \
+                && m == "replacing existing binary 'myapp_1.0.0_linux_amd64' \
                          left by an earlier run"),
             "{lines:?}"
         );
