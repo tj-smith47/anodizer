@@ -198,11 +198,69 @@ fn digests_match(remote_digest: &str, local_hex: &str) -> bool {
     remote_hex.eq_ignore_ascii_case(local_hex)
 }
 
+/// The release track a nightly retention sweep is confined to.
+///
+/// Every track of a multitrack workspace renders the SAME nightly release
+/// name, so a sweep keyed on the name alone deletes its siblings' releases —
+/// and the git tags behind them. The track's identity lives in its tag
+/// instead: the family the crate's `tag_template` mints
+/// ([`anodizer_core::git::tag_in_family`]), which anchors on the template's
+/// literal prefix and so keeps `v…-nightly` apart from `operator-v…-nightly`
+/// where a suffix rule would alias them.
+pub(crate) struct NightlyRetentionFamily<'a> {
+    /// The tag of the release this run just published.
+    pub(crate) tag: &'a str,
+    /// The publishing crate's resolved `tag_template`.
+    pub(crate) tag_template: &'a str,
+    /// `monorepo.tag_prefix`, when configured.
+    pub(crate) monorepo_prefix: Option<&'a str>,
+    /// Whether the workspace mints more than one tag family.
+    pub(crate) multitrack: bool,
+}
+
+impl NightlyRetentionFamily<'_> {
+    /// Whether the sweep narrows to the family at all.
+    ///
+    /// Only a multitrack workspace has siblings to protect, and narrowing
+    /// where there are none would strand every release cut under an earlier
+    /// tag scheme (a repo that used to pin `nightly.tag_name` and now mints
+    /// version-derived tags) — the name alone is already unambiguous there.
+    /// A literal `nightly.tag_name` likewise mints a tag outside every
+    /// family, leaving the name as the only key there is.
+    pub(crate) fn scopes(&self) -> bool {
+        self.multitrack
+            && anodizer_core::git::tag_in_family(self.tag, self.tag_template, self.monorepo_prefix)
+    }
+
+    /// Narrow a name-matched release set to this track.
+    fn scope(&self, releases: &[(u64, String)]) -> Vec<(u64, String)> {
+        if !self.scopes() {
+            return releases.to_vec();
+        }
+        releases
+            .iter()
+            .filter(|(_, rel_tag)| {
+                anodizer_core::git::tag_in_family(rel_tag, self.tag_template, self.monorepo_prefix)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The family as a diagnostic, for the sweep's verbose line.
+    pub(crate) fn describe(&self) -> String {
+        anodizer_core::git::tag_family_glob(self.tag_template, self.monorepo_prefix)
+            .unwrap_or_else(|| "(unscoped)".to_string())
+    }
+}
+
 /// Decide which nightly releases to prune so that exactly `keep_last` nightly
 /// releases survive — run AFTER the new release is created and published.
 ///
 /// `releases` is the full set of releases (`(id, tag)`) whose `name` matches the
-/// nightly release name, INCLUDING the just-created `protect_id`. They are sorted
+/// nightly release name, INCLUDING the just-created `protect_id`. `family`
+/// narrows that set to the publishing crate's own release track, so a
+/// multitrack workspace — where every track renders the same name — prunes
+/// only its own history. They are sorted
 /// newest-first internally by release `id` descending — monotonic with creation
 /// order on a single repo — so correctness does not depend on the order GitHub
 /// returns them. The newest `keep_last` survive; everything older is pruned.
@@ -224,11 +282,12 @@ pub(crate) fn nightly_releases_to_prune(
     releases: &[(u64, String)],
     keep_last: usize,
     protect_id: u64,
+    family: &NightlyRetentionFamily<'_>,
 ) -> Vec<(u64, String)> {
     let keep_last = keep_last.max(1);
     // Sort newest-first by id descending so the keep/prune split is correct
     // regardless of the API response order.
-    let mut sorted = releases.to_vec();
+    let mut sorted = family.scope(releases);
     sorted.sort_by_key(|r| std::cmp::Reverse(r.0));
     // The just-created release is counted in the kept set, so the newest
     // `keep_last` survive and everything older is pruned. The just-created
@@ -702,6 +761,37 @@ mod spec_struct_surface_tests {
         assert_eq!(opts.publish_repo_override, None);
     }
 
+    /// A retention family that scopes NOTHING — a literal `nightly.tag_name`
+    /// mints a tag outside every crate's family, so the release name stays the
+    /// only key. The arithmetic pins below predate family scoping and must be
+    /// unchanged by it.
+    fn unscoped(tag: &str) -> NightlyRetentionFamily<'_> {
+        NightlyRetentionFamily {
+            tag,
+            tag_template: "nightly",
+            monorepo_prefix: None,
+            multitrack: false,
+        }
+    }
+
+    /// The family a per-crate `tag_template` mints, for the multitrack pins.
+    fn family<'a>(tag: &'a str, tag_template: &'a str) -> NightlyRetentionFamily<'a> {
+        NightlyRetentionFamily {
+            tag,
+            tag_template,
+            monorepo_prefix: None,
+            multitrack: true,
+        }
+    }
+
+    /// A single-track workspace: one family, so nothing to narrow to.
+    fn single_track<'a>(tag: &'a str, tag_template: &'a str) -> NightlyRetentionFamily<'a> {
+        NightlyRetentionFamily {
+            multitrack: false,
+            ..family(tag, tag_template)
+        }
+    }
+
     #[test]
     fn nightly_releases_to_prune_keep_last_one_prunes_all_but_new() {
         // keep_last=1 (the keep_single_release alias): the prune list (which
@@ -713,7 +803,7 @@ mod spec_struct_surface_tests {
             (2u64, "0.1.0-nightly.1".to_string()),
             (1u64, "0.1.0-nightly.0".to_string()),
         ];
-        let pruned = nightly_releases_to_prune(&all, 1, 4);
+        let pruned = nightly_releases_to_prune(&all, 1, 4, &unscoped(&all[0].1));
         assert_eq!(
             pruned,
             vec![
@@ -735,7 +825,7 @@ mod spec_struct_surface_tests {
             (1u64, "t1".to_string()),
         ];
         for keep in [1usize, 2, 3, 4, 10] {
-            let pruned = nightly_releases_to_prune(&all, keep, 4);
+            let pruned = nightly_releases_to_prune(&all, keep, 4, &unscoped(&all[0].1));
             assert!(
                 !pruned.iter().any(|(id, _)| *id == 4),
                 "protect_id=4 must never be pruned (keep_last={keep}); got {pruned:?}",
@@ -753,7 +843,7 @@ mod spec_struct_surface_tests {
             (2u64, "t2".to_string()),
             (1u64, "new".to_string()), // protected, but lowest id
         ];
-        let pruned = nightly_releases_to_prune(&all, 1, 1);
+        let pruned = nightly_releases_to_prune(&all, 1, 1, &unscoped("new"));
         assert!(
             !pruned.iter().any(|(id, _)| *id == 1),
             "the protected (just-created) release must not be pruned: {pruned:?}",
@@ -770,7 +860,7 @@ mod spec_struct_surface_tests {
             (2u64, "t2".to_string()),
             (1u64, "t1".to_string()),
         ];
-        let pruned = nightly_releases_to_prune(&all, 2, 4);
+        let pruned = nightly_releases_to_prune(&all, 2, 4, &unscoped(&all[0].1));
         assert_eq!(
             pruned,
             vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())]
@@ -781,7 +871,7 @@ mod spec_struct_surface_tests {
     fn nightly_releases_to_prune_keeps_all_when_under_budget() {
         // Fewer releases than keep_last: nothing to prune.
         let all = vec![(2u64, "v1.2.3".to_string()), (1u64, "t1".to_string())];
-        assert!(nightly_releases_to_prune(&all, 10, 2).is_empty());
+        assert!(nightly_releases_to_prune(&all, 10, 2, &unscoped("v1.2.3")).is_empty());
     }
 
     #[test]
@@ -789,7 +879,7 @@ mod spec_struct_surface_tests {
         let all = vec![(2u64, "v1.2.3".to_string()), (1u64, "t1".to_string())];
         // keep_last=0 floored to 1 -> prune everything except the new release.
         assert_eq!(
-            nightly_releases_to_prune(&all, 0, 2),
+            nightly_releases_to_prune(&all, 0, 2, &unscoped("v1.2.3")),
             vec![(1u64, "t1".to_string())]
         );
     }
@@ -805,11 +895,141 @@ mod spec_struct_surface_tests {
             (2u64, "t2".to_string()),
         ];
         // keep_last=2: keep new (id=4) + id=3; prune 2 and 1 newest-first.
-        let pruned = nightly_releases_to_prune(&all, 2, 4);
+        let pruned = nightly_releases_to_prune(&all, 2, 4, &unscoped("v1.2.3"));
         assert_eq!(
             pruned,
             vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())],
             "must keep the highest-id releases regardless of input order",
+        );
+    }
+
+    /// The cfgd shape: three tracks publishing under ONE rendered release
+    /// name (`cfgd nightly`). Each track's sweep must prune only its own
+    /// family — before family scoping, `cfgd`'s `keep_last: 1` sweep deleted
+    /// the `operator-` and `csi-` releases created seconds earlier, and the
+    /// git tags behind them, so `verify-release` 404'd on two of three tags.
+    #[test]
+    fn nightly_retention_prunes_only_the_publishing_track() {
+        // Newest-first ids: this run created 6/5/4; the prior run left 3/2/1.
+        let name_matched = vec![
+            (6u64, "csi-v0.5.2-new-nightly".to_string()),
+            (5u64, "operator-v0.5.2-new-nightly".to_string()),
+            (4u64, "v0.5.2-new-nightly".to_string()),
+            (3u64, "csi-v0.5.1-old-nightly".to_string()),
+            (2u64, "operator-v0.5.1-old-nightly".to_string()),
+            (1u64, "v0.5.1-old-nightly".to_string()),
+        ];
+        let cases = [
+            (4u64, "v0.5.2-new-nightly", "v{{ Version }}", 1u64),
+            (
+                5u64,
+                "operator-v0.5.2-new-nightly",
+                "operator-v{{ Version }}",
+                2u64,
+            ),
+            (6u64, "csi-v0.5.2-new-nightly", "csi-v{{ Version }}", 3u64),
+        ];
+        for (protect_id, tag, template, expected_pruned_id) in cases {
+            let pruned =
+                nightly_releases_to_prune(&name_matched, 1, protect_id, &family(tag, template));
+            assert_eq!(
+                pruned,
+                vec![(
+                    expected_pruned_id,
+                    name_matched
+                        .iter()
+                        .find(|(id, _)| *id == expected_pruned_id)
+                        .expect("fixture id")
+                        .1
+                        .clone()
+                )],
+                "track '{template}' must prune only its own family",
+            );
+        }
+    }
+
+    /// The empty-prefix alias: `v…-nightly` is a SUFFIX of
+    /// `operator-v…-nightly`, so any contains/ends-with rule would let the
+    /// `v` track swallow every sibling. The family matcher anchors on the
+    /// template's literal prefix instead.
+    #[test]
+    fn nightly_retention_empty_prefix_family_excludes_prefixed_siblings() {
+        let name_matched = vec![
+            (4u64, "v0.5.2-new-nightly".to_string()),
+            (3u64, "operator-v0.5.1-old-nightly".to_string()),
+            (2u64, "csi-v0.5.1-old-nightly".to_string()),
+            (1u64, "v0.5.1-old-nightly".to_string()),
+        ];
+        let pruned = nightly_releases_to_prune(
+            &name_matched,
+            1,
+            4,
+            &family("v0.5.2-new-nightly", "v{{ Version }}"),
+        );
+        assert_eq!(pruned, vec![(1u64, "v0.5.1-old-nightly".to_string())]);
+    }
+
+    /// A single-track workspace is unchanged by family scoping: the sweep
+    /// still prunes every older nightly of the one family.
+    #[test]
+    fn nightly_retention_single_track_sweep_unchanged() {
+        let name_matched = vec![
+            (3u64, "v1.2.3-c-nightly".to_string()),
+            (2u64, "v1.2.2-b-nightly".to_string()),
+            (1u64, "v1.2.1-a-nightly".to_string()),
+        ];
+        assert_eq!(
+            nightly_releases_to_prune(
+                &name_matched,
+                1,
+                3,
+                &single_track("v1.2.3-c-nightly", "v{{ Version }}")
+            ),
+            vec![
+                (2u64, "v1.2.2-b-nightly".to_string()),
+                (1u64, "v1.2.1-a-nightly".to_string()),
+            ]
+        );
+    }
+
+    /// A single-track repo that USED to pin `nightly.tag_name` carries older
+    /// releases on a tag no family contains. Narrowing there would strand
+    /// them forever; with one track the shared name is already unambiguous,
+    /// so the sweep stays name-keyed and collects them.
+    #[test]
+    fn nightly_retention_single_track_still_prunes_a_legacy_rolling_tag() {
+        let name_matched = vec![
+            (3u64, "v1.2.3-c-nightly".to_string()),
+            (2u64, "nightly".to_string()),
+            (1u64, "nightly.0".to_string()),
+        ];
+        assert_eq!(
+            nightly_releases_to_prune(
+                &name_matched,
+                1,
+                3,
+                &single_track("v1.2.3-c-nightly", "v{{ Version }}")
+            ),
+            vec![
+                (2u64, "nightly".to_string()),
+                (1u64, "nightly.0".to_string()),
+            ]
+        );
+    }
+
+    /// A literal `nightly.tag_name` mints a tag no family contains; the
+    /// sweep then falls back to the name-only set it has always used.
+    #[test]
+    fn nightly_retention_falls_back_to_name_when_tag_is_outside_every_family() {
+        let name_matched = vec![
+            (2u64, "edge".to_string()),
+            (1u64, "operator-v0.5.1-old-nightly".to_string()),
+        ];
+        let f = family("edge", "v{{ Version }}");
+        assert!(!f.scopes());
+        assert_eq!(
+            nightly_releases_to_prune(&name_matched, 1, 2, &f),
+            vec![(1u64, "operator-v0.5.1-old-nightly".to_string())]
         );
     }
 }

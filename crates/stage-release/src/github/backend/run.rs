@@ -566,7 +566,29 @@ pub(crate) fn run_github_backend(
                 Some(&retry_after_capture),
             )
             .await?;
-            let to_prune = nightly_releases_to_prune(&existing, keep_last, release_id_raw);
+            let family = NightlyRetentionFamily {
+                tag,
+                tag_template: crate_cfg.resolved_tag_template(),
+                monorepo_prefix: ctx.config.monorepo_tag_prefix(),
+                multitrack: ctx.config.mints_multiple_tag_families(),
+            };
+            if family.scopes() {
+                log.verbose(&format!(
+                    "nightly retention scoped to tag family '{}' ({} of {} name-matched release(s) in family)",
+                    family.describe(),
+                    existing
+                        .iter()
+                        .filter(|(_, t)| anodizer_core::git::tag_in_family(
+                            t,
+                            crate_cfg.resolved_tag_template(),
+                            ctx.config.monorepo_tag_prefix()
+                        ))
+                        .count(),
+                    existing.len()
+                ));
+            }
+            let to_prune =
+                nightly_releases_to_prune(&existing, keep_last, release_id_raw, &family);
             for (rel_id, rel_tag) in to_prune {
                 log.status(&format!(
                     "deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}') for nightly retention (keep_last={keep_last})"

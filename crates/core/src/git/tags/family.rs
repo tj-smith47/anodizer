@@ -242,6 +242,27 @@ pub fn tag_family_glob(tag_template: &str, monorepo_prefix: Option<&str>) -> Opt
     tag_family_scope(tag_template, monorepo_prefix).map(|s| s.describe_glob())
 }
 
+/// Whether `tag` belongs to the family `tag_template` mints — the membership
+/// half of [`tag_family_glob`], for callers holding tag names rather than a
+/// git search (the GitHub retention sweep enumerates releases over the API).
+///
+/// `false` when the template mints no family at all (a literal tag name with
+/// no version placeholder, outside any monorepo namespace): such a template
+/// names one tag, not a track.
+///
+/// # Examples
+/// ```
+/// # use anodizer_core::git::tag_in_family;
+/// assert!(tag_in_family("v0.5.2-abc1234-nightly", "v{{ Version }}", None));
+/// // An empty-prefix family must not swallow a sibling track.
+/// assert!(!tag_in_family("operator-v0.5.2-abc1234-nightly", "v{{ Version }}", None));
+/// assert!(!tag_in_family("v0.5.2-abc1234-nightly", "operator-v{{ Version }}", None));
+/// assert!(!tag_in_family("nightly", "nightly", None));
+/// ```
+pub fn tag_in_family(tag: &str, tag_template: &str, monorepo_prefix: Option<&str>) -> bool {
+    tag_family_scope(tag_template, monorepo_prefix).is_some_and(|s| s.contains(tag))
+}
+
 /// Resolve the family a crate's `tag_template` mints, falling back to the
 /// monorepo namespace when the template carries no usable scope of its own.
 pub(super) fn tag_family_scope<'a>(

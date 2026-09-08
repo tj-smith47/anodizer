@@ -64,6 +64,23 @@ impl Config {
         (out, warnings)
     }
 
+    /// Whether the configured crate universe mints more than one tag family
+    /// — the per-crate shape, as opposed to single-crate or lockstep, where
+    /// every crate shares one `tag_template`.
+    pub fn mints_multiple_tag_families(&self) -> bool {
+        let mut seen: Vec<&str> = Vec::new();
+        for c in self.crate_universe() {
+            let tmpl = c.resolved_tag_template();
+            if !seen.contains(&tmpl) {
+                seen.push(tmpl);
+                if seen.len() > 1 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Return the monorepo tag prefix, if configured.
     ///
     /// Shorthand for `config.monorepo.as_ref().and_then(|m| m.tag_prefix.as_deref())`.

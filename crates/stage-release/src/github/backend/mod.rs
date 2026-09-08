@@ -16,8 +16,8 @@ use anyhow::{Context as _, Result};
 
 use super::lookup::{find_draft_by_name, find_release_by_tag, list_releases_by_name};
 use super::spec::{
-    BackendEnv, GithubReleaseSpec, UploadOpts, check_existing_assets_block_upload,
-    nightly_releases_to_prune,
+    BackendEnv, GithubReleaseSpec, NightlyRetentionFamily, UploadOpts,
+    check_existing_assets_block_upload, nightly_releases_to_prune,
 };
 use super::{
     build_octocrab_client, check_github_rate_limit_with_env, is_octocrab_404, retry_octocrab_call,

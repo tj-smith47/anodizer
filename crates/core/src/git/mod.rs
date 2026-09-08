@@ -85,8 +85,8 @@ pub use tags::{
     get_tags_at_head, get_tags_at_head_in, get_tags_at_sha_in, has_version_placeholder,
     head_is_at_tag, is_nightly_tag, list_remote_tag_names_in, list_tags_with_prefix,
     per_crate_tag_prefix, push_branch_and_tags_atomic_in, render_ignore_patterns,
-    strip_monorepo_prefix, tag_family_glob, tag_points_at_head, tag_points_at_head_in,
-    tag_position_in,
+    strip_monorepo_prefix, tag_family_glob, tag_in_family, tag_points_at_head,
+    tag_points_at_head_in, tag_position_in,
 };
 pub use worktree::Worktree;
 
