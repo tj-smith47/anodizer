@@ -32,17 +32,23 @@ pub(super) fn resolve_tag_override(
 
 /// The newest tag, by semver, across the tag families of every crate this run
 /// covers (the explicit selection when there is one, else the whole crate
-/// universe).
+/// universe), together with the template of the family it came from.
 ///
 /// Families are deduped by template, so a lockstep workspace performs exactly
 /// one probe and a single-crate config is unchanged. Returns `None` when no
 /// covered family has a tag.
+///
+/// The template travels with the tag because the previous-tag look-back must
+/// search the SAME family: a base taken from `v0.10.0` with a look-back
+/// scoped to `crd-v` would pair the version with a previous tag from another
+/// track, and the compare link and changelog window are both cut from that
+/// pair.
 fn newest_tag_across_crates(
     ctx: &Context,
     config: &Config,
     monorepo_prefix: Option<&str>,
     log: &StageLogger,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let selected = &ctx.options.selected_crates;
     let covered: Vec<&anodizer_core::config::CrateConfig> = if selected.is_empty() {
         config.crate_universe()
@@ -54,7 +60,7 @@ fn newest_tag_across_crates(
     };
 
     let mut seen_templates: Vec<String> = Vec::new();
-    let mut best: Option<(git::SemVer, String)> = None;
+    let mut best: Option<(git::SemVer, String, String)> = None;
     for crate_cfg in covered {
         let template = crate_cfg.tag_family_template();
         if seen_templates.contains(&template) {
@@ -81,11 +87,11 @@ fn newest_tag_across_crates(
         let Ok(semver) = git::parse_semver_tag(stripped) else {
             continue;
         };
-        if best.as_ref().is_none_or(|(bv, _)| semver > *bv) {
-            best = Some((semver, tag));
+        if best.as_ref().is_none_or(|(bv, _, _)| semver > *bv) {
+            best = Some((semver, tag, template));
         }
     }
-    if let Some((_, ref tag)) = best
+    if let Some((_, ref tag, _)) = best
         && seen_templates.len() > 1
     {
         log.verbose(&format!(
@@ -93,7 +99,7 @@ fn newest_tag_across_crates(
             seen_templates.len()
         ));
     }
-    best.map(|(_, tag)| tag)
+    best.map(|(_, tag, template)| (tag, template))
 }
 
 /// Resolve tag and populate git variables on the context.
@@ -156,10 +162,11 @@ pub fn resolve_git_context(
         .or_else(|| config.crate_universe().into_iter().next());
 
     if let Some(crate_cfg) = first_crate {
-        // The crate's own tag family, resolved once, so the latest-tag matcher
-        // below and the previous-tag prefix filter can never drift into
-        // mismatched families for an unset-template crate.
+        // The crate's own tag family, resolved once. A nightly / snapshot base
+        // may come from a SIBLING family instead (see below), in which case
+        // that family — not this one — bounds the previous-tag look-back.
         let crate_tag_template = crate_cfg.tag_family_template();
+        let mut base_tag_template = crate_tag_template.clone();
         // An override is the operator NAMING the version this run targets;
         // everything else is an inference from what the repository happens to
         // hold. Gates that ask "is the resolved version the one being
@@ -188,7 +195,10 @@ pub fn resolve_git_context(
             // than any track's own last release. A single-crate or lockstep
             // workspace has one family, so the answer is unchanged.
             let latest_tag = if ctx.is_nightly() || ctx.is_snapshot() {
-                newest_tag_across_crates(ctx, config, monorepo_prefix, log)
+                newest_tag_across_crates(ctx, config, monorepo_prefix, log).map(|(tag, tmpl)| {
+                    base_tag_template = tmpl;
+                    tag
+                })
             } else {
                 match git::find_latest_tag_matching_with_prefix(
                     &crate_tag_template,
@@ -297,16 +307,16 @@ pub fn resolve_git_context(
                     ));
                     git_info.previous_tag = Some(prev_override);
                 } else {
-                    // Scope the look-back to the current crate's tag family
-                    // (e.g. `v` for cfgd, `csi-v` for cfgd-csi) so
-                    // monorepo-style workspaces don't bleed prior tags across
-                    // crates. Without this, `git describe --tags` returns the
-                    // most recent tag of ANY crate — e.g. `cfgd: csi-v0.3.4 ->
-                    // 0.3.5` ends up in the nix/homebrew commit message because
-                    // csi was the most recently tagged sibling.
+                    // Scope the look-back to the family the resolved tag
+                    // actually belongs to (e.g. `v` for cfgd, `csi-v` for
+                    // cfgd-csi) so monorepo-style workspaces don't bleed prior
+                    // tags across crates. Without this, `git describe --tags`
+                    // returns the most recent tag of ANY crate — e.g. `cfgd:
+                    // csi-v0.3.4 -> 0.3.5` ends up in the nix/homebrew commit
+                    // message because csi was the most recently tagged sibling.
                     git_info.previous_tag = git::find_previous_tag_in_family(
                         &tag,
-                        &crate_tag_template,
+                        &base_tag_template,
                         config.git.as_ref(),
                         Some(ctx.template_vars()),
                         config.monorepo_tag_prefix(),

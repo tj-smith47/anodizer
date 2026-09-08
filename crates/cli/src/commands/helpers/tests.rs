@@ -2542,6 +2542,13 @@ fn apply_workspace_scope_infers_and_returns_skip() {
 /// family has something to find. Hermetic committer identity via env.
 #[cfg(unix)]
 fn with_multi_family_tags_repo_cwd(tags: &[&str], body: impl FnOnce()) {
+    with_tagged_commits_repo_cwd(&[tags], body);
+}
+
+/// Seed one commit per entry in `commits`, tagging each with that entry's
+/// tags, so a previous-tag look-back has an earlier commit to walk back to.
+#[cfg(unix)]
+fn with_tagged_commits_repo_cwd(commits: &[&[&str]], body: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let git = |args: &[&str]| {
@@ -2561,11 +2568,13 @@ fn with_multi_family_tags_repo_cwd(tags: &[&str], body: impl FnOnce()) {
         assert!(out.status.success(), "git {args:?} must succeed");
     };
     git(&["init", "-q"]);
-    std::fs::write(dir.join("f.txt"), "v1\n").unwrap();
-    git(&["add", "f.txt"]);
-    git(&["commit", "-q", "-m", "init"]);
-    for tag in tags {
-        git(&["tag", tag]);
+    for (n, tags) in commits.iter().enumerate() {
+        std::fs::write(dir.join("f.txt"), format!("v{n}\n")).unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "step"]);
+        for tag in tags.iter() {
+            git(&["tag", tag]);
+        }
     }
     let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
     body();
@@ -2665,6 +2674,36 @@ fn resolve_git_context_nightly_lockstep_base_unchanged() {
             Some("0.10.0"),
         );
     });
+}
+
+/// The base's family — not the first-declared crate's — bounds the
+/// previous-tag look-back. A `0.10.0` base paired with a `crd-v` previous tag
+/// yields a compare link and changelog window across two different tracks.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_nightly_previous_tag_comes_from_the_base_family() {
+    with_tagged_commits_repo_cwd(
+        &[
+            &["crd-v0.5.0", "v0.9.0"],
+            &["crd-v0.5.1", "v0.10.0", "operator-v0.8.0"],
+        ],
+        || {
+            let config = multi_family_config();
+            let opts = ContextOptions {
+                nightly: true,
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, opts);
+            resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect("nightly resolve must succeed");
+            assert_eq!(
+                ctx.git_info.as_ref().unwrap().previous_tag.as_deref(),
+                Some("v0.9.0"),
+                "the look-back must search the family the base came from",
+            );
+        },
+    );
 }
 
 /// A track with no tags at all (the cfgd-schema shape) is simply skipped by
