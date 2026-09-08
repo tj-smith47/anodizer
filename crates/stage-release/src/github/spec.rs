@@ -258,9 +258,41 @@ impl NightlyRetentionFamily<'_> {
     }
 
     /// The family as a diagnostic, for the sweep's verbose line.
+    ///
+    /// Names the excluded siblings (`v* minus operator-v*, csi-v*`) because
+    /// the own-glob alone reads as "everything starting with v" — the exact
+    /// misreading that makes an operator think the sweep is about to delete a
+    /// sibling track's releases.
     pub(crate) fn describe(&self) -> String {
-        anodizer_core::git::tag_family_glob(self.tag_template, self.monorepo_prefix)
-            .unwrap_or_else(|| "(unscoped)".to_string())
+        let Some(own) =
+            anodizer_core::git::tag_family_glob(self.tag_template, self.monorepo_prefix)
+        else {
+            return "(unscoped)".to_string();
+        };
+        let own_prefix =
+            anodizer_core::git::tag_family_prefix(self.tag_template, self.monorepo_prefix)
+                .unwrap_or_default();
+        let mut excluded: Vec<String> = Vec::new();
+        for sib in self.sibling_templates {
+            let Some(prefix) = anodizer_core::git::tag_family_prefix(sib, self.monorepo_prefix)
+            else {
+                continue;
+            };
+            if prefix.len() <= own_prefix.len() {
+                continue;
+            }
+            let Some(glob) = anodizer_core::git::tag_family_glob(sib, self.monorepo_prefix) else {
+                continue;
+            };
+            if !excluded.contains(&glob) {
+                excluded.push(glob);
+            }
+        }
+        if excluded.is_empty() {
+            own
+        } else {
+            format!("{own} minus {}", excluded.join(", "))
+        }
     }
 }
 
@@ -1072,5 +1104,38 @@ mod spec_struct_surface_tests {
             nightly_releases_to_prune(&name_matched, 1, 2, &f),
             vec![(1u64, "operator-v0.5.1-old-nightly".to_string())]
         );
+    }
+
+    /// The scope line must name what the sweep EXCLUDES, not just what it
+    /// matches: `v*` alone reads as every tag in the repository.
+    #[test]
+    fn retention_scope_line_names_the_excluded_sibling_families() {
+        let siblings = vec![
+            "operator-v{{ Version }}".to_string(),
+            "csi-v{{ Version }}".to_string(),
+        ];
+        let family = NightlyRetentionFamily {
+            tag: "v0.5.2-new-nightly",
+            tag_template: "v{{ Version }}",
+            sibling_templates: &siblings,
+            monorepo_prefix: None,
+            multitrack: true,
+        };
+        assert_eq!(family.describe(), "v* minus operator-v*, csi-v*");
+    }
+
+    /// A track with no narrower sibling has nothing to subtract, so the line
+    /// stays the bare glob rather than growing an empty `minus` clause.
+    #[test]
+    fn retention_scope_line_omits_an_empty_exclusion_clause() {
+        let siblings = vec!["v{{ Version }}".to_string()];
+        let family = NightlyRetentionFamily {
+            tag: "operator-v0.5.2-new-nightly",
+            tag_template: "operator-v{{ Version }}",
+            sibling_templates: &siblings,
+            monorepo_prefix: None,
+            multitrack: true,
+        };
+        assert_eq!(family.describe(), "operator-v*");
     }
 }

@@ -306,6 +306,11 @@ pub fn tag_family_prefix(tag_template: &str, monorepo_prefix: Option<&str>) -> O
 /// have. A tag no sibling claims stays in the family whose prefix it carries,
 /// which is what keeps a prefixed literal (`v` + `nightly` → `vnightly`)
 /// inside its own track.
+///
+/// Exclusion sees only the families this workspace CONFIGURES. A tag left
+/// behind by a crate that has since been renamed or removed — or minted by a
+/// tool outside anodizer — has no sibling template to claim it, so it stays
+/// in whichever configured family its prefix matches.
 pub fn tag_in_family_excluding_siblings(
     tag: &str,
     tag_template: &str,
