@@ -259,6 +259,26 @@ fn version_infix_tag_template_is_rejected() {
     );
 }
 
+/// The installer resolves the newest STABLE release at runtime, so a rolling
+/// `nightly.tag_name` must not reach the tag it bakes in: taking that rung
+/// would emit `tag="edge"` for a script that reconstructs `v${version}`.
+#[test]
+fn a_rolling_nightly_tag_name_does_not_reach_the_installer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None);
+    ctx.options.nightly = true;
+    ctx.config.nightly = Some(anodizer_core::config::NightlyConfig {
+        tag_name: Some("edge".to_string()),
+        ..Default::default()
+    });
+    InstallScriptStage.run(&mut ctx).expect("stage run");
+    let script = std::fs::read_to_string(tmp.path().join("install.sh")).expect("read script");
+    assert!(
+        script.contains(r#"tag="v${version}""#),
+        "the installer must keep pointing at the stable tag family:\n{script}"
+    );
+}
+
 /// install-script renders the checksums `name_template` under AMBIENT template
 /// vars, exactly as the checksum stage's `write_combined_file` does — it must
 /// NOT rebind `CrateName` to the flagship crate, or the filename it bakes would

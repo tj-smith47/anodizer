@@ -51,19 +51,16 @@ pub fn seed_missing_download_urls_for_crate(
         }
     }
 
-    // Same template-precedence the release stage's `resolve_release_tag`
-    // applies: an explicit `release.tag:` override wins over `tag_template`.
-    // A render error or empty result skips seeding rather than bailing — the
+    // The seeded URL must point at the release these assets are uploaded to,
+    // so the tag comes from the one resolver that creates it — including the
+    // `nightly.tag_name` rung, which a plain `tag_template` render misses. A
+    // render error or empty result skips seeding rather than bailing: the
     // release stage owns the loud diagnostic for that config bug.
-    let tag_tmpl = release_cfg
-        .tag
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| crate_cfg.tag_family_template());
-    let tag = match ctx.render_template(&tag_tmpl) {
-        Ok(t) if !t.is_empty() => t,
-        _ => return Ok(None),
-    };
+    let tag =
+        match crate::release_tag::resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref()) {
+            Ok(t) if !t.is_empty() => t,
+            _ => return Ok(None),
+        };
 
     let token_type = ctx.token_type;
     let Some(repo) = resolve_release_repo(&release_cfg, token_type, ctx)? else {
@@ -417,6 +414,30 @@ mod tests {
         assert_eq!(
             prefix,
             "https://github.com/octocat/hello/releases/download/app-v1.0.0"
+        );
+    }
+
+    /// The seeded URL must name the tag the release is created on. With
+    /// `nightly.tag_name` set that is the rolling tag, not a `tag_template`
+    /// render — a second derivation here points every asset URL at a release
+    /// that does not exist.
+    #[test]
+    fn seed_uses_the_nightly_tag_name_the_release_is_created_on() {
+        let cfg = crate_cfg_with_release();
+        let mut ctx = ctx_with(&cfg, vec![archive("myapp", "a.tar.gz", "x")]);
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(crate::config::NightlyConfig {
+            tag_name: Some("edge".to_string()),
+            ..Default::default()
+        });
+        let resolved = crate::release_tag::resolve_release_tag(&ctx, &cfg, None).unwrap();
+        let prefix = seed_missing_download_urls_for_crate(&mut ctx, &cfg)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, "edge");
+        assert_eq!(
+            prefix,
+            format!("https://github.com/octocat/hello/releases/download/{resolved}")
         );
     }
 

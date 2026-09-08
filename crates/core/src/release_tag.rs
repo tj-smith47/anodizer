@@ -60,17 +60,17 @@ pub fn resolve_release_tag(
             scope_to_tag_family(ctx, crate_cfg, rendered),
             "nightly.tag_name",
         )
-    } else if let Some(override_tmpl) = release_tag_override {
-        let rendered = ctx.render_template(override_tmpl).with_context(|| {
-            format!("release: render release.tag override for crate '{crate_name}'")
-        })?;
-        (rendered, "release.tag")
     } else {
-        let tmpl = crate_cfg.tag_family_template();
+        let source = if release_tag_override.is_some() {
+            "release.tag"
+        } else {
+            "tag_template"
+        };
+        let tmpl = release_tag_template(crate_cfg, release_tag_override);
         let rendered = ctx
             .render_template(&tmpl)
-            .with_context(|| format!("release: render tag_template for crate '{crate_name}'"))?;
-        (rendered, "tag_template")
+            .with_context(|| format!("release: render {source} for crate '{crate_name}'"))?;
+        (rendered, source)
     };
     if rendered.is_empty() {
         anyhow::bail!(
@@ -86,6 +86,22 @@ pub fn resolve_release_tag(
         );
     }
     Ok(rendered)
+}
+
+/// The tag TEMPLATE a crate's release is minted from: an explicit
+/// `release.tag` override, else the crate's own tag family.
+///
+/// This is the version-PARAMETERISED half of [`resolve_release_tag`], for the
+/// surfaces that emit a template rather than a tag — the `curl | sh` installer
+/// and cargo-binstall's `pkg_url` both resolve a version at install time and
+/// reconstruct the tag from it. They deliberately stop short of the
+/// `nightly.tag_name` rung: both point at whatever the project's newest STABLE
+/// release is, which is never the rolling tag a nightly run mints.
+pub fn release_tag_template(crate_cfg: &CrateConfig, release_tag_override: Option<&str>) -> String {
+    release_tag_override
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate_cfg.tag_family_template())
 }
 
 /// Put a literal `nightly.tag_name` inside this crate's tag family when the

@@ -292,12 +292,14 @@ fn resolve_checksums_filename(ctx: &mut Context, crate_cfg: &CrateConfig) -> Res
 
 /// Resolve the flagship crate's literal tag prefix.
 ///
-/// Renders the crate's tag template (a `release.tag` override wins, then the
-/// crate's `tag_template`, then the canonical `v{{ Version }}`) with `Version`
-/// stamped to `${version}`, then strips the trailing `${version}` — so
-/// `v{{ Version }}` → `v`, `release-{{ Version }}` → `release-`, and a bare
-/// `{{ Version }}` → `` (empty). This is the W2 fix: the script's
-/// `tag="${TAG_PREFIX}${version}"` no longer hardcodes a `v` prefix.
+/// The template comes from
+/// [`release_tag_template`](anodizer_core::release_tag::release_tag_template),
+/// the shared precedence (`release.tag` override, else the crate's tag
+/// family), rendered against a `Version` stamped to `${version}` and stripped
+/// of the trailing `${version}`: `v{{ Version }}` → `v`,
+/// `release-{{ Version }}` → `release-`, a bare `{{ Version }}` → `` (empty).
+/// The script's `tag="${TAG_PREFIX}${version}"` therefore carries the
+/// project's own prefix rather than a hardcoded `v`.
 ///
 /// The rendered tag MUST end with the version placeholder: a `curl | sh`
 /// installer reconstructs the release tag from a runtime-resolved version and
@@ -305,12 +307,11 @@ fn resolve_checksums_filename(ctx: &mut Context, crate_cfg: &CrateConfig) -> Res
 /// version-infix template (e.g. `{{ Version }}-stable`) is rejected with a
 /// clear error rather than silently baking a broken `tag=` into the script.
 fn resolve_tag_prefix(ctx: &mut Context, crate_cfg: &CrateConfig) -> Result<String> {
-    let template = crate_cfg
-        .release
-        .as_ref()
-        .and_then(|r| r.tag.clone())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| crate_cfg.tag_family_template().to_string());
+    let release_tag_override = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
+    let template = anodizer_core::release_tag::release_tag_template(
+        crate_cfg,
+        release_tag_override.as_deref(),
+    );
 
     let rendered = ctx
         .render_template(&template)
