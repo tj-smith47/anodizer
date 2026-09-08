@@ -150,8 +150,8 @@ fn canonical_cache_dir(cache_dir: &Path) -> Result<PathBuf> {
 
 /// Lock one resolved TUF cache directory, probing before blocking.
 fn host_lock_for_dir(dir: &Path, log: &StageLogger) -> Option<TufInitLock> {
-    let file = match TufInitLock::open_sentinel(dir) {
-        Ok(file) => file,
+    let (file, sentinel) = match TufInitLock::open_sentinel(dir) {
+        Ok(opened) => opened,
         Err(err) => {
             log.verbose(&format!(
                 "could not acquire host-level TUF init lock ({err:#}); \
@@ -164,15 +164,16 @@ fn host_lock_for_dir(dir: &Path, log: &StageLogger) -> Option<TufInitLock> {
     // long the other process signs, and an unexplained stall gets reported
     // as a hang.
     if fs4::FileExt::try_lock(&file).is_ok() {
-        return Some(TufInitLock { file });
+        return Some(TufInitLock { file, sentinel }.noted(log));
     }
     log.status("waiting for the host-level TUF lock held by another anodizer process on this host"); // status-ok: explains a multi-minute stall
     match fs4::FileExt::lock(&file) {
-        Ok(()) => Some(TufInitLock { file }),
+        Ok(()) => Some(TufInitLock { file, sentinel }.noted(log)),
         Err(err) => {
             log.verbose(&format!(
-                "could not acquire host-level TUF init lock ({err:#}); \
-                 keyless cosign runs unserialized across processes"
+                "could not acquire host-level TUF init lock on {} ({err:#}); \
+                 keyless cosign runs unserialized across processes",
+                sentinel.display()
             ));
             None
         }
@@ -186,6 +187,10 @@ fn host_lock_for_dir(dir: &Path, log: &StageLogger) -> Option<TufInitLock> {
 /// dies while holding it.
 pub(crate) struct TufInitLock {
     file: File,
+    /// The sentinel actually opened — under the CANONICAL cache dir, which
+    /// is why every message about this lock is formatted from here and never
+    /// from the spelling the caller passed in.
+    sentinel: PathBuf,
 }
 
 impl TufInitLock {
@@ -194,15 +199,16 @@ impl TufInitLock {
     ///
     /// The sentinel is keyed on the directory's CANONICAL path, so two runs
     /// spelling one store differently contend the same file.
-    fn open_sentinel(cache_dir: &Path) -> Result<File> {
+    fn open_sentinel(cache_dir: &Path) -> Result<(File, PathBuf)> {
         let cache_dir = canonical_cache_dir(cache_dir)?;
         let path = cache_dir.join(LOCK_SENTINEL);
-        File::options()
+        let file = File::options()
             .create(true)
             .truncate(false)
             .write(true)
             .open(&path)
-            .with_context(|| format!("opening TUF init lock sentinel {}", path.display()))
+            .with_context(|| format!("opening TUF init lock sentinel {}", path.display()))?;
+        Ok((file, path))
     }
 
     /// Create the cache directory (and parents) if needed, then take an
@@ -211,17 +217,28 @@ impl TufInitLock {
     /// [`host_lock_for_dir`], which probes and explains the wait.
     #[cfg(test)]
     pub(crate) fn acquire(cache_dir: &Path) -> Result<Self> {
-        let file = Self::open_sentinel(cache_dir)?;
+        let (file, sentinel) = Self::open_sentinel(cache_dir)?;
         // Explicit trait call: on toolchains ≥1.89 `std::fs::File` grew an
         // inherent `lock` that would otherwise shadow the fs4 method; on the
         // 1.87 MSRV only the fs4 method exists.
-        fs4::FileExt::lock(&file).with_context(|| {
-            format!(
-                "locking TUF init sentinel {}",
-                cache_dir.join(LOCK_SENTINEL).display()
-            )
-        })?;
-        Ok(Self { file })
+        fs4::FileExt::lock(&file)
+            .with_context(|| format!("locking TUF init sentinel {}", sentinel.display()))?;
+        Ok(Self { file, sentinel })
+    }
+
+    /// The sentinel file this lock holds, under the canonical cache dir.
+    pub(crate) fn sentinel(&self) -> &Path {
+        &self.sentinel
+    }
+
+    /// Leave a verbose trace of which sentinel this run holds, so a stall
+    /// reported against one store can be matched to the process holding it.
+    fn noted(self, log: &StageLogger) -> Self {
+        log.verbose(&format!(
+            "holding the host-level TUF init lock {}",
+            self.sentinel().display()
+        ));
+        self
     }
 }
 
@@ -353,6 +370,41 @@ mod tests {
         let locks = keyless_cosign_host_locks(&[&plain, &indirect], &env, &log);
         assert_eq!(locks.len(), 1, "one root, one lock");
         assert!(root.join(LOCK_SENTINEL).is_file());
+    }
+
+    /// Every message about the lock names the sentinel that was actually
+    /// opened — under the canonical cache dir — never the caller's spelling.
+    /// A directory squatting on the sentinel path is the one open failure
+    /// reachable as root; the guard's own path covers the locked case.
+    #[test]
+    fn lock_failure_names_the_canonical_sentinel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        let spelled = tmp.path().join("sub").join("..").join("root");
+        let canonical_sentinel = {
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::canonicalize(&root).unwrap().join(LOCK_SENTINEL)
+        };
+
+        let lock = TufInitLock::acquire(&spelled).expect("acquire through the indirect spelling");
+        assert_eq!(lock.sentinel(), canonical_sentinel);
+        drop(lock);
+
+        std::fs::remove_file(&canonical_sentinel).unwrap();
+        std::fs::create_dir(&canonical_sentinel).unwrap();
+        let msg = match TufInitLock::acquire(&spelled) {
+            Ok(_) => panic!("a directory on the sentinel path must fail the acquire"),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(
+            msg.contains(&canonical_sentinel.display().to_string()),
+            "message must name the canonical sentinel: {msg}"
+        );
+        assert!(
+            !msg.contains(".."),
+            "message must not carry the caller's spelling: {msg}"
+        );
     }
 
     #[test]
