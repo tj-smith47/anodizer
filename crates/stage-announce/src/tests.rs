@@ -22,7 +22,8 @@ use crate::helpers::{
 
 /// A process-unique dist directory so the per-version announce sent-marker
 /// (`<dist>/.announce-sent-<version>.json`) written by one test can never leak
-/// into another. The default `./dist` is shared across the whole crate, so
+/// into another. These contexts are built from `Config::default`, whose
+/// relative `./dist` is shared across the whole crate, so
 /// without this a successful announce in one test would mark a channel "sent"
 /// and silently skip it in a later test that expects it to fire. The tempdir
 /// is intentionally leaked: tests are short-lived and the OS reclaims it.

@@ -403,6 +403,11 @@ impl TestContextBuilder {
     }
 
     /// Set the dist directory (output directory for artifacts).
+    ///
+    /// Unset, the context gets a fresh directory of its own under the system
+    /// temp dir — never [`Config::default`]'s relative `./dist`, which every
+    /// context in a test binary would share and resolve against the process
+    /// working directory.
     pub fn dist(mut self, dist: PathBuf) -> Self {
         self.dist = Some(dist);
         self
@@ -532,9 +537,7 @@ impl TestContextBuilder {
         config.defaults = self.defaults;
         config.source = self.source;
         config.sboms = self.sboms;
-        if let Some(dist) = self.dist {
-            config.dist = dist;
-        }
+        config.dist = self.dist.unwrap_or_else(private_dist_dir);
 
         let options = ContextOptions {
             snapshot: self.snapshot,
@@ -612,6 +615,19 @@ impl TestContextBuilder {
 
         ctx
     }
+}
+
+/// A directory of this context's own, under the system temp dir.
+///
+/// `Config::default`'s relative `./dist` resolves against the test binary's
+/// working directory, so a stage writing artifacts without an explicit dist
+/// races every `#[serial(cwd)]` sibling for that one path. The handle is
+/// deliberately kept: the returned [`Context`] has nowhere to hold it, so the
+/// directory lives until the system reaps its temp dir.
+fn private_dist_dir() -> PathBuf {
+    tempfile::TempDir::with_prefix("anodizer-test-dist-")
+        .expect("test context: create a private dist directory")
+        .keep()
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1133,44 @@ mod tests {
             ctx.template_vars().get_structured("IsSnapshot"),
             Some(&serde_json::Value::Bool(true))
         );
+    }
+
+    #[test]
+    fn an_unset_dist_is_a_private_absolute_directory() {
+        let first = TestContextBuilder::new().build();
+        let second = TestContextBuilder::new().build();
+
+        assert!(
+            first.config.dist.is_absolute(),
+            "dist must not resolve against the test binary cwd: {}",
+            first.config.dist.display()
+        );
+        let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(
+            std::fs::canonicalize(&first.config.dist)
+                .unwrap()
+                .starts_with(&temp),
+            "dist must live under the system temp dir: {}",
+            first.config.dist.display()
+        );
+        assert_ne!(
+            first.config.dist, second.config.dist,
+            "each context must own its dist"
+        );
+        assert_eq!(
+            Config::default().dist,
+            PathBuf::from("./dist"),
+            "the operator-facing default is unchanged"
+        );
+    }
+
+    #[test]
+    fn an_explicit_dist_still_wins() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = TestContextBuilder::new()
+            .dist(tmp.path().to_path_buf())
+            .build();
+        assert_eq!(ctx.config.dist, tmp.path());
     }
 
     #[test]

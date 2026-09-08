@@ -527,15 +527,12 @@ fn test_changelog_non_snapshot_runs_regardless_of_opt_in() {
     // bypassed entirely so changelog generation continues as before.
     let config = changelog_snapshot_test_config(None);
     // This run proceeds past the gate into a real write of
-    // `<dist>/CHANGELOG.md`, and the builder's default dist is the relative
-    // `./dist`: without an absolute dist of its own, the write lands in
-    // whatever repo a concurrently running `#[serial(cwd)]` test has made
-    // the process cwd, and that test then finds a changelog it never wrote.
-    let tmp = tempfile::tempdir().unwrap();
+    // `<dist>/CHANGELOG.md`; the builder's own private dist keeps that write
+    // out of whatever repo a concurrent `#[serial(cwd)]` test has made the
+    // process cwd.
     let mut ctx = TestContextBuilder::new()
         .project_name(&config.project_name)
         .crates(config.crates.clone())
-        .dist(tmp.path().join("dist"))
         .build();
     ctx.config.changelog = config.changelog;
     // We can't easily run the full git-backed pipeline in a unit test, but
