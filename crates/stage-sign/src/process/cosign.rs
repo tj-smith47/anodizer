@@ -5,10 +5,16 @@ use anodizer_core::context::Context;
 pub(crate) const KEYLESS_COSIGN_HARNESS_SKIP: &str = "keyless cosign cannot sign in the determinism harness (no ambient OIDC); \
      signatures are non-deterministic and allowlisted";
 
-/// True when a sign config invokes keyless cosign: resolved `cmd` basename is
-/// exactly `cosign` and no arg supplies `--key`. Keyless mode is the path
+/// True when a spawn invokes keyless cosign: `cmd` basename is exactly
+/// `cosign` and no arg of `args` supplies `--key`. Keyless mode is the path
 /// that talks to Fulcio and lazily initializes the `~/.sigstore` TUF trust
 /// root on a fresh host.
+///
+/// `args` must be the RENDERED argv the spawn will use, never the config's
+/// template strings: a `--key=…` can arrive through a template (`{{ .Env.X }}`),
+/// and an invocation classified keyed on its raw args would sign keyless
+/// without the host TUF lock. `cmd` is never rendered — a sign config's `cmd`
+/// is spawned verbatim — so the basename test needs no such care.
 pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
     // Compare the basename so an absolute/relative path to cosign still matches.
     let basename = std::path::Path::new(cmd)
@@ -19,21 +25,21 @@ pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
         return false;
     }
     // A `--key` (the keyed form, e.g. `--key=env://COSIGN_KEY`) signs with a
-    // local key and never contacts Fulcio. The flag is a literal, so the raw
-    // (unrendered) args are sufficient to detect it.
+    // local key and never contacts Fulcio.
     let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
     !has_key
 }
 
-/// True when a sign config is keyless cosign AND the determinism harness is
-/// active.
+/// True when a rendered sign argv is keyless cosign AND the determinism
+/// harness is active.
 ///
 /// Shared by the `signs` / `binary_signs` loop here and the `docker_signs`
-/// loop in `lib.rs`. The discriminator is purely `cmd == cosign` + absence of
-/// `--key`, so it is config-mode-agnostic (single-crate, workspace-lockstep,
-/// workspace per-crate all flow through these loops). The harness signal
-/// mirrors the `IsHarness` derivation in `Context::populate_runtime_vars`:
-/// the `ANODIZER_IN_DETERMINISM_HARNESS` env var is set.
+/// loop in `lib.rs`; both call it per job on the argv that job will spawn.
+/// The discriminator is purely `cmd == cosign` + absence of `--key`, so it is
+/// config-mode-agnostic (single-crate, workspace-lockstep, workspace
+/// per-crate all flow through these loops). The harness signal mirrors the
+/// `IsHarness` derivation in `Context::populate_runtime_vars`: the
+/// `ANODIZER_IN_DETERMINISM_HARNESS` env var is set.
 pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &Context) -> bool {
     if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
         return false;
@@ -57,10 +63,11 @@ pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &
 ///
 /// A no-op (returns `args` unchanged) unless ALL hold: the harness is active,
 /// `cmd`'s basename is `cosign`, some arg supplies `--key` (keyless cosign is
-/// skipped upstream and the flag is meaningless without a key), and no arg
-/// already pins `--tlog-upload` (an explicit operator choice is respected,
-/// making this idempotent). cosign accepts the flag interspersed with or after
-/// positionals, so appending is always safe.
+/// skipped on the same rendered argv and the flag is meaningless without a
+/// key), and no arg already pins `--tlog-upload` (an explicit operator choice
+/// is respected, making this idempotent). cosign accepts the flag interspersed
+/// with or after positionals, so appending is always safe. `args` is the
+/// RENDERED argv: a `--key` supplied through a template is only visible there.
 pub(crate) fn harden_cosign_args_for_harness(
     cmd: &str,
     mut args: Vec<String>,

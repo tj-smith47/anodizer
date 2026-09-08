@@ -5970,6 +5970,15 @@ mod cosign_tuf_race {
     /// Run `DockerSignStage` with a stub `cosign` and `TUF_ROOT` pointed at
     /// `cache`, and report whether the host lock sentinel was created.
     fn docker_sign_creates_sentinel(keyed: bool) -> bool {
+        docker_sign_creates_sentinel_with(keyed.then(|| "--key=env://COSIGN_KEY".to_string()), &[])
+    }
+
+    /// [`docker_sign_creates_sentinel`] with one extra sign arg (a template
+    /// is allowed) and `Env.*` template values seeded before the run.
+    fn docker_sign_creates_sentinel_with(
+        extra_arg: Option<String>,
+        template_env: &[(&str, &str)],
+    ) -> bool {
         use anodizer_core::config::DockerSignConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -5977,9 +5986,7 @@ mod cosign_tuf_race {
         let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 0\n");
 
         let mut args = vec!["sign".to_string(), "{{ .Artifact }}".to_string()];
-        if keyed {
-            args.push("--key=env://COSIGN_KEY".to_string());
-        }
+        args.extend(extra_arg);
         let docker_signs = vec![DockerSignConfig {
             verify: None,
             cmd: Some(stub.to_string_lossy().into_owned()),
@@ -6001,6 +6008,9 @@ mod cosign_tuf_race {
             .env("TUF_ROOT", cache.to_string_lossy())
             .sealed_env()
             .build();
+        for (key, value) in template_env {
+            ctx.template_vars_mut().set_env(key, value);
+        }
         ctx.config.docker_signs = Some(docker_signs);
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
@@ -6416,6 +6426,105 @@ mod cosign_tuf_race {
             bodies.push(lines[i..=end].join("\n"));
         }
         bodies
+    }
+
+    /// A `--key` that arrives through a template is invisible in the
+    /// config's raw args. Keyless-ness is decided on the argv each job
+    /// spawns, so such a config is keyed: full parallelism and no host lock.
+    #[test]
+    fn rendered_key_flag_makes_a_sign_config_keyed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .args
+            .as_mut()
+            .unwrap()
+            .push("{{ .Env.COSIGN_KEY_FLAG }}".to_string());
+        // The signature bytes are a stub's; the classification is what this
+        // pins, not the verify leg.
+        signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(signs)
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut()
+            .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        add_archives(&mut ctx, tmp.path(), 4);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        assert!(
+            !cache.join(".anodizer-tuf-init.lock").exists(),
+            "a `--key` rendered from a template makes the config keyed; no host lock: {:?}",
+            capture.all_messages()
+        );
+        assert!(
+            capture
+                .all_messages()
+                .iter()
+                .any(|(_, msg)| msg.contains("signing 4 artifacts with parallelism=4")),
+            "a keyed config keeps the configured parallelism: {:?}",
+            capture.all_messages()
+        );
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Signature).len(), 4);
+    }
+
+    /// The docker path decides on the rendered per-image argv the same way.
+    #[test]
+    fn rendered_key_flag_makes_a_docker_config_keyed() {
+        assert!(
+            !docker_sign_creates_sentinel_with(
+                Some("{{ .Env.COSIGN_KEY_FLAG }}".to_string()),
+                &[("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY")],
+            ),
+            "a `--key` rendered from a template makes docker signing keyed; no host lock"
+        );
+    }
+
+    /// A sign config's `cmd` is never rendered: it is spawned verbatim, so a
+    /// template there fails at spawn instead of resolving to a signer whose
+    /// keyless-ness was decided on the unrendered name.
+    #[test]
+    fn templated_cmd_is_spawned_verbatim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0].cmd = Some("{{ .Env.COSIGN_BIN }}".to_string());
+
+        let mut ctx = build_ctx(&stub, &state);
+        ctx.config.signs = signs;
+        ctx.template_vars_mut()
+            .set_env("COSIGN_BIN", &stub.to_string_lossy());
+        add_archives(&mut ctx, tmp.path(), 2);
+        let err = SignStage
+            .run(&mut ctx)
+            .expect_err("a templated cmd is spawned verbatim and cannot be found");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to spawn '{{ .Env.COSIGN_BIN }}'"),
+            "the literal template string must be what was spawned: {msg}"
+        );
+        assert!(
+            !state.join("events").exists(),
+            "the stub the template names must never have run"
+        );
     }
 
     /// A transiently-failing cosign (fails the first attempt with the

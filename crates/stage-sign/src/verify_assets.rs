@@ -36,8 +36,8 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 
 use crate::expected::expected_output_paths;
-use crate::helpers::{default_sign_cmd, should_sign_artifact, sign_ids_match};
-use crate::process::ensure_cosign_consent_env;
+use crate::helpers::{default_sign_cmd, resolve_sign_args, should_sign_artifact, sign_ids_match};
+use crate::process::{ensure_cosign_consent_env, harden_cosign_args_for_harness};
 use crate::verify::{
     ConfigVerifyMode, VerifyJob, VerifyRunVerdict, build_blob_verify_args,
     derive_cosign_public_key, execute_verify_job_classified, resolve_config_verify_mode,
@@ -184,7 +184,22 @@ pub fn verify_signature_assets(
         }
 
         let cmd = cfg.cmd.clone().unwrap_or_else(default_sign_cmd);
-        let args = cfg.resolved_args();
+        // Classified on the argv the sign step spawned, never on the
+        // template strings: a `--key` can arrive through a template. The
+        // artifact placeholders only vary the paths, so blanking them leaves
+        // the classifying flags intact; the harness hardening is re-applied
+        // because the signed argv carried it.
+        let args: Vec<String> = match resolve_sign_args(&cfg.resolved_args(), "", "", None)
+            .iter()
+            .map(|arg| ctx.render_template(arg))
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(rendered) => harden_cosign_args_for_harness(&cmd, rendered, ctx),
+            Err(e) => {
+                skip_config(&format!("could not render `args:`: {e:#}"));
+                continue;
+            }
+        };
         let mode = resolve_config_verify_mode(
             cfg.verify.as_ref(),
             &cmd,
@@ -1200,6 +1215,73 @@ mod tests {
             "keyless re-verification must take the host-level TUF lock"
         );
         assert_eq!(calls(&state).len(), 1, "the verifier must have run");
+    }
+
+    /// A `--key` arriving through a template makes the sign keyed. The
+    /// re-verification classifies on the rendered argv, so it verifies with
+    /// the derived public key and takes no host TUF lock.
+    #[test]
+    fn rendered_key_flag_reverifies_keyed_without_the_host_lock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+        let cache = tmp.path().join("tuf-root");
+
+        let mut cfg = keyless_bundle_config(&stub, &state);
+        cfg.args
+            .as_mut()
+            .unwrap()
+            .push("{{ .Env.COSIGN_KEY_FLAG }}".to_string());
+        cfg.env
+            .as_mut()
+            .unwrap()
+            .push(format!("TUF_ROOT={}", cache.display()));
+
+        let mut ctx = ctx_with(tmp.path(), vec![cfg]);
+        ctx.template_vars_mut()
+            .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+        );
+
+        let log = ctx.logger("verify-release");
+        verify_signature_assets(
+            &ctx,
+            "app",
+            None,
+            &PublishedSignatureSource::default(),
+            &log,
+        );
+
+        let calls = calls(&state);
+        assert!(
+            !cache.join(".anodizer-tuf-init.lock").exists(),
+            "a keyed re-verification must not take the host-level TUF lock: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("public-key --key=env://COSIGN_KEY")),
+            "the public key must be derived from the rendered `--key`: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("verify-blob") && c.contains("--key")),
+            "the verifier must run in keyed mode: {calls:?}"
+        );
     }
 
     #[test]

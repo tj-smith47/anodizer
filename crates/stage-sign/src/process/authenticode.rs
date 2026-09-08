@@ -239,6 +239,7 @@ pub(crate) fn process_authenticode_config(
             id_label: sign_cfg.resolved_id().to_string(),
             artifact_display: artifact_str.clone(),
             signature_display: artifact_str.clone(),
+            certificate_display: None,
             output_flag: match sign_cfg.output.as_ref() {
                 Some(s) => s
                     .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))

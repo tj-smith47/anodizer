@@ -81,6 +81,10 @@ struct SignJob {
     artifact_display: String,
     /// Display string for the signature output path (used in log messages).
     signature_display: String,
+    /// The rendered `--output-certificate` path the sign argv wrote, in the
+    /// same cwd-relative spelling, for the post-sign verification of a
+    /// non-bundle keyless signature. `None` when the config renders none.
+    certificate_display: Option<String>,
     /// Whether to capture and log the command's stdout/stderr.
     output_flag: bool,
     /// Artifact registrations to add after signing (signature + optional certificate).

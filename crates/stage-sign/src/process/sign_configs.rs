@@ -52,7 +52,7 @@ pub(crate) fn process_sign_configs(
 ) -> Result<()> {
     let parallelism = ctx.options.parallelism.max(1);
 
-    for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
+    'configs: for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
         let sub_label = sign_cfg
             .id
             .clone()
@@ -126,54 +126,17 @@ pub(crate) fn process_sign_configs(
             .map(|s| s.to_string())
             .unwrap_or_else(default_sign_cmd);
 
-        // Keyless cosign cannot run inside the determinism harness: cosign's
-        // keyless mode needs ambient OIDC (Fulcio/Rekor), which the harness
-        // strips for hermeticity, and a keyless config inherits the harness's
-        // ephemeral `COSIGN_KEY` env (the `--key` flag is environment-bound),
-        // crashing on `reading key: open $COSIGN_KEY: file name too long`.
-        // Its signatures are non-deterministic and already drift-allowlisted,
-        // so the harness skips it — exactly like the unavailable-tool / docker
-        // / srpm skips above. A config with an explicit `--key` (anodizer's own
-        // `--key=env://COSIGN_KEY`) signs with the ephemeral key and still runs.
-        let args = harden_cosign_args_for_harness(&cmd, sign_cfg.resolved_args(), ctx);
-        if is_keyless_cosign_under_harness(&cmd, &args, ctx) {
-            let reason = KEYLESS_COSIGN_HARNESS_SKIP.to_string();
-            log.verbose(&format!(
-                "skipped {} config '{}' — {}",
-                label, sub_label, reason
-            ));
-            ctx.remember_skip(label, &sub_label, &reason);
-            continue;
-        }
+        // The config's template argv. Everything that classifies the signer
+        // — the harness skip, the verification mode, the host TUF lock — is
+        // decided on the RENDERED per-job argv below, never on these
+        // strings: a `--key` can arrive through a template.
+        let args = sign_cfg.resolved_args();
 
         if sign_cfg.args.as_ref().is_some_and(|a| a.is_empty()) {
             log.warn(&format!(
                 "{} config has empty args — did you mean to omit args for defaults?",
                 label
             ));
-        }
-
-        // Resolve the post-sign verification mode once per config (the
-        // discriminating inputs — cmd, raw argv, identity env — are all
-        // config-level), so a skip is logged a single time and the keyed
-        // public key is derived a single time.
-        let verify_mode = crate::verify::resolve_config_verify_mode(
-            sign_cfg.verify.as_ref(),
-            &cmd,
-            &args,
-            sign_cfg.certificate.is_some(),
-            ctx.env_source(),
-        );
-        match &verify_mode {
-            crate::verify::ConfigVerifyMode::Disabled => log.verbose(&format!(
-                "{} config '{}': signature verification disabled by `verify.enabled: false`",
-                label, sub_label
-            )),
-            crate::verify::ConfigVerifyMode::Skip(reason) => log.verbose(&format!(
-                "{} config '{}': skipping signature verification — {}",
-                label, sub_label, reason
-            )),
-            _ => {}
         }
 
         type ArtifactEntry = (
@@ -251,47 +214,6 @@ pub(crate) fn process_sign_configs(
                 sub_label
             ));
         }
-
-        // Keyed cosign verification needs the PUBLIC half of the signing
-        // key: `cosign verify-blob --key` rejects a private key, so derive
-        // it once per config via `cosign public-key --key <ref>` (the same
-        // local, network-free load the preflight gate uses) into a temp
-        // file that lives until the parallel fan-out below completes. A
-        // failed derivation is a hard error: the identical key material
-        // would fail signing moments later anyway.
-        let pubkey_file: Option<tempfile::NamedTempFile> = match &verify_mode {
-            crate::verify::ConfigVerifyMode::CosignKeyed { key_ref, .. }
-                if !ctx.is_dry_run() && !artifact_paths.is_empty() =>
-            {
-                let derive_env: Vec<(String, String)> = sign_cfg
-                    .env
-                    .as_deref()
-                    .map(|env_list| {
-                        anodizer_core::config::render_env_entries(env_list, |v| {
-                            ctx.render_template(v)
-                        })
-                        .with_context(|| format!("sign[{label}]: render env entries"))
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                let tmp = tempfile::Builder::new()
-                    .prefix("anodizer-verify-")
-                    .suffix(".pub")
-                    .tempfile()
-                    .context("sign verify: create temp file for derived public key")?;
-                crate::verify::derive_cosign_public_key(
-                    &cmd,
-                    key_ref,
-                    Some(&derive_env),
-                    tmp.path(),
-                )?;
-                Some(tmp)
-            }
-            _ => None,
-        };
-        let pubkey_path: Option<String> = pubkey_file
-            .as_ref()
-            .map(|f| f.path().to_string_lossy().into_owned());
 
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
@@ -409,7 +331,7 @@ pub(crate) fn process_sign_configs(
             // Empty rendered args (from conditional Tera blocks that
             // evaluated to "") are dropped — passing them to the signer
             // as empty positional args confuses gpg.
-            let mut fully_resolved: Vec<String> = resolved
+            let fully_resolved: Vec<String> = resolved
                 .iter()
                 .map(|arg| -> Result<Option<String>> {
                     let rendered = ctx
@@ -424,6 +346,29 @@ pub(crate) fn process_sign_configs(
                 })
                 .filter_map(|r| r.transpose())
                 .collect::<Result<Vec<_>>>()?;
+            let mut fully_resolved = harden_cosign_args_for_harness(&cmd, fully_resolved, ctx);
+
+            // Keyless cosign cannot run inside the determinism harness:
+            // cosign's keyless mode needs ambient OIDC (Fulcio/Rekor), which
+            // the harness strips for hermeticity, and a keyless config
+            // inherits the harness's ephemeral `COSIGN_KEY` env (the `--key`
+            // flag is environment-bound), crashing on `reading key: open
+            // $COSIGN_KEY: file name too long`. Its signatures are
+            // non-deterministic and already drift-allowlisted, so the
+            // harness skips the whole config — exactly like the
+            // unavailable-tool / docker / srpm skips above. A config whose
+            // rendered argv carries `--key` (anodizer's own
+            // `--key=env://COSIGN_KEY`) signs with the ephemeral key and
+            // still runs.
+            if is_keyless_cosign_under_harness(&cmd, &fully_resolved, ctx) {
+                let reason = KEYLESS_COSIGN_HARNESS_SKIP.to_string();
+                log.verbose(&format!(
+                    "skipped {} config '{}' — {}",
+                    label, sub_label, reason
+                ));
+                ctx.remember_skip(label, &sub_label, &reason);
+                continue 'configs;
+            }
 
             inject_gpg_faked_system_time(&cmd, &mut fully_resolved, ctx.env_source());
 
@@ -585,23 +530,6 @@ pub(crate) fn process_sign_configs(
                 Some(rendered_env)
             };
 
-            // Verify against the exact same artifact/signature strings the
-            // sign argv used (they are cwd-relative in the same way), under
-            // the same rendered env, with the same resolved binary.
-            let verify_job = crate::verify::build_blob_verify_args(
-                &verify_mode,
-                artifact_str.as_ref(),
-                &signature_str,
-                certificate_str.as_deref(),
-                pubkey_path.as_deref(),
-            )
-            .map(|vargs| crate::verify::VerifyJob {
-                cmd: cmd.clone(),
-                args: vargs,
-                env: rendered_env.clone(),
-                what: artifact_str.to_string(),
-            });
-
             // Re-signing a combined checksum: the sign stage already wrote
             // these `.sig`/`.pem` files over the pre-refresh bytes. The default
             // `gpg --output <sig> --detach-sig` refuses to overwrite a file
@@ -626,6 +554,7 @@ pub(crate) fn process_sign_configs(
                 id_label: sign_cfg.resolved_id().to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
+                certificate_display: certificate_str.clone(),
                 output_flag: match sign_cfg.output.as_ref() {
                     Some(s) => s
                         .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -637,7 +566,87 @@ pub(crate) fn process_sign_configs(
                 authenticode_result: None,
                 redact_extra: Vec::new(),
                 env_remove: Vec::new(),
-                verify: verify_job,
+                verify: None,
+            });
+        }
+
+        // Resolve the post-sign verification mode once per config, from the
+        // argv the first job will actually spawn: the flags that classify a
+        // signer (`--key`, `--bundle`, `--tlog-upload`) render identically
+        // for every job of one config — templates only vary the artifact
+        // paths — and a `--key` supplied through a template is visible only
+        // in the rendered form. With no job (dry run, no matching artifact)
+        // nothing is spawned and the template argv merely feeds the skip
+        // line. Resolving once keeps the skip logged a single time and the
+        // keyed public key derived a single time.
+        let classified_args: &[String] = sign_jobs
+            .first()
+            .map(|j| j.args.as_slice())
+            .unwrap_or(&args);
+        let verify_mode = crate::verify::resolve_config_verify_mode(
+            sign_cfg.verify.as_ref(),
+            &cmd,
+            classified_args,
+            sign_cfg.certificate.is_some(),
+            ctx.env_source(),
+        );
+        match &verify_mode {
+            crate::verify::ConfigVerifyMode::Disabled => log.verbose(&format!(
+                "{} config '{}': signature verification disabled by `verify.enabled: false`",
+                label, sub_label
+            )),
+            crate::verify::ConfigVerifyMode::Skip(reason) => log.verbose(&format!(
+                "{} config '{}': skipping signature verification — {}",
+                label, sub_label, reason
+            )),
+            _ => {}
+        }
+
+        // Keyed cosign verification needs the PUBLIC half of the signing
+        // key: `cosign verify-blob --key` rejects a private key, so derive
+        // it once per config via `cosign public-key --key <ref>` (the same
+        // local, network-free load the preflight gate uses) into a temp
+        // file that lives until the parallel fan-out below completes, under
+        // the env the sign jobs run with so `env://VAR` refs resolve the
+        // same way. A failed derivation is a hard error: the identical key
+        // material would fail signing moments later anyway.
+        let pubkey_file: Option<tempfile::NamedTempFile> = match (&verify_mode, sign_jobs.first()) {
+            (crate::verify::ConfigVerifyMode::CosignKeyed { key_ref, .. }, Some(first)) => {
+                let tmp = tempfile::Builder::new()
+                    .prefix("anodizer-verify-")
+                    .suffix(".pub")
+                    .tempfile()
+                    .context("sign verify: create temp file for derived public key")?;
+                crate::verify::derive_cosign_public_key(
+                    &cmd,
+                    key_ref,
+                    first.env.as_deref(),
+                    tmp.path(),
+                )?;
+                Some(tmp)
+            }
+            _ => None,
+        };
+        let pubkey_path: Option<String> = pubkey_file
+            .as_ref()
+            .map(|f| f.path().to_string_lossy().into_owned());
+
+        // Verify against the exact same artifact/signature strings the sign
+        // argv used (they are cwd-relative in the same way), under the same
+        // rendered env, with the same resolved binary.
+        for job in &mut sign_jobs {
+            job.verify = crate::verify::build_blob_verify_args(
+                &verify_mode,
+                &job.artifact_display,
+                &job.signature_display,
+                job.certificate_display.as_deref(),
+                pubkey_path.as_deref(),
+            )
+            .map(|vargs| crate::verify::VerifyJob {
+                cmd: cmd.clone(),
+                args: vargs,
+                env: job.env.clone(),
+                what: job.artifact_display.clone(),
             });
         }
 
@@ -649,8 +658,11 @@ pub(crate) fn process_sign_configs(
         // host-level advisory lock for its whole run, which also queues a
         // second anodizer process behind this one instead of racing it.
         // Keyed cosign (`--key=`) never contacts Fulcio/Rekor and keeps the
-        // full parallelism.
-        let keyless = is_keyless_cosign(&cmd, &args) && !sign_jobs.is_empty();
+        // full parallelism. Decided per job on the argv that job spawns —
+        // one keyless job makes the config keyless.
+        let keyless = sign_jobs
+            .iter()
+            .any(|job| is_keyless_cosign(&job.cmd, &job.args));
         let tuf_init_locks = if keyless {
             log.verbose(&format!(
                 "keyless cosign: serializing {} invocation(s) — concurrent invocations \
