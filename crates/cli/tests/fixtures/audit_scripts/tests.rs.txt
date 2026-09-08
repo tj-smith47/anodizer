@@ -1,0 +1,14 @@
+// A sibling `tests.rs` carries no `#[cfg(test)]` of its own: the parent
+// declares it. The whole file is test code.
+use super::*;
+
+#[test]
+fn sibling_file_is_test_context() {
+    unsafe { std::env::set_var("SIBLING_FILE", "1") };
+}
+
+#[test]
+#[serial_test::serial(sibling_env)]
+fn a_justified_call_is_not_reported() {
+    unsafe { std::env::set_var("SIBLING_JUSTIFIED", "1") }; // env-ok: serialised by serial(sibling_env)
+}

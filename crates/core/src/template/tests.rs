@@ -3138,7 +3138,7 @@ fn test_base_tera_env_or_default_placeholder_reads_process_env() {
     use super::base_tera::BASE_TERA;
     let key = "ANODIZER_T7_PLACEHOLDER_ENVSET";
     // SAFETY: serialised by serial(env_placeholder); removed before returning.
-    unsafe { std::env::set_var(key, "fromenv") };
+    unsafe { std::env::set_var(key, "fromenv") }; // env-ok: serialised by #[serial(env_placeholder)]; removed before returning
     let mut tera = BASE_TERA.clone();
     tera.add_raw_template(
         "t",
@@ -3147,7 +3147,7 @@ fn test_base_tera_env_or_default_placeholder_reads_process_env() {
     .unwrap();
     let result = tera.render("t", &tera::Context::new()).unwrap();
     // SAFETY: serialised by serial(env_placeholder).
-    unsafe { std::env::remove_var(key) };
+    unsafe { std::env::remove_var(key) }; // env-ok: serialised by #[serial(env_placeholder)]; removed before returning
     assert_eq!(result, "fromenv");
 }
 
@@ -3167,13 +3167,13 @@ fn test_base_tera_is_env_set_placeholder_set() {
     use super::base_tera::BASE_TERA;
     let key = "ANODIZER_T7_PLACEHOLDER_ISSET_SET";
     // SAFETY: serialised by serial(env_placeholder); removed before returning.
-    unsafe { std::env::set_var(key, "yes") };
+    unsafe { std::env::set_var(key, "yes") }; // env-ok: serialised by #[serial(env_placeholder)]; removed before returning
     let mut tera = BASE_TERA.clone();
     tera.add_raw_template("t", "{% if isEnvSet(name=\"ANODIZER_T7_PLACEHOLDER_ISSET_SET\") %}set{% else %}unset{% endif %}")
         .unwrap();
     let result = tera.render("t", &tera::Context::new()).unwrap();
     // SAFETY: serialised by serial(env_placeholder).
-    unsafe { std::env::remove_var(key) };
+    unsafe { std::env::remove_var(key) }; // env-ok: serialised by #[serial(env_placeholder)]; removed before returning
     assert_eq!(result, "set");
 }
 

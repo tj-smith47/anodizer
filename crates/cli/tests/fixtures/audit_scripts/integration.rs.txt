@@ -2,5 +2,6 @@ use std::process::Command;
 
 #[test]
 fn a_whole_integration_file_is_test_context() {
+    unsafe { std::env::set_var("INTEGRATION_FILE", "1") };
     let _ = Command::new("git").arg("init").output();
 }

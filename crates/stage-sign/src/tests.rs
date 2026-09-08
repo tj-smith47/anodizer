@@ -5129,6 +5129,7 @@ mod authenticode {
 
     #[test]
     #[cfg(unix)]
+    #[serial_test::serial(authenticode_pw_env)]
     fn password_env_var_is_stripped_from_signer_child_env() {
         // Defense-in-depth: the cert password reaches the signer ONLY via argv
         // (`-pass`/`/p`), never as an inherited env var. `Command` does not
@@ -5180,9 +5181,9 @@ mod authenticode {
 
         // The child inherits the REAL parent env, not ctx's injected source, so
         // the var must exist in the real env for the strip to be observable.
-        unsafe { std::env::set_var(PW_ENV, "child-must-not-see-this") };
+        unsafe { std::env::set_var(PW_ENV, "child-must-not-see-this") }; // env-ok: serialised by #[serial(authenticode_pw_env)]; removed before returning
         let result = SignStage.run(&mut ctx);
-        unsafe { std::env::remove_var(PW_ENV) };
+        unsafe { std::env::remove_var(PW_ENV) }; // env-ok: serialised by #[serial(authenticode_pw_env)]
 
         result.expect("signing succeeds (password supplied via argv)");
         let child_env = std::fs::read_to_string(&env_dump).expect("read child env dump");

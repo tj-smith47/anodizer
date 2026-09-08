@@ -14,7 +14,8 @@
 //!   so the reads inside it are not;
 //! * a process-global mutation or a `git` spawn inside such a module is test
 //!   code and is reported, while the same call after the module is not;
-//! * a `crates/*/tests/**` integration file is test code in its entirety.
+//! * a `crates/*/tests/**` integration file and a sibling `tests.rs` (no
+//!   `#[cfg(test)]` of their own) are test code in their entirety.
 #![cfg(unix)]
 
 use std::path::Path;
@@ -26,6 +27,7 @@ const LIB_RS: &str = include_str!("fixtures/audit_scripts/lib.rs.txt");
 const ATTR_GAP_RS: &str = include_str!("fixtures/audit_scripts/attr_gap.rs.txt");
 const REGISTRY_RS: &str = include_str!("fixtures/audit_scripts/registry.rs.txt");
 const INTEGRATION_RS: &str = include_str!("fixtures/audit_scripts/integration.rs.txt");
+const TESTS_RS: &str = include_str!("fixtures/audit_scripts/tests.rs.txt");
 
 /// The fixture sources are `.txt` so the workspace's own audits, which scan
 /// `*.rs`, never read them as real source.
@@ -35,6 +37,7 @@ fn fixture_tree() -> TempDir {
         ("crates/demo/src/lib.rs", LIB_RS),
         ("crates/demo/src/attr_gap.rs", ATTR_GAP_RS),
         ("crates/demo/tests/spawn.rs", INTEGRATION_RS),
+        ("crates/demo/src/tests.rs", TESTS_RS),
         ("crates/core/src/artifact/registry.rs", REGISTRY_RS),
     ] {
         let path = dir.path().join(rel);
@@ -113,14 +116,20 @@ fn tag_family_audit_reads_production_after_an_inline_test_module() {
 }
 
 #[test]
-fn test_isolation_audit_reports_inside_the_inline_test_module_only() {
+fn test_isolation_audit_reports_test_code_only() {
     let dir = fixture_tree();
     let (code, out) = run_audit("audit-test-isolation.sh", dir.path());
 
-    let (line, text) = at(LIB_RS, "INLINE_ONLY");
+    let (inline_line, inline_text) = at(LIB_RS, "INLINE_ONLY");
+    let (sibling_line, sibling_text) = at(TESTS_RS, "SIBLING_FILE");
+    let (file_line, file_text) = at(INTEGRATION_RS, "INTEGRATION_FILE");
     assert_eq!(
         hits(&out),
-        vec![format!("crates/demo/src/lib.rs:{line}: [env] {text}")],
+        vec![
+            format!("crates/demo/src/lib.rs:{inline_line}: [env] {inline_text}"),
+            format!("crates/demo/src/tests.rs:{sibling_line}: [env] {sibling_text}"),
+            format!("crates/demo/tests/spawn.rs:{file_line}: [env] {file_text}"),
+        ],
         "{out}"
     );
     assert_eq!(code, 1, "{out}");

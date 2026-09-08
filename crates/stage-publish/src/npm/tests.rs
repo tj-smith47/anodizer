@@ -3979,8 +3979,8 @@ esac
     // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
     // env_mutex (the shared PATH coordinator); paired set/restore below.
     unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
-        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
+        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string()); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let p = NpmPublisher::new();
@@ -3991,8 +3991,8 @@ esac
     // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
     // env_mutex (the shared PATH coordinator); paired with the set above.
     unsafe {
-        std::env::set_var("PATH", orig_path);
-        std::env::remove_var("NPM_PUBLISH_COUNTER");
+        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
+        std::env::remove_var("NPM_PUBLISH_COUNTER"); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     // The first package published successfully and MUST be recorded for
@@ -4098,8 +4098,8 @@ esac
     // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
     // env_mutex (the shared PATH coordinator); paired set/restore below.
     unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
-        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
+        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string()); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let p = NpmPublisher::new();
@@ -4110,8 +4110,8 @@ esac
     // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
     // env_mutex (the shared PATH coordinator); paired with the set above.
     unsafe {
-        std::env::set_var("PATH", orig_path);
-        std::env::remove_var("NPM_PUBLISH_COUNTER");
+        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
+        std::env::remove_var("NPM_PUBLISH_COUNTER"); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     // NOTHING published: the counter file was never created because the staging
@@ -5150,14 +5150,14 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
     // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
     // env_mutex; paired restore below.
     unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let res = NpmPublisher::new().rollback(&mut ctx, &npm_evidence(vec![npm_target("NPM_TOKEN")]));
 
     // SAFETY: paired with the set above.
     unsafe {
-        std::env::set_var("PATH", orig_path);
+        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
     res.expect("rollback is best-effort and returns Ok");
 
@@ -5227,7 +5227,7 @@ exit 0
     let orig_path = std::env::var("PATH").unwrap_or_default();
     // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
     unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let selector = PromoteSelector::Version("1.2.3".to_string());
@@ -5241,7 +5241,7 @@ exit 0
 
     // SAFETY: paired with the set above.
     unsafe {
-        std::env::set_var("PATH", orig_path);
+        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let outcome = outcome.expect("postinstall version promote must succeed");
@@ -5321,7 +5321,7 @@ exit 0
     let orig_path = std::env::var("PATH").unwrap_or_default();
     // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
     unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let selector = PromoteSelector::Newest;
@@ -5335,7 +5335,7 @@ exit 0
 
     // SAFETY: paired with the set above.
     unsafe {
-        std::env::set_var("PATH", orig_path);
+        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
     }
 
     let outcome = outcome.expect("optional-deps newest promote must succeed");

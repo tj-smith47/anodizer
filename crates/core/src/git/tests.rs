@@ -1312,7 +1312,7 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
     let prev = std::env::var("GITHUB_TOKEN").ok();
     // SAFETY: serialized via `#[serial]`.
     unsafe {
-        std::env::set_var("GITHUB_TOKEN", secret);
+        std::env::set_var("GITHUB_TOKEN", secret); // env-ok: serialised by #[serial(token_env)]; restored before returning
     }
 
     // Engineer stderr that mentions the token: we pre-write a file
@@ -1330,9 +1330,9 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
     // Restore prior env before assertions.
     unsafe {
         if let Some(prev) = prev {
-            std::env::set_var("GITHUB_TOKEN", prev);
+            std::env::set_var("GITHUB_TOKEN", prev); // env-ok: serialised by #[serial(token_env)]; restored before returning
         } else {
-            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GITHUB_TOKEN"); // env-ok: serialised by #[serial(token_env)]; restored before returning
         }
     }
 
@@ -1362,7 +1362,7 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
     let secret = "ghp_commitintestSentinel_987654321";
     let prev = std::env::var("GITHUB_TOKEN").ok();
     unsafe {
-        std::env::set_var("GITHUB_TOKEN", secret);
+        std::env::set_var("GITHUB_TOKEN", secret); // env-ok: serialised by #[serial(token_env)]; restored before returning
     }
 
     // With nothing staged, `git commit -m <msg>` exits 1 and prints
@@ -1376,9 +1376,9 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
 
     unsafe {
         if let Some(prev) = prev {
-            std::env::set_var("GITHUB_TOKEN", prev);
+            std::env::set_var("GITHUB_TOKEN", prev); // env-ok: serialised by #[serial(token_env)]; restored before returning
         } else {
-            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GITHUB_TOKEN"); // env-ok: serialised by #[serial(token_env)]; restored before returning
         }
     }
 

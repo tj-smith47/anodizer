@@ -50,14 +50,11 @@
 #
 # Production mutations (outside `#[cfg(test)]` — e.g. the CLI resolving
 # `TARGET` at single-threaded startup so user hooks inherit it) are OUT OF
-# SCOPE: this audit only scans test regions, which lib/test-regions.awk bounds
-# by the braces of the gated item, so production code following an inline test
-# module is production again.
-#
-# Scope limit, stated plainly: a sibling `tests.rs` carries no `#[cfg(test)]`
-# of its own, so it holds no region and is not scanned here. Widening to whole
-# test files means routing `is_test_file` (lib/test-regions.awk) into `in_test`
-# below.
+# SCOPE: this audit scans test code only — inline `#[cfg(test)]` regions,
+# which lib/test-regions.awk bounds by the braces of the gated item (so
+# production code following an inline test module is production again), and
+# whole test files (a sibling `tests.rs`, anything under `crates/*/tests/`),
+# which `is_test_file` names.
 #
 # ── cwd-helper pairing class ────────────────────────────────────────────────
 # The raw-call-site cwd class above is blind to a cwd swap performed through a
@@ -86,7 +83,7 @@ cd "$ROOT"
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src --include='*.rs' 2>/dev/null || true)
+mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src crates/*/tests --include='*.rs' 2>/dev/null || true)
 
 # No global early-exit on an empty FILES: the cwd-helper pairing check below
 # is independent of raw set_current_dir/set_var call sites (its whole point
@@ -97,24 +94,28 @@ mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(
 # Per-file awk scan. State is reset at FNR==1 because awk carries variables
 # across files in a multi-file invocation.
 #
-# Test-region detection is the shared lib's: a `#[cfg(test)]` item is test code
-# from the attribute to the close of its brace block, so production code that
+# Test detection is the shared lib's: a whole test file (`is_test_file`) is
+# test code from its first line, and a `#[cfg(test)]` item is test code from
+# the attribute to the close of its brace block, so production code that
 # follows an inline test module is production again. Production mutation
-# outside a region is exempt.
+# outside both is exempt.
 #
-# A test-region `set_var`/`remove_var` PASSES iff an `// env-ok: <non-space>`
-# marker sits on its line or the line directly above it; a test-region
+# A test `set_var`/`remove_var` PASSES iff an `// env-ok: <non-space>`
+# marker sits on its line or the line directly above it; a test
 # `set_current_dir` PASSES iff a `// cwd-ok: <non-space>` marker does. No
 # enclosing-scope inference (brace/`fn` counting corrupts on `fn`/`{` inside
 # string literals, e.g. an embedded stub-program source) — the explicit marker
 # is the contract.
 report() {
     awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
-        FNR == 1 { prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0 }
+        FNR == 1 {
+            whole_file_is_test = is_test_file(FILENAME)
+            prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0
+        }
 
         {
             line = $0
-            in_test = in_test_region
+            in_test = (whole_file_is_test || in_test_region)
             prev_envok = this_envok
             this_envok = (line ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
             prev_cwdok = this_cwdok
