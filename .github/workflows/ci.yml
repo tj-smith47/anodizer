@@ -5,7 +5,9 @@ on:
     branches: [master, 'session-*/**']
   pull_request:
   # recovery trigger: lets CI run on a head whose push was suppressed
-  # (e.g. a skip marker inherited into a revert subject)
+  # (e.g. a skip marker inherited into a revert subject). release.yml ignores a
+  # dispatched run (its workflow_run leg requires a push-event CI run), so
+  # dispatch release.yml by hand afterwards to release that head.
   workflow_dispatch:
 
 concurrency:

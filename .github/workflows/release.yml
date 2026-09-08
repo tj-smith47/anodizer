@@ -224,7 +224,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      # read-only: the branch+tag push authenticates with GH_PAT, and the only
+      # GITHUB_TOKEN consumer left in this job (resolve-release-target) just
+      # reads prior runs via `gh run view` / `gh run list`.
+      contents: read
       actions: read
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}

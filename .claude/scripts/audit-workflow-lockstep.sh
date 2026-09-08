@@ -172,15 +172,22 @@ done
 # master inside that window makes the fast-forward impossible (422, release half
 # landed). `--push` is atomic — branch HEAD and tag land together, or the tag job
 # fails before anything publishes.
+# Matched as a whole word (the args are space-padded first): `--push` is a
+# prefix of `--push-tags-only` and `--push-dry-run`, and both of those leave the
+# branch un-pushed — a substring match would pass them.
 tag_args=$(yqr -r '.jobs.tag.steps[] | select(.name == "Auto-tag release") | .with.args' "$REL")
 case "$tag_args" in
     "" | null)
         fail "tag topology: could not read the auto-tag step args from ${REL}." ;;
-    *--push-tags-only*)
-        fail "tag topology: the auto-tag step passes --push-tags-only [${tag_args}] — the deferred-branch shape races any push to master. Use --push." ;;
-    *--push*) ;;
-    *)
-        fail "tag topology: the auto-tag step args [${tag_args}] push nothing — the cut tag would never reach the remote." ;;
+    *) case " ${tag_args} " in
+        *" --push-tags-only "*)
+            fail "tag topology: the auto-tag step passes --push-tags-only [${tag_args}] — the deferred-branch shape races any push to master. Use --push." ;;
+        *" --push-dry-run "*)
+            fail "tag topology: the auto-tag step passes --push-dry-run [${tag_args}] — it only prints the push commands, so no tag ever reaches the remote." ;;
+        *" --push "*) ;;
+        *)
+            fail "tag topology: the auto-tag step args [${tag_args}] push nothing — the cut tag would never reach the remote." ;;
+    esac ;;
 esac
 if [[ "$(yqr -r '.jobs | has("advance-master")' "$REL")" != "false" ]]; then
     fail "tag topology: ${REL} re-introduces an advance-master job — with an atomic tag push there is no stranded bump commit left to fast-forward onto."
