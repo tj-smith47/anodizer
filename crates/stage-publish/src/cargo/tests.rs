@@ -1837,7 +1837,7 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
 #[test]
 fn cargo_version_matches_pinned_discriminator_strings() {
     // Last-verified cargo minor. Update together with re-verification.
-    const VERIFIED_CARGO_MINOR: u64 = 97;
+    const VERIFIED_CARGO_MINOR: u64 = 98;
 
     // Resolve cargo via the `CARGO` env var — the absolute path cargo
     // exports when it spawns the test binary — not PATH: a peer `#[serial]`
