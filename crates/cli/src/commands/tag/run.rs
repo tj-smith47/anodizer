@@ -94,7 +94,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // engine and the changelog's crate selection.
     let mut crate_path: Option<String> = None;
     let mut version_sync_enabled = false;
-    let mut crate_version_files: Vec<anodizer_core::config::VersionFileEntry> = Vec::new();
+    let mut crate_version_files = top_level_version_files(&loaded_config);
     if let Some(ref crate_name) = opts.crate_name {
         crate::commands::helpers::validate_selection_against_universe(
             &loaded_config,
@@ -925,6 +925,17 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 ),
             )?;
         }
+    } else if crate_path.is_none() && !crate_version_files.is_empty() {
+        bump_top_level_version_files(
+            &workspace_root_path,
+            &crate_version_files,
+            old_tag_str,
+            &new_version,
+            &loaded_config.project_name,
+            opts.dry_run,
+            skip_ci_suffix(cfg.skip_ci_on_bump),
+            &log,
+        )?;
     }
 
     // Create and push tag

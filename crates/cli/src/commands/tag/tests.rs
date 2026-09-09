@@ -2449,6 +2449,57 @@ fn plan_version_files_rewrites_dedupes_identical_anchored_pair() {
     );
 }
 
+/// A config with no `crates:` block has only its top-level `version_files`, and
+/// the repo-level tag path must plan a rewrite for every entry of it — bare and
+/// anchored alike. `check version-files` reads the same list, so an enrollment
+/// this path skipped would be reported stale by a guard nothing can satisfy.
+#[test]
+fn top_level_version_files_drive_a_single_crate_plan() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        version_files: Some(vec![
+            vf("README.md"),
+            vf_at("chart.yaml", r"app: v{version}"),
+        ]),
+        ..Default::default()
+    };
+
+    let files = top_level_version_files(&config);
+    assert_eq!(files.len(), 2, "top-level enrollment dropped: {files:?}");
+
+    let plan = version_files_plan(&files, "1.2.3", "1.3.0", "app");
+    let got: Vec<(&str, Option<&str>)> = plan
+        .iter()
+        .map(|r| (r.file.as_str(), r.anchor.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("README.md", None),
+            ("chart.yaml", Some(r"app: v{version}")),
+        ],
+        "plan: {plan:?}"
+    );
+}
+
+/// A config that DOES declare crates reaches the lockstep or per-crate engine,
+/// each of which resolves its own list; planning the top-level list here too
+/// would sweep the same files twice in one bump.
+#[test]
+fn top_level_version_files_are_empty_when_crates_are_declared() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "app".to_string(),
+            path: "crates/app".to_string(),
+            ..Default::default()
+        }],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert!(top_level_version_files(&config).is_empty());
+}
+
 #[test]
 fn plan_version_files_rewrites_skips_group_with_no_old_version() {
     // A first-tag group (old_version=None) has nothing to rewrite from.

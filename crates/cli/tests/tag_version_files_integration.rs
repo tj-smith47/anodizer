@@ -1042,3 +1042,75 @@ crates:
     assert_eq!(show_head(root, "core-install.md"), "core is at v0.2.0\n");
     assert_eq!(show_head(root, "cli-install.md"), "cli is at 0.3.0\n");
 }
+
+/// A config with no `crates:` block: `tag` must rewrite its top-level
+/// `version_files`, bare and anchored alike. `check version-files` validates
+/// the same list, so an entry `tag` skipped would be reported stale forever.
+#[test]
+fn no_crates_block_rewrites_top_level_version_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"1.2.3\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(root.join("README.md"), "Install app 1.2.3 today.\n").unwrap();
+    fs::write(
+        root.join("chart.yaml"),
+        "app:\n  image: ghcr.io/x/app:v1.2.3\ndocs: see 1.2.3 for details\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: app\nversion_files:\n  - README.md\n  - path: chart.yaml\n    match: 'app:\\n  image: .*:v{version}'\n",
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v1.2.3"]);
+    fs::write(root.join("src/main.rs"), "fn main() {}\n// touched\n").unwrap();
+    git_add_commit(root, "feat: a thing");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(out.status.success(), "tag failed: {combined}");
+    assert!(
+        combined.contains("rewrote 1 occurrence(s) of 1.2.3 → 1.3.0 in README.md"),
+        "bare top-level entry not planned: {combined}"
+    );
+    assert!(
+        combined.contains("rewrote 1 occurrence(s) of 1.2.3 → 1.3.0 in chart.yaml (match"),
+        "anchored top-level entry not planned: {combined}"
+    );
+    // Dry-run previews only.
+    assert_eq!(read(root, "README.md"), "Install app 1.2.3 today.\n");
+
+    // The real run writes both entries and commits them before the tag: the
+    // anchored one rewrites its image pin and leaves the unrelated literal.
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let chart = "app:\n  image: ghcr.io/x/app:v1.3.0\ndocs: see 1.2.3 for details\n";
+    assert_eq!(read(root, "README.md"), "Install app 1.3.0 today.\n");
+    assert_eq!(read(root, "chart.yaml"), chart);
+    assert_eq!(show_head(root, "README.md"), "Install app 1.3.0 today.\n");
+    assert_eq!(show_head(root, "chart.yaml"), chart);
+}

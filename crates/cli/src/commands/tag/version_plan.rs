@@ -144,6 +144,61 @@ pub(crate) fn plan_version_files_rewrites(
     Ok(plan)
 }
 
+/// The `version_files` enrollment the repo-level (no `--crate`) tag path owns.
+///
+/// A config with no `crates:` block declares one repo-wide version, so its
+/// top-level `version_files` is that config's only enrollment and nothing else
+/// will rewrite it — `check version-files` reads the same list, and the two
+/// surfaces must agree. A config that DOES declare crates reaches the lockstep
+/// or per-crate engine instead, each of which resolves its own list, so this
+/// returns nothing rather than sweeping the same files twice.
+pub(crate) fn top_level_version_files(
+    config: &anodizer_core::config::Config,
+) -> Vec<anodizer_core::config::VersionFileEntry> {
+    if config.crates.is_empty() {
+        resolve_version_files(None, Some(config))
+    } else {
+        Vec::new()
+    }
+}
+
+/// Rewrite the top-level `version_files` of a config that declares no
+/// `crates:` block, and — outside dry-run — commit what changed.
+///
+/// Such a config has no crate manifest for `tag` to version-sync, so nothing
+/// else in the bump would touch its enrollment; `check version-files` reads the
+/// same list, so leaving it unrewritten reports drift no bump could clear. The
+/// rewrite goes through the same plan/apply seam as the `--crate` case, so one
+/// file is swept once. Absent a previous tag there is no old version to rewrite
+/// from and this is a no-op.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bump_top_level_version_files(
+    root: &Path,
+    files: &[anodizer_core::config::VersionFileEntry],
+    old_tag: &str,
+    new_version: &str,
+    project_name: &str,
+    dry_run: bool,
+    skip_ci_suffix: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let Some(old) = git::version_from_tag(old_tag) else {
+        return Ok(());
+    };
+    let plan = version_files_plan(files, &old, new_version, project_name);
+    let changed = rewrite_and_stage_version_files(root, &plan, dry_run, log)?;
+    if dry_run || changed.is_empty() {
+        return Ok(());
+    }
+    let staged: Vec<&str> = changed.iter().map(String::as_str).collect();
+    git::stage_and_commit_in(
+        root,
+        &staged,
+        &git::release_bump_subject(&format!("{project_name} → {new_version}"), skip_ci_suffix),
+    )?;
+    Ok(())
+}
+
 /// Build the deduped plan for ONE crate's enrollment list under a single
 /// `old` → `new` bump: the single-crate (`--crate`) and lockstep-workspace
 /// shape, where every entry shares one pair so the interaction hazards
