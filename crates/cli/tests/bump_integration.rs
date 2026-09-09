@@ -447,6 +447,10 @@ fn bump_heals_stale_floor_on_unbumped_sibling() {
             vec!["bump", "patch", "-p", "core", "--exact", "-y"],
             "0.1.0",
         ),
+        (
+            vec!["bump", "patch", "-p", "core", "-y", "--commit"],
+            "0.5.0",
+        ),
     ] {
         let tmp = TempDir::new().unwrap();
         two_crate_workspace(tmp.path());
@@ -484,6 +488,40 @@ fn bump_heals_stale_floor_on_unbumped_sibling() {
         assert!(
             cli.contains(&format!("path = \"../util\", version = \"{expected}\"")),
             "{args:?}: util floor should read {expected}: {cli}"
+        );
+
+        if !args.contains(&"--commit") {
+            continue;
+        }
+        // `bump` refuses to start on a dirty tree, so every manifest it edited
+        // — the propagated `core` floor and the healed `util` one — has to be
+        // inside the commit it just made.
+        let status = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.current_dir(tmp.path()).args(["status", "--porcelain"]);
+                cmd
+            },
+            "git",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&status.stdout).trim(),
+            "",
+            "--commit must leave no manifest unstaged"
+        );
+        let show = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.current_dir(tmp.path())
+                    .args(["show", "--name-only", "--format=", "HEAD"]);
+                cmd
+            },
+            "git",
+        );
+        let files = String::from_utf8_lossy(&show.stdout);
+        assert!(
+            files.lines().any(|l| l == "crates/cli/Cargo.toml"),
+            "the healed manifest must be inside the bump commit: {files}"
         );
     }
 }

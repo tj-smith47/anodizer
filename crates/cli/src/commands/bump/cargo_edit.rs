@@ -194,12 +194,15 @@ fn parse_member_manifest(manifest_path: &Path) -> Result<Option<MemberInfo>> {
 
 /// Apply the plan: rewrite `[package].version` (or root `[workspace.package].version`)
 /// and — unless `exact` — propagate dep specs into sibling manifests.
+///
+/// Returns the manifests the dep-spec propagation and the floor sweep edited,
+/// for staging alongside the version rewrites the plan's rows already name.
 pub fn apply_plan(
     workspace_root: &Path,
     rows: &[PlanRow],
     exact: bool,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
     // Group rows into two buckets: root-rewrite (inheriting workspace version)
     // and member-rewrite (own version).
     let ws = load_workspace(workspace_root)?
@@ -251,6 +254,7 @@ pub fn apply_plan(
     }
 
     // 3. Propagate dep-spec rewrites into sibling manifests (unless exact).
+    let mut edited: Vec<PathBuf> = Vec::new();
     if !exact {
         let bumped: BTreeMap<String, String> = rows
             .iter()
@@ -258,14 +262,24 @@ pub fn apply_plan(
             .map(|r| (r.crate_name.clone(), r.next.clone()))
             .collect();
         // Root Cargo.toml may carry [workspace.dependencies] — rewrite those too.
-        rewrite_workspace_dependencies(&workspace_root.join("Cargo.toml"), &bumped, log)?;
-        for m in member_index.values() {
-            rewrite_member_dependencies(&m.manifest_path, &bumped, log)?;
+        let root_manifest = workspace_root.join("Cargo.toml");
+        if rewrite_workspace_dependencies(&root_manifest, &bumped, log)? {
+            edited.push(root_manifest);
         }
-        heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), false, log)?;
+        for m in member_index.values() {
+            if rewrite_member_dependencies(&m.manifest_path, &bumped, log)? {
+                edited.push(m.manifest_path.clone());
+            }
+        }
+        for healed in heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), false, log)?
+        {
+            if !edited.contains(&healed) {
+                edited.push(healed);
+            }
+        }
     }
 
-    Ok(())
+    Ok(edited)
 }
 
 fn rewrite_package_version(manifest_path: &Path, new_version: &str) -> Result<()> {
@@ -304,13 +318,14 @@ fn rewrite_workspace_package_version(root_manifest: &Path, new_version: &str) ->
     Ok(())
 }
 
+/// Returns whether the manifest was rewritten.
 fn rewrite_member_dependencies(
     manifest_path: &Path,
     bumped: &BTreeMap<String, String>,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<bool> {
     if bumped.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let text = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -361,16 +376,17 @@ fn rewrite_member_dependencies(
         std::fs::write(manifest_path, doc.to_string())
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     }
-    Ok(())
+    Ok(changed)
 }
 
+/// Returns whether the root manifest was rewritten.
 fn rewrite_workspace_dependencies(
     root_manifest: &Path,
     bumped: &BTreeMap<String, String>,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<bool> {
     if bumped.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let text = std::fs::read_to_string(root_manifest)
         .with_context(|| format!("failed to read {}", root_manifest.display()))?;
@@ -383,7 +399,7 @@ fn rewrite_workspace_dependencies(
         .and_then(|w| w.get_mut("dependencies"))
         .and_then(|d| d.as_table_mut())
     else {
-        return Ok(());
+        return Ok(false);
     };
     let mut changed = false;
     for (dep_name, new_ver) in bumped {
@@ -399,7 +415,7 @@ fn rewrite_workspace_dependencies(
         std::fs::write(root_manifest, doc.to_string())
             .with_context(|| format!("failed to write {}", root_manifest.display()))?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Rewrite `<table>[<dep_name>]` to use `new_ver`. Handles three shapes:

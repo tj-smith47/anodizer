@@ -127,12 +127,13 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         }
     }
 
-    cargo_edit::apply_plan(&workspace_root, &rows, opts.exact, &log)?;
+    let dep_edits = cargo_edit::apply_plan(&workspace_root, &rows, opts.exact, &log)?;
 
     if opts.commit {
         commit_plan(
             &workspace_root,
             &rows,
+            &dep_edits,
             &opts,
             bump_config.as_ref(),
             bump_workspace.as_ref(),
@@ -152,6 +153,7 @@ fn is_interactive_stdout() -> bool {
 fn commit_plan(
     workspace_root: &std::path::Path,
     rows: &[PlanRow],
+    dep_edits: &[PathBuf],
     opts: &BumpOpts,
     changelog_config: Option<&anodizer_core::config::Config>,
     workspace: Option<&cargo_edit::WorkspaceInfo>,
@@ -163,6 +165,14 @@ fn commit_plan(
             if !staged.contains(path) {
                 staged.push(path.clone());
             }
+        }
+    }
+    // A row names only its own manifest, so the sibling manifests the dep-spec
+    // propagation and the floor sweep rewrote would otherwise be left dirty by
+    // a commit `bump` refuses to start on.
+    for path in dep_edits {
+        if !staged.contains(path) {
+            staged.push(path.clone());
         }
     }
 
