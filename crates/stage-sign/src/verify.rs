@@ -208,8 +208,13 @@ pub(crate) fn resolve_keyless_identity(
 }
 
 /// Resolve a sign config's verification mode from its resolved `cmd`, its
-/// (hardened, unrendered) argv, and the ambient environment. Pure — no
+/// rendered, hardened argv, and the ambient environment. Pure — no
 /// subprocess, no filesystem — so it is fully unit-testable offline.
+///
+/// The argv must be the one a job will spawn: a `--key` supplied through a
+/// template is visible only after rendering, and every caller passes the
+/// first rendered job's argv (or, with nothing to spawn, the template argv
+/// that merely feeds the skip line).
 pub(crate) fn resolve_config_verify_mode(
     verify_cfg: Option<&SignVerifyConfig>,
     cmd: &str,
