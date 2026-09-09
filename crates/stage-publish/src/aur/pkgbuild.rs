@@ -1,25 +1,6 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// pkgdesc quoting helper
-// ---------------------------------------------------------------------------
-
-/// Quote a PKGBUILD `pkgdesc` value, choosing the appropriate quoting style
-/// to handle embedded single or double quotes.
-pub(crate) fn quote_pkgdesc(s: &str) -> String {
-    if s.contains('"') && !s.contains('\'') {
-        format!("'{}'", s)
-    } else if s.contains('\'') && !s.contains('"') {
-        format!("\"{}\"", s)
-    } else if s.contains('"') && s.contains('\'') {
-        // Escape single quotes for single-quoted string using shell idiom
-        format!("'{}'", s.replace('\'', "'\\''"))
-    } else {
-        format!("\"{}\"", s)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // PkgbuildParams
 // ---------------------------------------------------------------------------
 
@@ -95,20 +76,20 @@ pub(crate) fn extract_archive_extension(url: &str) -> &str {
 pub(crate) const PKGBUILD_TEMPLATE: &str = r#"{% for m in maintainers %}# Maintainer: {{ m }}
 {% endfor %}{% for c in contributors %}# Contributor: {{ c }}
 {% endfor %}{% if maintainers | length > 0 or contributors | length > 0 %}
-{% endif %}pkgname='{{ name }}'
+{% endif %}pkgname={{ name }}
 pkgver={{ version }}
 pkgrel={{ pkgrel }}
-pkgdesc={{ quoted_description }}
-arch=({% for a in arches %}'{{ a }}'{% if not loop.last %} {% endif %}{% endfor %})
-url="{{ url }}"
-license=({% for l in license %}'{{ l }}'{% if not loop.last %} {% endif %}{% endfor %})
-{% if depends | length > 0 %}depends=({% for d in depends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
+pkgdesc={{ description }}
+arch=({% for a in arches %}{{ a }}{% if not loop.last %} {% endif %}{% endfor %})
+url={{ url }}
+license=({% for l in license %}{{ l }}{% if not loop.last %} {% endif %}{% endfor %})
+{% if depends | length > 0 %}depends=({% for d in depends %}{{ d }}{% if not loop.last %} {% endif %}{% endfor %})
 {% else %}depends=()
-{% endif %}{% if optdepends | length > 0 %}optdepends=({% for d in optdepends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
-{% endif %}{% if conflicts | length > 0 %}conflicts=({% for c in conflicts %}'{{ c }}'{% if not loop.last %} {% endif %}{% endfor %})
-{% endif %}{% if provides | length > 0 %}provides=({% for p in provides %}'{{ p }}'{% if not loop.last %} {% endif %}{% endfor %})
-{% endif %}{% if replaces | length > 0 %}replaces=({% for r in replaces %}'{{ r }}'{% if not loop.last %} {% endif %}{% endfor %})
-{% endif %}{% if backup | length > 0 %}backup=({% for b in backup %}'{{ b }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if optdepends | length > 0 %}optdepends=({% for d in optdepends %}{{ d }}{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if conflicts | length > 0 %}conflicts=({% for c in conflicts %}{{ c }}{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if provides | length > 0 %}provides=({% for p in provides %}{{ p }}{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if replaces | length > 0 %}replaces=({% for r in replaces %}{{ r }}{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if backup | length > 0 %}backup=({% for b in backup %}{{ b }}{% if not loop.last %} {% endif %}{% endfor %})
 {% endif %}{% if install_file %}install={{ install_file }}
 {% endif %}{% for s in sources %}source_{{ s.arch }}=("{{ s.rename }}::{{ s.url }}")
 sha256sums_{{ s.arch }}=('{{ s.hash }}')
@@ -123,22 +104,28 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     let tera = anodizer_core::template::parse_static("pkgbuild", PKGBUILD_TEMPLATE)
         .context("aur: parse PKGBUILD template")?;
 
+    // Every metadata field is single-quoted here rather than in the template:
+    // the value is already rendered at this point, so quoting it now is what
+    // keeps a `'`, a `$HOME` or a backtick in a description literal instead of
+    // letting makepkg expand or mis-parse it.
+    let q = anodizer_core::shell::shell_single_quote;
+    let quote_all = |vs: &[String]| -> Vec<String> { vs.iter().map(|v| q(v)).collect() };
+
     let mut ctx = tera::Context::new();
-    ctx.insert("name", params.name);
+    ctx.insert("name", &q(params.name));
     ctx.insert("version", params.version);
     ctx.insert("pkgrel", &params.pkgrel);
-    ctx.insert("description", params.description);
-    ctx.insert("quoted_description", &quote_pkgdesc(params.description));
-    ctx.insert("url", params.url);
-    ctx.insert("license", params.license);
+    ctx.insert("description", &q(params.description));
+    ctx.insert("url", &q(params.url));
+    ctx.insert("license", &quote_all(params.license));
     ctx.insert("maintainers", params.maintainers);
     ctx.insert("contributors", params.contributors);
-    ctx.insert("depends", params.depends);
-    ctx.insert("optdepends", params.optdepends);
-    ctx.insert("conflicts", params.conflicts);
-    ctx.insert("provides", params.provides);
-    ctx.insert("replaces", params.replaces);
-    ctx.insert("backup", params.backup);
+    ctx.insert("depends", &quote_all(params.depends));
+    ctx.insert("optdepends", &quote_all(params.optdepends));
+    ctx.insert("conflicts", &quote_all(params.conflicts));
+    ctx.insert("provides", &quote_all(params.provides));
+    ctx.insert("replaces", &quote_all(params.replaces));
+    ctx.insert("backup", &quote_all(params.backup));
     ctx.insert("binary_name", params.binary_name);
     ctx.insert("install_file", &params.install_file);
 
@@ -150,7 +137,8 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
         .collect();
     arches.sort();
     arches.dedup();
-    ctx.insert("arches", &arches);
+    let quoted_arches: Vec<String> = arches.iter().map(|a| q(a)).collect();
+    ctx.insert("arches", &quoted_arches);
 
     // Sources as objects for template iteration.
     // Replace the version string in URLs with ${pkgver} so the PKGBUILD

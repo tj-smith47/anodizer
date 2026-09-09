@@ -39,9 +39,9 @@ fn test_generate_pkgbuild_basic() {
     assert!(pkgbuild.contains("pkgname='mytool'"));
     assert!(pkgbuild.contains("pkgver=1.0.0"));
     assert!(pkgbuild.contains("pkgrel=1"));
-    assert!(pkgbuild.contains("pkgdesc=\"A great tool\""));
+    assert!(pkgbuild.contains("pkgdesc='A great tool'"));
     assert!(pkgbuild.contains("arch=('x86_64')"));
-    assert!(pkgbuild.contains("url=\"https://github.com/org/mytool\""));
+    assert!(pkgbuild.contains("url='https://github.com/org/mytool'"));
     assert!(pkgbuild.contains("license=('MIT')"));
     assert!(pkgbuild.contains("depends=()"));
     assert!(pkgbuild.contains(
@@ -320,10 +320,16 @@ fn distinct_arches_still_build_sources() {
 /// Build a single-crate AUR context carrying one linux archive per
 /// `(target, url, sha256)` entry.
 fn aur_ctx_with_archives(entries: &[(&str, &str, &str)]) -> Context {
+    aur_ctx_with_description(None, entries)
+}
+
+/// Same, with an explicit `aur.description` template.
+fn aur_ctx_with_description(description: Option<&str>, entries: &[(&str, &str, &str)]) -> Context {
     let aur = AurConfig {
         git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
         homepage: Some("https://example.com".to_string()),
         license: Some("MIT".to_string()),
+        description: description.map(str::to_owned),
         ..Default::default()
     };
     let mut config = Config::default();
@@ -987,28 +993,121 @@ fn aur_skip_upload_template_expands_to_true_on_snapshot() {
 }
 
 // -----------------------------------------------------------------------
-// quote_pkgdesc
+// PKGBUILD field quoting
 // -----------------------------------------------------------------------
 
 #[test]
-fn quote_pkgdesc_plain_uses_double_quotes() {
-    assert_eq!(quote_pkgdesc("A great tool"), "\"A great tool\"");
+fn pkgbuild_single_quotes_every_field() {
+    let license = vec!["MIT'X".to_string()];
+    let depends = vec!["a'b".to_string()];
+    let sources = vec![(
+        "x86_64".to_string(),
+        "https://example.com/mytool-2.5.0-x86_64.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let pkgbuild = generate_pkgbuild(&PkgbuildParams {
+        name: "mytool-bin",
+        version: "2.5.0",
+        pkgrel: 1,
+        description: "it's great",
+        url: "https://x/a'b",
+        license: &license,
+        maintainers: &[],
+        contributors: &[],
+        depends: &depends,
+        optdepends: &[],
+        conflicts: &[],
+        provides: &[],
+        replaces: &[],
+        backup: &[],
+        sources: &sources,
+        binary_name: "mytool",
+        install_template: None,
+        extra_install_lines: &[],
+        install_file: None,
+    })
+    .unwrap();
+
+    assert!(pkgbuild.contains(r"pkgdesc='it'\''s great'"), "{pkgbuild}");
+    assert!(pkgbuild.contains(r"url='https://x/a'\''b'"), "{pkgbuild}");
+    assert!(pkgbuild.contains(r"license=('MIT'\''X')"), "{pkgbuild}");
+    assert!(pkgbuild.contains(r"depends=('a'\''b')"), "{pkgbuild}");
+    assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
+    assert!(pkgbuild.contains("arch=('x86_64')"), "{pkgbuild}");
 }
 
+/// A `$HOME` or a backtick inside a description must reach makepkg as
+/// literal text, not as an expansion the shell performs while sourcing the
+/// PKGBUILD.
 #[test]
-fn quote_pkgdesc_double_quote_only_switches_to_single() {
-    assert_eq!(quote_pkgdesc("Say \"hi\" now"), "'Say \"hi\" now'");
+fn pkgbuild_quoting_defuses_shell_expansion() {
+    let license = vec!["MIT'X".to_string()];
+    let depends = vec!["a'b".to_string()];
+    let sources = vec![(
+        "x86_64".to_string(),
+        "https://example.com/mytool-2.5.0-x86_64.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let pkgbuild = generate_pkgbuild(&PkgbuildParams {
+        name: "mytool-bin",
+        version: "2.5.0",
+        pkgrel: 1,
+        description: "Fixture app with 'quotes' and $HOME and `tick`",
+        url: "https://example.com/fxapp?a=1&b='x'",
+        license: &license,
+        maintainers: &[],
+        contributors: &[],
+        depends: &depends,
+        optdepends: &[],
+        conflicts: &[],
+        provides: &[],
+        replaces: &[],
+        backup: &[],
+        sources: &sources,
+        binary_name: "mytool",
+        install_template: None,
+        extra_install_lines: &[],
+        install_file: None,
+    })
+    .unwrap();
+
+    assert!(
+        pkgbuild.contains(r"pkgdesc='Fixture app with '\''quotes'\'' and $HOME and `tick`'"),
+        "{pkgbuild}"
+    );
+    assert!(
+        pkgbuild.contains(r"url='https://example.com/fxapp?a=1&b='\''x'\'''"),
+        "{pkgbuild}"
+    );
 }
 
+/// The description reaches the quoting step already rendered, so a `'`
+/// produced BY the template is escaped like any other.
 #[test]
-fn quote_pkgdesc_apostrophe_only_keeps_double() {
-    assert_eq!(quote_pkgdesc("don't panic"), "\"don't panic\"");
-}
-
-#[test]
-fn quote_pkgdesc_both_quotes_escapes_apostrophe() {
-    // contains both ' and " -> single-quote wrap with shell-escaped '.
-    assert_eq!(quote_pkgdesc("it's \"quoted\""), "'it'\\''s \"quoted\"'");
+fn pkgdesc_is_rendered_before_quoting() {
+    let ctx = aur_ctx_with_description(
+        Some("{{ \"mytool\" }}'s tool"),
+        &[(
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "hash1",
+        )],
+    );
+    let rendered = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+        .expect("render ok")
+        .expect("not skipped");
+    assert!(
+        rendered.pkgbuild.contains(r"pkgdesc='mytool'\''s tool'"),
+        "{}",
+        rendered.pkgbuild
+    );
+    // `.SRCINFO` is not a shell script; makepkg parses it as plain
+    // key = value, so the value stays raw.
+    assert!(
+        rendered.srcinfo.contains("pkgdesc = mytool's tool"),
+        "{}",
+        rendered.srcinfo
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1528,7 +1627,7 @@ fn render_url_falls_back_to_release_github() {
     assert!(
         rendered
             .pkgbuild
-            .contains("url=\"https://github.com/myorg/mytool\""),
+            .contains("url='https://github.com/myorg/mytool'"),
         "url must derive from release.github when homepage unset:\n{}",
         rendered.pkgbuild
     );
@@ -1720,7 +1819,7 @@ fn render_homepage_template_is_rendered_into_url() {
     assert!(
         rendered
             .pkgbuild
-            .contains("url=\"https://example.com/releases/v1.2.3\""),
+            .contains("url='https://example.com/releases/v1.2.3'"),
         "templated homepage must render into PKGBUILD url=:\n{}",
         rendered.pkgbuild
     );
@@ -1981,7 +2080,7 @@ fn publish_to_aur_pushes_pkgbuild_and_srcinfo_to_master() {
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
     assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
     assert!(
-        pkgbuild.contains("url=\"https://example.com/mytool\""),
+        pkgbuild.contains("url='https://example.com/mytool'"),
         "{pkgbuild}"
     );
     let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");

@@ -203,41 +203,40 @@ pub(super) fn generate_source_pkgbuild(
         lines.push(String::new());
     }
 
-    lines.push(format!("pkgname='{}'", name));
-    lines.push(format!("pkgver='{}'", version));
+    // Single-quote every metadata field: the values are already rendered, so
+    // quoting here is what keeps a `'`, a `$HOME` or a backtick in a
+    // description literal instead of letting makepkg expand or mis-parse it.
+    let q = anodizer_core::shell::shell_single_quote;
+    let quoted_array =
+        |vs: &[String]| -> String { vs.iter().map(|v| q(v)).collect::<Vec<_>>().join(" ") };
+
+    lines.push(format!("pkgname={}", q(name)));
+    lines.push(format!("pkgver={}", q(version)));
     lines.push(format!("pkgrel={}", pkgrel));
-    lines.push(format!("pkgdesc=\"{}\"", description));
-    let arch_entries: Vec<String> = arches.iter().map(|a| format!("'{}'", a)).collect();
-    lines.push(format!("arch=({})", arch_entries.join(" ")));
+    lines.push(format!("pkgdesc={}", q(description)));
+    lines.push(format!("arch=({})", quoted_array(arches)));
     if !homepage.is_empty() {
-        lines.push(format!("url='{}'", homepage));
+        lines.push(format!("url={}", q(homepage)));
     }
-    let license_entries: Vec<String> = license.iter().map(|l| format!("'{}'", l)).collect();
-    lines.push(format!("license=({})", license_entries.join(" ")));
+    lines.push(format!("license=({})", quoted_array(license)));
 
     if !depends.is_empty() {
-        let d: Vec<String> = depends.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("depends=({})", d.join(" ")));
+        lines.push(format!("depends=({})", quoted_array(depends)));
     }
     if !makedepends.is_empty() {
-        let d: Vec<String> = makedepends.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("makedepends=({})", d.join(" ")));
+        lines.push(format!("makedepends=({})", quoted_array(makedepends)));
     }
     if !optdepends.is_empty() {
-        let d: Vec<String> = optdepends.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("optdepends=({})", d.join(" ")));
+        lines.push(format!("optdepends=({})", quoted_array(optdepends)));
     }
     if !conflicts.is_empty() {
-        let d: Vec<String> = conflicts.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("conflicts=({})", d.join(" ")));
+        lines.push(format!("conflicts=({})", quoted_array(conflicts)));
     }
     if !provides.is_empty() {
-        let d: Vec<String> = provides.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("provides=({})", d.join(" ")));
+        lines.push(format!("provides=({})", quoted_array(provides)));
     }
     if !backup.is_empty() {
-        let d: Vec<String> = backup.iter().map(|s| format!("'{}'", s)).collect();
-        lines.push(format!("backup=({})", d.join(" ")));
+        lines.push(format!("backup=({})", quoted_array(backup)));
     }
 
     if let Some(install_file) = install_file {

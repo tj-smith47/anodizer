@@ -531,6 +531,48 @@ fn render_inner_default_url_from_https_giturl() {
 /// Templated `description` / `homepage` (`{{ .Tag }}`) are
 /// template-rendered into the source PKGBUILD `pkgdesc=` / `url=` lines
 /// (and the .SRCINFO `pkgdesc =` / `url =` lines) — the literal delimiters
+/// Every PKGBUILD metadata field is POSIX single-quoted, so a description
+/// carrying a `'`, a `$HOME` or a backtick reaches makepkg literally
+/// instead of being expanded while the file is sourced. `.SRCINFO` is not
+/// a shell script, so it keeps the raw value.
+#[test]
+fn aur_source_pkgbuild_quotes_description() {
+    let ctx = source_ctx(
+        "https://github.com/myorg/mytool.git",
+        "mytool",
+        "1.2.3",
+        "v1.2.3",
+    );
+    let cfg = AurSourceConfig {
+        description: Some("it's great with $HOME and `tick`".to_string()),
+        homepage: Some("https://example.com/a'b".to_string()),
+        license: Some("MIT'X".to_string()),
+        depends: Some(vec!["a'b".to_string()]),
+        ..Default::default()
+    };
+    let render = render_aur_source_inner(&ctx, &cfg, "mytool", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    let pkgbuild = &render.rendered.pkgbuild;
+    assert!(
+        pkgbuild.contains(r"pkgdesc='it'\''s great with $HOME and `tick`'"),
+        "{pkgbuild}"
+    );
+    assert!(
+        pkgbuild.contains(r"url='https://example.com/a'\''b'"),
+        "{pkgbuild}"
+    );
+    assert!(pkgbuild.contains(r"license=('MIT'\''X')"), "{pkgbuild}");
+    assert!(pkgbuild.contains(r"depends=('a'\''b')"), "{pkgbuild}");
+    assert!(
+        render
+            .rendered
+            .srcinfo
+            .contains("pkgdesc = it's great with $HOME and `tick`"),
+        "{}",
+        render.rendered.srcinfo
+    );
+}
+
 /// must NOT leak. Regression for the raw-emit description/homepage bug.
 #[test]
 fn render_inner_description_and_homepage_templates_are_rendered() {
@@ -552,7 +594,7 @@ fn render_inner_description_and_homepage_templates_are_rendered() {
         render
             .rendered
             .pkgbuild
-            .contains("pkgdesc=\"mytool v1.2.3 source build\""),
+            .contains("pkgdesc='mytool v1.2.3 source build'"),
         "templated description must render into PKGBUILD pkgdesc=:\n{}",
         render.rendered.pkgbuild
     );
@@ -792,7 +834,7 @@ fn render_inner_per_crate_metadata_no_cross_crate_leakage() {
     let pkgbuild = &render.rendered.pkgbuild;
 
     assert!(
-        pkgbuild.contains("pkgdesc=\"Bravo the second tool\""),
+        pkgbuild.contains("pkgdesc='Bravo the second tool'"),
         "description must be bravo's real Cargo.toml description, not the \
              crate name or alfa's:\n{}",
         pkgbuild
