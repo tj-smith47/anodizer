@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn snapshot_does_not_clear() {
         let m = SkipMemento::new();
-        m.remember("publisher", "my-tool", "empty cmd");
+        m.remember("publisher", "my-tool", "no matching artifacts");
         let snap = m.snapshot();
         assert_eq!(snap.len(), 1);
         // Still present after snapshot.

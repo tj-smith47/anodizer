@@ -97,14 +97,6 @@ pub fn run_publishers(
             continue;
         }
 
-        if publisher.cmd.is_empty() {
-            log.verbose(&format!("skipped publisher {} — empty cmd", label));
-            if let Some(sm) = skip_memento {
-                sm.remember("publisher", label, "empty cmd");
-            }
-            continue;
-        }
-
         // Resolve extra_files globs into additional artifacts
         let mut extra_artifacts: Vec<Artifact> = Vec::new();
         if let Some(ref extra_files) = publisher.extra_files {
@@ -198,6 +190,14 @@ pub fn run_publishers(
             continue;
         }
 
+        // A publisher that matched artifacts but carries no command would
+        // publish nothing while reporting success — the signature of a typo'd
+        // or template-stripped `cmd:`. The check sits after the match so a
+        // publisher whose filters select nothing stays a clean skip.
+        if publisher.cmd.trim().is_empty() {
+            anyhow::bail!("publisher {:?}: command is empty", label);
+        }
+
         // Execute publisher command per artifact, with parallelism
         let run_for_artifact = |artifact: &&Artifact| -> Result<()> {
             let (rendered_cmd, rendered_args) = build_publisher_command(
@@ -209,6 +209,15 @@ pub fn run_publishers(
             .with_context(|| format!("failed to render publisher command for {}", label))?;
 
             let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
+            // Parse with shellwords and exec directly instead of wrapping with
+            // `sh -c`. A command whose template renders to nothing is the same
+            // config error as a blank `cmd:`, so it is rejected before the
+            // dry-run branch — otherwise `--dry-run` would report a publish
+            // that can never happen.
+            let shell_args = split_shellwords(&full_cmd);
+            if shell_args.is_empty() {
+                anyhow::bail!("publisher {:?}: command is empty", label);
+            }
             log.status(&run_line(
                 label,
                 &artifact.path.display().to_string(),
@@ -216,12 +225,6 @@ pub fn run_publishers(
                 dry_run,
             ));
             if !dry_run {
-                // Parse with shellwords and exec directly instead of
-                // wrapping with `sh -c`.
-                let shell_args = split_shellwords(&full_cmd);
-                if shell_args.is_empty() {
-                    anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);
-                }
                 let mut cmd = anodizer_core::user_command::whitelisted(&shell_args)?;
 
                 if let Some(ref dir) = publisher.dir {
@@ -827,47 +830,24 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // --- Empty cmd is skipped ---
+    // --- Empty cmd with matching artifacts is a config error ---
 
     #[test]
-    fn test_empty_cmd_is_skipped() {
+    fn publisher_empty_cmd_with_matching_artifacts_errors() {
         let vars = base_vars();
-        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
         let publishers = vec![PublisherConfig {
             name: Some("empty".to_string()),
             cmd: String::new(),
             ..Default::default()
         }];
 
-        let result = run_publishers(
-            &publishers,
-            &artifacts,
-            &vars,
-            false,
-            &test_logger(),
-            1,
-            None,
-        );
-        assert!(result.is_ok());
-    }
-
-    // --- SkipMemento integration ---
-
-    #[test]
-    fn test_publisher_empty_cmd_records_skip_memento() {
-        // A publisher with an empty cmd must skip AND record the skip, so the
-        // end-of-pipeline summary shows it. Otherwise a typo'd publisher cmd
-        // looks identical to a real skipped publisher in the logs.
-        let vars = base_vars();
-        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
-        let publishers = vec![PublisherConfig {
-            name: Some("noisy".to_string()),
-            cmd: String::new(),
-            ..Default::default()
-        }];
-
         let memento = anodizer_core::pipe_skip::SkipMemento::new();
-        let result = run_publishers(
+        let err = run_publishers(
             &publishers,
             &artifacts,
             &vars,
@@ -875,13 +855,118 @@ mod tests {
             &test_logger(),
             1,
             Some(&memento),
+        )
+        .expect_err("an empty cmd with matching artifacts must fail");
+        assert_eq!(err.to_string(), "publisher \"empty\": command is empty");
+        assert!(
+            memento.snapshot().is_empty(),
+            "a config error is not an intentional skip"
         );
-        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn publisher_blank_cmd_with_matching_artifacts_errors() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("blank".to_string()),
+            cmd: " \t\n ".to_string(),
+            ..Default::default()
+        }];
+
+        let err = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            None,
+        )
+        .expect_err("a whitespace-only cmd must fail");
+        assert_eq!(err.to_string(), "publisher \"blank\": command is empty");
+    }
+
+    #[test]
+    fn publisher_cmd_rendering_empty_errors_in_dry_run() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("rendersempty".to_string()),
+            cmd: "{{ \"\" }}".to_string(),
+            ..Default::default()
+        }];
+
+        let err = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            1,
+            None,
+        )
+        .expect_err("a cmd that renders empty must fail even on a dry run");
+        assert_eq!(
+            err.to_string(),
+            "publisher \"rendersempty\": command is empty"
+        );
+    }
+
+    #[test]
+    fn publisher_empty_cmd_without_matching_artifacts_does_not_error() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![
+            PublisherConfig {
+                name: Some("empty".to_string()),
+                cmd: String::new(),
+                ids: Some(vec!["does-not-exist".to_string()]),
+                ..Default::default()
+            },
+            PublisherConfig {
+                name: Some("realcmd".to_string()),
+                cmd: "true".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
+        let (log, capture) =
+            StageLogger::with_capture("publisher", anodizer_core::log::Verbosity::Normal);
+        run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &log,
+            1,
+            Some(&memento),
+        )
+        .expect("a publisher whose filters match nothing is a clean skip");
+
         let events = memento.snapshot();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].stage, "publisher");
-        assert_eq!(events[0].label, "noisy");
-        assert_eq!(events[0].reason, "empty cmd");
+        assert_eq!(events[0].label, "empty");
+        assert_eq!(events[0].reason, "no matching artifacts");
+
+        let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            lines.iter().any(|l| l.contains("realcmd")),
+            "the publisher after a skipped one must still run: {lines:?}"
+        );
     }
 
     #[test]
