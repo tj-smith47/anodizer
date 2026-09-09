@@ -622,8 +622,48 @@ fn taskfile_block(taskfile: &str, target: &str) -> String {
     block
 }
 
-/// Every target reachable from `roots` through `- task: <name>` lines, roots
-/// included.
+/// The targets one target block names: every `- task: <name>` item, plus
+/// every entry of a `deps:` list in either spelling (`deps: [a, b]` and a
+/// block list). A dep runs the target just as a cmd does, so a walk that
+/// followed only `- task:` edges would miss half the graph.
+fn child_tasks(block: &str) -> Vec<String> {
+    let mut children = Vec::new();
+    let mut in_deps = false;
+    for line in block.lines() {
+        let code = strip_trailing_comment(line);
+        let trimmed = code.trim();
+        // A key at the target's own field level closes any open deps list.
+        if code.starts_with("    ") && !code.starts_with("     ") && trimmed.contains(':') {
+            in_deps = false;
+            if let Some(rest) = trimmed.strip_prefix("deps:") {
+                let rest = rest.trim();
+                match rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                    Some(inline) => children.extend(
+                        inline
+                            .split(',')
+                            .map(|n| n.trim().to_string())
+                            .filter(|n| !n.is_empty()),
+                    ),
+                    None => in_deps = rest.is_empty(),
+                }
+                continue;
+            }
+        }
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            let item = item.trim();
+            match item.strip_prefix("task: ") {
+                Some(name) => children.push(name.trim().to_string()),
+                None if in_deps => children.push(item.to_string()),
+                None => {}
+            }
+        }
+    }
+    children
+}
+
+/// Every target reachable from `roots` through `child_tasks`, roots included.
+/// The `seen` guard is what makes this terminate: the graph is a DAG only by
+/// convention, and a diamond would otherwise re-walk a shared child.
 fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     let mut queue: Vec<String> = roots.iter().map(|r| (*r).to_string()).collect();
@@ -633,28 +673,16 @@ fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
         }
         let block = taskfile_block(taskfile, &name);
         seen.push(name);
-        for line in block.lines() {
-            if let Some(child) = line.trim().strip_prefix("- task: ") {
-                let child = child.split('#').next().unwrap_or("").trim();
-                if !child.is_empty() {
-                    queue.push(child.to_string());
-                }
-            }
-        }
+        queue.extend(child_tasks(&block));
     }
     seen.sort();
     seen
 }
 
-/// Whether a Taskfile `cmds:` block runs `target` as a subtask. Anchored on
-/// the whole target name so `docs:validate-readme` never reads as `doc`.
+/// Whether a Taskfile target block runs `target`, by cmd or by dep. Matching
+/// whole names is what keeps `docs:validate-readme` from reading as `doc`.
 fn runs_task(block: &str, target: &str) -> bool {
-    block.lines().any(|line| {
-        line.trim()
-            .strip_prefix("- task: ")
-            .and_then(|rest| rest.strip_prefix(target))
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
-    })
+    child_tasks(block).iter().any(|child| child == target)
 }
 
 /// A target key may carry a trailing comment. Ending a block only on a bare
@@ -686,6 +714,44 @@ fn a_multibyte_char_at_the_key_column_is_not_a_key() {
     assert!(!is_top_level_key("      - task: doc"));
 }
 
+/// The walk's `seen` guard carries both jobs: it collapses a diamond to one
+/// visit and it is the only thing that terminates a cycle. Taskfile graphs are
+/// acyclic by convention, not by construction, so pin both here rather than
+/// discover them as a hung test run.
+#[test]
+fn the_task_walk_visits_a_diamond_once_and_survives_a_cycle() {
+    let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n      - task: c\n  b:\n    deps: [d]\n  c:\n    cmds:\n      - task: d\n  d:\n    cmds:\n      - task: a\n";
+    let walked = reachable_tasks(snippet, &["a"]);
+    assert_eq!(
+        walked,
+        vec!["a", "b", "c", "d"],
+        "each target is visited once, the shared child `d` included"
+    );
+}
+
+/// `deps:` runs a target as surely as `cmds:` does, in either spelling.
+#[test]
+fn a_dep_is_an_edge_in_both_spellings() {
+    let inline = "tasks:\n  t:\n    deps: [one, two]\n    cmds:\n      - echo hi\n";
+    assert_eq!(child_tasks(&taskfile_block(inline, "t")), ["one", "two"]);
+
+    let block = "tasks:\n  t:\n    deps:\n      - one\n      - task: two\n    cmds:\n      - echo hi\n      - task: three\n";
+    assert_eq!(
+        child_tasks(&taskfile_block(block, "t")),
+        ["one", "two", "three"]
+    );
+
+    // A bare `- item` outside a deps list is a shell command, not a target.
+    let cmds_only = "tasks:\n  t:\n    cmds:\n      - cargo build\n";
+    assert!(child_tasks(&taskfile_block(cmds_only, "t")).is_empty());
+
+    // Whole names only: a longer sibling never reads as its prefix.
+    let sibling = "tasks:\n  t:\n    cmds:\n      - task: docs:validate-readme\n";
+    let block = taskfile_block(sibling, "t");
+    assert!(!runs_task(&block, "doc"));
+    assert!(runs_task(&block, "docs:validate-readme"));
+}
+
 /// Rustdoc over this workspace holds several GB, so it may not run on the
 /// commit path; it is CI's job and `task gate`'s (and so `task push`'s). The
 /// wiring spans four files that no compiler ties together — a rename or a
@@ -706,25 +772,57 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
         "the `doc:` target must run the workspace rustdoc, got:\n{doc}"
     );
 
+    // The floor is only sound in two legs: an unreadable /proc/meminfo makes
+    // the numeric comparison a shell error, which go-task would report with the
+    // floor's own message. Pin the shape, not the prose.
+    let headroom = taskfile_block(&taskfile, "_check:mem-headroom");
+    let legs: Vec<&str> = headroom
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("- sh:"))
+        .collect();
+    assert_eq!(
+        legs.len(),
+        2,
+        "the memory precondition is a digits guard followed by a floor test, got:\n{headroom}"
+    );
+    assert!(
+        legs[0].contains("^[0-9]+$"),
+        "the first leg must reject a non-numeric MemAvailable reading, got: {}",
+        legs[0]
+    );
+    assert!(
+        legs[1].contains("-ge 8388608"),
+        "the second leg must test the 8 GB floor, got: {}",
+        legs[1]
+    );
+    for leg in &legs {
+        assert!(
+            leg.contains("uname"),
+            "every leg short-circuits off Linux, which alone publishes /proc/meminfo, got: {leg}"
+        );
+    }
+
     let gate = taskfile_block(&taskfile, "gate");
     assert!(
         runs_task(&gate, "doc"),
         "`task gate` must run the rustdoc gate, got:\n{gate}"
     );
     // Absent from `lint` alone proves nothing: `task commit` reaches the gate
-    // through whatever `lint` chains, so walk the whole closure.
-    let commit_path = reachable_tasks(&taskfile, &["lint"]);
+    // through whatever it and `lint` chain, by cmd or by dep, so walk the whole
+    // closure from the target a commit actually invokes.
+    let commit_path = reachable_tasks(&taskfile, &["commit"]);
     for name in &commit_path {
         let block = taskfile_block(&taskfile, name);
         assert!(
             !runs_task(&block, "doc"),
-            "`task {name}` is reachable from `task lint`, which every commit runs, so it must not chain the rustdoc gate, got:\n{block}"
+            "`task {name}` is reachable from `task commit`, so it must not chain the rustdoc gate, got:\n{block}"
         );
     }
     assert_eq!(
         commit_path.len(),
-        23,
-        "the set of tasks `task lint` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
+        26,
+        "the set of tasks `task commit` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
     );
 
     let ci = std::fs::read_to_string(repo.join(".github/workflows/ci.yml")).expect("ci.yml");
