@@ -320,6 +320,8 @@ $ anodizer tag
    • updated crates/cfgd/Cargo.toml from 0.6.1 to 0.7.0
    • healed dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
    • created cfgd-v0.7.0 locally; nothing was pushed — pass --push to push the bump commit + tags atomically
+anodizer-output crates=["cfgd"]
+anodizer-output versions={"cfgd":"0.7.0"}
 ```
 
 A floor the run's own version bump already rewrites is reported by that step,

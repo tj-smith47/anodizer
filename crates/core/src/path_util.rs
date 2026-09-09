@@ -20,8 +20,8 @@ fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Render `path` for a user-facing message, relative to the repo root it lives
-/// under.
+/// The spelling of `path` relative to the repo root it lives under: what
+/// anodizer prints for a repo-committed file, and what it hands `git add`.
 ///
 /// Every path anodizer prints for a repo-committed file is the spelling the
 /// user wrote (or would write) in their config, never the absolute path the
@@ -29,6 +29,10 @@ fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
 /// directory into logs a human reads and diffs. `root` is stripped when `path`
 /// is under it; a path outside the root has no relative spelling, so it is
 /// printed as-is. The repo root itself renders as `.`.
+///
+/// The bump commit stages the manifests it rewrote by this same spelling, so
+/// the returned string is a git pathspec as well as a display string: any
+/// formatting added for a reader's benefit would break staging.
 pub fn display_under_root(root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
     // A `.` component survives `join` (`<root>/./Cargo.toml`), and a config
