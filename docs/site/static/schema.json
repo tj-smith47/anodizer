@@ -8335,7 +8335,7 @@
           ]
         },
         "arm_variant": {
-          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
+          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included. Default: `6`.",
           "default": null,
           "type": [
             "string",

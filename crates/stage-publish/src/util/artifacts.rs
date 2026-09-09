@@ -121,8 +121,17 @@ fn artifact_to_os_artifact(
     }
     let id = a.metadata.get("id").cloned();
     let amd64_variant = a.metadata.get("amd64_variant").cloned();
-    let arm_variant = a.metadata.get("arm_variant").cloned();
     let target = a.target.as_deref().unwrap_or("");
+    let arch = infer_arch(target);
+    // A 32-bit ARM build carries its version in the arch token itself
+    // (`armv7`), and no stage stamps `arm_variant` metadata. Reading only the
+    // metadata would leave every variant filter matching every ARM archive,
+    // so a publisher that can name one platform once would name it twice.
+    let arm_variant = a
+        .metadata
+        .get("arm_variant")
+        .cloned()
+        .or_else(|| arch.strip_prefix("armv").map(str::to_string));
     // Prefer archive's first extra_binaries entry; fall back to the artifact's
     // own binary name (an UploadableBinary). None when this artifact has no
     // associated binary name (caller may substitute crate_name).
@@ -151,7 +160,7 @@ fn artifact_to_os_artifact(
         url,
         sha256,
         os: infer_os(target, os_fallback),
-        arch: infer_arch(target),
+        arch,
         target: target.to_string(),
         id,
         amd64_variant,

@@ -1440,7 +1440,7 @@ Fields from both original types are present; any field may be `None` at either c
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
-| `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
+| `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. Default: `6`. |
 | `caveats` | string | — | Post-install message shown to the user. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |

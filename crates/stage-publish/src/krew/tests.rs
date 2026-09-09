@@ -498,6 +498,9 @@ fn test_krew_arch_mapping() {
     assert_eq!(krew_arch("x86_64"), "amd64");
     assert_eq!(krew_arch("arm64"), "arm64");
     assert_eq!(krew_arch("aarch64"), "arm64");
+    for arm in ["arm", "armv5", "armv6", "armv7"] {
+        assert_eq!(krew_arch(arm), "arm", "krew_arch({arm})");
+    }
     assert_eq!(krew_arch("unknown"), "unknown");
 }
 
@@ -1340,6 +1343,115 @@ fn render_manifest_embeds_real_sha256_and_url() {
         "metadata.name carries the krew.name override; got:\n{manifest}"
     );
     assert!(manifest.contains("version: v1.0.0"), "got:\n{manifest}");
+}
+
+/// krew names one platform per (os, arch) selector, and its arch label for
+/// 32-bit ARM is the plain `arm` every ARM client reports. With no
+/// `arm_variant` set, the baseline armv6 archive is the one that ships.
+#[test]
+fn unset_arm_variant_selects_armv6() {
+    let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+    let mut ctx = build_ctx(vec![c], "1.0.0");
+    add_archive(
+        &mut ctx,
+        "widget",
+        "arm-unknown-linux-gnueabi",
+        "linux",
+        "armv6",
+        "kubectl-widget",
+        &"a".repeat(64),
+    );
+    add_archive(
+        &mut ctx,
+        "widget",
+        "armv7-unknown-linux-gnueabihf",
+        "linux",
+        "armv7",
+        "kubectl-widget",
+        &"b".repeat(64),
+    );
+    let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+        .expect("render ok")
+        .expect("not skipped");
+    assert_eq!(
+        manifest.matches("arch: arm\n").count(),
+        1,
+        "exactly one 32-bit ARM platform block, labelled with krew's own arch:\n{manifest}"
+    );
+    assert!(
+        !manifest.contains("arch: armv"),
+        "krew matches runtime.GOARCH, which never spells a variant:\n{manifest}"
+    );
+    assert!(
+        manifest.contains("linux-armv6.tar.gz"),
+        "the baseline armv6 archive is the one selected:\n{manifest}"
+    );
+    assert!(
+        !manifest.contains("linux-armv7.tar.gz"),
+        "the armv7 archive must not also ship:\n{manifest}"
+    );
+}
+
+/// An explicit `arm_variant` still picks its own archive.
+#[test]
+fn explicit_arm_variant_still_wins() {
+    let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+    if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+        k.arm_variant = Some("7".to_string());
+    }
+    let mut ctx = build_ctx(vec![c], "1.0.0");
+    add_archive(
+        &mut ctx,
+        "widget",
+        "arm-unknown-linux-gnueabi",
+        "linux",
+        "armv6",
+        "kubectl-widget",
+        &"a".repeat(64),
+    );
+    add_archive(
+        &mut ctx,
+        "widget",
+        "armv7-unknown-linux-gnueabihf",
+        "linux",
+        "armv7",
+        "kubectl-widget",
+        &"b".repeat(64),
+    );
+    let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+        .expect("render ok")
+        .expect("not skipped");
+    assert!(
+        manifest.contains("linux-armv7.tar.gz") && !manifest.contains("linux-armv6.tar.gz"),
+        "an explicit arm_variant selects its own archive:\n{manifest}"
+    );
+}
+
+/// The eligibility gate and the renderer read the same default, so a crate
+/// whose only ARM archive is armv7 is reported as having nothing to publish
+/// rather than being accepted and then rendered empty.
+#[test]
+fn crate_has_krew_artifacts_uses_the_same_default() {
+    let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+    let krew_cfg = c
+        .publish
+        .as_ref()
+        .and_then(|p| p.krew.clone())
+        .expect("krew config");
+    let mut ctx = build_ctx(vec![c], "1.0.0");
+    add_archive(
+        &mut ctx,
+        "widget",
+        "armv7-unknown-linux-gnueabihf",
+        "linux",
+        "armv7",
+        "kubectl-widget",
+        &"b".repeat(64),
+    );
+    assert!(
+        !super::artifacts::crate_has_krew_artifacts(&ctx, "widget", &krew_cfg).unwrap(),
+        "the gate must apply the same default the renderer does"
+    );
 }
 
 /// Register an archive carrying the full layout metadata the krew `files:`

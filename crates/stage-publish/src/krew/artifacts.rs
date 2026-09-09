@@ -204,6 +204,11 @@ impl KrewPublishOutcome {
     }
 }
 
+/// The ARM version krew plugins are built against when the config names none.
+/// Baseline armv6 code runs on every 32-bit ARM krew supports, so it is the
+/// safe single answer where the manifest can carry only one.
+pub(super) const DEFAULT_ARM_VARIANT: &str = "6";
+
 /// Whether `crate_name` has at least one krew-eligible archive artifact under
 /// `krew_cfg` in this run.
 ///
@@ -222,13 +227,19 @@ pub(crate) fn crate_has_krew_artifacts(
 ) -> Result<bool> {
     let ids_filter = krew_cfg.ids.as_deref();
     let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    let arm_variant = krew_cfg.arm_variant.as_deref();
+    // An unset filter would admit every 32-bit ARM archive, so one platform
+    // would get an entry per variant and krew would install whichever it read
+    // last. Baseline armv6 runs on every ARM krew supports.
+    let arm_variant = krew_cfg
+        .arm_variant
+        .as_deref()
+        .unwrap_or(DEFAULT_ARM_VARIANT);
     let artifacts = util::find_all_platform_artifacts_with_variant(
         ctx,
         crate_name,
         ids_filter,
         Some(amd64_variant),
-        arm_variant,
+        Some(arm_variant),
     )?;
     Ok(!artifacts.is_empty())
 }
@@ -368,7 +379,13 @@ pub(crate) fn render_krew_manifest_for_crate(
     // amd64_variant/arm_variant filters.
     let ids_filter = krew_cfg.ids.as_deref();
     let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    let arm_variant = krew_cfg.arm_variant.as_deref();
+    // An unset filter would admit every 32-bit ARM archive, so one platform
+    // would get an entry per variant and krew would install whichever it read
+    // last. Baseline armv6 runs on every ARM krew supports.
+    let arm_variant = krew_cfg
+        .arm_variant
+        .as_deref()
+        .unwrap_or(DEFAULT_ARM_VARIANT);
 
     // Krew plugins support a single binary per archive. Walk the eligible
     // archives — through the SAME `ids` allow-list `find_all_platform_artifacts_with_variant`
@@ -393,7 +410,7 @@ pub(crate) fn render_krew_manifest_for_crate(
         crate_name,
         ids_filter,
         Some(amd64_variant),
-        arm_variant,
+        Some(arm_variant),
     )?
     .into_iter()
     // Krew installs only on linux/darwin/windows. Drop Apple-but-not-macOS

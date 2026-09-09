@@ -199,14 +199,15 @@ pub(super) fn resolve_plugin_name(
 ///
 /// This is a publisher-specific mapping layer on top of the generic
 /// `infer_arch` in `util.rs`. The util layer produces canonical short
-/// forms (`"amd64"`, `"arm64"`), and this function translates them
-/// to whatever Krew expects. Today the mapping is a no-op for the
-/// common cases, but keeping a separate layer allows adapting to
-/// future Krew label changes without touching the shared inference.
+/// forms (`"amd64"`, `"arm64"`, `"armv7"`), and this function translates them
+/// to whatever Krew expects. krew matches a platform selector against the
+/// client's `runtime.GOARCH`, whose 32-bit ARM value is plain `arm` — a
+/// selector spelled `armv7` matches no machine at all.
 pub(super) fn krew_arch(arch: &str) -> &str {
     match arch {
         "amd64" | "x86_64" => "amd64",
         "arm64" | "aarch64" => "arm64",
+        "arm" | "armv5" | "armv6" | "armv7" => "arm",
         other => other,
     }
 }

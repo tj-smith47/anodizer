@@ -51,7 +51,7 @@ pub struct KrewConfig {
     /// rejected when the config is parsed.
     pub amd64_variant: Option<Amd64Variant>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
-    /// variant are included.
+    /// variant are included. Default: `6`.
     pub arm_variant: Option<String>,
     /// When true, force-push the updated plugin manifest to the existing PR
     /// branch when a PR for the same head branch already exists. The PR content

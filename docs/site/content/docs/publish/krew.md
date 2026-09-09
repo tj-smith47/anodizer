@@ -72,7 +72,7 @@ explicitly only to override, or if the crate has no `description`.
 | `skip` | bool or string | `false` | Skip the krew publisher entirely (no manifest generated). Accepts bool or template string. |
 | `skip_upload` | bool or string | `false` | Generate the manifest but skip the upload step; `true` always skips, `"auto"` skips for pre-releases |
 | `amd64_variant` | enum | `"v1"` | amd64 microarchitecture variant filter — exactly one of `"v1"`, `"v2"`, `"v3"`, `"v4"` (any other value is rejected when the config is parsed) |
-| `arm_variant` | string | none | ARM version filter (`"6"`, `"7"`) |
+| `arm_variant` | string | `"6"` | ARM version filter (`"6"`, `"7"`) |
 | `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
 
 All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{ Version }}`).
@@ -116,7 +116,7 @@ crates:
         caveats: ""                      # post-install message
         ids: []
         amd64_variant: "v1"             # v1 | v2 | v3 | v4
-        arm_variant: ""                  # "6" | "7"
+        arm_variant: "6"                 # "6" | "7"
         repository:
           owner: myorg                   # required
           name: krew-index               # required
@@ -144,10 +144,10 @@ Anodizer resolves a GitHub token from the first source that is set, in this orde
 
 ## How plugin manifests are generated
 
-Anodizer discovers all build artifacts for the crate (filtered by `ids`, `amd64_variant`, and `arm_variant` if set), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
+Anodizer discovers all build artifacts for the crate (filtered by `ids`, `amd64_variant`, and `arm_variant`), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
 
 Each artifact becomes a platform entry with:
-- **selector**: `matchLabels` for `os` (linux, darwin, windows) and `arch` (amd64, arm64)
+- **selector**: `matchLabels` for `os` (linux, darwin, windows) and `arch` (amd64, arm64, arm)
 - **uri**: download URL for the archive
 - **sha256**: checksum of the archive
 - **bin**: binary name
