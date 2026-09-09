@@ -36,6 +36,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -76,7 +77,8 @@ sorted_words() { tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' '; }
 
 # --- 1. Determinism shard roster -------------------------------------------
 det_labels=$(yqr -r '.jobs.shard.strategy.matrix.include[].shard' "$DET" | sorted_words)
-rel_expected_raw=$(grep -oE 'expected=\([^)]*\)' "$REL" || true)
+collect_files REL_EXPECTED -oE 'expected=\([^)]*\)' "$REL"
+rel_expected_raw=$(printf '%s\n' "${REL_EXPECTED[@]}")
 if [[ -z "$rel_expected_raw" ]]; then
     fail "shard roster: no 'expected=(…)' assert array found in ${REL}."
 else

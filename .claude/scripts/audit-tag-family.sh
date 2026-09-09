@@ -65,11 +65,9 @@ TAG_PREFIX_RAW_OK=(
 allow_keys="$(printf '%s\n' "${TAG_FAMILY_RAW_OK[@]}" | sed 's/ — .*$//')"
 prefix_keys="$(printf '%s\n' "${TAG_PREFIX_RAW_OK[@]}" | sed 's/ — .*$//')"
 
-mapfile -t FILES < <(
-    grep -rlE '\.tag_template|DEFAULT_TAG_PREFIX|unwrap_or(_else)?\((\|\| *)?"v"' crates/*/src --include='*.rs' 2>/dev/null \
-        | grep -vE '(/tests/|/tests\.rs$|_tests\.rs$)' \
-        || true
-)
+collect_files FILES -rlE '\.tag_template|DEFAULT_TAG_PREFIX|unwrap_or(_else)?\((\|\| *)?"v"' \
+    crates/*/src --include='*.rs' \
+    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs'
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-tag-family: no raw tag_template reads or tag-prefix compositions found."
     exit 0
@@ -84,7 +82,12 @@ run_scanner violations -v allow="$allow_keys" -v pallow="$prefix_keys" -f "$LIB_
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); return s }
 
-    FNR == 1 { fname = ""; prev = "" }
+    FNR == 1 { fname = ""; prev_cmt = "" }
+
+    # The marker is read off the comment half of the line — a string literal
+    # quoting `tag-family-ok:` is text, not an exemption — and `prev_cmt`
+    # carries the line above's comment so a marker may sit there instead.
+    { cmt = comment_part($0) }
 
     /^[[:space:]]*(pub(\([a-z]+\))? )?(async )?(const )?fn [A-Za-z0-9_]+/ {
         match($0, /fn [A-Za-z0-9_]+/)
@@ -93,18 +96,18 @@ run_scanner violations -v allow="$allow_keys" -v pallow="$prefix_keys" -f "$LIB_
 
     /\.tag_template/ && $0 !~ /^[[:space:]]*\/\// {
         key = FILENAME "::" fname
-        if (!(key in ok) && $0 !~ /tag-family-ok:/ && prev !~ /tag-family-ok:/)
+        if (!(key in ok) && cmt !~ /tag-family-ok:/ && prev_cmt !~ /tag-family-ok:/)
             printf("%s:%d (fn %s): %s\n", FILENAME, FNR, fname, trim($0))
     }
 
     # The constant declaration is the one place the literal is allowed to live.
     (/DEFAULT_TAG_PREFIX/ || /unwrap_or(_else)?\((\|\| *)?"v"/) && $0 !~ /^[[:space:]]*\/\// && $0 !~ /const DEFAULT_TAG_PREFIX/ {
         key = FILENAME "::" fname
-        if (!(key in pok) && $0 !~ /tag-family-ok:/ && prev !~ /tag-family-ok:/)
+        if (!(key in pok) && cmt !~ /tag-family-ok:/ && prev_cmt !~ /tag-family-ok:/)
             printf("%s:%d (fn %s): [prefix composition] %s\n", FILENAME, FNR, fname, trim($0))
     }
 
-    { prev = $0 }
+    { prev_cmt = cmt }
 AWK
 
 if [[ -n "$violations" ]]; then

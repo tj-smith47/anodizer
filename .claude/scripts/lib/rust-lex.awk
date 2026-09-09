@@ -2,17 +2,36 @@
 # Load with `awk -f .claude/scripts/lib/rust-lex.awk -f - <files> <<'AWK' … AWK`
 # (a program given by -f cannot be mixed with inline program text).
 #
-# `strip_code` carries multi-line raw strings, normal strings and block
-# comments across lines in the globals `in_raw`, `raw_hashes`, `in_str` and
+# One pass over a line yields BOTH halves of it — `strip_code`, the code with
+# literals and comments elided, and `comment_part`, the comment text that
+# elision hides — and the result is memoised per input record: re-running the
+# state machine over a line whose entry state has already been consumed reads
+# the closing `"` of a multi-line string as an opening one.
+#
+# The pass carries multi-line raw strings, normal strings and block comments
+# across lines in the globals `in_raw`, `raw_hashes`, `in_str` and
 # `in_bcomment`; a consumer resets them per file with `reset_lex()`.
 
 function reset_lex() { in_raw = 0; raw_hashes = 0; in_str = 0; in_bcomment = 0 }
 
-# Returns l with string/char literals and comments elided, carrying
-# multi-line raw strings, multi-line normal strings and block comments
-# across lines in globals. Elision (rather than skipping the line)
-# keeps the surrounding real code visible to the brace counter.
-function strip_code(l,   out, i, n, c, k, endm, m) {
+# Returns l with string/char literals and comments elided. Elision (rather
+# than skipping the line) keeps the surrounding real code visible to the brace
+# counter.
+function strip_code(l) { lex_scan(l); return lex_code }
+
+# Returns the comment half of l: the `//` tail that opens outside a string
+# literal (the slashes included) plus the body of any block comment on the
+# line. An audit marker spelled inside a string literal lands in the CODE
+# half, so reading a marker from here is what stops a literal from forging it.
+function comment_part(l) { lex_scan(l); return lex_comment }
+
+function lex_scan(l) {
+    if (lex_nr == NR && lex_text == (l "")) return
+    lex_nr = NR; lex_text = l ""; lex_comment = ""
+    lex_code = lex_halves(l)
+}
+
+function lex_halves(l,   out, i, n, c, k, endm, m) {
     out = ""; i = 1; n = length(l)
     while (i <= n) {
         if (in_raw) {
@@ -34,11 +53,12 @@ function strip_code(l,   out, i, n, c, k, endm, m) {
         }
         if (in_bcomment) {
             k = index(substr(l, i), "*/")
-            if (k == 0) return out
+            if (k == 0) { lex_comment = lex_comment substr(l, i); return out }
+            lex_comment = lex_comment substr(l, i, k - 1)
             i = i + k + 1; in_bcomment = 0; continue
         }
         c = substr(l, i, 1)
-        if (c == "/" && substr(l, i + 1, 1) == "/") return out
+        if (c == "/" && substr(l, i + 1, 1) == "/") { lex_comment = lex_comment substr(l, i); return out }
         if (c == "/" && substr(l, i + 1, 1) == "*") { in_bcomment = 1; i += 2; continue }
         if (c == "r") {
             m = 0

@@ -23,6 +23,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 MODE="scan"
 if [[ "${1:-}" == "--groups" ]]; then
@@ -52,11 +53,11 @@ fi
 # remaining conversions land.
 SERIAL_PENDING=()
 
-all_unkeyed="$(grep -rnE "$UNKEYED_RE" crates/ --include='*.rs' || true)"
+collect_files ALL_UNKEYED -rnE "$UNKEYED_RE" crates/ --include='*.rs' --exclude-dir=target
 
 violations=""
 pending_hit=()
-while IFS= read -r line; do
+for line in "${ALL_UNKEYED[@]}"; do
     [[ -n "$line" ]] || continue
     site="$(printf '%s' "$line" | cut -d: -f1,2)"
     matched=""
@@ -68,7 +69,7 @@ while IFS= read -r line; do
         fi
     done
     [[ -n "$matched" ]] || violations+="$line"$'\n'
-done <<<"$all_unkeyed"
+done
 
 # A pinned site that no longer matches has been converted; the pin must go with
 # it, otherwise the list silently grows stale and stops meaning anything.

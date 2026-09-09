@@ -41,12 +41,8 @@ cd "$ROOT"
 
 # Candidate files: any source under crates/ that spawns git or node. The awk
 # pass then decides per-file whether each call site is in test context.
-mapfile -t FILES < <(
-    grep -rlP 'Command::new\("(git|node)"\)' crates/ --include='*.rs' 2>/dev/null \
-        | grep -v '/target/' \
-        | grep -v 'crates/core/src/test_helpers/' \
-        || true
-)
+collect_files FILES -rlP 'Command::new\("(git|node)"\)' crates/ --include='*.rs' \
+    --exclude-dir=target --exclude-dir=test_helpers
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-test-spawn-retry: no git/node spawn call sites found."
@@ -85,7 +81,9 @@ run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk"
         # multi-line rationale is common), so the marker need not sit on
         # the spawn line. Any non-comment line that is NOT the spawn site
         # disarms it (handled in the Command::new block + the fall-through).
-        if (line ~ /\/\/[[:space:]]*spawn-retry-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
+        # The marker is read off the comment half of the line, so a string
+        # literal quoting it is text, not an exemption.
+        if (comment_part(line) ~ /\/\/[[:space:]]*spawn-retry-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
         # Opening the helper (or its closure) starts a short exemption
         # window covering the Command::new a few lines below — 8 lines
         # tolerates a closure that binds locals before building the Command.

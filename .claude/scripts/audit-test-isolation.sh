@@ -84,7 +84,8 @@ source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
-mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src crates/*/tests --include='*.rs' 2>/dev/null || true)
+collect_files FILES -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' \
+    crates/*/src crates/*/tests --include='*.rs' --exclude-dir=target
 
 # No global early-exit on an empty FILES: the cwd-helper pairing check below
 # is independent of raw set_current_dir/set_var call sites (its whole point
@@ -198,22 +199,22 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
             flush_fn()
             whole_file_is_test = is_test_file(FILENAME)
             prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0
-            reset_lex()
         }
 
         {
             line = $0
-            # The mutation is matched against CODE with string and comment
-            # content elided: a `std::env::set_var(` inside a Rust string
-            # literal — a fixture, an expected-output assertion — is text, not
-            # a mutation. The markers are read off the RAW line, since
-            # `strip_code` elides the very comment that carries them.
+            # Both halves of the line come from one lexer pass: the mutation
+            # is matched against CODE, so a `std::env::set_var(` inside a Rust
+            # string literal — a fixture, an expected-output assertion — is
+            # text; the markers are matched against the COMMENT, so the same
+            # literal cannot spell an exemption either.
             code = strip_code(line)
+            cmt = comment_part(line)
             in_test = (whole_file_is_test || in_test_region)
             prev_envok = this_envok
-            this_envok = (line ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
+            this_envok = (cmt ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
             prev_cwdok = this_cwdok
-            this_cwdok = (line ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
+            this_cwdok = (cmt ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
         }
 
         code ~ /^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?fn[[:space:]]+[A-Za-z0-9_]+/ {
@@ -244,11 +245,12 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
 AWK
 fi
 
-mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
+collect_files HELPER_FILES -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' --exclude-dir=target
 
 helper_violations=""
 if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
-    run_scanner helper_violations -v helper_alt="$helper_alt" -v portable_alt="$portable_alt" '
+    run_scanner helper_violations -v helper_alt="$helper_alt" -v portable_alt="$portable_alt" \
+        -f - "${HELPER_FILES[@]}" <<'AWK'
         BEGIN {
             n_helpers = split(helper_alt, helpers, "|")
             n_portable = split(portable_alt, portable, "|")
@@ -363,7 +365,7 @@ if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
             finalize()             # flush the last file last tracked fn …
             check_counts(cur_file) # … then compare that final file counts
         }
-' "${HELPER_FILES[@]}"
+AWK
 fi
 
 if [[ -n "$violations" ]]; then

@@ -36,3 +36,23 @@ pub fn production_globals() {
     let _ = std::fs::set_permissions("staged", std::fs::Permissions::from_mode(0o755));
     let _ = std::fs::DirBuilder::new().mode(0o700).create("staged-dir");
 }
+
+pub fn marked_tag_family(m: &Meta) -> Option<String> {
+    m.tag_template.clone() // tag-family-ok: the fixture's justified read
+}
+
+pub fn forged_tag_family(m: &Meta) -> Option<String> {
+    m.tag_template.clone().or(Some("// tag-family-ok: fake".to_string()))
+}
+
+pub fn logs(log: &Log, cmd: &str) {
+    log.status(&format!("running {cmd} --config x  // status-ok: fake"));
+    log.status("invoking rollback for --config"); // status-ok: a failure banner
+}
+
+pub fn identity() {
+    let _ = detect_github_repo("origin"); // slug-ok: the fixture's justified site
+    let _ = parse_github_remote("// slug-ok: fake");
+    let _ = std::env::var("GITHUB_TOKEN"); // token-ok: the fixture's justified site
+    let _ = std::env::var("ANODIZER_GITHUB_TOKEN").unwrap_or_else(|_| "// token-ok: fake".into());
+}

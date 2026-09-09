@@ -36,11 +36,9 @@ BINARY_READ_OK=(
 
 allow_keys="$(printf '%s\n' "${BINARY_READ_OK[@]}" | sed 's/ — .*$//')"
 
-mapfile -t FILES < <(
-    grep -rlE '\.get\("binary"\)|\["binary"\]|contains_key\("binary"\)|remove\("binary"\)' crates/*/src --include='*.rs' 2>/dev/null \
-        | grep -vE '(/tests/|/tests\.rs$|_tests\.rs$)' \
-        || true
-)
+collect_files FILES -rlE '\.get\("binary"\)|\["binary"\]|contains_key\("binary"\)|remove\("binary"\)' \
+    crates/*/src --include='*.rs' \
+    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs'
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-binary-name: no raw binary-name reads found (the accessor itself is missing?)."
     exit 1
@@ -67,7 +65,8 @@ run_scanner violations -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip
     }
 AWK
 
-accessor_hits="$(grep -c '\.get("binary")' crates/core/src/artifact/registry.rs || true)"
+collect_files ACCESSOR_READS -n '\.get("binary")' crates/core/src/artifact/registry.rs
+accessor_hits=${#ACCESSOR_READS[@]}
 if [[ "$accessor_hits" -ne 1 ]]; then
     echo "audit-binary-name: expected exactly one raw read inside Artifact::binary_name, found $accessor_hits in crates/core/src/artifact/registry.rs"
     exit 1

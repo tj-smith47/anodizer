@@ -24,6 +24,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -33,8 +34,11 @@ cd "$ROOT"
 # `// Note: …`, which carries no quote.
 LABEL_RE='"(Warning|Error|Note): '
 
+collect_files LABEL_HITS -rnP "$LABEL_RE" crates/*/src --include='*.rs' \
+    --exclude-dir=target --exclude-dir=log
+
 violations=""
-while IFS= read -r hit; do
+for hit in "${LABEL_HITS[@]}"; do
     # Drop whole-line comments (// , /// , //! , leading * of a block comment):
     # an example label quoted inside a comment is documentation, not output.
     text="${hit#*:*:}"
@@ -43,10 +47,7 @@ while IFS= read -r hit; do
         //* | '*'*) continue ;;
     esac
     violations+="$hit"$'\n'
-done < <(
-    grep -rnP "$LABEL_RE" crates/*/src --include='*.rs' 2>/dev/null \
-        | grep -v 'crates/core/src/log/' || true
-)
+done
 
 if [[ -n "$violations" ]]; then
     echo "OPEN-CODED STATUS LABEL — Warning/Error/Note come only from log.rs."

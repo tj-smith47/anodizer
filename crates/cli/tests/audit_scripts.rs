@@ -117,11 +117,13 @@ fn tag_family_audit_reads_production_after_an_inline_test_module() {
     let (code, out) = run_audit("audit-tag-family.sh", dir.path());
 
     let (line, text) = at(LIB_RS, "let _production_family");
+    let (forged_line, forged_text) = at(LIB_RS, "tag-family-ok: fake");
     assert_eq!(
         hits(&out),
-        vec![format!(
-            "crates/demo/src/lib.rs:{line} (fn after_the_inline_module): {text}"
-        )],
+        vec![
+            format!("crates/demo/src/lib.rs:{line} (fn after_the_inline_module): {text}"),
+            format!("crates/demo/src/lib.rs:{forged_line} (fn forged_tag_family): {forged_text}"),
+        ],
         "{out}"
     );
     assert_eq!(code, 1, "{out}");
@@ -137,12 +139,16 @@ fn test_isolation_audit_reports_test_code_only() {
     let (hand_line, hand_text) = at(TESTS_RS, "SIBLING_JUSTIFIED");
     let (named_line, named_text) = at(NAMED_TESTS_RS, "NAMED_SIBLING_FILE");
     let (file_line, file_text) = at(INTEGRATION_RS, "INTEGRATION_FILE");
+    let (env_forge_line, env_forge_text) = at(TESTS_RS, "env-ok: fake");
+    let (cwd_forge_line, cwd_forge_text) = at(TESTS_RS, "cwd-ok: fake");
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{inline_line}: [env] {inline_text}"),
             format!("crates/demo/src/named_tests.rs:{named_line}: [env] {named_text}"),
             format!("crates/demo/src/tests.rs:{hand_line}: [env-guard] {hand_text}"),
+            format!("crates/demo/src/tests.rs:{env_forge_line}: [env] {env_forge_text}"),
+            format!("crates/demo/src/tests.rs:{cwd_forge_line}: [cwd] {cwd_forge_text}"),
             format!("crates/demo/src/tests.rs:{sibling_line}: [env] {sibling_text}"),
             format!("crates/demo/tests/spawn.rs:{file_line}: [env] {file_text}"),
         ],
@@ -185,10 +191,12 @@ fn spawn_retry_audit_reports_test_context_only() {
 
     let (inline_line, inline_text) = at(LIB_RS, r#"arg("status")"#);
     let (file_line, file_text) = at(INTEGRATION_RS, r#"arg("init")"#);
+    let (forged_line, forged_text) = at(TESTS_RS, "spawn-retry-ok: fake");
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{inline_line}: {inline_text}"),
+            format!("crates/demo/src/tests.rs:{forged_line}: {forged_text}"),
             format!("crates/demo/tests/spawn.rs:{file_line}: {file_text}"),
         ],
         "{out}"
@@ -213,12 +221,53 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     let (set_mode_line, set_mode_text) = at(LIB_RS, "perms.set_mode");
     let (from_mode_line, from_mode_text) = at(TESTS_RS, r#""sibling-stub""#);
     let (builder_line, builder_text) = at(TESTS_RS, r#""opts-stub""#);
+    let (forged_line, forged_text) = at(TESTS_RS, "exec-writer-ok: fake");
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{set_mode_line}: {set_mode_text}"),
             format!("crates/demo/src/tests.rs:{from_mode_line}: {from_mode_text}"),
             format!("crates/demo/src/tests.rs:{builder_line}: {builder_text}"),
+            format!("crates/demo/src/tests.rs:{forged_line}: {forged_text}"),
+        ],
+        "{out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
+/// The two audits whose whole surface is a marker: `audit-log-status.sh`'s
+/// `status-ok:` and `audit-repo-identity.sh`'s `slug-ok:` / `token-ok:`. Each
+/// fixture pairs one genuine marker with one spelled inside a string literal;
+/// only the forged one is a hit, because a marker is read from the comment
+/// half of its line and a string literal is code.
+#[test]
+fn log_status_audit_reads_its_marker_from_the_comment_half() {
+    let dir = fixture_tree();
+    let (code, out) = run_audit("audit-log-status.sh", dir.path());
+
+    let (forged_line, forged_text) = at(LIB_RS, "status-ok: fake");
+    assert_eq!(
+        hits(&out),
+        vec![format!(
+            "crates/demo/src/lib.rs:{forged_line}: {forged_text}"
+        )],
+        "{out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
+#[test]
+fn repo_identity_audit_reads_its_markers_from_the_comment_half() {
+    let dir = fixture_tree();
+    let (code, out) = run_audit("audit-repo-identity.sh", dir.path());
+
+    let (slug_line, slug_text) = at(LIB_RS, "slug-ok: fake");
+    let (token_line, token_text) = at(LIB_RS, "token-ok: fake");
+    assert_eq!(
+        hits(&out),
+        vec![
+            format!("crates/demo/src/lib.rs:{slug_line}:    {slug_text}"),
+            format!("crates/demo/src/lib.rs:{token_line}:    {token_text}"),
         ],
         "{out}"
     );
@@ -333,7 +382,7 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
         );
     }
     assert!(
-        checked >= 6,
+        checked >= 8,
         "expected every awk-library scanner to be driven, found {checked}"
     );
 }
@@ -716,10 +765,6 @@ fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
 
     const SCRIPT: &str = "audit-log-status.sh";
     let body = std::fs::read_to_string(scripts.join(SCRIPT)).expect("script body");
-    assert!(
-        !body.contains("-f \"$LIB_DIR/"),
-        "{SCRIPT} no longer runs an inline program; point this probe at one that does"
-    );
     let broken = body.replacen("<<'AWK'\n", "<<'AWK'\n(((\n", 1);
     assert_ne!(
         broken, body,

@@ -51,6 +51,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -64,6 +65,8 @@ fi
 
 # Cited paths are repo-relative and always start at `crates/`. Collect the
 # unique set across every page, then test each for existence.
+collect_files CITED_PATHS -rhoP 'crates/[A-Za-z0-9_./-]+\.rs' "$DOCS_DIR"
+
 broken=""
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
@@ -72,9 +75,7 @@ while IFS= read -r path; do
         cites=$(grep -rln -- "$path" "$DOCS_DIR" 2>/dev/null | tr '\n' ' ')
         broken+="  $path"$'\n'"      cited by: $cites"$'\n'
     fi
-done < <(
-    grep -rhoP 'crates/[A-Za-z0-9_./-]+\.rs' "$DOCS_DIR" 2>/dev/null | sort -u || true
-)
+done < <(printf '%s\n' "${CITED_PATHS[@]}" | sort -u)
 
 if [[ -n "$broken" ]]; then
     echo "BROKEN DOC SOURCE LINK — a cited crates/**.rs path does not exist."

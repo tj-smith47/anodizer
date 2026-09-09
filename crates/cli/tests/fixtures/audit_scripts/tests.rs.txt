@@ -35,3 +35,37 @@ fn a_marked_mode_is_not_reported() {
 fn an_open_options_exec_write_is_reported() {
     let _ = std::fs::OpenOptions::new().mode(0o755).write(true).open("opts-stub");
 }
+
+// A marker is read from the COMMENT half of the line. Every pair below is
+// one genuine marker and one spelled inside a string literal, which is code.
+#[test]
+fn a_forged_env_marker_is_reported() {
+    let _guard = EnvGuard("FORGED_ENV_GUARD");
+    unsafe { std::env::set_var("FORGED_ENV", "// env-ok: fake") };
+}
+
+#[test]
+#[serial_test::serial(cwd)]
+fn a_marked_cwd_swap_is_not_reported() {
+    std::env::set_current_dir("marked").unwrap(); // cwd-ok: serialised by serial(cwd)
+}
+
+#[test]
+fn a_forged_cwd_marker_is_reported() {
+    std::env::set_current_dir("forged").unwrap_or_else(|_| panic!("// cwd-ok: fake"));
+}
+
+#[test]
+fn a_forged_exec_writer_marker_is_reported() {
+    std::fs::set_permissions("forged-stub", std::fs::Permissions::from_mode(0o755)).expect("// exec-writer-ok: fake");
+}
+
+#[test]
+fn a_marked_spawn_is_not_reported() {
+    let _ = Command::new("git").arg("marked").output(); // spawn-retry-ok: an availability probe
+}
+
+#[test]
+fn a_forged_spawn_retry_marker_is_reported() {
+    let _ = Command::new("git").arg("// spawn-retry-ok: fake").output();
+}

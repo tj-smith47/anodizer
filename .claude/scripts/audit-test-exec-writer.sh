@@ -63,12 +63,8 @@ UNROUTED=()
 export EXEC_MODE_RE='(Permissions::from_mode|set_mode|\.mode)\(0o[1357]'
 
 # The helper's own home is exempt — it IS the helper.
-mapfile -t FILES < <(
-    grep -rlP "$EXEC_MODE_RE" crates/ --include='*.rs' 2>/dev/null \
-        | grep -v '/target/' \
-        | grep -v 'crates/core/src/test_helpers/' \
-        || true
-)
+collect_files FILES -rlP "$EXEC_MODE_RE" crates/ --include='*.rs' \
+    --exclude-dir=target --exclude-dir=test_helpers
 
 # Drop the listed files from the scan, failing if one no longer exists.
 KEPT=()
@@ -105,7 +101,9 @@ run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk"
         # The marker arms across the contiguous comment block directly
         # above its chmod, so a multi-line rationale need not be crammed
         # onto the call's own line.
-        if (line ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
+        # Read off the comment half of the line: a marker spelled inside a
+        # string literal is text, not an exemption.
+        if (comment_part(line) ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
     }
 
     $0 ~ exec_mode_re {

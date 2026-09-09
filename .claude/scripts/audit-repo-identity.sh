@@ -29,31 +29,50 @@
 # detectors won't compile outside `core::git`); Class B (the token
 # empty-filter) has NO compiler enforcement, so this grep is its only guard.
 #
-# Comment lines, `crates/*/tests/**` integration tests, and unit-test module
-# files (`*/tests.rs`) are exempt — test scaffolding routinely reads the raw
-# env to save/restore it around a case, which is not production resolution. A
-# genuinely legitimate production site tags the line with `// slug-ok: <why>`
-# (class A) or `// token-ok: <why>` (class B).
+# Comments, string literals, and whole test files (`crates/*/tests/**`, a
+# sibling `tests.rs` / `<name>_tests.rs`) are exempt — test scaffolding
+# routinely reads the raw env to save/restore it around a case, which is not
+# production resolution. A genuinely legitimate production site tags the line
+# with `// slug-ok: <why>` (class A) or `// token-ok: <why>` (class B).
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
 fail=0
 
+# Exported so the awk program reads them from ENVIRON: passing a regex with
+# -v puts it through awk's string-escape pass, which eats the backslashes.
+export SLUG_RE='(detect_github_repo|detect_owner_repo|parse_github_remote|parse_remote_owner_repo)[[:space:]]*\('
+export TOKEN_RE='(\.|::)(var|env_var)\([[:space:]]*"(ANODIZER_GITHUB_TOKEN|GITHUB_TOKEN)"'
+
+# One scan per class. The marker is matched against the COMMENT half of the
+# line, so a marker quoted in a string literal is not an exemption, and a line
+# whose CODE half is blank is a comment (or the inside of a multi-line string)
+# rather than a resolution site. Whole test files (`is_test_file`) are out of
+# scope — test scaffolding routinely reads the raw env to save and restore it
+# around a case — as is the class's own resolver home.
+scan_class() { # <out-var> <regex-env-name> <marker> <home path prefix>
+    collect_files CLASS_FILES -rlE "${!2}" crates --include='*.rs' --exclude-dir=target
+    printf -v "$1" '%s' ''
+    ((${#CLASS_FILES[@]})) || return 0
+    run_scanner "$1" -v re_var="$2" -v marker="$3" -v home="$4" \
+        -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${CLASS_FILES[@]}" <<'AWK'
+        BEGIN { re = ENVIRON[re_var] }
+        FNR == 1 { skip_file = is_test_file(FILENAME) || index(FILENAME, home) == 1 }
+        skip_file { next }
+        strip_code($0) ~ /[^[:space:]]/ && $0 ~ re && comment_part($0) !~ marker {
+            printf("%s:%d:%s\n", FILENAME, FNR, $0)
+        }
+AWK
+}
+
 # --- Class A: remote-URL owner parsing outside the slug resolver ------------
-slug_hits="$(
-    grep -rnE '\b(detect_github_repo|detect_owner_repo|parse_github_remote|parse_remote_owner_repo)\s*\(' \
-        crates --include='*.rs' 2>/dev/null \
-        | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
-        | grep -v -E '^crates/core/src/git/' \
-        | grep -v -E ':[0-9]+:.*//[[:space:]]*slug-ok:' \
-        | grep -v -E '/tests/|(^|/)tests\.rs:' \
-        || true
-)"
+scan_class slug_hits SLUG_RE '//[[:space:]]*slug-ok:' 'crates/core/src/git/'
 if [[ -n "$slug_hits" ]]; then
     fail=1
     echo "REPO-IDENTITY: owner/repo re-derived outside the canonical resolver."
@@ -69,15 +88,7 @@ if [[ -n "$slug_hits" ]]; then
 fi
 
 # --- Class B: hand-rolled GitHub token env reads outside the resolver -------
-token_hits="$(
-    grep -rnE '(\.|::)(var|env_var)\(\s*"(ANODIZER_GITHUB_TOKEN|GITHUB_TOKEN)"' \
-        crates --include='*.rs' 2>/dev/null \
-        | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
-        | grep -v -E '^crates/core/src/git/github_api.rs:' \
-        | grep -v -E ':[0-9]+:.*//[[:space:]]*token-ok:' \
-        | grep -v -E '/tests/|(^|/)tests\.rs:' \
-        || true
-)"
+scan_class token_hits TOKEN_RE '//[[:space:]]*token-ok:' 'crates/core/src/git/github_api.rs'
 if [[ -n "$token_hits" ]]; then
     fail=1
     echo "REPO-IDENTITY: GitHub token resolved without the empty-string filter."
