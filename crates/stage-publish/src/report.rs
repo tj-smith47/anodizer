@@ -115,7 +115,7 @@ pub fn load_prior_report(
         format!(
             "no prior report found at {} (run_id={}). The announce-only \
              flow consumes a `report.json` written by a successful prior \
-             release run; re-run `anodize release` end-to-end first so the \
+             release run; re-run `anodizer release` end-to-end first so the \
              run dir exists.",
             path.display(),
             run_id,
@@ -262,4 +262,29 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
     }
 
     log.status(&format!("wrote run-report to {}", path.display()));
+}
+
+#[cfg(test)]
+mod tests {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    /// The recovery hint must name the binary the operator actually has on
+    /// PATH. `anodize` is the tool's former name and resolves to nothing.
+    #[test]
+    fn missing_prior_report_names_the_real_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            dist: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        let err = super::load_prior_report(&ctx, "nope")
+            .expect_err("a missing report must bail with the recovery hint");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("`anodizer release`"),
+            "the hint must name the anodizer binary; got {msg}"
+        );
+    }
 }
