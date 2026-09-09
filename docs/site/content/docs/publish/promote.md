@@ -114,6 +114,17 @@ folded per-publisher summary.
 | Explicit version | `--version 1.4.0` | Promote exactly this version/tag. |
 | Prior run | `--from-run <id>` | Promote what a recorded run published (reads `dist/run-<id>/report.json`). `--from-run` is the most precise: it moves exactly the revisions that run uploaded, per its recorded evidence. |
 
+An explicit `--version` or `--from-run` that matches **no** revision on any
+configured snap is a hard failure with a non-zero exit — you asserted a
+specific artifact exists and it does not. The default `Newest` selector against
+an empty source track is the opposite: a skip with exit 0, because "nothing is
+soaking this week" is a normal state for a scheduled promotion job.
+
+```console
+$ anodizer promote --to stable --version 9.9.9 --publishers snapcraft
+error: 1 publisher(s) failed to promote: snapcraft
+```
+
 ```bash
 $ anodizer promote --to stable --version 1.4.0
 $ anodizer promote --to stable --from-run 20260712-abc123

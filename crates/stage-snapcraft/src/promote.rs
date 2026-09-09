@@ -129,6 +129,23 @@ impl Promotable for SnapcraftPromoter {
         }
 
         if released.is_empty() {
+            // `Newest` means "promote whatever sits on the source channel", so
+            // an empty channel is a legitimate no-op. `--version` / `--from-run`
+            // are the operator asserting a specific artifact exists; when it
+            // does not, the assertion was wrong and must exit non-zero.
+            if matches!(
+                req.selector,
+                PromoteSelector::Version(_) | PromoteSelector::FromRun { .. }
+            ) {
+                bail!(
+                    "no snapcraft revision matched {} for any configured snap ({}) — \
+                     nothing was promoted; check the version or run id, or omit \
+                     --version/--from-run to promote the newest revision on {}",
+                    req.selector.describe(),
+                    snap_names.join(", "),
+                    req.from
+                );
+            }
             return Ok(PromoteOutcome::skipped(
                 self.name(),
                 from_label,
@@ -660,10 +677,11 @@ Rev    Uploaded              Arches  Version  Channels
     }
 
     #[test]
-    fn promote_from_run_empty_report_is_skipped_nothing_to_promote() {
-        // FromRun with a report holding no snapcraft targets ⇒ every snap's
-        // recorded revisions are empty, release_one returns an empty Vec with
-        // no spawn, and the folded outcome is Skipped(NothingToPromote).
+    fn promote_from_run_with_no_recorded_revision_is_an_error() {
+        // `--from-run` asserts a specific run's revisions exist. A report
+        // holding no snapcraft targets matches nothing anywhere, so the
+        // operator named the wrong run and must learn it from a non-zero exit,
+        // not from a silent skip.
         let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
         let selector = PromoteSelector::FromRun {
             run_id: "run42".to_string(),
@@ -676,14 +694,18 @@ Rev    Uploaded              Arches  Version  Channels
             dry_run: false,
             ctx: &ctx,
         };
-        let out = SnapcraftPromoter
+        let err = SnapcraftPromoter
             .promote(&req)
-            .expect("empty recorded family ok");
-        assert_eq!(
-            out.status,
-            PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
+            .expect_err("an explicit run id matching no revision must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no snapcraft revision matched run run42"),
+            "the failure must name the selector that matched nothing; got {msg}"
         );
-        assert_eq!(out.from, "run run42");
+        assert!(
+            msg.contains("mysnap"),
+            "the failure must name the snaps that were searched; got {msg}"
+        );
     }
 
     /// Build a dry-run request against a one-snap fixture with the given
@@ -1084,6 +1106,44 @@ Rev    Uploaded              Arches  Version  Channels
             out.status,
             PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
         );
+    }
+
+    // An empty source channel is a normal state for the default `Newest`
+    // selector (nothing soaking this week), so it stays exit-0 — only an
+    // explicit --version/--from-run asserts an artifact exists.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn promote_newest_matching_nothing_stays_a_skip() {
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        let tools = FakeToolDir::new();
+        tools
+            .tool("snapcraft")
+            .script(
+                "if [ \"$1\" = \"list-revisions\" ]; then\n\
+                 echo \"Snap 'mysnap' was not found in the Snap Store.\" 1>&2\n\
+                 exit 1\nfi\nexit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+
+        let ctx = ctx_with_snapcrafts("", vec![Some("mysnap")]);
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: "candidate".to_string(),
+            to: "stable".to_string(),
+            selector: &selector,
+            dry_run: false,
+            ctx: &ctx,
+        };
+        let out = SnapcraftPromoter
+            .promote(&req)
+            .expect("an empty source channel is a legitimate no-op for Newest");
+        assert_eq!(
+            out.status,
+            PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
+        );
+        assert!(!out.is_failure(), "a skip must not fail the run");
     }
 
     // A genuine probe/auth error (non-zero exit with NO absent marker)
