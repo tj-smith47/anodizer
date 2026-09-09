@@ -8,7 +8,7 @@ cask "{{ name | ruby_escape }}" do
   version "{{ version | ruby_escape }}"
 {% if not has_platforms %}  sha256 "{{ sha256 | ruby_escape }}"
 
-  url "{{ url | ruby_escape }}"{{ url_extras }}
+  url "{{ url }}"{{ url_extras }}
 {% endif %}{% if custom_block %}{{ custom_block }}
 {% endif %}{% if homepage %}  homepage "{{ homepage | ruby_escape }}"
 {% endif %}  name "{{ display_name | ruby_escape }}"
@@ -22,7 +22,7 @@ cask "{{ name | ruby_escape }}" do
 {% if has_platforms %}{% for plat in platforms %}  on_{{ plat.os_block }} do
 {% for arch_entry in plat.arches %}    on_{{ arch_entry.arch_block }} do
       sha256 "{{ arch_entry.sha256 | ruby_escape }}"
-      url "{{ arch_entry.url | ruby_escape }}"{{ url_extras_indented }}
+      url "{{ arch_entry.url }}"{{ url_extras_indented }}
     end
 {% endfor %}  end
 

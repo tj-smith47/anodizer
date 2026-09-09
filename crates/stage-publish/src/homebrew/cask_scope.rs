@@ -157,7 +157,10 @@ pub(super) fn build_cask_platform_blocks(
             } else {
                 continue;
             };
-            let url = url.replace(version, "#{version}");
+            // Escape before substituting: `#{version}` is Ruby
+            // interpolation anodizer emits on purpose, everything else in
+            // the URL must reach the file as a literal.
+            let url = ruby_escape_str(&url).replace(version, "#{version}");
             let sha256 = art
                 .metadata
                 .get("sha256")
@@ -283,7 +286,7 @@ pub(super) fn generate_cask_from_context(
             )
         })?
     };
-    let url = url.replace(&version, "#{version}");
+    let url = ruby_escape_str(&url).replace(&version, "#{version}");
 
     let sha256 = primary_artifact
         .metadata

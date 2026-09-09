@@ -909,6 +909,27 @@ fn test_ruby_escape_quote_and_backslash() {
 }
 
 #[test]
+fn ruby_escape_str_matches_goreleaser() {
+    use crate::template::ruby_escape_str;
+
+    assert_eq!(ruby_escape_str(r#"a"b"#), r#"a\"b"#);
+    assert_eq!(ruby_escape_str(r"a\b"), r"a\\b");
+    assert_eq!(ruby_escape_str("#{x}"), r"\#{x}");
+    // An author-escaped `\#{x}` must survive as a literal: the backslash is
+    // doubled first, then the interpolation opener is escaped.
+    assert_eq!(ruby_escape_str(r"\#{x}"), r"\\\#{x}");
+    assert_eq!(ruby_escape_str("a\nb"), r"a\nb");
+    assert_eq!(ruby_escape_str("a\rb"), r"a\rb");
+    assert_eq!(ruby_escape_str("a\tb"), r"a\tb");
+    // A bare `#` is not an interpolation opener.
+    assert_eq!(ruby_escape_str("a#b"), "a#b");
+    assert_eq!(
+        ruby_escape_str("It's \"quoted\" \\ path #{value}\nnext line"),
+        r#"It's \"quoted\" \\ path \#{value}\nnext line"#
+    );
+}
+
+#[test]
 fn test_ruby_escape_plain_string_unchanged() {
     let mut vars = test_vars();
     vars.set("Input", "no special chars here");

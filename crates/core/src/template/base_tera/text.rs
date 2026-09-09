@@ -10,16 +10,35 @@ use tera::TeraResult;
 use crate::template::engine_adapter::{JsonRegisterExt, try_get_value};
 
 /// Escape a string for safe inclusion inside a **double-quoted Ruby string
-/// literal**: replace `\` with `\\` first, then `"` with `\"`.
+/// literal**: `\` → `\\`, `"` → `\"`, and a literal newline, carriage
+/// return or tab → its two-character escape, in one left-to-right pass; then
+/// `#{` → `\#{`.
 ///
-/// Backslash must be escaped before the quote so the quote's inserted escape
-/// backslash is not itself doubled. Use this anywhere a user-supplied value is
-/// spliced into a `"…"` Ruby literal — both the Tera `ruby_escape` filter
-/// (registered by `register_ruby_escape`) and the `format!`/`push_str` sites in the Homebrew
+/// The single pass is what keeps a backslash from being re-scanned after it is
+/// doubled. The `#{` pass runs afterwards so an input `\#{x}` — already
+/// escaped by its author — comes out as `\\\#{x}`, the Ruby literal that
+/// prints `\#{x}` rather than interpolating. Escaping the control characters
+/// keeps a multi-line description on the one line a `desc "…"` stanza allows.
+///
+/// Use this anywhere a user-supplied value is spliced into a `"…"` Ruby
+/// literal — both the Tera `ruby_escape` filter (registered by
+/// `register_ruby_escape`) and the `format!`/`push_str` sites in the Homebrew
 /// formula/cask generators route through it so there is a single escape
-/// implementation.
+/// implementation. It returns the body; the caller supplies the surrounding
+/// quotes.
 pub fn ruby_escape_str(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.replace("#{", "\\#{")
 }
 
 /// Register the `ruby_escape` filter on a Tera instance.

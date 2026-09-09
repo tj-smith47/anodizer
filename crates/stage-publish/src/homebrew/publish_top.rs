@@ -253,8 +253,10 @@ fn render_top_level_cask_inner(
         })?
     };
 
-    // replace version string with #{version} for auto-update
-    let url = url.replace(&version, "#{version}");
+    // Escape before substituting: `#{version}` is Ruby interpolation
+    // anodizer emits on purpose so `brew livecheck` can bump the cask, while
+    // everything else in the URL must reach the file as a literal.
+    let url = anodizer_core::template::ruby_escape_str(&url).replace(&version, "#{version}");
 
     let sha256 = macos_artifact
         .metadata
