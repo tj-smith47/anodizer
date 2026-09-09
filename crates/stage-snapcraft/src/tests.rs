@@ -841,8 +841,9 @@ fn snap_is_byte_reproducible_across_time() {
         use std::os::unix::fs::PermissionsExt;
         // snapcraft rejects a prime tree whose apps are not world-readable +
         // executable; the real build stage stages binaries 0755.
-        // exec-writer-ok: a prime-tree permissions fixture — snapcraft is never
-        // run here, so nothing execs this file.
+        // exec-writer-ok: `snapcraft pack` reads this file into the squashfs
+        // and never execs it; the mode is what snapcraft demands of the prime
+        // tree, not something this test spawns.
         std::fs::set_permissions(&probe_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 

@@ -2268,7 +2268,7 @@ fn test_changelog_write_failure_on_readonly_path() {
 
 #[test]
 #[serial(cwd)]
-fn test_changelog_dry_run_writes_file() {
+fn test_changelog_dry_run_writes_nothing_to_dist() {
     use anodizer_core::config::{Config, CrateConfig};
     use std::process::Command;
 
