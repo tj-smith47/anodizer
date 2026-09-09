@@ -2514,11 +2514,12 @@ fn version_files_plan_refuses_a_prerelease_chain_anchored_first() {
     assert!(err.contains("bumps chain"), "err: {err}");
 }
 
-/// A config that DOES declare crates reaches the lockstep or per-crate engine,
-/// each of which resolves its own list; planning the top-level list here too
-/// would sweep the same files twice in one bump.
+/// A single declared crate that enrolls nothing of its own is checked by
+/// `check version-files` against the TOP-LEVEL list at that crate's version, so
+/// the repo-level tag path must rewrite that same list. Returning nothing here
+/// is the tag/check divergence: the file is validated forever and bumped never.
 #[test]
-fn top_level_version_files_are_empty_when_crates_are_declared() {
+fn top_level_version_files_cover_a_single_declared_crate() {
     let config = anodizer_core::config::Config {
         project_name: "app".to_string(),
         crates: vec![anodizer_core::config::CrateConfig {
@@ -2526,6 +2527,47 @@ fn top_level_version_files_are_empty_when_crates_are_declared() {
             path: "crates/app".to_string(),
             ..Default::default()
         }],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(
+        top_level_version_files(&config),
+        vec![vf("README.md")],
+        "a one-crate config's top-level enrollment was dropped"
+    );
+}
+
+/// A crate's own `version_files` wins over the top-level list — the same
+/// precedence `resolve_version_files` gives `check version-files`.
+#[test]
+fn top_level_version_files_yield_to_a_crates_own_list() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "app".to_string(),
+            path: "crates/app".to_string(),
+            version_files: Some(vec![vf("OWN.md")]),
+            ..Default::default()
+        }],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(top_level_version_files(&config), vec![vf("OWN.md")]);
+}
+
+/// Several declared crates reach the lockstep or per-crate engine, each of
+/// which resolves its own list; planning the top-level list here too would
+/// sweep the same files twice in one bump.
+#[test]
+fn top_level_version_files_are_empty_when_several_crates_are_declared() {
+    let crate_cfg = |name: &str| anodizer_core::config::CrateConfig {
+        name: name.to_string(),
+        path: format!("crates/{name}"),
+        ..Default::default()
+    };
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![crate_cfg("a"), crate_cfg("b")],
         version_files: Some(vec![vf("README.md")]),
         ..Default::default()
     };

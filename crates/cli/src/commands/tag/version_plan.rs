@@ -169,21 +169,26 @@ fn build_version_files_plan(units: &[PlanUnit<'_>]) -> Result<Vec<VersionFileRew
     Ok(plan)
 }
 
-/// The `version_files` enrollment the repo-level (no `--crate`) tag path owns.
+/// The `version_files` enrollment the repo-level (no `--crate`) tag path owns,
+/// resolved exactly as `anodizer check version-files` resolves it.
 ///
-/// A config with no `crates:` block declares one repo-wide version, so its
-/// top-level `version_files` is that config's only enrollment and nothing else
-/// will rewrite it — `check version-files` reads the same list, and the two
-/// surfaces must agree. A config that DOES declare crates reaches the lockstep
-/// or per-crate engine instead, each of which resolves its own list, so this
-/// returns nothing rather than sweeping the same files twice.
+/// `check` builds one unit per configured crate through
+/// [`resolve_version_files`], so a crate that enrolls nothing of its own is
+/// checked against the TOP-LEVEL list at that crate's version. The repo-level
+/// tag path serves the same shapes — no `crates:` block at all, or a single
+/// declared crate tagged without `--crate` — so it resolves through the same
+/// seam and rewrites what `check` validates.
+///
+/// Several declared crates reach the lockstep or per-crate engine, each of
+/// which resolves its own list through that same seam, so this returns nothing
+/// rather than sweeping the files a second time.
 pub(crate) fn top_level_version_files(
     config: &anodizer_core::config::Config,
 ) -> Vec<anodizer_core::config::VersionFileEntry> {
-    if config.crates.is_empty() {
-        resolve_version_files(None, Some(config))
-    } else {
-        Vec::new()
+    match config.crate_universe().as_slice() {
+        [] => resolve_version_files(None, Some(config)),
+        [single] => resolve_version_files(Some(single), Some(config)),
+        _ => Vec::new(),
     }
 }
 

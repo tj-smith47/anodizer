@@ -1291,3 +1291,213 @@ fn per_crate_bare_and_anchored_share_one_file() {
     assert_eq!(read(root, "shared.md"), expected);
     assert_eq!(show_head(root, "shared.md"), expected);
 }
+
+// ---------------------------------------------------------------------------
+// One declared crate, tagged without `--crate`
+// ---------------------------------------------------------------------------
+
+/// A workspace declaring exactly ONE crate that enrolls nothing of its own,
+/// with a TOP-LEVEL `version_files` list, at 0.1.0 with a `fix:` commit after
+/// `v0.1.0`. `check version-files` resolves the top-level list as that crate's
+/// list, so the repo-level tag path must rewrite it.
+fn one_declared_crate_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(root.join("README.md"), "app is at 0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: app
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+version_files:
+  - README.md
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+}
+
+/// The single declared crate's bump must carry the top-level enrollment. It
+/// used to be dropped — the repo-level path planned the top-level list only
+/// when `crates:` was absent entirely — so `check version-files` validated a
+/// file `tag` never rewrote and the repo went stale on its own release.
+#[test]
+fn one_declared_crate_rewrites_top_level_version_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    one_declared_crate_fixture(root);
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    assert!(
+        combined.contains("rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in README.md"),
+        "top-level entry not planned for the one declared crate: {combined}"
+    );
+    assert_eq!(read(root, "README.md"), "app is at 0.1.0\n");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(read(root, "README.md"), "app is at 0.1.1\n");
+    assert_eq!(show_head(root, "README.md"), "app is at 0.1.1\n");
+}
+
+/// The tag/check agreement, per config mode: every entry `check version-files`
+/// validates at version `version` is an entry the bump rewrites FROM that same
+/// version. Runs `check` first (the enrollment it covers, in sync), then the
+/// bump as a dry run (the enrollment it would rewrite).
+fn assert_tag_covers_what_check_validates(
+    root: &Path,
+    mode: &str,
+    tag_args: &[&str],
+    files: &[&str],
+    version: &str,
+) {
+    let out = anodizer()
+        .current_dir(root)
+        .args(["check", "version-files"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{mode}: check failed: {combined}");
+    assert!(
+        combined.contains("version_files are in sync"),
+        "{mode}: check validated no enrollment: {combined}"
+    );
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(tag_args)
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{mode}: tag failed: {combined}");
+    for file in files {
+        let expected = format!("of {version} \u{2192} ");
+        assert!(
+            combined
+                .lines()
+                .any(|l| l.contains(&expected) && l.contains(&format!(" in {file}"))),
+            "{mode}: check validates {file} at {version} but the bump rewrites it from \
+             something else (or not at all): {combined}"
+        );
+    }
+}
+
+/// The tag/check agreement across every config mode: single-crate, lockstep,
+/// per-crate, and the one-declared-crate shape whose enrollment lives at the
+/// top level. The last one was the divergence — `check` validated the
+/// top-level list as that crate's list and `tag` planned nothing.
+#[test]
+fn tag_and_check_agree_in_every_config_mode() {
+    let single = TempDir::new().unwrap();
+    single_crate_fixture(single.path(), "appVersion: v0.1.0\n", "      - Chart.yaml");
+    assert_tag_covers_what_check_validates(
+        single.path(),
+        "single-crate",
+        &["tag", "--crate", "app", "--dry-run"],
+        &["Chart.yaml"],
+        "0.1.0",
+    );
+
+    let lockstep = TempDir::new().unwrap();
+    let root = lockstep.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+    assert_tag_covers_what_check_validates(
+        root,
+        "lockstep",
+        &["tag", "--dry-run"],
+        &["Chart.yaml"],
+        "0.1.0",
+    );
+
+    let per_crate = TempDir::new().unwrap();
+    shared_file_fixture(
+        per_crate.path(),
+        &[("core", "0.1.0"), ("cli", "0.1.0")],
+        "both at 0.1.0\n",
+    );
+    assert_tag_covers_what_check_validates(
+        per_crate.path(),
+        "per-crate",
+        &["tag", "--dry-run"],
+        &["shared.md"],
+        "0.1.0",
+    );
+
+    let one_crate = TempDir::new().unwrap();
+    one_declared_crate_fixture(one_crate.path());
+    assert_tag_covers_what_check_validates(
+        one_crate.path(),
+        "one declared crate",
+        &["tag", "--dry-run"],
+        &["README.md"],
+        "0.1.0",
+    );
+}
