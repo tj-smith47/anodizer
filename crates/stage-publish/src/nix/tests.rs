@@ -80,6 +80,87 @@ fn test_generate_nix_expression_basic() {
     assert!(expr.contains("mkdir -p $out/bin"));
 }
 
+/// A nixpkgs `stdenv` derivation runs its standard install fixups —
+/// `fixupPhase` wrappers, shell-completion install hooks — from the
+/// `runHook` calls, so an `installPhase` that omits them silently skips
+/// them.
+#[test]
+fn install_phase_runs_pre_and_post_install_hooks() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/foo-linux-amd64.tar.gz".to_string(),
+        "abc123".to_string(),
+    )];
+    let install_lines = vec![
+        "mkdir -p $out/bin".to_string(),
+        "cp -vr ./foo $out/bin/foo".to_string(),
+    ];
+    let expr = generate_nix_expression(&NixParams {
+        name: "foo",
+        version: "1.0.0",
+        description: "A great tool",
+        homepage: "https://example.com",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
+        main_program: "",
+        archives: &archives,
+        install_lines: &install_lines,
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    assert!(
+        expr.contains(
+            "  installPhase = \'\'\n    runHook preInstall\n    mkdir -p $out/bin\n    cp -vr ./foo $out/bin/foo\n    runHook postInstall\n  \'\';"
+        ),
+        "{expr}"
+    );
+}
+
+/// The user's `post_install:` stays its own `postInstall` attribute; the
+/// hooks added to `installPhase` do not absorb it.
+#[test]
+fn post_install_attribute_is_still_separate() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/foo-linux-amd64.tar.gz".to_string(),
+        "abc123".to_string(),
+    )];
+    let expr = generate_nix_expression(&NixParams {
+        name: "foo",
+        version: "1.0.0",
+        description: "A great tool",
+        homepage: "https://example.com",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
+        main_program: "",
+        archives: &archives,
+        install_lines: &["mkdir -p $out/bin".to_string()],
+        post_install_lines: &["installShellCompletion --cmd foo".to_string()],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    assert!(expr.contains("  postInstall = \'\'"), "{expr}");
+    assert!(expr.contains("installShellCompletion --cmd foo"), "{expr}");
+    assert!(expr.contains("    runHook preInstall"), "{expr}");
+}
+
 #[test]
 fn test_derivation_url_map_pairs_nix_double_with_go_arch_asset() {
     // The derivation's `urlMap` is keyed by Nix system doubles

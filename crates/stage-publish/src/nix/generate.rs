@@ -58,8 +58,10 @@ stdenvNoCC.mkDerivation {
   ];
 {% endif %}
   installPhase = ''
+    runHook preInstall
 {% for line in install_lines %}    {{ line }}
-{% endfor %}  '';
+{% endfor %}    runHook postInstall
+  '';
 {% if has_post_install %}
   postInstall = ''
 {% for line in post_install_lines %}    {{ line }}
