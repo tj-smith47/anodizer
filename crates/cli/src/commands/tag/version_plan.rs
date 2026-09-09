@@ -98,9 +98,10 @@ pub(crate) fn rewrite_and_stage_version_files(
 /// Distinct old versions that do not chain both rewrite: the engine applies
 /// each pair to its own occurrences. Fully identical entries dedupe to a single
 /// rewrite (lockstep crates share one pair, so they never conflict), and two
-/// entries from ONE owner on ONE pair — a bare entry beside an anchored one —
-/// are exempt from both hazards: they express a single rewrite, which the
-/// claiming engine applies to each occurrence exactly once. On a
+/// entries on ONE pair — a bare entry beside an anchored one, from one owner or
+/// two — are exempt from both hazards whatever enrolled them: they express a
+/// single rewrite, which the claiming engine applies to each occurrence exactly
+/// once. On a
 /// refusal this `bail!`s naming the file, the anchor overlap, and both crates.
 ///
 /// Runs identically for dry-run and real tagging so the preview matches the
@@ -427,12 +428,13 @@ fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<
     if a.file != b.file {
         return Ok(());
     }
-    // One owner rewriting one file at one pair is ONE rewrite, however many
-    // entries express it: every entry selects its occurrences from the original
-    // content and each occurrence is claimed once, so a bare entry beside an
-    // anchored one on the same bump lands exactly the same bytes as either
-    // alone. Only DIFFERENT pairs can chain.
-    if a.owner == b.owner && a.old == b.old && a.new == b.new {
+    // One file bumped from one version to one other version is ONE rewrite,
+    // however many entries express it and whoever enrolled them: every entry
+    // selects its occurrences from the original content and each occurrence is
+    // claimed once, so a bare entry beside an anchored one on the same bump
+    // lands exactly the same bytes as either alone. Only DIFFERENT pairs can
+    // hold two new versions for one old one, or chain.
+    if a.old == b.old && a.new == b.new {
         return Ok(());
     }
     // A bare entry sweeps the whole file, so it overlaps every anchored region

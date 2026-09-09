@@ -2503,6 +2503,40 @@ fn version_files_plan_keeps_an_identical_pair_on_one_file() {
     }
 }
 
+/// An identical pair is one rewrite whatever enrolled it: two crates on one
+/// shared file, both moving `1.2.3 → 1.2.3-rc1`, are not a chain even though
+/// the new version still matches the old matcher — every entry selects from the
+/// original content and each occurrence is claimed once.
+#[test]
+fn identical_pair_from_two_owners_is_not_a_chain() {
+    let groups = vec![
+        group_result(
+            &["core"],
+            &[("core-v1.2.3-rc1", "Release")],
+            &[("crates/core", "1.2.3-rc1")],
+            Some("1.2.3"),
+            Some("core-v1.2.3"),
+            vec![vec![vf("shared.md")]],
+        ),
+        group_result(
+            &["cli"],
+            &[("cli-v1.2.3-rc1", "Release")],
+            &[("crates/cli", "1.2.3-rc1")],
+            Some("1.2.3"),
+            Some("cli-v1.2.3"),
+            vec![vec![vf_at("shared.md", r"pin: v{version}")]],
+        ),
+    ];
+    let plan = plan_version_files_rewrites(&groups).unwrap();
+    let mut anchors: Vec<Option<&str>> = plan.iter().map(|r| r.anchor.as_deref()).collect();
+    anchors.sort();
+    assert_eq!(
+        anchors,
+        vec![None, Some(r"pin: v{version}")],
+        "plan: {plan:?}"
+    );
+}
+
 /// A GENUINE chain from one owner: two entries on one file bumping
 /// `1.2.3 → 1.2.4` and `1.2.4 → 1.2.5`, where the second matcher still fires on
 /// the first's output. The refusal names the two ENTRIES, because with a single

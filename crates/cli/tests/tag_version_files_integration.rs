@@ -1811,3 +1811,64 @@ fn version_occurrences_are_word_bounded_on_both_commands() {
         "tag rewrote a neighbouring version"
     );
 }
+
+/// Two crates in ONE lockstep workspace enrolling one shared file — one bare,
+/// one anchored — move on the same pair, so they are one rewrite, not a chain.
+/// The owners differ; the pair does not, and the pair is what decides.
+#[test]
+fn lockstep_two_crates_bare_plus_anchored_prerelease_rewrites_both() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n\n         [workspace.package]\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    for name in ["a", "b"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(root.join("shared.md"), "pin: v1.2.3\nother: 1.2.3\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        concat!(
+            "project_name: two\n",
+            "crates:\n",
+            "  - name: a\n",
+            "    path: crates/a\n",
+            "    version_files:\n",
+            "      - shared.md\n",
+            "  - name: b\n",
+            "    path: crates/b\n",
+            "    version_files:\n",
+            "      - path: shared.md\n",
+            "        match: 'pin: v{version}'\n",
+        ),
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v1.2.3"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--version", "1.2.3-rc1", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    let expected = "pin: v1.2.3-rc1\nother: 1.2.3-rc1\n";
+    assert_eq!(read(root, "shared.md"), expected);
+    assert_eq!(show_head(root, "shared.md"), expected);
+}
