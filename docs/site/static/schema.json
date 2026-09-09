@@ -13344,7 +13344,7 @@
           }
         },
         "footer": {
-          "description": "Text appended to the release body (inline string, from_file, or from_url).",
+          "description": "Text appended to the release body (inline string, from_file, or from_url).\n\nREPLACES anodizer's default attribution footer rather than stacking with it. Set to `\"\"` for no footer at all.",
           "default": null,
           "anyOf": [
             {
@@ -13353,6 +13353,14 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "full_changelog_link": {
+          "description": "Append a derived `**Full Changelog**: <compare-url>` line to the release body, below the changelog and above the footer. The compare range is `<previous tag>...<tag>` on the repository this release publishes to. Suppressed automatically when no previous tag exists (a first release) or when the changelog body already carries such a line (`changelog.use: github-native`). Default: `true`.\n\n```yaml\nrelease:\n  full_changelog_link: false   # do not append the derived compare link\n```",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "gitea": {

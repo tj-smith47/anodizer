@@ -58,7 +58,8 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 | `make_latest` | string/bool | `auto` | Mark as latest: `auto`, `true`, `false` |
 | `name_template` | string | `{{ Tag }}` | Release title |
 | `header` | string | none | Text prepended to release body |
-| `footer` | string | none | Text appended to release body |
+| `footer` | string | `Released with [anodizer](…) 🦀` | Text appended to release body. REPLACES the default attribution line; set to `""` for no footer |
+| `full_changelog_link` | bool | `true` | Append a derived `**Full Changelog**: …/compare/<prev>...<tag>` line below the changelog and above the footer |
 | `extra_files` | list | none | Additional files to upload (glob patterns) |
 | `skip_upload` | bool | `false` | Create release without uploading assets |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
@@ -78,7 +79,8 @@ release:
   make_latest: auto           # auto | true | false
   name_template: "{{ Tag }}"
   header: ""                  # text prepended to release body
-  footer: ""                  # text appended to release body
+  footer: ""                  # "" = no footer; unset = the default anodizer attribution line
+  full_changelog_link: true   # append the derived compare link
   extra_files: []             # glob patterns for additional uploads
   skip_upload: false          # bool or template string
   replace_existing_draft: false
@@ -88,6 +90,42 @@ release:
   exclude: []                 # drop assets whose name matches a glob
   skip: false
   on_failure: hold             # the only accepted value; also the default
+```
+
+## Release body layout
+
+anodizer composes the release body from four pieces. The middle two are always
+present; the outer two are configurable:
+
+```
+<release.header>
+
+<changelog>
+
+---
+**Full Changelog**: https://github.com/myorg/myapp/compare/v1.2.2...v1.2.3
+Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
+```
+
+The `**Full Changelog**` line is derived — from the repository the release
+publishes to and the previous tag in this release's tag family. You never write
+it. It is omitted on a first release (no previous tag) and when the changelog
+already carries one (`changelog.use: github-native`).
+
+The last line is the default footer. A `footer:` you set **replaces** it; it
+never stacks:
+
+```yaml
+release:
+  footer: "Questions? open an issue."   # replaces the attribution line
+```
+
+Turn either off independently:
+
+```yaml
+release:
+  full_changelog_link: false   # no derived compare link
+  footer: ""                   # no footer at all
 ```
 
 ## Excluding sidecars with `exclude`
@@ -167,8 +205,6 @@ crates:
       name_template: "{{ ProjectName }} {{ Version }}"
       header: |
         ## What's Changed
-      footer: |
-        **Full Changelog**: https://github.com/myorg/myapp/compare/{{ PreviousTag }}...{{ Tag }}
       prerelease: auto
       make_latest: auto
 ```

@@ -186,7 +186,7 @@ Changelog generation works with no config — it collects all commits since the 
 | `abbrev` | int | `0` | Hash length: `0` = full SHA, `N` = truncate to N chars, `-1` = omit the hash |
 | `skip` | bool/template | `false` | Skip changelog generation (alias: `disable`) |
 | `header` | string | none | Text prepended to changelog |
-| `footer` | string | none | Text appended to changelog |
+| `footer` | string | none | Text appended to changelog. Also the release-body footer when `release.footer` is unset; leave both unset and the release body gets anodizer's default attribution line |
 | `filters.exclude` | list | none | Regex patterns to exclude commits |
 | `filters.include` | list | none | Regex patterns to include (whitelist) |
 | `groups` | list | none | Group commits by pattern |
