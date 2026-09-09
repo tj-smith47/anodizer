@@ -65,9 +65,9 @@ TAG_PREFIX_RAW_OK=(
 allow_keys="$(printf '%s\n' "${TAG_FAMILY_RAW_OK[@]}" | sed 's/ — .*$//')"
 prefix_keys="$(printf '%s\n' "${TAG_PREFIX_RAW_OK[@]}" | sed 's/ — .*$//')"
 
-collect_files FILES -rlE '\.tag_template|DEFAULT_TAG_PREFIX|unwrap_or(_else)?\((\|\| *)?"v"' \
-    crates/*/src --include='*.rs' \
-    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs'
+collect_files FILES -rlE --include='*.rs' \
+    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs' \
+    -- '\.tag_template|DEFAULT_TAG_PREFIX|unwrap_or(_else)?\((\|\| *)?"v"' crates/*/src
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-tag-family: no raw tag_template reads or tag-prefix compositions found."
     exit 0

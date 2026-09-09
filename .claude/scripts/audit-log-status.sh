@@ -44,7 +44,8 @@ source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
-collect_files FILES -rlE '\.status\(' crates/*/src --include='*.rs' --exclude-dir=target
+collect_files FILES -rlE --include='*.rs' --exclude-dir=target \
+    -- '\.status\(' crates/*/src
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-log-status: no status() calls found."
     exit 0

@@ -65,8 +65,9 @@ export EXEC_MODE_RE='(Permissions::from_mode|set_mode|\.mode)\(0o[1357]'
 # The helper's own home is exempt — it IS the helper. The exemption is a
 # DIRECTORY NAME, not one path: a `test_helpers/` under any crate is exempt,
 # on the reading that anything so named is scaffolding rather than a test.
-collect_files FILES -rlP "$EXEC_MODE_RE" crates/ --include='*.rs' \
-    --exclude-dir=target --exclude-dir=test_helpers
+collect_files FILES -rlP --include='*.rs' \
+    --exclude-dir=target --exclude-dir=test_helpers \
+    -- "$EXEC_MODE_RE" crates/
 
 # Drop the listed files from the scan, failing if one no longer exists.
 KEPT=()

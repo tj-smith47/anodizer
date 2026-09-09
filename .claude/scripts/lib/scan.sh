@@ -31,13 +31,20 @@ run_scanner() {
 
 # The one way an audit collects the files (or hit lines) a scan runs over:
 #
-#   collect_files FILES -rlE '<pattern>' crates/*/src --include='*.rs'
+#   collect_files FILES --include='*.rs' -rlE -- '<pattern>' crates/*/src
 #
-# `collect_files <array-var> <grep args…>` fills <array-var> with grep's
-# output lines. grep's "no match" (status 1) is a legitimate empty result;
-# anything above it — grep missing from PATH, an unreadable path, a pattern
-# the build cannot compile — means the collection did not run, and is exited 2
-# on with grep's own stderr left visible.
+# `collect_files <array-var> [grep options…] -- <pattern> [root…]` fills
+# <array-var> with grep's output lines. The `--` is REQUIRED and is the whole
+# parse: everything before it reaches grep verbatim, so an option's argument
+# may be joined (`--include='*.rs'`) or detached (`--include '*.rs'`) without
+# the helper having to know which options take one; after it the first word is
+# the pattern and the rest are roots. A call without `--` exits 2 rather than
+# guessing.
+#
+# grep's "no match" (status 1) is a legitimate empty result; anything above
+# it — grep missing from PATH, an unreadable path, a pattern the build cannot
+# compile — means the collection did not run, and is exited 2 on with grep's
+# own stderr left visible.
 #
 # WHY, the same reason run_scanner exists one step later: a
 # `grep … 2>/dev/null || true` collection turns a grep that never ran into an
@@ -47,34 +54,44 @@ run_scanner() {
 # A root that does not exist is dropped before grep sees it: the call sites
 # pass optional globs (`crates/*/src crates/*/tests`), and an unexpanded
 # `crates/*/tests` on a tree where no crate has one is an absent optional
-# root, not a broken scan. Roots are the operands after the pattern, so a
-# pattern that looks like a path is never mistaken for one.
+# root, not a broken scan. grep always runs with stdin on /dev/null, so a call
+# that ends up with no root at all returns empty instead of reading — or
+# blocking on — whatever the caller's stdin happens to be.
 collect_files() {
     local -n __collect_out="$1"
     shift
-    local -a __collect_args=()
-    local __collect_arg __collect_seen_pattern=0 __collect_roots=0 __collect_kept=0
+    local -a __collect_opts=() __collect_roots=()
+    local __collect_pattern="" __collect_stage=0 __collect_named=0 __collect_arg
     for __collect_arg in "$@"; do
-        if [[ "$__collect_arg" == -* ]]; then
-            __collect_args+=("$__collect_arg")
-        elif ((!__collect_seen_pattern)); then
-            __collect_seen_pattern=1
-            __collect_args+=("$__collect_arg")
+        if ((__collect_stage == 0)); then
+            if [[ "$__collect_arg" == "--" ]]; then
+                __collect_stage=1
+            else
+                __collect_opts+=("$__collect_arg")
+            fi
+        elif ((__collect_stage == 1)); then
+            __collect_pattern="$__collect_arg"
+            __collect_stage=2
         else
-            ((++__collect_roots))
+            ((++__collect_named))
             if [[ -e "$__collect_arg" ]]; then
-                ((++__collect_kept))
-                __collect_args+=("$__collect_arg")
+                __collect_roots+=("$__collect_arg")
             fi
         fi
     done
+    if ((__collect_stage != 2)); then
+        printf '%s: collect_files called without --; the scan did not run.\n' \
+            "$(basename "$0" .sh)" >&2
+        exit 2
+    fi
     __collect_out=()
-    # Every named root is absent: an empty result, not a grep reading stdin.
-    if ((__collect_roots > 0 && __collect_kept == 0)); then
+    # Every named root is absent: an empty result, not a grep over the tree.
+    if ((__collect_named > 0 && ${#__collect_roots[@]} == 0)); then
         return 0
     fi
     local __collect_text __collect_status=0
-    __collect_text="$(grep "${__collect_args[@]}")" || __collect_status=$?
+    __collect_text="$(grep "${__collect_opts[@]}" -e "$__collect_pattern" \
+        -- "${__collect_roots[@]}" < /dev/null)" || __collect_status=$?
     if ((__collect_status > 1)); then
         printf '%s: file collection exited %d; the scan did not run.\n' \
             "$(basename "$0" .sh)" "$__collect_status" >&2

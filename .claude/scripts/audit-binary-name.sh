@@ -36,9 +36,9 @@ BINARY_READ_OK=(
 
 allow_keys="$(printf '%s\n' "${BINARY_READ_OK[@]}" | sed 's/ — .*$//')"
 
-collect_files FILES -rlE '\.get\("binary"\)|\["binary"\]|contains_key\("binary"\)|remove\("binary"\)' \
-    crates/*/src --include='*.rs' \
-    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs'
+collect_files FILES -rlE --include='*.rs' \
+    --exclude-dir=tests --exclude-dir=target --exclude='tests.rs' --exclude='*_tests.rs' \
+    -- '\.get\("binary"\)|\["binary"\]|contains_key\("binary"\)|remove\("binary"\)' crates/*/src
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-binary-name: no raw binary-name reads found (the accessor itself is missing?)."
     exit 1
@@ -65,10 +65,19 @@ run_scanner violations -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip
     }
 AWK
 
-collect_files ACCESSOR_READS -n '\.get("binary")' crates/core/src/artifact/registry.rs
+# A REQUIRED root, unlike the globs above: an absent one means the accessor
+# moved, and a count of zero from a file that is not there would read as a
+# violation of the one-accessor rule rather than as the rename it is.
+REGISTRY="crates/core/src/artifact/registry.rs"
+if [[ ! -f "$REGISTRY" ]]; then
+    echo "audit-binary-name: ${REGISTRY} not found; the scan did not run." >&2
+    exit 2
+fi
+
+collect_files ACCESSOR_READS -n -- '\.get("binary")' "$REGISTRY"
 accessor_hits=${#ACCESSOR_READS[@]}
 if [[ "$accessor_hits" -ne 1 ]]; then
-    echo "audit-binary-name: expected exactly one raw read inside Artifact::binary_name, found $accessor_hits in crates/core/src/artifact/registry.rs"
+    echo "audit-binary-name: expected exactly one raw read inside Artifact::binary_name, found $accessor_hits in $REGISTRY"
     exit 1
 fi
 

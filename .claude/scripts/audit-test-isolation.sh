@@ -84,8 +84,8 @@ source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
-collect_files FILES -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' \
-    crates/*/src crates/*/tests --include='*.rs' --exclude-dir=target
+collect_files FILES -rlP --include='*.rs' --exclude-dir=target \
+    -- 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src crates/*/tests
 
 # No global early-exit on an empty FILES: the cwd-helper pairing check below
 # is independent of raw set_current_dir/set_var call sites (its whole point
@@ -245,7 +245,8 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
 AWK
 fi
 
-collect_files HELPER_FILES -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' --exclude-dir=target
+collect_files HELPER_FILES -rlE --include='*.rs' --exclude-dir=target \
+    -- "(${all_helper_alt})\\(" crates/*/src
 
 helper_violations=""
 if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then

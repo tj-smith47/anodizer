@@ -44,8 +44,9 @@ cd "$ROOT"
 # The retry helper's own home is exempt — it IS the helper. The exemption is
 # a DIRECTORY NAME, not one path: a `test_helpers/` under any crate is exempt,
 # on the reading that anything so named is scaffolding rather than a test.
-collect_files FILES -rlP 'Command::new\("(git|node)"\)' crates/ --include='*.rs' \
-    --exclude-dir=target --exclude-dir=test_helpers
+collect_files FILES -rlP --include='*.rs' \
+    --exclude-dir=target --exclude-dir=test_helpers \
+    -- 'Command::new\("(git|node)"\)' crates/
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-test-spawn-retry: no git/node spawn call sites found."

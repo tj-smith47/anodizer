@@ -77,7 +77,7 @@ sorted_words() { tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' '; }
 
 # --- 1. Determinism shard roster -------------------------------------------
 det_labels=$(yqr -r '.jobs.shard.strategy.matrix.include[].shard' "$DET" | sorted_words)
-collect_files REL_EXPECTED -oE 'expected=\([^)]*\)' "$REL"
+collect_files REL_EXPECTED -oE -- 'expected=\([^)]*\)' "$REL"
 rel_expected_raw=$(printf '%s\n' "${REL_EXPECTED[@]}")
 if [[ -z "$rel_expected_raw" ]]; then
     fail "shard roster: no 'expected=(…)' assert array found in ${REL}."
@@ -145,7 +145,7 @@ else
         done < <(yqr -r '.. | select(tag == "!!map" and has("from-artifact")) | .["from-artifact"]' "$f")
     done
     # resolve-release-target's shell default (the non-empty branch).
-    collect_files RESOLVE_DEFAULTS -oE 'from_artifact="[^"]+"' "$RESOLVE"
+    collect_files RESOLVE_DEFAULTS -oE -- 'from_artifact="[^"]+"' "$RESOLVE"
     for rv in "${RESOLVE_DEFAULTS[@]}"; do
         rv="${rv#from_artifact=\"}"
         rv="${rv%\"}"

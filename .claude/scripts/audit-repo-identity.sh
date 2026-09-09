@@ -57,7 +57,7 @@ export TOKEN_RE='(\.|::)(var|env_var)\([[:space:]]*"(ANODIZER_GITHUB_TOKEN|GITHU
 # scope — test scaffolding routinely reads the raw env to save and restore it
 # around a case — as is the class's own resolver home.
 scan_class() { # <out-var> <regex-env-name> <marker> <home path prefix>
-    collect_files CLASS_FILES -rlE "${!2}" crates --include='*.rs' --exclude-dir=target
+    collect_files CLASS_FILES -rlE --include='*.rs' --exclude-dir=target -- "${!2}" crates
     printf -v "$1" '%s' ''
     ((${#CLASS_FILES[@]})) || return 0
     run_scanner "$1" -v re_var="$2" -v marker="$3" -v home="$4" \

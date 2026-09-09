@@ -65,7 +65,7 @@ fi
 
 # Cited paths are repo-relative and always start at `crates/`. Collect the
 # unique set across every page, then test each for existence.
-collect_files CITED_PATHS -rhoP 'crates/[A-Za-z0-9_./-]+\.rs' "$DOCS_DIR"
+collect_files CITED_PATHS -rhoP -- 'crates/[A-Za-z0-9_./-]+\.rs' "$DOCS_DIR"
 
 broken=""
 while IFS= read -r path; do

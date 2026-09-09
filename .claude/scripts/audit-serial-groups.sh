@@ -39,8 +39,8 @@ cd "$ROOT"
 # or a string that merely mentions the attribute is not a finding.
 UNKEYED_RE='^[[:space:]]*#\[(serial_test::)?(file_)?serial(\(\))?\][[:space:]]*$'
 
-collect_files KEYED_ATTRS -rhoE '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' \
-    crates/ --include='*.rs'
+collect_files KEYED_ATTRS -rhoE --include='*.rs' \
+    -- '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' crates/
 
 # Every group key the collected attributes name, one per line. A tree with no
 # keyed attribute yields nothing rather than aborting the pipeline: zero
@@ -63,7 +63,7 @@ fi
 # remaining conversions land.
 SERIAL_PENDING=()
 
-collect_files ALL_UNKEYED -rnE "$UNKEYED_RE" crates/ --include='*.rs' --exclude-dir=target
+collect_files ALL_UNKEYED -rnE --include='*.rs' --exclude-dir=target -- "$UNKEYED_RE" crates/
 
 violations=""
 pending_hit=()

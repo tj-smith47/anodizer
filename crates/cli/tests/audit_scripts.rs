@@ -274,14 +274,90 @@ fn repo_identity_audit_reads_its_markers_from_the_comment_half() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// Every audit scanner runs on bash >= 4.4 — `mapfile` arrived in 4.0 and 4.4
-/// is where `set -u` stopped treating an empty array's `"${arr[@]}"` as an
-/// unset expansion — and the floor is a property of the script SET, not of a
-/// feature list: a scanner that uses no array today grows one tomorrow, and a
-/// detection rule keyed on today's spellings (`mapfile `, `[@]}"`, `readarray
-/// -t` with index-only expansion) silently stops covering it. So every
-/// `audit-*.sh` sources `lib/require-bash.sh`, and no script restates the
-/// check inline.
+/// Drive `lib/scan.sh`'s collector directly. `body` runs from `dir` with the
+/// real helper sourced, and `stdin` is fed to it so a helper that leaves grep
+/// reading the caller's stdin is visible as a wrong result or a hang.
+fn run_collector(dir: &Path, body: &str, stdin: &str) -> (i32, String) {
+    use std::io::Write;
+
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/lib");
+    let script = format!(
+        "set -euo pipefail\nsource {}/require-bash.sh\nsource {}/scan.sh\n{body}\n",
+        lib.display(),
+        lib.display()
+    );
+    let mut child = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawning bash");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("feeding stdin");
+    let out = child.wait_with_output().expect("collector output");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// The collector's whole parse is the `--`: options reach grep verbatim, so an
+/// option's argument may be detached (`--include '*.rs'`) without the helper
+/// having to know which options take one. Classifying operands by shape
+/// instead put the argument in the pattern slot and left grep with no file
+/// operand at all.
+#[test]
+fn the_collector_reads_a_detached_option_argument_as_grep_does() {
+    let dir = fixture_tree();
+    let (code, out) = run_collector(
+        dir.path(),
+        "collect_files X -rl --include '*.rs' -- 'set_var' crates\nprintf 'n=%d\\n' \"${#X[@]}\"",
+        "",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("n=4"),
+        "a detached option argument must reach grep as written: {out}"
+    );
+}
+
+/// Without the separator the helper cannot tell an option's argument from the
+/// pattern, and a guess produces an empty result from a grep that never ran.
+#[test]
+fn the_collector_refuses_a_call_without_the_separator() {
+    let dir = fixture_tree();
+    let (code, out) = run_collector(
+        dir.path(),
+        "collect_files X -rl 'set_var' crates\nprintf 'reached\\n'",
+        "",
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("collect_files called without --"), "{out}");
+    assert!(!out.contains("reached"), "the call must not return: {out}");
+}
+
+/// grep runs on `/dev/null`, so a collection whose roots all vanished returns
+/// empty instead of reading — or blocking on — the caller's stdin.
+#[test]
+fn the_collector_never_reads_the_callers_stdin() {
+    let dir = fixture_tree();
+    let (code, out) = run_collector(
+        dir.path(),
+        "collect_files X -r -- 'set_var' crates/*/absent\nprintf 'n=%d\\n' \"${#X[@]}\"",
+        "set_var from stdin\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("n=0"), "stdin is not a scan root: {out}");
+}
+
 /// `collect_files` is handed OPTIONAL roots — `crates/*/src crates/*/tests` —
 /// and a glob that matches nothing stays literal. An absent optional root is
 /// not a failed scan: the roots that do exist are still read.
@@ -322,6 +398,14 @@ fn a_tree_with_no_serial_attribute_reports_a_clean_scan() {
     );
 }
 
+/// Every audit scanner runs on bash >= 4.4 — `mapfile` arrived in 4.0 and 4.4
+/// is where `set -u` stopped treating an empty array's `"${arr[@]}"` as an
+/// unset expansion — and the floor is a property of the script SET, not of a
+/// feature list: a scanner that uses no array today grows one tomorrow, and a
+/// detection rule keyed on today's spellings (`mapfile `, `[@]}"`, `readarray
+/// -t` with index-only expansion) silently stops covering it. So every
+/// `audit-*.sh` sources `lib/require-bash.sh`, and no script restates the
+/// check inline.
 #[test]
 fn every_audit_script_sources_the_bash_floor() {
     let mut walked = 0usize;
@@ -1322,6 +1406,16 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
                 "{name} calls run_scanner/collect_files without sourcing lib/scan.sh"
             );
         }
+        // The collector's options end at `--`; without one it cannot tell an
+        // option's detached argument from the pattern, so it refuses to guess.
+        for (index, line) in logical_lines(&body) {
+            if line.contains("collect_files ") && !line.contains(" -- ") {
+                forbidden.push(format!(
+                    "{name}:{index}: collect_files without a `--` separator: {}",
+                    line.trim()
+                ));
+            }
+        }
     }
     assert!(
         forbidden.is_empty(),
@@ -1332,6 +1426,31 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
         scanners >= 13,
         "expected every scanning script to be walked, found {scanners}"
     );
+}
+
+/// The script's lines with `\`-continuations joined, each paired with the
+/// 1-based number of the line it starts on.
+fn logical_lines(body: &str) -> Vec<(usize, String)> {
+    let mut joined: Vec<(usize, String)> = Vec::new();
+    let mut pending: Option<(usize, String)> = None;
+    for (index, raw) in body.lines().enumerate() {
+        let continued = raw.ends_with('\\');
+        let piece = raw.strip_suffix('\\').unwrap_or(raw);
+        match pending.as_mut() {
+            Some((_, text)) => {
+                text.push(' ');
+                text.push_str(piece.trim_start());
+            }
+            None => pending = Some((index + 1, piece.to_string())),
+        }
+        if !continued {
+            joined.push(pending.take().expect("a started line"));
+        }
+    }
+    if let Some(last) = pending {
+        joined.push(last);
+    }
+    joined
 }
 
 /// The spellings the runner pin has to recognise. Each ran awk while the pin
