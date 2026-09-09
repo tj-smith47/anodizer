@@ -1548,13 +1548,24 @@ fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<Validated> {
 /// and the files `tag` rewrites are the same set at the same versions — the
 /// pin derives BOTH lists from the commands' own output, so a resolver that
 /// drifts on one side fails here without anyone updating a fixture list.
+/// Every fixture enrolls one file bare AND anchored, and each side must report
+/// the anchored entry as such: a resolver that dropped the anchor on one side
+/// would still produce the same file list.
 fn assert_tag_covers_what_check_validates(root: &Path, mode: &str, tag_args: &[&str]) {
     let checked = check_validated(root, mode);
     assert!(
         !checked.is_empty(),
         "{mode}: check validated no enrolled file"
     );
+    assert!(
+        checked.iter().any(|(_, anchor, _)| anchor.is_some()),
+        "{mode}: check validated no anchored entry: {checked:?}"
+    );
     let rewritten = tag_rewrote(root, mode, tag_args);
+    assert!(
+        rewritten.iter().any(|(_, anchor, _)| anchor.is_some()),
+        "{mode}: tag rewrote no anchored entry: {rewritten:?}"
+    );
     assert_eq!(
         checked, rewritten,
         "{mode}: check validates one set of version_files and tag rewrites another"
@@ -1655,8 +1666,8 @@ version_files:
 }
 
 /// A lockstep workspace (`[workspace.package].version = "0.1.0"`, no `crates:`
-/// block) enrolling one top-level `Chart.yaml`, with a `fix:` commit after
-/// `v0.1.0`.
+/// block) enrolling one top-level `Chart.yaml` twice — bare, and anchored on
+/// its `pin:` line — with a `fix:` commit after `v0.1.0`.
 fn lockstep_fixture(root: &Path) {
     fs::write(
         root.join("Cargo.toml"),
@@ -1670,10 +1681,16 @@ fn lockstep_fixture(root: &Path) {
     )
     .unwrap();
     fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
-    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\npin: v0.1.0\n").unwrap();
     fs::write(
         root.join(".anodizer.yaml"),
-        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
+        concat!(
+            "project_name: lockstep\n",
+            "version_files:\n",
+            "  - Chart.yaml\n",
+            "  - path: Chart.yaml\n",
+            "    match: 'pin: v{version}'\n",
+        ),
     )
     .unwrap();
     git_init(root);
@@ -1956,7 +1973,7 @@ fn lockstep_two_crates_bare_plus_anchored_prerelease_rewrites_both() {
     let root = tmp.path();
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n\n         [workspace.package]\nversion = \"1.2.3\"\n",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"1.2.3\"\n",
     )
     .unwrap();
     for name in ["a", "b"] {

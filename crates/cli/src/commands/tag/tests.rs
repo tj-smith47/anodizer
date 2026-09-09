@@ -2676,47 +2676,52 @@ fn refresh_cargo_lock_runs_only_where_a_lockfile_is_committed() {
 /// The three ways the repo-level bump can find no version to write, each with
 /// its own repair job and its own message — and each rendered on ONE line: a
 /// `bail!` literal that carries its source indentation ships runs of spaces to
-/// the terminal.
+/// the terminal. The missing and versionless messages are compared whole; the
+/// unparseable one embeds toml_edit's own diagnostic, so only the two halves
+/// written here are compared.
 #[test]
 fn repo_level_bump_refuses_each_unusable_manifest_on_one_line() {
     let log = StageLogger::new("tag", Verbosity::Normal);
-    // The unparseable case embeds toml_edit's own multi-line diagnostic, so only
-    // the halves this file writes are checked for space runs there.
-    let cases: Vec<(&str, Option<&str>, String, &str, bool)> = vec![
+    // `exact` is the whole message where this file owns every byte of it; the
+    // unparseable case is `(prefix, suffix)` because toml_edit's multi-line
+    // diagnostic sits between the two halves this file writes.
+    enum Expect {
+        Exact(&'static str),
+        Halves(&'static str, &'static str),
+    }
+    let cases: Vec<(&str, Option<&str>, Expect)> = vec![
         (
             "missing",
             None,
-            "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
-             manifest does not exist; create it, declare the crate under `crates:`, or drop \
-             the version_files enrollment"
-                .to_string(),
-            "drop the version_files enrollment",
-            true,
+            Expect::Exact(
+                "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
+                 manifest does not exist; create it, declare the crate under `crates:`, or drop \
+                 the version_files enrollment",
+            ),
         ),
         (
             "unparseable",
             Some("[package\nname = \"app\"\n"),
-            "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
-             manifest cannot be read:"
-                .to_string(),
-            "; fix the manifest, declare the crate under `crates:`, or drop the version_files \
-             enrollment",
-            false,
+            Expect::Halves(
+                "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
+                 manifest cannot be read:",
+                "; fix the manifest, declare the crate under `crates:`, or drop the version_files \
+                 enrollment",
+            ),
         ),
         (
             "versionless",
             Some("[workspace]\nmembers = [\"crates/app\"]\n"),
-            "version_files: the repo-level bump must write 1.2.4 into a manifest, but \
-             Cargo.toml declares no [package].version and the workspace declares no \
-             [workspace.package].version; give the manifest a version, declare the crate \
-             under `crates:`, or drop the version_files enrollment"
-                .to_string(),
-            "drop the version_files enrollment",
-            true,
+            Expect::Exact(
+                "version_files: the repo-level bump must write 1.2.4 into a manifest, but \
+                 Cargo.toml declares no [package].version and the workspace declares no \
+                 [workspace.package].version; give the manifest a version, declare the crate \
+                 under `crates:`, or drop the version_files enrollment",
+            ),
         ),
     ];
 
-    for (shape, manifest, expected, suffix, strict) in cases {
+    for (shape, manifest, expect) in cases {
         let tmp = tempfile::tempdir().unwrap();
         if let Some(body) = manifest {
             std::fs::write(tmp.path().join("Cargo.toml"), body).unwrap();
@@ -2736,18 +2741,19 @@ fn repo_level_bump_refuses_each_unusable_manifest_on_one_line() {
         )
         .unwrap_err()
         .to_string();
-        assert!(
-            err.starts_with(&expected),
-            "{shape}: expected {expected:?}, got {err:?}"
-        );
-        assert!(
-            err.ends_with(suffix),
-            "{shape}: expected the repair sentence {suffix:?}, got {err:?}"
-        );
-        assert!(
-            !strict || !err.contains("  "),
-            "{shape}: the message carries a run of literal spaces: {err:?}"
-        );
+        match expect {
+            Expect::Exact(expected) => assert_eq!(err, expected, "{shape}"),
+            Expect::Halves(prefix, suffix) => {
+                assert!(
+                    err.starts_with(prefix),
+                    "{shape}: expected {prefix:?}, got {err:?}"
+                );
+                assert!(
+                    err.ends_with(suffix),
+                    "{shape}: expected the repair sentence {suffix:?}, got {err:?}"
+                );
+            }
+        }
     }
 }
 
