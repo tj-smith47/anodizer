@@ -196,53 +196,45 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// `mapfile` and a plainly expanded `"${arr[@]}"` under `set -u` both need
-/// bash >= 4.4, and the assertion of that floor belongs in exactly one place:
-/// four of the eight scripts using them stated it inline and the other four
-/// assumed it, so half the population would have failed silently on a 4.3
-/// host. Every script that needs the floor sources the one shared line, and
-/// no script restates it.
+/// Every audit scanner runs on bash >= 4.4 — `mapfile` arrived in 4.0 and 4.4
+/// is where `set -u` stopped treating an empty array's `"${arr[@]}"` as an
+/// unset expansion — and the floor is a property of the script SET, not of a
+/// feature list: a scanner that uses no array today grows one tomorrow, and a
+/// detection rule keyed on today's spellings (`mapfile `, `[@]}"`, `readarray
+/// -t` with index-only expansion) silently stops covering it. So every
+/// `audit-*.sh` sources `lib/require-bash.sh`, and no script restates the
+/// check inline.
 #[test]
-fn every_array_using_audit_script_sources_the_bash_floor() {
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(".claude/scripts");
-    let mut needing = 0usize;
+fn every_audit_script_sources_the_bash_floor() {
+    let mut walked = 0usize;
     let mut missing = Vec::new();
     let mut restated = Vec::new();
-    for entry in std::fs::read_dir(&scripts).expect("scripts dir") {
-        let path = entry.expect("script entry").path();
-        let name = path
+    for script in audit_scripts() {
+        let name = script
             .file_name()
             .expect("file name")
             .to_string_lossy()
             .into_owned();
-        if !name.starts_with("audit-") || !name.ends_with(".sh") {
-            continue;
-        }
-        let body = std::fs::read_to_string(&path).expect("script body");
-        if body.contains("BASH_VERSINFO") {
-            restated.push(name.clone());
-        }
-        if !(body.contains("mapfile ") || body.contains("[@]}\"")) {
-            continue;
-        }
-        needing += 1;
+        let body = std::fs::read_to_string(&script).expect("script body");
+        walked += 1;
         if !body.contains("source \"$LIB_DIR/require-bash.sh\"") {
-            missing.push(name);
+            missing.push(name.clone());
+        }
+        if body.contains("BASH_VERSINFO") || body.contains("bash --version") {
+            restated.push(name);
         }
     }
     assert!(
         missing.is_empty(),
-        "scripts using mapfile or a plain array expansion must source lib/require-bash.sh: {missing:?}"
+        "every audit script sources lib/require-bash.sh; these do not: {missing:?}"
     );
     assert!(
         restated.is_empty(),
         "the bash floor is asserted once, in lib/require-bash.sh; these restate it: {restated:?}"
     );
     assert!(
-        needing >= 10,
-        "expected every array-using scanner to be walked, found {needing}"
+        walked >= 14,
+        "expected every audit script to be walked, found {walked}"
     );
 }
 
