@@ -14,7 +14,6 @@ use anodizer_core::Publisher;
 use anodizer_core::config::{CargoAuthMode, CargoPublishConfig, CrateConfig, PublishConfig};
 use anodizer_core::test_helpers::TestContextBuilder;
 use serial_test::serial;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Write a crate source dir with a `[package]` manifest pinning
@@ -88,10 +87,7 @@ pub(super) fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) 
         log = argv_log.display(),
         fail = fail_crate,
     );
-    std::fs::write(&stub, script).expect("write cargo stub");
-    let mut perms = std::fs::metadata(&stub).expect("stat stub").permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&stub, perms).expect("chmod stub");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&stub, &script);
     let prev = std::env::var("PATH").unwrap_or_default();
     format!("{}:{}", dir.display(), prev)
 }
@@ -463,10 +459,7 @@ fn install_yank_failing_stub(dir: &Path, argv_log: &Path) -> String {
              exit 0\n",
         log = argv_log.display(),
     );
-    std::fs::write(&stub, script).expect("write cargo stub");
-    let mut perms = std::fs::metadata(&stub).expect("stat stub").permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&stub, perms).expect("chmod stub");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&stub, &script);
     let prev = std::env::var("PATH").unwrap_or_default();
     format!("{}:{}", dir.display(), prev)
 }

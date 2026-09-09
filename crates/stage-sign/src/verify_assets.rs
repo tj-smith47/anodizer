@@ -422,11 +422,8 @@ mod tests {
 
     /// Write an executable shell script and return its path.
     fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
-        std::fs::write(&path, body).expect("write script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod script");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(&path, body);
         path
     }
 

@@ -12,3 +12,14 @@ fn sibling_file_is_test_context() {
 fn a_justified_call_is_not_reported() {
     unsafe { std::env::set_var("SIBLING_JUSTIFIED", "1") }; // env-ok: serialised by serial(sibling_env)
 }
+
+#[test]
+fn a_hand_rolled_exec_write_is_reported() {
+    std::fs::set_permissions("sibling-stub", std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_marked_mode_is_not_reported() {
+    // exec-writer-ok: 0o700 on a directory, which is never exec'd.
+    std::fs::set_permissions("gnupghome", std::fs::Permissions::from_mode(0o700)).unwrap();
+}

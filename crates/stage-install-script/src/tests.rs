@@ -767,12 +767,7 @@ fn assert_installed(dest: &Path, name: &str, needle: &str) {
 /// Write an executable `#!/bin/sh` stub named `name` into `dir`.
 #[cfg(unix)]
 fn write_stub(dir: &Path, name: &str, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    std::fs::write(&path, body).unwrap();
-    let mut perms = std::fs::metadata(&path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&dir.join(name), body);
 }
 
 /// Compute a file's sha256 via the same tools the installer uses

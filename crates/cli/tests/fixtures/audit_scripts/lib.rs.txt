@@ -18,6 +18,9 @@ mod inline_tests {
         let _inline_family = m.tag_template.clone();
         unsafe { std::env::set_var("INLINE_ONLY", "1") };
         let _ = Command::new("git").arg("status").output();
+        let mut perms = std::fs::metadata("stub").unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions("stub", perms).unwrap();
     }
 }
 
@@ -30,4 +33,5 @@ pub fn after_the_inline_module(m: &Meta) -> Option<&String> {
 pub fn production_globals() {
     unsafe { std::env::set_var("PRODUCTION_ONLY", "1") };
     let _ = Command::new("git").arg("rev-parse").output();
+    let _ = std::fs::set_permissions("staged", std::fs::Permissions::from_mode(0o755));
 }

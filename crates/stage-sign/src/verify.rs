@@ -1135,17 +1135,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn derive_public_key_invocation_shape() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let script = tmp.path().join("cosign");
-        std::fs::write(
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
             &script,
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RECORD_FILE\"\nexit 0\n",
-        )
-        .expect("write script");
-        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
+        );
 
         let record = tmp.path().join("argv.txt");
         let out = tmp.path().join("derived.pub");
@@ -1177,14 +1172,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn derive_public_key_failure_carries_stderr() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let script = tmp.path().join("cosign");
-        std::fs::write(&script, "#!/bin/sh\necho 'bad key material' >&2\nexit 1\n")
-            .expect("write script");
-        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
+            &script,
+            "#!/bin/sh\necho 'bad key material' >&2\nexit 1\n",
+        );
 
         let out = tmp.path().join("derived.pub");
         let err = derive_cosign_public_key(script.to_str().unwrap(), "env://K", None, &out)
@@ -1202,17 +1195,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn derive_public_key_failure_scrubs_job_env_secrets() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let script = tmp.path().join("cosign");
-        std::fs::write(
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
             &script,
             "#!/bin/sh\necho \"wrong password: $COSIGN_PASSWORD\" >&2\nexit 1\n",
-        )
-        .expect("write script");
-        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
+        );
 
         let secret = "hunter2-literal-job-env-secret";
         assert!(
@@ -1311,17 +1299,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn literal_job_env_secret_masked_in_verbose_live_tee() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let script = tmp.path().join("cosign");
-        std::fs::write(
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
             &script,
             "#!/bin/sh\necho \"token=$COSIGN_PASSWORD\" >&2\nexit 1\n",
-        )
-        .expect("write script");
-        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
+        );
 
         let secret = "hunter2-literal-config-secret";
         assert!(
@@ -1365,13 +1348,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn timed_out_verifier_classifies_inconclusive() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let script = tmp.path().join("cosign");
-        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("write script");
-        let mut perms = std::fs::metadata(&script).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
+            &script,
+            "#!/bin/sh\nsleep 30\n",
+        );
 
         let job = VerifyJob {
             cmd: script.to_string_lossy().into_owned(),

@@ -5279,11 +5279,10 @@ fn mode_a_generates_one_file_per_shell_and_bundles() {
     // Fake "binary": a shell script that emits per-shell completion text.
     // mode-A renders `{{ .ArtifactPath }} completions {{ .Shell }}`.
     let bin = tmp.path().join("myapp");
-    fs::write(&bin, b"#!/bin/sh\necho \"completion-for-$2\"\n").unwrap();
-    let mut perms = fs::metadata(&bin).unwrap().permissions();
-    use std::os::unix::fs::PermissionsExt;
-    perms.set_mode(0o755);
-    fs::set_permissions(&bin, perms).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &bin,
+        "#!/bin/sh\necho \"completion-for-$2\"\n",
+    );
 
     let archive = anodizer_core::config::ArchiveConfig {
         name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
@@ -5341,11 +5340,10 @@ fn mode_a_manpage_generates_and_bundles() {
     let tmp = TempDir::new().unwrap();
     let dist = tmp.path().join("dist");
     let bin = tmp.path().join("myapp");
-    fs::write(&bin, b"#!/bin/sh\necho '.TH MYAPP 1'\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&bin).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&bin, perms).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &bin,
+        "#!/bin/sh\necho '.TH MYAPP 1'\n",
+    );
 
     let archive = anodizer_core::config::ArchiveConfig {
         name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
@@ -5522,13 +5520,12 @@ fn workspace_per_crate_completions_resolve_per_crate() {
     let dist = tmp.path().join("dist");
     let host = anodizer_core::partial::detect_host_target().unwrap();
 
-    use std::os::unix::fs::PermissionsExt;
     let make_bin = |name: &str| {
         let p = tmp.path().join(name);
-        fs::write(&p, format!("#!/bin/sh\necho \"{name}-$2\"\n")).unwrap();
-        let mut perms = fs::metadata(&p).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&p, perms).unwrap();
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
+            &p,
+            &format!("#!/bin/sh\necho \"{name}-$2\"\n"),
+        );
         p
     };
     let bin_a = make_bin("aaa");
@@ -5612,15 +5609,10 @@ fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
     let bin = tmp.path().join("myapp");
     // Completions echo their shell; the man "command" echoes whatever Shell
     // resolves to at man-gen time — proving the leak (or its absence).
-    fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &bin,
-        b"#!/bin/sh\nif [ \"$1\" = completions ]; then echo \"comp-$2\"; else echo \"shell=[$SHELL_PROBE]\"; fi\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&bin).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&bin, perms).unwrap();
+        "#!/bin/sh\nif [ \"$1\" = completions ]; then echo \"comp-$2\"; else echo \"shell=[$SHELL_PROBE]\"; fi\n",
+    );
 
     let archive = anodizer_core::config::ArchiveConfig {
         // Archive name embeds {{ .Shell }} too: after a mode-A run it must
@@ -5701,11 +5693,10 @@ fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
     // in the rendered name / templated body; the recorded binary name stays
     // "myapp" (Binary is re-set per-target and must NOT be affected).
     let bin = tmp.path().join("hostbin");
-    fs::write(&bin, b"#!/bin/sh\necho \"comp-$2\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&bin).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&bin, perms).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &bin,
+        "#!/bin/sh\necho \"comp-$2\"\n",
+    );
 
     // templated_files body echoes ArtifactPath — must render empty post-gen.
     let tpl = tmp.path().join("probe.tpl");

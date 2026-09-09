@@ -126,6 +126,8 @@ mod tests {
         for (path, data) in members {
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
+            // exec-writer-ok: a tar::Header mode field in an in-memory
+            // archive — no file reaches the filesystem and nothing is exec'd.
             header.set_mode(0o755);
             header.set_cksum();
             builder.append_data(&mut header, path, *data).unwrap();

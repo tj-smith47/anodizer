@@ -819,14 +819,10 @@ fn failed_version_sync_bump_commit_aborts_before_tagging() {
     let hooks_dir = work.path().join(".git/hooks");
     fs::create_dir_all(&hooks_dir).unwrap();
     let hook = hooks_dir.join("pre-commit");
-    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&hook).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&hook, perms).unwrap();
-    }
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&hook, "#!/bin/sh\nexit 1\n");
+    #[cfg(not(unix))]
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
 
     let out = anodizer()
         .current_dir(work.path())

@@ -19,12 +19,20 @@
 # See crates/core/src/test_helpers/fake_tool.rs.
 #
 # This audit fails (exit 1) when TEST code sets an OWNER-EXECUTABLE mode
-# (`Permissions::from_mode(0o[1357]` — any mode whose OWNER bits carry the
-# execute bit, so 0o755, 0o700 and 0o500 all match) WITHOUT carrying an inline
+# WITHOUT carrying an inline
 #   // exec-writer-ok: <why>
 # marker on that line or the line directly above it. The marker is for a mode
 # set on something that is never exec'd — a directory (a `GNUPGHOME` at 0o700),
-# or a fixture file a tree-walk only stats.
+# a `tar::Header` field that never becomes a file, or a fixture file a
+# tree-walk only stats.
+#
+# Both spellings of the mode count, because the two are interchangeable at a
+# call site and only one of them was visible to the first version of this
+# audit:
+#   std::fs::set_permissions(p, Permissions::from_mode(0o755))
+#   let mut perms = metadata(p)?.permissions(); perms.set_mode(0o755);
+# `0o[1357]` is any mode whose OWNER bits carry the execute bit, so 0o755,
+# 0o700 and 0o500 all match.
 #
 # TEST context is lib/test-regions.awk's: a whole test file (a sibling
 # `tests.rs`, anything under `crates/*/tests/`) or an inline `#[cfg(test)]`
@@ -42,13 +50,11 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 # path with the reason, printed on every run so the set stays visible, and
 # checked to still exist so a rename cannot silently drop one. The list is a
 # ratchet: a NEW hand-rolled writer anywhere else fails the audit.
-UNROUTED=(
-    "crates/stage-sign/src/verify_assets.rs|its write_script helper is byte-identical to the one stage-verify-release routes through the helper"
-)
+UNROUTED=()
 
 # The helper's own home is exempt — it IS the helper.
 mapfile -t FILES < <(
-    grep -rlP 'Permissions::from_mode\(0o[1357]' crates/ --include='*.rs' 2>/dev/null \
+    grep -rlP '(Permissions::from_mode|set_mode)\(0o[1357]' crates/ --include='*.rs' 2>/dev/null \
         | grep -v '/target/' \
         | grep -v 'crates/core/src/test_helpers/' \
         || true
@@ -58,19 +64,19 @@ mapfile -t FILES < <(
 KEPT=()
 for f in "${FILES[@]}"; do
     skip=""
-    for entry in "${UNROUTED[@]}"; do
+    for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
         [[ "$f" == "${entry%%|*}" ]] && skip=1 && break
     done
     [[ -n "$skip" ]] || KEPT+=("$f")
 done
-for entry in "${UNROUTED[@]}"; do
+for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
     path="${entry%%|*}"
     if [[ ! -f "$path" ]]; then
         echo "audit-test-exec-writer: listed file $path no longer exists — drop or repoint its entry." >&2
         exit 1
     fi
 done
-FILES=("${KEPT[@]}")
+FILES=(${KEPT[@]+"${KEPT[@]}"})
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-test-exec-writer: no executable-mode call sites found."
@@ -91,7 +97,7 @@ report() {
             if (line ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
         }
 
-        /Permissions::from_mode\(0o[1357]/ {
+        /(Permissions::from_mode|set_mode)\(0o[1357]/ {
             if (in_test && !is_comment && !marker_armed) {
                 printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
                 bad = 1
@@ -100,7 +106,7 @@ report() {
 
         {
             if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ \
-                && line !~ /Permissions::from_mode\(0o[1357]/) marker_armed = 0
+                && line !~ /(Permissions::from_mode|set_mode)\(0o[1357]/) marker_armed = 0
         }
 
         END { exit bad ? 2 : 0 }
@@ -132,7 +138,7 @@ fi
 echo "audit-test-exec-writer: all ${#FILES[@]} executable-mode files route test writes through write_executable_script (or mark // exec-writer-ok:)."
 if [[ ${#UNROUTED[@]} -gt 0 ]]; then
     echo "audit-test-exec-writer: ${#UNROUTED[@]} listed writer(s) still hand-rolled:"
-    for entry in "${UNROUTED[@]}"; do
+    for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
         echo "  ${entry%%|*} — ${entry#*|}"
     done
 fi

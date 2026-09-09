@@ -30,12 +30,8 @@ fn combined_meta() -> std::collections::HashMap<String, String> {
 /// Write an executable shell script to `dir/name` and return its path.
 #[cfg(unix)]
 fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
-    std::fs::write(&path, body).expect("write script");
-    let mut perms = std::fs::metadata(&path).expect("stat").permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&path, body);
     path
 }
 
