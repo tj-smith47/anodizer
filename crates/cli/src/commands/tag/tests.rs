@@ -2482,36 +2482,95 @@ fn top_level_version_files_drive_a_single_crate_plan() {
     );
 }
 
-/// One `(old, new)` pair is not a safety guarantee: a prerelease target still
-/// matches its own old version, so a bare entry and an anchored entry on one
-/// file would rewrite the same bytes twice. The single-crate/lockstep builder
-/// must refuse it exactly as the per-crate builder does.
+/// A bare entry beside an anchored one on ONE owner's ONE bump is a single
+/// rewrite, not a chain: the engine claims the anchored region first and sweeps
+/// the rest, so both entries plan and each occurrence moves exactly once. The
+/// prerelease target is the sharp case — `1.2.3` does fire inside `1.2.3-rc1`.
 #[test]
-fn version_files_plan_refuses_a_prerelease_chain_on_one_file() {
-    let files = vec![vf("chart.yaml"), vf_at("chart.yaml", r"pin: v{version}")];
-    let err = version_files_plan(&files, "1.2.3", "1.2.3-rc1", "app")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("bumps chain"), "err: {err}");
-    assert!(
-        err.contains("whole-file entry overlaps match pin: v{version}"),
-        "err: {err}"
-    );
-    assert!(
-        err.contains("give each enrollment its own `match` anchor"),
-        "err: {err}"
-    );
+fn version_files_plan_keeps_an_identical_pair_on_one_file() {
+    for files in [
+        vec![vf("chart.yaml"), vf_at("chart.yaml", r"pin: v{version}")],
+        vec![vf_at("chart.yaml", r"pin: v{version}"), vf("chart.yaml")],
+    ] {
+        let plan = version_files_plan(&files, "1.2.3", "1.2.3-rc1", "app").unwrap();
+        let mut anchors: Vec<Option<&str>> = plan.iter().map(|r| r.anchor.as_deref()).collect();
+        anchors.sort();
+        assert_eq!(
+            anchors,
+            vec![None, Some(r"pin: v{version}")],
+            "plan: {plan:?}"
+        );
+    }
 }
 
-/// The same guard must reject the shape whichever order the entries are
-/// enrolled in — the bare sweep overlaps the anchored region either way.
+/// A GENUINE chain from one owner: two entries on one file bumping
+/// `1.2.3 → 1.2.4` and `1.2.4 → 1.2.5`, where the second matcher still fires on
+/// the first's output. The refusal names the two ENTRIES, because with a single
+/// owner "crates" sends the author hunting for a second crate that isn't there.
 #[test]
-fn version_files_plan_refuses_a_prerelease_chain_anchored_first() {
-    let files = vec![vf_at("chart.yaml", r"pin: v{version}"), vf("chart.yaml")];
-    let err = version_files_plan(&files, "1.2.3", "1.2.3-rc1", "app")
+fn one_owner_chain_names_the_two_entries() {
+    let groups = vec![
+        group_result(
+            &["app"],
+            &[("app-v1.2.4", "Release")],
+            &[("crates/app", "1.2.4")],
+            Some("1.2.3"),
+            Some("app-v1.2.3"),
+            vec![vec![vf("chart.yaml")]],
+        ),
+        group_result(
+            &["app"],
+            &[("app-v1.2.5", "Release")],
+            &[("crates/app", "1.2.5")],
+            Some("1.2.4"),
+            Some("app-v1.2.4"),
+            vec![vec![vf_at("chart.yaml", r"pin: v{version}")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("bumps chain"), "err: {err}");
+    assert!(
+        err.contains(
+            "is enrolled twice by app whose bumps chain (the whole-file entry 1.2.3 → 1.2.4 \
+             then match pin: v{version} 1.2.4 → 1.2.5)"
+        ),
+        "err: {err}"
+    );
+    assert!(!err.contains("enrolled by crates"), "err: {err}");
+}
+
+/// Two owners keep the crate-named wording: the author has two crates to
+/// reconcile, and naming them is what makes the conflict findable.
+#[test]
+fn two_owner_chain_names_the_crates() {
+    let groups = vec![
+        group_result(
+            &["core"],
+            &[("core-v0.2.0", "Release")],
+            &[("crates/core", "0.2.0")],
+            Some("0.1.0"),
+            Some("core-v0.1.0"),
+            vec![vec![vf("shared.md")]],
+        ),
+        group_result(
+            &["cli"],
+            &[("cli-v0.3.0", "Release")],
+            &[("crates/cli", "0.3.0")],
+            Some("0.2.0"),
+            Some("cli-v0.2.0"),
+            vec![vec![vf("shared.md")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "is enrolled by crates whose bumps chain (core 0.1.0 → 0.2.0 then cli 0.2.0 → 0.3.0)"
+        ),
+        "err: {err}"
+    );
 }
 
 /// A single declared crate that enrolls nothing of its own is checked by

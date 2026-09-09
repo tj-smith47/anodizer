@@ -1225,18 +1225,19 @@ fn single_crate_bare_and_anchored_share_one_file() {
     assert_eq!(show_head(root, "chart.yaml"), expected);
 }
 
-/// A prerelease target still matches its own old version, so a bare entry and
-/// an anchored entry on one file would rewrite the same bytes twice. The guard
-/// runs in single-crate mode, not only per-crate.
+/// A prerelease target still matches its own old version — `1.2.3` fires inside
+/// `1.2.3-rc1` — but the two entries express ONE owner's ONE bump, so they are
+/// one rewrite: the anchored entry claims its `pin:` line first and the bare
+/// sweep takes the rest, each byte rewritten exactly once.
 #[test]
-fn single_crate_bare_plus_anchored_prerelease_bails() {
+fn single_crate_bare_plus_anchored_prerelease_rewrites_both() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     bare_and_anchored_single_crate_fixture(root);
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--version", "1.2.3-rc1", "--dry-run"])
+        .args(["tag", "--version", "1.2.3-rc1", "--no-push"])
         .output()
         .unwrap();
     let combined = format!(
@@ -1244,21 +1245,17 @@ fn single_crate_bare_plus_anchored_prerelease_bails() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        !out.status.success(),
-        "the double rewrite must bail: {combined}"
-    );
-    assert!(
-        combined.contains("bumps chain (app 1.2.3 → 1.2.3-rc1 then app 1.2.3 → 1.2.3-rc1)"),
-        "chain refusal missing: {combined}"
-    );
-    assert_eq!(read(root, "chart.yaml"), "pin: v1.2.3\nother: 1.2.3\n");
+    assert!(out.status.success(), "tag failed: {combined}");
+    let expected = "pin: v1.2.3-rc1\nother: 1.2.3-rc1\n";
+    assert_eq!(read(root, "chart.yaml"), expected);
+    assert_eq!(show_head(root, "chart.yaml"), expected);
 }
 
-/// The same guard in lockstep mode, where the top-level enrollment is shared by
-/// every workspace crate under one version.
+/// The same shape in lockstep mode, where the top-level enrollment is shared by
+/// every workspace crate under one version: still one owner, one pair, one
+/// rewrite per occurrence.
 #[test]
-fn lockstep_bare_plus_anchored_prerelease_bails() {
+fn lockstep_bare_plus_anchored_prerelease_rewrites_both() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     fs::write(
@@ -1287,7 +1284,7 @@ fn lockstep_bare_plus_anchored_prerelease_bails() {
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--version", "2.0.0-rc1", "--dry-run"])
+        .args(["tag", "--version", "2.0.0-rc1", "--no-push"])
         .output()
         .unwrap();
     let combined = format!(
@@ -1295,15 +1292,10 @@ fn lockstep_bare_plus_anchored_prerelease_bails() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        !out.status.success(),
-        "the double rewrite must bail: {combined}"
-    );
-    assert!(
-        combined.contains("bumps chain (a 2.0.0 → 2.0.0-rc1 then a 2.0.0 → 2.0.0-rc1)"),
-        "chain refusal missing: {combined}"
-    );
-    assert_eq!(read(root, "chart.yaml"), "pin: v2.0.0\nother: 2.0.0\n");
+    assert!(out.status.success(), "tag failed: {combined}");
+    let expected = "pin: v2.0.0-rc1\nother: 2.0.0-rc1\n";
+    assert_eq!(read(root, "chart.yaml"), expected);
+    assert_eq!(show_head(root, "chart.yaml"), expected);
 }
 
 /// Per-crate, two crates on the same bump, one enrolling the shared file bare

@@ -97,7 +97,10 @@ pub(crate) fn rewrite_and_stage_version_files(
 ///
 /// Distinct old versions that do not chain both rewrite: the engine applies
 /// each pair to its own occurrences. Fully identical entries dedupe to a single
-/// rewrite (lockstep crates share one pair, so they never conflict). On a
+/// rewrite (lockstep crates share one pair, so they never conflict), and two
+/// entries from ONE owner on ONE pair — a bare entry beside an anchored one —
+/// are exempt from both hazards: they express a single rewrite, which the
+/// claiming engine applies to each occurrence exactly once. On a
 /// refusal this `bail!`s naming the file, the anchor overlap, and both crates.
 ///
 /// Runs identically for dry-run and real tagging so the preview matches the
@@ -385,11 +388,30 @@ fn sort_plan(plan: &mut [VersionFileRewrite]) {
     });
 }
 
+/// How one side of a refusal is named: several owners are named by crate, a
+/// single owner by the entry it wrote, because "crates" sends the author
+/// looking for a second crate that does not exist.
+fn refusal_side(rewrite: &VersionFileRewrite, same_owner: bool) -> String {
+    match (same_owner, rewrite.anchor.as_deref()) {
+        (false, _) => rewrite.owner.clone(),
+        (true, Some(anchor)) => format!("match {anchor}"),
+        (true, None) => "the whole-file entry".to_string(),
+    }
+}
+
 /// Refuse the two rewrite shapes one file cannot survive, for a pair of
 /// enrollments that overlap in it. Returns `Ok(())` when the pair does not
 /// interact, or interacts safely (distinct olds, no chain).
 fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<()> {
     if a.file != b.file {
+        return Ok(());
+    }
+    // One owner rewriting one file at one pair is ONE rewrite, however many
+    // entries express it: every entry selects its occurrences from the original
+    // content and each occurrence is claimed once, so a bare entry beside an
+    // anchored one on the same bump lands exactly the same bytes as either
+    // alone. Only DIFFERENT pairs can chain.
+    if a.owner == b.owner && a.old == b.old && a.new == b.new {
         return Ok(());
     }
     // A bare entry sweeps the whole file, so it overlaps every anchored region
@@ -403,17 +425,25 @@ fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<
         }
     };
 
+    let same_owner = a.owner == b.owner;
+    let enrolled_by = if same_owner {
+        format!("is enrolled twice by {}", a.owner)
+    } else {
+        "is enrolled by crates".to_string()
+    };
+
     if a.old == b.old && a.new != b.new {
         bail!(
-            "version_files conflict: {}{} is enrolled by crates bumping FROM the same version to \
+            "version_files conflict: {}{} {} bumping FROM the same version to \
              different versions ({} {} → {} vs {} {} → {}); a file cannot hold two new versions \
              for one old one",
             a.file,
             anchor_suffix,
-            a.owner,
+            enrolled_by,
+            refusal_side(a, same_owner),
             a.old,
             a.new,
-            b.owner,
+            refusal_side(b, same_owner),
             b.old,
             b.new,
         );
@@ -432,15 +462,16 @@ fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<
     };
     if let Some((first, second)) = chain {
         bail!(
-            "version_files conflict: {}{} is enrolled by crates whose bumps chain ({} {} → {} \
+            "version_files conflict: {}{} {} whose bumps chain ({} {} → {} \
              then {} {} → {}); the second rewrite would consume the first's output — give each \
              enrollment its own `match` anchor",
             a.file,
             anchor_suffix,
-            first.owner,
+            enrolled_by,
+            refusal_side(first, same_owner),
             first.old,
             first.new,
-            second.owner,
+            refusal_side(second, same_owner),
             second.old,
             second.new,
         );
