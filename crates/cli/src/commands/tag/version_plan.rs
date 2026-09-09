@@ -101,8 +101,11 @@ pub(crate) fn rewrite_and_stage_version_files(
 /// entries on ONE pair — a bare entry beside an anchored one, from one owner or
 /// two — are exempt from both hazards whatever enrolled them: they express a
 /// single rewrite, which the claiming engine applies to each occurrence exactly
-/// once. On a
-/// refusal this `bail!`s naming the file, the anchor overlap, and both crates.
+/// once. On a refusal this `bail!`s naming the file, the anchor overlap, and
+/// each side of the pair: the two crates when the entries came from different
+/// owners, and the two entries themselves — `match <anchor>` or
+/// `the whole-file entry` — when one owner wrote both, because naming "crates"
+/// there sends the author looking for a second crate that does not exist.
 ///
 /// Runs identically for dry-run and real tagging so the preview matches the
 /// outcome — the validated plan is computed once, then either previewed or

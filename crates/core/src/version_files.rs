@@ -326,6 +326,141 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Every regex over a VERSION in the version_files population is built by
+    /// one of two functions here. A second builder is exactly the drift fix
+    /// round 2 removed (`version_regexes` beside `occurrence_regex`, one used by
+    /// `tag` and one by `check`), and nothing mechanical stopped it coming back:
+    /// this walk does, across every file either command resolves through.
+    ///
+    /// The two rollback entries are the deliberate exception, named here rather
+    /// than pattern-matched away: they validate a TAG REF's grammar, never a
+    /// version inside a repo file.
+    #[test]
+    fn every_version_matcher_is_built_by_one_of_the_named_builders() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root above crates/core");
+        let population = [
+            "crates/core/src/version_files.rs",
+            "crates/cli/src/commands/tag",
+            "crates/cli/src/commands/check",
+            "crates/cli/src/commands/version_files_resolve.rs",
+            "crates/stage-build/src/version_sync.rs",
+        ];
+
+        let mut sources: Vec<std::path::PathBuf> = Vec::new();
+        for entry in population {
+            let path = repo_root.join(entry);
+            if path.is_dir() {
+                collect_rust_sources(&path, &mut sources);
+            } else {
+                assert!(
+                    path.is_file(),
+                    "population entry missing: {}",
+                    path.display()
+                );
+                sources.push(path);
+            }
+        }
+
+        let mut owners: Vec<(String, String)> = Vec::new();
+        for source in &sources {
+            let text = fs::read_to_string(source).expect("read source");
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("Regex::new") && !line.contains("RegexBuilder") {
+                    continue;
+                }
+                // A version matcher is a Regex built from a version: the
+                // literal spells one (`\d+\.\d+`, the `{version}` anchor
+                // token) or the pattern is composed from a version binding.
+                let start = i.saturating_sub(4);
+                let window = lines[start..(i + 3).min(lines.len())].join(" ");
+                let builds_from_a_version = window.contains(r"\d+\.\d+")
+                    || window.contains("{version}")
+                    || window.contains("version")
+                    || window.contains("escaped");
+                if !builds_from_a_version {
+                    continue;
+                }
+                let owner = lines[..=i]
+                    .iter()
+                    .rev()
+                    .find_map(|l| item_name(l))
+                    .unwrap_or_else(|| panic!("no owning item for {}:{}", source.display(), i + 1));
+                owners.push((
+                    source
+                        .strip_prefix(repo_root)
+                        .unwrap_or(source)
+                        .display()
+                        .to_string(),
+                    owner,
+                ));
+            }
+        }
+        owners.sort();
+
+        let expected = vec![
+            (
+                "crates/cli/src/commands/tag/rollback/tags.rs".to_string(),
+                "LOCKSTEP_TAG_RE".to_string(),
+            ),
+            (
+                "crates/cli/src/commands/tag/rollback/tags.rs".to_string(),
+                "PER_CRATE_TAG_RE".to_string(),
+            ),
+            (
+                "crates/core/src/version_files.rs".to_string(),
+                "anchor_regex".to_string(),
+            ),
+            (
+                "crates/core/src/version_files.rs".to_string(),
+                "occurrence_regex".to_string(),
+            ),
+        ];
+        assert_eq!(
+            owners, expected,
+            "a version matcher outside `occurrence_regex` / `anchor_regex` (or the two \
+             tag-grammar validators) means `tag` and `check` can disagree again"
+        );
+    }
+
+    /// The `fn` or `static` an item line declares, if any.
+    fn item_name(line: &str) -> Option<String> {
+        let trimmed = line.trim_start();
+        for keyword in ["fn ", "static "] {
+            if let Some(rest) = trimmed
+                .strip_prefix(keyword)
+                .or_else(|| trimmed.split_once(&format!(" {keyword}")).map(|(_, r)| r))
+            {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Every production `.rs` file under `dir`, recursively — test sources
+    /// excluded by name, exactly as the audit scanners decide it.
+    fn collect_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                collect_rust_sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !crate::test_helpers::test_sources::is_test_source_path(&path)
+            {
+                out.push(path);
+            }
+        }
+    }
+
     /// Writes `name` under `dir` and returns the ROOT-RELATIVE name — the
     /// spelling the engine takes, logs and errors with.
     fn write(dir: &TempDir, name: &str, body: &str) -> String {

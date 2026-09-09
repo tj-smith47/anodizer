@@ -396,10 +396,16 @@ version = "0.1.0"
     )
     .unwrap();
     fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
-    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\npin: v0.1.0\n").unwrap();
     fs::write(
         root.join(".anodizer.yaml"),
-        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
+        concat!(
+            "project_name: lockstep\n",
+            "version_files:\n",
+            "  - Chart.yaml\n",
+            "  - path: Chart.yaml\n",
+            "    match: 'pin: v{version}'\n",
+        ),
     )
     .unwrap();
 
@@ -415,8 +421,14 @@ version = "0.1.0"
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
     assert!(stdout.contains("new_tag=v0.1.1"), "stdout: {stdout}");
 
-    assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.1\n");
-    assert_eq!(show_head(root, "Chart.yaml"), "appVersion: v0.1.1\n");
+    assert_eq!(
+        read(root, "Chart.yaml"),
+        "appVersion: v0.1.1\npin: v0.1.1\n"
+    );
+    assert_eq!(
+        show_head(root, "Chart.yaml"),
+        "appVersion: v0.1.1\npin: v0.1.1\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,6 +1365,13 @@ fn per_crate_bare_and_anchored_share_one_file() {
 /// `v0.1.0`. `check version-files` resolves the top-level list as that crate's
 /// list, so the repo-level tag path must rewrite it.
 fn one_declared_crate_fixture(root: &Path) {
+    one_declared_crate_fixture_syncing(root, true);
+}
+
+/// [`one_declared_crate_fixture`], with `version_sync` switched on or off. A
+/// crate that never opted in owns no manifest write, which is what makes the
+/// repo-level bump's "writes no manifest" case observable.
+fn one_declared_crate_fixture_syncing(root: &Path, version_sync: bool) {
     fs::write(
         root.join("Cargo.toml"),
         "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
@@ -1365,19 +1384,26 @@ fn one_declared_crate_fixture(root: &Path) {
     )
     .unwrap();
     fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
-    fs::write(root.join("README.md"), "app is at 0.1.0\n").unwrap();
+    fs::write(root.join("README.md"), "app is at 0.1.0\npin: v0.1.0\n").unwrap();
+    let sync = if version_sync {
+        "    version_sync:\n      enabled: true\n"
+    } else {
+        ""
+    };
     fs::write(
         root.join(".anodizer.yaml"),
-        r#"project_name: app
+        format!(
+            r#"project_name: app
 crates:
   - name: app
     path: crates/app
-    tag_template: "v{{ .Version }}"
-    version_sync:
-      enabled: true
-version_files:
+    tag_template: "v{{{{ .Version }}}}"
+{sync}version_files:
   - README.md
-"#,
+  - path: README.md
+    match: 'pin: v{{version}}'
+"#
+        ),
     )
     .unwrap();
 
@@ -1413,7 +1439,7 @@ fn one_declared_crate_rewrites_top_level_version_files() {
         combined.contains("rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in README.md"),
         "top-level entry not planned for the one declared crate: {combined}"
     );
-    assert_eq!(read(root, "README.md"), "app is at 0.1.0\n");
+    assert_eq!(read(root, "README.md"), "app is at 0.1.0\npin: v0.1.0\n");
 
     let out = anodizer()
         .current_dir(root)
@@ -1426,14 +1452,23 @@ fn one_declared_crate_rewrites_top_level_version_files() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(read(root, "README.md"), "app is at 0.1.1\n");
-    assert_eq!(show_head(root, "README.md"), "app is at 0.1.1\n");
+    assert_eq!(read(root, "README.md"), "app is at 0.1.1\npin: v0.1.1\n");
+    assert_eq!(
+        show_head(root, "README.md"),
+        "app is at 0.1.1\npin: v0.1.1\n"
+    );
 }
 
-/// The `(file, version)` pairs `check version-files` actually validated, taken
+/// One enrolled entry as a command reported it: the file, the `match` anchor
+/// when the entry has one, and the version the entry is at. Anchor and all —
+/// two entries on one file are one bare and one anchored, and a comparison that
+/// dropped the anchor could not tell them apart.
+type Validated = (String, Option<String>, String);
+
+/// The entries `check version-files` actually validated, taken
 /// from its own `-v` report rather than a hand-written list, plus a cross-check
 /// that the count it reports matches the number of lines it printed.
-fn check_validated(root: &Path, mode: &str) -> Vec<(String, String)> {
+fn check_validated(root: &Path, mode: &str) -> Vec<Validated> {
     let out = anodizer()
         .current_dir(root)
         .args(["check", "version-files", "--verbose"])
@@ -1446,13 +1481,16 @@ fn check_validated(root: &Path, mode: &str) -> Vec<(String, String)> {
     );
     assert!(out.status.success(), "{mode}: check failed: {combined}");
 
-    let mut pairs: Vec<(String, String)> = combined
+    let mut pairs: Vec<Validated> = combined
         .lines()
         .filter_map(|line| {
             let (file, rest) = line.split_once(" contains ")?;
             let file = file.split_whitespace().last()?;
-            let version = rest.split_whitespace().next()?;
-            Some((file.to_string(), version.to_string()))
+            let (version, anchor) = match rest.split_once(" inside ") {
+                Some((version, anchor)) => (version, Some(anchor.trim().to_string())),
+                None => (rest.split_whitespace().next()?, None),
+            };
+            Some((file.to_string(), anchor, version.trim().to_string()))
         })
         .collect();
     let reported: usize = combined
@@ -1474,9 +1512,9 @@ fn check_validated(root: &Path, mode: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// The `(file, old_version)` pairs a `tag` run planned to rewrite, taken from
-/// its own rewrite lines.
-fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<(String, String)> {
+/// The entries a `tag` run planned to rewrite, taken from its own rewrite
+/// lines and named the same way — file plus anchor.
+fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<Validated> {
     let out = anodizer()
         .current_dir(root)
         .args(tag_args)
@@ -1489,13 +1527,17 @@ fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<(String, Strin
     );
     assert!(out.status.success(), "{mode}: tag failed: {combined}");
 
-    let mut pairs: Vec<(String, String)> = combined
+    let mut pairs: Vec<Validated> = combined
         .lines()
         .filter_map(|line| {
             let rest = line.split_once(" occurrence(s) of ")?.1;
             let (old, rest) = rest.split_once(' ')?;
-            let file = rest.split_once(" in ")?.1;
-            Some((file.trim().to_string(), old.to_string()))
+            let target = rest.split_once(" in ")?.1.trim();
+            let (file, anchor) = match target.split_once(" (match ") {
+                Some((file, anchor)) => (file, Some(anchor.trim_end_matches(')').to_string())),
+                None => (target, None),
+            };
+            Some((file.to_string(), anchor, old.to_string()))
         })
         .collect();
     pairs.sort();
@@ -1526,7 +1568,11 @@ fn assert_tag_covers_what_check_validates(root: &Path, mode: &str, tag_args: &[&
 #[test]
 fn tag_and_check_agree_in_every_config_mode() {
     let single = TempDir::new().unwrap();
-    single_crate_fixture(single.path(), "appVersion: v0.1.0\n", "      - Chart.yaml");
+    single_crate_fixture(
+        single.path(),
+        "appVersion: v0.1.0\npin: v0.1.0\n",
+        "      - Chart.yaml\n      - path: Chart.yaml\n        match: 'pin: v{version}'",
+    );
     assert_tag_covers_what_check_validates(
         single.path(),
         "single-crate",
@@ -1546,10 +1592,14 @@ fn tag_and_check_agree_in_every_config_mode() {
     );
 
     let per_crate = TempDir::new().unwrap();
-    shared_file_fixture(
+    shared_file_fixture_enrolled(
         per_crate.path(),
         &[("core", "0.1.0"), ("cli", "0.1.0")],
-        "both at 0.1.0\n",
+        "both at 0.1.0\npin: v0.1.0\n",
+        &[
+            "      - shared.md\n",
+            "      - path: shared.md\n        match: 'pin: v{version}'\n",
+        ],
     );
     assert_tag_covers_what_check_validates(per_crate.path(), "per-crate", &["tag", "--dry-run"]);
 
@@ -1580,7 +1630,7 @@ fn lockstep_with_crates_fixture(root: &Path) {
     )
     .unwrap();
     fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
-    fs::write(root.join("OWN.md"), "a is at 0.1.0\n").unwrap();
+    fs::write(root.join("OWN.md"), "a is at 0.1.0\npin: v0.1.0\n").unwrap();
     fs::write(root.join("TOP.md"), "top says 0.1.0\n").unwrap();
     fs::write(
         root.join(".anodizer.yaml"),
@@ -1590,6 +1640,8 @@ crates:
     path: crates/a
     version_files:
       - OWN.md
+      - path: OWN.md
+        match: 'pin: v{version}'
 version_files:
   - TOP.md
 "#,
@@ -1713,9 +1765,92 @@ fn every_bump_leaves_check_version_files_in_sync() {
     assert_bump_leaves_check_in_sync(per_crate.path(), "per-crate", &["tag", "--no-push"]);
 }
 
-/// The repo-level bump writes no manifest when it owns none: several declared
-/// crates dispatch elsewhere, and a lone declared crate that never opted into
-/// `version_sync` keeps its manifest (and, with it, its enrolled files) untouched.
+/// Several declared crates dispatch to the per-crate path, so the repo-level
+/// bump — the one that demands a readable manifest — never runs: each crate
+/// writes its OWN manifest at its own version, and the workspace root, which
+/// carries no `[package]`, is never written and never refused.
+#[test]
+fn several_declared_crates_write_no_repo_level_manifest() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    split_bump_fixture(
+        root,
+        "0.1.0",
+        &[
+            ("chart.yaml", "operator 0.1.0\n"),
+            ("other.yaml", "csi 0.1.0\n"),
+        ],
+        "      - chart.yaml\n",
+        "      - other.yaml\n",
+    );
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+
+    assert!(
+        read(root, "crates/operator/Cargo.toml").contains("version = \"0.2.0\""),
+        "operator manifest not written by its own bump"
+    );
+    assert!(
+        read(root, "crates/csi/Cargo.toml").contains("version = \"0.1.1\""),
+        "csi manifest not written by its own bump"
+    );
+    assert_eq!(
+        read(root, "Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/operator\", \"crates/csi\"]\nresolver = \"2\"\n",
+        "the repo-level bump wrote the workspace root"
+    );
+}
+
+/// A lone declared crate that never opted into `version_sync` owns no manifest
+/// write, and the top-level enrollment rides on that same opt-in: the
+/// repo-level bump leaves the `[package].version` AND the enrolled files
+/// exactly where they are, so nothing in the tree claims a version the crate
+/// never took.
+#[test]
+fn lone_declared_crate_without_version_sync_keeps_its_manifest() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    one_declared_crate_fixture_syncing(root, false);
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    assert!(
+        !combined.contains("sync version in"),
+        "a crate without version_sync had its manifest synced: {combined}"
+    );
+    assert_eq!(
+        read(root, "crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+    );
+    assert_eq!(read(root, "README.md"), "app is at 0.1.0\npin: v0.1.0\n");
+    assert_eq!(
+        show_head(root, "README.md"),
+        "app is at 0.1.0\npin: v0.1.0\n"
+    );
+}
+
+/// The manifest the repo-level bump writes is the one `check version-files`
+/// reads back: a lone declared crate that opted into `version_sync` has ITS
+/// manifest planned, not the workspace root's.
 #[test]
 fn repo_level_manifest_is_the_one_check_reads() {
     let one_crate = TempDir::new().unwrap();
