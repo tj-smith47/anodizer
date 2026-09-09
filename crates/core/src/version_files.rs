@@ -323,14 +323,16 @@ pub fn check_version_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_sources::{is_test_source_path, production_half};
     use std::fs;
     use tempfile::TempDir;
 
     /// Every regex over a VERSION in the version_files population is built by
-    /// one of two functions here. A second builder is exactly the drift fix
-    /// round 2 removed (`version_regexes` beside `occurrence_regex`, one used by
-    /// `tag` and one by `check`), and nothing mechanical stopped it coming back:
-    /// this walk does, across every file either command resolves through.
+    /// one of two functions here. A second builder is exactly the drift that
+    /// once split `tag` from `check` (`version_regexes` beside
+    /// `occurrence_regex`, one used by each), and nothing mechanical stopped it
+    /// coming back: this walk does, across the production half of every file
+    /// either command resolves through.
     ///
     /// The two rollback entries are the deliberate exception, named here rather
     /// than pattern-matched away: they validate a TAG REF's grammar, never a
@@ -367,7 +369,9 @@ mod tests {
         let mut owners: Vec<(String, String)> = Vec::new();
         for source in &sources {
             let text = fs::read_to_string(source).expect("read source");
-            let lines: Vec<&str> = text.lines().collect();
+            // A test that exercises a matcher spells a version too; only the
+            // production half can introduce a matcher.
+            let lines: Vec<&str> = production_half(&text).lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if !line.contains("Regex::new") && !line.contains("RegexBuilder") {
                     continue;
@@ -453,9 +457,7 @@ mod tests {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 collect_rust_sources(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !crate::test_helpers::test_sources::is_test_source_path(&path)
-            {
+            } else if path.extension().is_some_and(|e| e == "rs") && !is_test_source_path(&path) {
                 out.push(path);
             }
         }

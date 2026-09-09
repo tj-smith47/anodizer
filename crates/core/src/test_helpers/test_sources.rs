@@ -12,6 +12,8 @@
 //! - [`is_test_source_path`] mirrors `is_test_file` rule for rule.
 //! - [`declared_under_test_cfg`] checks the premise behind the name match —
 //!   the parent module really does declare the file under a test-only `cfg`.
+//! - [`production_half`] finds where a production file's inline test module
+//!   starts, so a walk over production code stops before it.
 
 use std::path::{Path, PathBuf};
 
@@ -173,6 +175,44 @@ pub fn is_test_only_cfg(line: &str) -> bool {
         .strip_prefix("#[cfg(")
         .and_then(split_group)
         .is_some_and(|(predicate, _)| predicate_is_test_only(predicate))
+}
+
+/// The production half of one Rust source file: everything before its inline
+/// test module. That module starts at the first top-level `#[cfg(…)]` that is
+/// test-only ([`is_test_only_cfg`]) and gates an item written out in place
+/// (`mod tests {` …). A `mod tests;` declaration does not start one — its body
+/// is a file the name rules already classify, and production items follow the
+/// declaration — and neither does a `cfg` nested inside another item. A file
+/// with no inline test module is returned whole.
+///
+/// ```
+/// # use anodizer_core::test_helpers::test_sources::production_half;
+/// let inline = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() {}\n}\n";
+/// assert_eq!(production_half(inline), "fn a() {}\n");
+/// let sibling = "#[cfg(test)]\nmod tests;\nfn a() {}\n";
+/// assert_eq!(production_half(sibling), sibling);
+/// ```
+pub fn production_half(text: &str) -> &str {
+    let mut offset = 0usize;
+    let mut cfg_at: Option<usize> = None;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("#[cfg(") && is_test_only_cfg(line) {
+            cfg_at.get_or_insert(offset);
+        } else if let Some(start) = cfg_at
+            && !line.starts_with("#[")
+            && !line.starts_with("//")
+            && !line.trim().is_empty()
+        {
+            // The gated item itself: a body opened in place is the inline test
+            // module; anything else (a declaration, a `use`) is not.
+            if line.trim_end().ends_with('{') {
+                return &text[..start];
+            }
+            cfg_at = None;
+        }
+        offset += line.len();
+    }
+    text
 }
 
 /// Split `rest` — the text after an opening `(` — at the `)` that closes it,
@@ -457,6 +497,31 @@ mod tests {
     }
 
     /// The three name rules, and the shapes that look like them but are not.
+    /// The inline test module starts at a top-level test-only `cfg` gating a
+    /// body opened in place — the `all(test, …)` spelling included — and the
+    /// production text before it is returned byte-exact.
+    #[test]
+    fn production_half_stops_at_the_inline_test_module() {
+        let src = "fn a() {}\n\n#[cfg(all(test, unix))]\n/// docs\n#[allow(dead_code)]\nmod tests {\n    fn b() {}\n}\n";
+        assert_eq!(production_half(src), "fn a() {}\n\n");
+    }
+
+    /// A `mod tests;` declaration names a sibling file the name rules
+    /// classify; the production items after it stay in the production half.
+    #[test]
+    fn production_half_keeps_the_items_after_a_sibling_declaration() {
+        let src = "#[cfg(test)]\nmod tests;\n\nfn later() {}\n";
+        assert_eq!(production_half(src), src);
+    }
+
+    /// Neither a non-test `cfg` nor a test `cfg` nested inside another item
+    /// starts the inline test module.
+    #[test]
+    fn production_half_ignores_non_test_and_nested_cfgs() {
+        let src = "#[cfg(unix)]\nmod posix {\n    #[cfg(test)]\n    mod inner {}\n}\n#[cfg(not(test))]\nfn prod() {}\n";
+        assert_eq!(production_half(src), src);
+    }
+
     #[test]
     fn name_rules_match_the_awk_lexer() {
         for path in [

@@ -5474,7 +5474,9 @@ mod authenticode {
 mod cosign_tuf_race {
     use super::*;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
-    use anodizer_core::test_helpers::test_sources::{declared_under_test_cfg, is_test_source_path};
+    use anodizer_core::test_helpers::test_sources::{
+        declared_under_test_cfg, is_test_source_path, production_half,
+    };
     use std::path::Path;
 
     /// A keyless cosign sign config pointed at a stub script named `cosign`,
@@ -6616,8 +6618,7 @@ mod cosign_tuf_race {
         for source in sources {
             let text = std::fs::read_to_string(&source).expect("read source");
             // Test modules stub cosign rather than spawning it for real.
-            let production = text.split("\n#[cfg(").next().expect("production half");
-            for body in function_bodies(production) {
+            for body in function_bodies(production_half(&text)) {
                 if !KEYLESS.iter().any(|m| body.contains(m)) {
                     continue;
                 }
