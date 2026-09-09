@@ -37,6 +37,7 @@ use crate::command::{
     SNAPCRAFT_PROBE_TIMEOUT, SNAPCRAFT_UPLOAD_TIMEOUT, is_snap_absent_from_store,
     snap_newest_revisions_in_channel_by_arch, snap_revisions_for_version_by_arch,
     snapcraft_list_revisions_command, snapcraft_release_command, snapcraft_whoami_command,
+    validate_snap_channel,
 };
 
 /// The snapcraft promotion capability. Zero-sized; all state comes from the
@@ -69,6 +70,13 @@ impl Promotable for SnapcraftPromoter {
                  `anodizer promote --publishers snapcraft` needs a `snapcrafts:` block"
             );
         }
+
+        // Validated before the dry-run early return: a dry-run is exactly where
+        // an operator expects to learn the channel is wrong, and the Snap Store
+        // would otherwise only refuse a typo after authenticating and resolving
+        // a revision.
+        validate_snap_channel(&req.from).context("promote --from")?;
+        validate_snap_channel(&req.to).context("promote --to")?;
 
         // The `from` shown in the folded outcome names the source the selector
         // actually targets (`--version`/`--from-run`), not the canonical track.
@@ -676,6 +684,54 @@ Rev    Uploaded              Arches  Version  Channels
             PromoteStatus::Skipped(PromoteSkipReason::NothingToPromote)
         );
         assert_eq!(out.from, "run run42");
+    }
+
+    /// Build a dry-run request against a one-snap fixture with the given
+    /// channel pair, so the channel-grammar tests share one shape.
+    fn dry_run_promote(from: &str, to: &str) -> Result<PromoteOutcome> {
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
+        let selector = PromoteSelector::Newest;
+        let req = PromoteRequest {
+            from: from.to_string(),
+            to: to.to_string(),
+            selector: &selector,
+            dry_run: true,
+            ctx: &ctx,
+        };
+        SnapcraftPromoter.promote(&req)
+    }
+
+    #[test]
+    fn promote_rejects_invalid_to_channel_before_the_dry_run_branch() {
+        let err = dry_run_promote("candidate", "lastest")
+            .expect_err("a malformed --to must be refused even under --dry-run");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid snapcraft channel 'lastest'"),
+            "the refusal must quote the bad channel; got {msg}"
+        );
+        assert!(
+            msg.contains("promote --to"),
+            "the refusal must name which flag was wrong; got {msg}"
+        );
+    }
+
+    #[test]
+    fn promote_rejects_invalid_from_channel() {
+        let err = dry_run_promote("totally/bogus", "stable")
+            .expect_err("a malformed --from must be refused: it selects the source revisions");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("promote --from"),
+            "the refusal must name --from, not --to; got {msg}"
+        );
+    }
+
+    #[test]
+    fn promote_accepts_a_track_qualified_channel() {
+        let out = dry_run_promote("latest/candidate", "latest/stable")
+            .expect("a track-qualified channel is legal snap grammar");
+        assert_eq!(out.status, PromoteStatus::DryRun);
     }
 
     #[test]

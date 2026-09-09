@@ -15,14 +15,21 @@ This is the "release candidate" workflow: publish `1.4.0` to a candidate track,
 let it soak, then promote the exact reviewed revision to stable once you trust
 it.
 
-```bash
+```console
 # Publish a candidate (in your release config / pipeline), then later:
-$ anodizer promote --to stable
-   • promoted snapcraft anodizer rev 42 candidate→stable
-   • re-tagged npm anodizer@1.4.0 next→latest
-   • re-pointed docker ghcr.io/acme/app:edge → ghcr.io/acme/app:latest
-   • flipped github release v1.4.0 prerelease→stable
+$ anodizer promote --to stable --dry-run
+   • (dry-run) would promote snapcraft app newest candidate→stable
+   • (dry-run) would promote npm newest next→latest
+   • (dry-run) would promote docker ghcr.io/acme/app:edge → ghcr.io/acme/app:latest
+   • (dry-run) would flip github release newest on acme/app (prerelease→stable)
+   • snapcraft: candidate→stable (dry-run)
+   • npm: next→latest (dry-run)
+   • docker: 1 image(s) edge→latest (dry-run)
+   • github: 1 release(s) prerelease→stable (dry-run)
 ```
+
+Every run prints two registers: one line per artifact the publisher acted on,
+then one folded summary line per publisher. Drop `--dry-run` to apply it.
 
 ## No config block — and why
 
@@ -57,6 +64,47 @@ tag, otherwise `next`.
 `--from` (default `prerelease`) is the source track. It is informational for the
 publishers that locate the artifact by version or by "newest pre-release"; it
 selects the source floating tag for docker.
+
+### Snapcraft channel grammar
+
+Both `--from` and `--to` are checked against the Snap Store's channel grammar
+before anything is spawned — including under `--dry-run`, which is exactly
+where a typo should surface. The form is `[<track>/]<risk>[/<branch>]`, with
+`<risk>` one of `stable`, `candidate`, `beta`, `edge`:
+
+| Accepted | Rejected |
+|---|---|
+| `stable`, `candidate`, `beta`, `edge` | `lastest`, `chanidate` — no risk word |
+| `latest/candidate`, `2.x/stable` | `totally/bogus` — no risk word |
+| `stable/hotfix-1` | `a/b/stable` — two tracks |
+| `latest/stable/hotfix-1` | `stable/beta` — two risk words |
+
+```console
+$ anodizer promote --to lastest --publishers snapcraft --dry-run
+   • snapcraft: candidate→lastest (failed: promote --to: invalid snapcraft channel 'lastest': expected [<track>/]<risk>[/<branch>] with <risk> one of stable, candidate, beta, edge (e.g. stable, latest/candidate, 2.x/stable, latest/stable/hotfix-1))
+       Error 1 publisher(s) failed to promote: snapcraft
+```
+
+The same check runs on every rendered `snapcrafts[].channel_templates` entry
+during a publish, so a template that only resolves to a bad channel at upload
+time is caught before `snapcraft upload --release=` sees it.
+
+## Promoting a snap from candidate to stable
+
+The classic soak workflow: publish to `candidate`, test the real snap, then move
+that exact revision to `stable`.
+
+```console
+$ anodizer promote --to stable --from candidate --publishers snapcraft --dry-run
+   • (dry-run) would promote snapcraft myapp newest candidate→stable
+   • snapcraft: candidate→stable (dry-run)
+```
+
+Drop `--dry-run` to apply it. A live run resolves the concrete revision per
+architecture (`snapcraft list-revisions`), releases each one
+(`snapcraft release <name> <rev> stable`), and prints a `promoted snap <name>
+revision <rev> candidate→stable` result line per revision followed by the
+folded per-publisher summary.
 
 ## Selecting which artifact to promote
 
@@ -123,13 +171,21 @@ before the first registry is touched, never halfway through.
 `--dry-run` resolves the full plan and prints exactly what would happen, running
 no external command and requiring no credential:
 
-```bash
+```console
 $ anodizer promote --to stable --dry-run
-   • (dry-run) would promote snapcraft newest candidate→stable
+   • (dry-run) would promote snapcraft app newest candidate→stable
    • (dry-run) would promote npm newest next→latest
-   • (dry-run) would re-point docker ghcr.io/acme/app:edge → ghcr.io/acme/app:latest
+   • (dry-run) would promote docker ghcr.io/acme/app:edge → ghcr.io/acme/app:latest
    • (dry-run) would flip github release newest on acme/app (prerelease→stable)
+   • snapcraft: candidate→stable (dry-run)
+   • npm: next→latest (dry-run)
+   • docker: 1 image(s) edge→latest (dry-run)
+   • github: 1 release(s) prerelease→stable (dry-run)
 ```
+
+The snapcraft dry-run names the **selector**, not a concrete revision:
+resolving one needs a `snapcraft list-revisions` round-trip, and `--dry-run`
+deliberately runs no external command and needs no credential.
 
 Run the dry-run first whenever you are unsure which artifact the selector
 resolves to.

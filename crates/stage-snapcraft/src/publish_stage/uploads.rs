@@ -13,7 +13,7 @@ use anodizer_core::run::run_capture_timeout;
 use crate::arch::triple_to_snap_arch;
 use crate::command::{
     first_channel_rejected_for_prerelease_snap, is_content_dedup_rejection, is_retriable_snap_push,
-    resolve_effective_channels, snapcraft_upload_command,
+    resolve_effective_channels, snapcraft_upload_command, validate_snap_channel,
 };
 use crate::targets::SnapcraftTarget;
 
@@ -172,6 +172,23 @@ pub(crate) fn run_uploads(
                         rendered_grade.as_deref(),
                         snap_cfg.confinement.as_deref(),
                     );
+
+                    // The rendered value is the first place a channel string
+                    // exists in its final form: `gate.rs` deliberately checks
+                    // the raw templates, where `{{ .Env.CHANNEL }}` cannot be
+                    // graded. A typo reaching `snapcraft upload --release=` is
+                    // only refused by the store after the whole build.
+                    if let Some(channels) = effective_channels.as_deref() {
+                        for channel in channels {
+                            validate_snap_channel(channel).with_context(|| {
+                                format!(
+                                    "snapcraft: crate '{}' channel_templates rendered to an \
+                                     invalid channel",
+                                    krate.name
+                                )
+                            })?;
+                        }
+                    }
 
                     // Re-check the RENDERED channels/grade against the same
                     // pre-release restriction the build stage validates on

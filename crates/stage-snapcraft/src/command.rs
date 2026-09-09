@@ -289,6 +289,44 @@ fn channel_risk(channel: &str) -> &str {
         .unwrap_or(channel)
 }
 
+/// Validate a Snap Store channel string against the store's grammar,
+/// `[<track>/]<risk>[/<branch>]`, where `<risk>` is one of [`KNOWN_RISKS`].
+///
+/// The Snap Store rejects a malformed channel only after authenticating and
+/// resolving a revision, so an operator typo in `promote --to` or in a
+/// rendered `channel_templates` entry would otherwise surface as a late store
+/// error — or, under `--dry-run`, not at all. Segments are matched
+/// case-insensitively, the same way [`channel_risk`] matches.
+pub(crate) fn validate_snap_channel(channel: &str) -> anyhow::Result<()> {
+    let segments: Vec<&str> = channel.split('/').collect();
+    let shaped = segments.len() <= 3
+        && segments
+            .iter()
+            .all(|s| !s.is_empty() && !s.contains(|c: char| c.is_ascii_whitespace()));
+    let risk_positions: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| KNOWN_RISKS.iter().any(|r| r.eq_ignore_ascii_case(s)))
+        .map(|(i, _)| i)
+        .collect();
+    // Exactly one risk segment, at most one track before it and at most one
+    // branch after it — the grammar is positional around the risk word, not
+    // around the segment count, since a bare `stable` and a full
+    // `latest/stable/hotfix-1` are both legal.
+    let placed = risk_positions.len() == 1
+        && risk_positions[0] <= 1
+        && segments.len() - 1 - risk_positions[0] <= 1;
+    if shaped && placed {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "invalid snapcraft channel '{channel}': expected [<track>/]<risk>[/<branch>] \
+         with <risk> one of {} (e.g. stable, latest/candidate, 2.x/stable, \
+         latest/stable/hotfix-1)",
+        KNOWN_RISKS.join(", ")
+    )
+}
+
 /// Return `true` when a `list-revisions` data row's `Arches` column matches
 /// `arch` (case-insensitive, exact). Each row is minted by one
 /// architecture-specific `snapcraft upload`, so the column holds exactly one
@@ -513,6 +551,70 @@ pub fn is_content_dedup_rejection(combined_output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_track_risk_branch() {
+        for channel in [
+            "stable",
+            "candidate",
+            "beta",
+            "edge",
+            "latest/candidate",
+            "2.x/stable",
+            "stable/hotfix-1",
+            "latest/stable/hotfix-1",
+            "STABLE",
+            "Latest/Beta",
+        ] {
+            assert!(
+                validate_snap_channel(channel).is_ok(),
+                "a well-formed channel must validate: {channel:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_risk_level() {
+        for channel in [
+            "not-a-risk",
+            "chanidate",
+            "totally/bogus",
+            "a/b/stable",
+            "latest/stable/hot/fix",
+            "stable/beta",
+            "",
+            "latest/",
+            "/stable",
+            "beta/ /x",
+        ] {
+            let err = validate_snap_channel(channel)
+                .expect_err("a malformed channel must be rejected before the store sees it");
+            let msg = format!("{err:#}");
+            for risk in KNOWN_RISKS {
+                assert!(
+                    msg.contains(risk),
+                    "the refusal must name every accepted risk; {channel:?} gave {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_snap_channel_reads_the_known_risks_ssot() {
+        // Walks the vocabulary rather than a literal list, so a fifth risk
+        // added to KNOWN_RISKS is covered without editing this test.
+        for risk in KNOWN_RISKS {
+            assert!(
+                validate_snap_channel(risk).is_ok(),
+                "every KNOWN_RISKS entry must validate bare: {risk}"
+            );
+            let tracked = format!("latest/{risk}");
+            assert!(
+                validate_snap_channel(&tracked).is_ok(),
+                "every KNOWN_RISKS entry must validate track-qualified: {tracked}"
+            );
+        }
+    }
 
     #[test]
     fn absence_probe_matches_only_genuine_snap_absence() {
