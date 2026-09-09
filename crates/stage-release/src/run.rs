@@ -11,8 +11,9 @@ use crate::flags::{
     warn_unsupported_nightly_retention,
 };
 use crate::release_body::{
-    build_release_body, collect_extra_files, render_nondeterministic_exemptions_block,
-    resolve_content_source, resolve_header_footer,
+    build_release_body, collect_extra_files, compose_release_trailer, full_changelog_element,
+    render_nondeterministic_exemptions_block, resolve_content_source, resolve_header_footer,
+    resolve_release_footer,
 };
 use crate::{
     compose_release_url, gitea, github, gitlab, populate_artifact_download_urls,
@@ -608,7 +609,7 @@ pub(crate) fn assemble_artifact_entries(
 /// `{{ .Checksums }}` lives by convention) so the notice unambiguously
 /// precedes any checksums the user templated into the body. Blank-line
 /// separator so markdown consumers treat it as a distinct paragraph.
-fn compose_full_release_body(
+pub(crate) fn compose_full_release_body(
     ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
     crate_name: &str,
@@ -639,11 +640,6 @@ fn compose_full_release_body(
         ctx.stage_outputs.changelog_header.as_deref(),
     )
     .map(str::to_owned);
-    let rendered_footer = resolve_header_footer(
-        release_footer.as_deref(),
-        ctx.stage_outputs.changelog_footer.as_deref(),
-    )
-    .map(str::to_owned);
 
     let exemptions = ctx
         .determinism
@@ -657,10 +653,21 @@ fn compose_full_release_body(
     } else {
         format!("{}\n{}", exemptions, changelog_body)
     };
+    let footer = resolve_release_footer(
+        release_footer.as_deref(),
+        ctx.stage_outputs.changelog_footer.as_deref(),
+    );
+    // A body or footer that still hand-writes the link (github-native notes,
+    // or a consumer config not yet migrated to the derived one) must not have
+    // it printed twice.
+    let already_linked = changelog_with_exemptions.contains("**Full Changelog**:")
+        || footer.contains("**Full Changelog**:");
+    let link = full_changelog_element(ctx, release_cfg, already_linked)?;
+    let trailer = compose_release_trailer(link.as_deref(), footer);
     Ok(build_release_body(
         &changelog_with_exemptions,
         rendered_header.as_deref(),
-        rendered_footer.as_deref(),
+        trailer.as_deref(),
     ))
 }
 

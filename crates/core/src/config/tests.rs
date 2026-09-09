@@ -11075,3 +11075,17 @@ fn crate_universe_warns_when_name_collides_with_different_paths() {
         "warn must show the dropped path: {w}"
     );
 }
+
+#[test]
+fn full_changelog_link_parses_and_defaults() {
+    let cfg: ReleaseConfig = serde_yaml_ng::from_str("full_changelog_link: false").unwrap();
+    assert_eq!(cfg.full_changelog_link, Some(false));
+    assert!(!cfg.resolved_full_changelog_link());
+
+    let omitted: ReleaseConfig = serde_yaml_ng::from_str("draft: true").unwrap();
+    assert_eq!(omitted.full_changelog_link, None);
+    assert!(
+        omitted.resolved_full_changelog_link(),
+        "the derived compare link is opt-out, not opt-in"
+    );
+}

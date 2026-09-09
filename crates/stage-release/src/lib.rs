@@ -227,6 +227,43 @@ pub(crate) fn compose_release_url(
     }
 }
 
+/// Build the compare URL between two tags on the release forge.
+///
+/// The web-UI counterpart of [`compose_release_url`], with the same
+/// `(token_type, download_base, owner, repo, …)` inputs, so the release page
+/// and the release body's `**Full Changelog**` link can never disagree about a
+/// host. GitLab omits the `/{owner}` segment when `owner` is empty, matching
+/// [`compose_release_url`].
+///
+/// - GitHub / Gitea: `{base}/{owner}/{repo}/compare/{from}...{to}`
+/// - GitLab: `{base}/{owner}/{repo}/-/compare/{from}...{to}`
+///
+/// Refs are inserted verbatim, not percent-encoded: a monorepo tag
+/// (`subproject1/v1.2.3`) must keep its `/` for the forge to resolve the ref,
+/// and `+` in a build-metadata tag is a literal in a URL path.
+pub(crate) fn compose_compare_url(
+    token_type: ScmTokenType,
+    download_base: &str,
+    owner: &str,
+    repo: &str,
+    from: &str,
+    to: &str,
+) -> String {
+    let base = download_base.trim_end_matches('/');
+    match token_type {
+        ScmTokenType::GitHub | ScmTokenType::Gitea => {
+            format!("{}/{}/{}/compare/{}...{}", base, owner, repo, from, to)
+        }
+        ScmTokenType::GitLab => {
+            if owner.is_empty() {
+                format!("{}/{}/-/compare/{}...{}", base, repo, from, to)
+            } else {
+                format!("{}/{}/{}/-/compare/{}...{}", base, owner, repo, from, to)
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
 // ---------------------------------------------------------------------------

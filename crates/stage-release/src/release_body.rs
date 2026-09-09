@@ -7,7 +7,7 @@
 //! template. Lifted out of the ReleaseStage monolith so the body-shape
 //! decisions are reviewable in one place.
 
-use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig};
+use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, ReleaseConfig};
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
@@ -29,29 +29,120 @@ pub(crate) fn resolve_header_footer<'a>(
     release_value.or(changelog_value)
 }
 
+/// Resolve the release-body footer, applying the default attribution line.
+///
+/// REPLACE semantics: a configured `release.footer` (or, as today's fallback,
+/// `changelog.footer`) replaces [`ReleaseConfig::DEFAULT_FOOTER`] rather than
+/// stacking with it. An explicit `release.footer: ""` resolves to the empty
+/// string, which [`build_release_body`] drops — the documented opt-out.
+pub(crate) fn resolve_release_footer<'a>(
+    release_value: Option<&'a str>,
+    changelog_value: Option<&'a str>,
+) -> &'a str {
+    resolve_header_footer(release_value, changelog_value).unwrap_or(ReleaseConfig::DEFAULT_FOOTER)
+}
+
+/// Join the derived Full-Changelog element and the footer into the single
+/// trailing block [`build_release_body`] separates from the changelog with a
+/// blank line.
+///
+/// The two are joined by ONE newline (a markdown soft break) so the shipped
+/// layout — rule, link, attribution — stays a single trailing paragraph.
+/// Returns `None` when neither element has content, so a body with no trailer
+/// renders exactly as it did before either existed.
+pub(crate) fn compose_release_trailer(link: Option<&str>, footer: &str) -> Option<String> {
+    match (link, footer.is_empty()) {
+        (Some(l), false) => Some(format!("{l}\n{footer}")),
+        (Some(l), true) => Some(l.to_string()),
+        (None, false) => Some(footer.to_string()),
+        (None, true) => None,
+    }
+}
+
+/// Render the derived `**Full Changelog**` element for one crate's release
+/// body, or `None` when it must be omitted.
+///
+/// Omitted when: the crate opted out (`release.full_changelog_link: false`);
+/// no previous tag exists in this release's tag family (a first release — a
+/// compare URL with an empty lower bound 404s); no `release.<provider>` block
+/// resolves; or `already_linked` is set because the changelog body or the
+/// resolved footer already carries a `**Full Changelog**:` line.
+///
+/// The compare bounds are the context's `Tag` / `PreviousTag` template vars —
+/// the same pair a hand-written footer used, and, under a per-crate release,
+/// the crate's OWN family tags. Under a configured `monorepo.tag_prefix` those
+/// two vars are prefix-stripped, so the `Prefixed*` variants (which hold the
+/// real git refs) are used instead.
+///
+/// The repo is the one this release publishes to, NOT the `origin` remote: a
+/// `release.provider:` cross-publish must link against the forge the release
+/// lands on. A nightly `publish_repo` override is applied inside the GitHub
+/// backend, after this runs, and is deliberately not honoured here — the tags
+/// being compared live in the source repo.
+pub(crate) fn full_changelog_element(
+    ctx: &Context,
+    release_cfg: &ReleaseConfig,
+    already_linked: bool,
+) -> Result<Option<String>> {
+    if already_linked || !release_cfg.resolved_full_changelog_link() {
+        return Ok(None);
+    }
+    let (tag_var, prev_var) = if ctx.config.monorepo_tag_prefix().is_some() {
+        ("PrefixedTag", "PrefixedPreviousTag")
+    } else {
+        ("Tag", "PreviousTag")
+    };
+    let vars = ctx.template_vars();
+    let (Some(tag), Some(prev)) = (vars.get(tag_var), vars.get(prev_var)) else {
+        return Ok(None);
+    };
+    if tag.is_empty() || prev.is_empty() {
+        return Ok(None);
+    }
+    let (tag, prev) = (tag.to_string(), prev.to_string());
+    let Some(repo) =
+        anodizer_core::download_url::resolve_release_repo(release_cfg, ctx.token_type, ctx)?
+    else {
+        return Ok(None);
+    };
+    if repo.owner.is_empty() && repo.name.is_empty() {
+        return Ok(None);
+    }
+    let base = anodizer_core::download_url::default_download_base(ctx);
+    let url =
+        crate::compose_compare_url(ctx.token_type, &base, &repo.owner, &repo.name, &prev, &tag);
+    Ok(Some(format!("---\n**Full Changelog**: {url}")))
+}
+
 /// Construct the release body by wrapping the changelog with optional
 /// header and footer from the release config.
+///
+/// Each part's own trailing newlines are dropped before the join: a YAML block
+/// scalar (`header: |`) carries one, and keeping it would render a second
+/// blank line between the header and the changelog that the author never
+/// wrote. The join owns the separation.
 pub(crate) fn build_release_body(
     changelog_body: &str,
     header: Option<&str>,
     footer: Option<&str>,
 ) -> String {
+    let trimmed = |s: &str| -> usize { s.trim_end_matches('\n').len() };
     let mut parts: Vec<&str> = Vec::new();
 
     if let Some(h) = header
-        && !h.is_empty()
+        && trimmed(h) > 0
     {
-        parts.push(h);
+        parts.push(&h[..trimmed(h)]);
     }
 
-    if !changelog_body.is_empty() {
-        parts.push(changelog_body);
+    if trimmed(changelog_body) > 0 {
+        parts.push(&changelog_body[..trimmed(changelog_body)]);
     }
 
     if let Some(f) = footer
-        && !f.is_empty()
+        && trimmed(f) > 0
     {
-        parts.push(f);
+        parts.push(&f[..trimmed(f)]);
     }
 
     if parts.is_empty() {

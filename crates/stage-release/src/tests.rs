@@ -7,7 +7,7 @@ fn tlog() -> &'static anodizer_core::log::StageLogger {
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
-    PrereleaseConfig, ReleaseConfig, StringOrBool,
+    PrereleaseConfig, ReleaseConfig, ScmRepoConfig, StringOrBool,
 };
 use anodizer_core::release_tag::resolve_release_tag;
 use anodizer_core::scm::ScmTokenType;
@@ -18,13 +18,14 @@ use super::ReleaseStage;
 use super::github::build_octocrab_client;
 use super::release_body::{
     GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
-    build_release_json, collect_extra_files, compose_body_for_mode,
-    render_nondeterministic_exemptions_block, resolve_content_source, resolve_header_footer,
-    resolve_make_latest,
+    build_release_json, collect_extra_files, compose_body_for_mode, compose_release_trailer,
+    full_changelog_element, render_nondeterministic_exemptions_block, resolve_content_source,
+    resolve_header_footer, resolve_make_latest, resolve_release_footer,
 };
+use super::run::compose_full_release_body;
 use super::{
-    compose_release_url, populate_artifact_download_urls, populate_checksums_var, retry_upload,
-    should_mark_prerelease,
+    compose_compare_url, compose_release_url, populate_artifact_download_urls,
+    populate_checksums_var, retry_upload, should_mark_prerelease,
 };
 
 #[test]
@@ -518,6 +519,260 @@ fn test_build_release_body_empty_changelog() {
 fn test_build_release_body_all_empty() {
     let body = build_release_body("", None, None);
     assert_eq!(body, "");
+}
+
+// ---- derived Full Changelog link + default attribution footer ----
+
+/// The exact release body anodizer shipped for v0.25.2, when its footer was
+/// still hand-written in `.anodizer.yaml`. The derived link and the default
+/// footer must reproduce it byte for byte.
+const SHIPPED_V0_25_2_BODY: &str = "## What's new in v0.25.2\n\n## Changelog\n\n### Bug Fixes\n\n* 33c33e69b1e5 reject an <Environment> wxs on a wixl too old to parse it (@tj-smith47)\n* 09c47e98e003 drive cpio directly instead of a pipefail shell pipeline (@tj-smith47)\n\n---\n**Full Changelog**: https://github.com/tj-smith47/anodizer/compare/v0.25.1...v0.25.2\nReleased with [anodizer](https://github.com/tj-smith47/anodizer) 🦀\n";
+
+const V0_25_2_CHANGELOG: &str = "## Changelog\n\n### Bug Fixes\n\n* 33c33e69b1e5 reject an <Environment> wxs on a wixl too old to parse it (@tj-smith47)\n* 09c47e98e003 drive cpio directly instead of a pipefail shell pipeline (@tj-smith47)";
+
+fn anodizer_release_cfg() -> ReleaseConfig {
+    let mut cfg = ReleaseConfig::default();
+    cfg.github = Some(ScmRepoConfig {
+        owner: "tj-smith47".to_string(),
+        name: "anodizer".to_string(),
+        token: None,
+    });
+    cfg
+}
+
+#[test]
+fn release_body_matches_shipped_v0_25_2_layout() {
+    let ctx = TestContextBuilder::new()
+        .project_name("anodizer")
+        .tag("v0.25.2")
+        .previous_tag(Some("v0.25.1"))
+        .build();
+    let mut cfg = anodizer_release_cfg();
+    cfg.header = Some(ContentSource::Inline(
+        "## What's new in {{ .Tag }}\n".to_string(),
+    ));
+
+    let body = compose_full_release_body(&ctx, &cfg, "anodizer", V0_25_2_CHANGELOG).unwrap();
+
+    assert_eq!(body, SHIPPED_V0_25_2_BODY);
+}
+
+#[test]
+fn block_scalar_header_and_footer_do_not_double_the_blank_line() {
+    // `header: |` / `footer: |` in YAML carry a trailing newline; the join
+    // owns the paragraph break, so the rendered body keeps exactly one blank
+    // line between parts.
+    let body = build_release_body("changes\n", Some("HEADER\n"), Some("FOOTER\n"));
+    assert_eq!(body, "HEADER\n\nchanges\n\nFOOTER\n");
+
+    let only_newlines = build_release_body("changes", Some("\n"), Some("\n\n"));
+    assert_eq!(only_newlines, "changes\n");
+}
+
+#[test]
+fn trailer_defaults_to_link_plus_attribution() {
+    let trailer = compose_release_trailer(
+        Some("---\n**Full Changelog**: U"),
+        ReleaseConfig::DEFAULT_FOOTER,
+    );
+    assert_eq!(
+        trailer.as_deref(),
+        Some(
+            "---\n**Full Changelog**: U\nReleased with [anodizer](https://github.com/tj-smith47/anodizer) 🦀"
+        )
+    );
+}
+
+#[test]
+fn custom_footer_replaces_attribution_and_keeps_link() {
+    let footer = resolve_release_footer(Some("Thanks!"), None);
+    assert_eq!(footer, "Thanks!");
+
+    let trailer = compose_release_trailer(Some("---\n**Full Changelog**: U"), footer).unwrap();
+    assert!(trailer.contains("**Full Changelog**: U"));
+    assert!(!trailer.contains('🦀'));
+    assert_eq!(trailer, "---\n**Full Changelog**: U\nThanks!");
+}
+
+#[test]
+fn empty_release_footer_suppresses_attribution() {
+    let footer = resolve_release_footer(Some(""), None);
+    assert_eq!(footer, "");
+
+    let trailer = compose_release_trailer(Some("---\n**Full Changelog**: U"), footer);
+    assert_eq!(trailer.as_deref(), Some("---\n**Full Changelog**: U"));
+
+    let body = build_release_body("c", None, trailer.as_deref());
+    assert!(!body.contains('🦀'));
+    assert_eq!(body, "c\n\n---\n**Full Changelog**: U\n");
+}
+
+#[test]
+fn changelog_footer_still_falls_back_into_release_body() {
+    assert_eq!(
+        resolve_release_footer(None, Some("changelog-f")),
+        "changelog-f"
+    );
+    assert_eq!(
+        resolve_release_footer(None, None),
+        ReleaseConfig::DEFAULT_FOOTER
+    );
+}
+
+#[test]
+fn link_opt_out_drops_the_element_and_the_rule() {
+    let ctx = TestContextBuilder::new()
+        .tag("v1.2.3")
+        .previous_tag(Some("v1.2.2"))
+        .build();
+    let mut cfg = anodizer_release_cfg();
+    cfg.full_changelog_link = Some(false);
+
+    assert_eq!(full_changelog_element(&ctx, &cfg, false).unwrap(), None);
+
+    let body = compose_full_release_body(&ctx, &cfg, "anodizer", "changes").unwrap();
+    assert!(!body.contains("---"));
+    assert!(
+        body.ends_with("Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀\n")
+    );
+}
+
+#[test]
+fn no_previous_tag_omits_the_link() {
+    let ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .previous_tag(None)
+        .build();
+    let cfg = anodizer_release_cfg();
+
+    assert_eq!(full_changelog_element(&ctx, &cfg, false).unwrap(), None);
+
+    let body = compose_full_release_body(&ctx, &cfg, "anodizer", "changes").unwrap();
+    assert!(!body.contains("**Full Changelog**"));
+    assert_eq!(
+        body,
+        "changes\n\nReleased with [anodizer](https://github.com/tj-smith47/anodizer) 🦀\n"
+    );
+}
+
+#[test]
+fn per_crate_family_tags_bound_the_compare_range() {
+    let mut ctx = TestContextBuilder::new().tag("v0.5.0").build();
+    // The shape `apply_per_crate_tag` writes for a multitrack release: the
+    // crate's own family tags, not the workspace's.
+    ctx.template_vars_mut().set("Tag", "core-v0.5.0");
+    ctx.template_vars_mut().set("PreviousTag", "core-v0.4.0");
+    let cfg = anodizer_release_cfg();
+
+    let link = full_changelog_element(&ctx, &cfg, false).unwrap().unwrap();
+    assert!(
+        link.ends_with("/compare/core-v0.4.0...core-v0.5.0"),
+        "link was {link}"
+    );
+}
+
+#[test]
+fn lockstep_body_carries_exactly_one_link() {
+    let ctx = TestContextBuilder::new()
+        .tag("v0.25.2")
+        .previous_tag(Some("v0.25.1"))
+        .build();
+    let cfg = anodizer_release_cfg();
+    let aggregate = "### anodizer-core\n\n* a change\n\n### anodizer-cli\n\n* another change";
+
+    let body = compose_full_release_body(&ctx, &cfg, "anodizer", aggregate).unwrap();
+
+    assert_eq!(body.matches("**Full Changelog**:").count(), 1);
+}
+
+#[test]
+fn gitea_compare_url_shape() {
+    assert_eq!(
+        compose_compare_url(
+            ScmTokenType::Gitea,
+            "https://gitea.example.com",
+            "o",
+            "r",
+            "v1",
+            "v2"
+        ),
+        "https://gitea.example.com/o/r/compare/v1...v2"
+    );
+}
+
+#[test]
+fn gitlab_compare_url_shape() {
+    assert_eq!(
+        compose_compare_url(
+            ScmTokenType::GitLab,
+            "https://gitlab.com",
+            "o",
+            "r",
+            "v1",
+            "v2"
+        ),
+        "https://gitlab.com/o/r/-/compare/v1...v2"
+    );
+    assert_eq!(
+        compose_compare_url(
+            ScmTokenType::GitLab,
+            "https://gitlab.com",
+            "",
+            "r",
+            "v1",
+            "v2"
+        ),
+        "https://gitlab.com/r/-/compare/v1...v2"
+    );
+}
+
+#[test]
+fn github_native_body_does_not_double_print_the_link() {
+    let ctx = TestContextBuilder::new()
+        .tag("v1.2.3")
+        .previous_tag(Some("v1.2.2"))
+        .build();
+    let cfg = anodizer_release_cfg();
+
+    assert_eq!(full_changelog_element(&ctx, &cfg, true).unwrap(), None);
+
+    // The guard is driven off the composed changelog body, so a
+    // `changelog.use: github-native` body links exactly once.
+    let native = "* a change\n\n**Full Changelog**: https://github.com/tj-smith47/anodizer/compare/v1.2.2...v1.2.3";
+    let body = compose_full_release_body(&ctx, &cfg, "anodizer", native).unwrap();
+    assert_eq!(body.matches("**Full Changelog**:").count(), 1);
+}
+
+#[test]
+fn monorepo_prefix_uses_prefixed_tag_vars() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.monorepo = Some(anodizer_core::config::MonorepoConfig {
+        tag_prefix: Some("sub/".to_string()),
+        ..Default::default()
+    });
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("PreviousTag", "v1.2.2");
+    ctx.template_vars_mut().set("PrefixedTag", "sub/v1.2.3");
+    ctx.template_vars_mut()
+        .set("PrefixedPreviousTag", "sub/v1.2.2");
+    let cfg = anodizer_release_cfg();
+
+    let link = full_changelog_element(&ctx, &cfg, false).unwrap().unwrap();
+    assert!(
+        link.ends_with("/compare/sub/v1.2.2...sub/v1.2.3"),
+        "link was {link}"
+    );
+}
+
+#[test]
+fn no_repo_block_omits_the_link() {
+    let ctx = TestContextBuilder::new()
+        .tag("v1.2.3")
+        .previous_tag(Some("v1.2.2"))
+        .build();
+    let cfg = ReleaseConfig::default();
+
+    assert_eq!(full_changelog_element(&ctx, &cfg, false).unwrap(), None);
 }
 
 #[test]

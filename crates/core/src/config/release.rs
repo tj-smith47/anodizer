@@ -32,7 +32,22 @@ pub struct ReleaseConfig {
     /// Text prepended to the release body (inline string, from_file, or from_url).
     pub header: Option<ContentSource>,
     /// Text appended to the release body (inline string, from_file, or from_url).
+    ///
+    /// REPLACES anodizer's default attribution footer rather than stacking
+    /// with it. Set to `""` for no footer at all.
     pub footer: Option<ContentSource>,
+    /// Append a derived `**Full Changelog**: <compare-url>` line to the
+    /// release body, below the changelog and above the footer. The compare
+    /// range is `<previous tag>...<tag>` on the repository this release
+    /// publishes to. Suppressed automatically when no previous tag exists
+    /// (a first release) or when the changelog body already carries such a
+    /// line (`changelog.use: github-native`). Default: `true`.
+    ///
+    /// ```yaml
+    /// release:
+    ///   full_changelog_link: false   # do not append the derived compare link
+    /// ```
+    pub full_changelog_link: Option<bool>,
     /// Extra files to upload to the release beyond build artifacts.
     ///
     /// Paths / globs are resolved relative to the project root. `..`
@@ -192,6 +207,12 @@ impl ReleaseConfig {
     /// "keep-existing" — keep current release notes, don't overwrite).
     pub const DEFAULT_MODE: &'static str = "keep-existing";
 
+    /// Default release-body footer: the anodizer attribution line. Used when
+    /// neither `release.footer` nor `changelog.footer` is set. An explicit
+    /// `release.footer: ""` suppresses it.
+    pub const DEFAULT_FOOTER: &'static str =
+        "Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀";
+
     /// Default minimum interval between successive asset-upload starts
     /// (see [`Self::upload_pace`]). 200 ms smooths the initial burst at the
     /// default concurrency of 4 without meaningfully slowing a release.
@@ -238,6 +259,12 @@ impl ReleaseConfig {
     /// Resolve `replace_existing_artifacts`, falling back to `false`.
     pub fn resolved_replace_existing_artifacts(&self) -> bool {
         self.replace_existing_artifacts.unwrap_or(false)
+    }
+
+    /// Resolve `full_changelog_link`, falling back to `true` — the derived
+    /// compare link is opt-out, not opt-in.
+    pub fn resolved_full_changelog_link(&self) -> bool {
+        self.full_changelog_link.unwrap_or(true)
     }
 
     /// Resolve `include_meta`, falling back to `false` (don't upload
