@@ -275,10 +275,7 @@ fn cargo_preflight_accepts_cookie_only_and_scope_denials_from_crates_io() {
                 .into_boxed_str(),
             );
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
-        let _base = EnvGuard::set(
-            "ANODIZER_TEST_CRATES_IO_API_BASE",
-            &format!("http://{addr}"),
-        );
+        let _base = EnvGuard::set("ANODIZER_TEST_CRATES_IO_API_BASE", format!("http://{addr}"));
         let ctx = TestContextBuilder::new()
             .project_name("mytool")
             .crates(vec![CrateConfig {

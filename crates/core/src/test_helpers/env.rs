@@ -40,12 +40,14 @@ pub fn env_mutex() -> &'static Mutex<()> {
 /// the module doc above says is otherwise the test author's responsibility.
 /// Callers must hold [`env_mutex`] for the guard's lifetime so the
 /// process-global env is mutated by one test at a time.
-pub struct EnvGuard(&'static str, Option<String>);
+pub struct EnvGuard(&'static str, Option<std::ffi::OsString>);
 
 impl EnvGuard {
     /// Set `key=val`, remembering the prior value for restoration on drop.
-    pub fn set(key: &'static str, val: &str) -> Self {
-        let prev = std::env::var(key).ok();
+    pub fn set(key: &'static str, val: impl AsRef<std::ffi::OsStr>) -> Self {
+        // `var_os`, not `var`: a prior value this process did not set may not
+        // be UTF-8, and restoring it as absent would be a leak of its own.
+        let prev = std::env::var_os(key);
         // SAFETY: serialized by env_mutex (caller-held); restored on drop.
         unsafe { std::env::set_var(key, val) };
         Self(key, prev)
@@ -61,5 +63,35 @@ impl Drop for EnvGuard {
                 None => std::env::remove_var(self.0),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EnvGuard, env_mutex};
+
+    /// The guard's whole reason to exist: the paired set/restore idiom it
+    /// replaces restores nothing when the body between the two halves unwinds,
+    /// leaking the override into whatever test runs next in the process.
+    #[test]
+    fn a_panic_under_the_guard_still_restores_the_prior_value() {
+        let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let before = std::env::var_os("PATH");
+
+        let unwound = std::panic::catch_unwind(|| {
+            let _guard = EnvGuard::set("PATH", "/anodizer-stub-path-only");
+            assert_eq!(
+                std::env::var("PATH").as_deref(),
+                Ok("/anodizer-stub-path-only")
+            );
+            panic!("the body unwinds while the stub PATH is live");
+        });
+
+        assert!(unwound.is_err(), "the closure must have panicked");
+        assert_eq!(
+            std::env::var_os("PATH"),
+            before,
+            "PATH must be restored on unwind"
+        );
     }
 }

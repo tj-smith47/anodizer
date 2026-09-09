@@ -1970,23 +1970,10 @@ crates:
         // activate() and the SDE var both mutate process env — hold the same
         // serialised window; restore SDE on exit.
         let _g = tools.activate();
-        let prior_sde = std::env::var_os("SOURCE_DATE_EPOCH");
-        // SAFETY: serialised by the env mutex held inside `_g` for this test.
-        // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; paired restore below
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1577836800") };
+        let _sde =
+            anodizer_core::test_helpers::env::EnvGuard::set("SOURCE_DATE_EPOCH", "1577836800");
 
         let run = MakeselfStage.run(&mut ctx);
-
-        // Restore SDE before asserting so a panic doesn't leak it.
-        // SAFETY: still inside the `_g` serialised window.
-        unsafe {
-            match prior_sde {
-                // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; paired restore of the set above
-                Some(v) => std::env::set_var("SOURCE_DATE_EPOCH", v),
-                // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; paired restore of the set above
-                None => std::env::remove_var("SOURCE_DATE_EPOCH"),
-            }
-        }
         run.expect("run under SDE should succeed");
 
         let work = fx.dist.join("makeself").join("d").join("linux_amd64");

@@ -3857,20 +3857,8 @@ fn rollback_dry_run_returns_ok_without_spawning_cargo() {
     let _g = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex; paired with the restore below.
-    // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); paired restore below
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
     let rb = CargoPublisher::new().rollback(&mut ctx, &evidence);
-    // SAFETY: restore PATH (paired with the set above).
-    unsafe {
-        match prev {
-            // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
     rb.expect("dry-run rollback must short-circuit to Ok before spawning");
     assert!(
         super::partial_rollback_tests::read_argv_log(&argv_log).is_empty(),

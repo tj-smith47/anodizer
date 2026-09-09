@@ -2275,7 +2275,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let _base = anodizer_core::test_helpers::env::EnvGuard::set(
             "ANODIZER_GITHUB_API_BASE",
-            &format!("http://{addr}"),
+            format!("http://{addr}"),
         );
         let log = StageLogger::new("publish", Verbosity::Quiet);
         super::reconcile_open_prs(

@@ -240,13 +240,7 @@ fn partial_publish_records_only_succeeded_crate() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    // Read the previous PATH under the lock so a concurrent mutator
-    // cannot interleave between the read and the set below.
-    let prev_path = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex above (shared with every other
-    // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
     let result = publish_to_cargo_with(
         &mut ctx,
         &["crate-b".to_string()],
@@ -255,15 +249,6 @@ fn partial_publish_records_only_succeeded_crate() {
         never_published,
         None,
     );
-    // SAFETY: restore PATH within the same serial group.
-    unsafe {
-        match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
 
     assert!(result.is_err(), "crate-b's publish failure must surface");
 
@@ -334,13 +319,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    // Read the previous PATH under the lock so a concurrent mutator
-    // cannot interleave between the read and the set below.
-    let prev_path = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex above (shared with every other
-    // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
     let publish_result = publish_to_cargo_with(
@@ -363,15 +342,6 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let publisher = CargoPublisher::new();
     let rb = publisher.rollback(&mut ctx, &evidence);
 
-    // SAFETY: restore PATH within the same serial group.
-    unsafe {
-        match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
     rb.expect("rollback ok");
 
     let yanks: Vec<String> = read_argv_log(&argv_log)
@@ -416,26 +386,11 @@ fn rollback_is_clean_noop_when_nothing_published() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    // Read the previous PATH under the lock so a concurrent mutator
-    // cannot interleave between the read and the set below.
-    let prev_path = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex above (shared with every other
-    // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let publisher = CargoPublisher::new();
     let rb = publisher.rollback(&mut ctx, &evidence);
 
-    // SAFETY: restore PATH within the same serial group.
-    unsafe {
-        match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
     rb.expect("rollback no-op ok");
 
     assert!(
@@ -464,31 +419,15 @@ fn install_yank_failing_stub(dir: &Path, argv_log: &Path) -> String {
     format!("{}:{}", dir.display(), prev)
 }
 
-/// Run `f` with `PATH` prepended to `new_path` under the serial guard,
-/// restoring the previous value afterward. Keeps the set/restore pairing
-/// out of each test body.
+/// Run `f` with `PATH` set to `new_path` under the serial guard. The guards
+/// restore `PATH` and release the mutex on drop, so a panicking `f` cannot
+/// hand the stub to whichever test runs next in the process.
 fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex above (shared with every other
-    // PATH mutator in the workspace, including fake_tool::activate)
-    // plus the callers' `#[serial(cargo_stub_path)]` guard; paired
-    // restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
-    unsafe { std::env::set_var("PATH", new_path) };
-    let out = f();
-    // SAFETY: restore the prior PATH (paired with the set above).
-    unsafe {
-        match prev {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
-    out
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", new_path);
+    f()
 }
 
 /// Rollback whose `cargo yank` fails: the publisher must NOT propagate
@@ -977,13 +916,7 @@ fn manifest_read_failure_does_not_skip_publish() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    // Read the previous PATH under the lock so a concurrent mutator
-    // cannot interleave between the read and the set below.
-    let prev_path = std::env::var("PATH").ok();
-    // SAFETY: serialised by env_mutex above (shared with every other
-    // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
     let log = StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
@@ -995,16 +928,6 @@ fn manifest_read_failure_does_not_skip_publish() {
         always_published_1_0_0,
         None,
     );
-
-    // SAFETY: restore PATH.
-    unsafe {
-        match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
-            None => std::env::remove_var("PATH"),
-        }
-    }
 
     result.expect("publish must succeed");
     let invocations = read_argv_log(&argv_log);
