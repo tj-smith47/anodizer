@@ -48,6 +48,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -92,44 +93,32 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-report() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
-        BEGIN { exec_mode_re = ENVIRON["EXEC_MODE_RE"] }
+run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+    BEGIN { exec_mode_re = ENVIRON["EXEC_MODE_RE"] }
 
-        FNR == 1 { whole_file_is_test = is_test_file(FILENAME); marker_armed = 0 }
+    FNR == 1 { whole_file_is_test = is_test_file(FILENAME); marker_armed = 0 }
 
-        {
-            line = $0
-            in_test = (whole_file_is_test || in_test_region)
-            is_comment = (line ~ /^[[:space:]]*\/\//) ? 1 : 0
-            # The marker arms across the contiguous comment block directly
-            # above its chmod, so a multi-line rationale need not be crammed
-            # onto the call's own line.
-            if (line ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
+    {
+        line = $0
+        in_test = (whole_file_is_test || in_test_region)
+        is_comment = (line ~ /^[[:space:]]*\/\//) ? 1 : 0
+        # The marker arms across the contiguous comment block directly
+        # above its chmod, so a multi-line rationale need not be crammed
+        # onto the call's own line.
+        if (line ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
+    }
+
+    $0 ~ exec_mode_re {
+        if (in_test && !is_comment && !marker_armed) {
+            printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
         }
+    }
 
-        $0 ~ exec_mode_re {
-            if (in_test && !is_comment && !marker_armed) {
-                printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-            }
-        }
-
-        {
-            if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ \
-                && line !~ exec_mode_re) marker_armed = 0
-        }
+    {
+        if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ \
+            && line !~ exec_mode_re) marker_armed = 0
+    }
 AWK
-}
-
-# The scanner prints its findings and exits 0; a non-zero status is awk
-# itself failing (a missing library, a bad regex), which `|| true` would
-# otherwise swallow as a clean scan of nothing.
-scan_status=0
-violations="$(report "${FILES[@]}")" || scan_status=$?
-if ((scan_status != 0)); then
-    echo "audit-test-exec-writer: scanner exited $scan_status; the scan did not run." >&2
-    exit 2
-fi
 
 if [[ -n "$violations" ]]; then
     echo "HAND-ROLLED EXECUTABLE WRITE IN TESTS — ETXTBSY flake under --test-threads."

@@ -257,13 +257,15 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
     let dir = TempDir::new().expect("temp dir");
     let lib = dir.path().join("lib");
     std::fs::create_dir(&lib).expect("lib dir");
-    // Only the awk sources are withheld: the shared bash floor still has to
-    // load, or the scripts would die before ever reaching a scanner.
-    std::fs::copy(
-        repo.join(".claude/scripts/lib/require-bash.sh"),
-        lib.join("require-bash.sh"),
-    )
-    .expect("copy the bash floor");
+    // Only the awk sources are withheld: the shared bash libraries still have
+    // to load, or the scripts would die before ever reaching a scanner.
+    for shared in ["require-bash.sh", "scan.sh"] {
+        std::fs::copy(
+            repo.join(".claude/scripts/lib").join(shared),
+            lib.join(shared),
+        )
+        .unwrap_or_else(|e| panic!("copy lib/{shared}: {e}"));
+    }
 
     let mut checked = 0usize;
     for entry in std::fs::read_dir(repo.join(".claude/scripts")).expect("scripts dir") {
@@ -294,13 +296,19 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
             .unwrap_or_else(|e| panic!("running {name}: {e}"));
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            !out.status.success(),
-            "{name} exited 0 with no awk library — a scan that never ran read as clean.\n{stdout}{stderr}"
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name} must exit 2 (\"the scan did not run\"), never 0 or the \
+             violations-found 1.\n{stdout}{stderr}"
         );
         assert!(
             stderr.contains(".awk"),
             "{name} must leave the awk error visible, got: {stderr}"
+        );
+        assert!(
+            stderr.contains("the scan did not run"),
+            "{name} must say the scan did not run, got: {stderr}"
         );
     }
     assert!(
@@ -510,4 +518,127 @@ fn test_source_files(dir: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     found
+}
+
+/// Every `audit-*.sh` under `.claude/scripts`.
+fn audit_scripts() -> Vec<std::path::PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts");
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("scripts dir")
+        .map(|e| e.expect("script entry").path())
+        .filter(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            name.starts_with("audit-") && name.ends_with(".sh")
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Whether `line` starts a command whose program is `awk`. A command starts at
+/// the line, or after one of the shell's command separators, so
+/// `x="$(awk …)"`, `… | awk …` and a bare `awk …` all count while the word
+/// inside a comment or a `.awk` path does not.
+fn invokes_awk(line: &str) -> bool {
+    if line.trim_start().starts_with('#') {
+        return false;
+    }
+    line.split(['|', ';', '&', '(', ')', '`', '{', '}'])
+        .map(str::trim_start)
+        .any(|cmd| {
+            cmd.strip_prefix("awk")
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        })
+}
+
+/// A scanner that could not run must not read as a clean scan, and the thing
+/// that decides so is `lib/scan.sh`'s `run_scanner`: it captures awk's stdout,
+/// leaves awk's stderr visible and exits 2 on any non-zero awk status. A bare
+/// `var="$(awk …)"` under `set -e` instead exits 1 — the repo's
+/// "violations found" code — with an empty findings block, so a syntax error
+/// in the program reads as a passing audit. Textual rather than behavioural so
+/// a script added tomorrow with the old shape is caught before it ever runs.
+#[test]
+fn every_awk_invocation_goes_through_the_shared_runner() {
+    let mut bare = Vec::new();
+    let mut scanners = 0usize;
+    for script in audit_scripts() {
+        let name = script.file_name().expect("file name").to_string_lossy();
+        let body = std::fs::read_to_string(&script).expect("script body");
+        for (index, line) in body.lines().enumerate() {
+            if invokes_awk(line) {
+                bare.push(format!("{name}:{}: {}", index + 1, line.trim()));
+            }
+        }
+        if body.contains("run_scanner ") {
+            scanners += 1;
+            assert!(
+                body.contains("source \"$LIB_DIR/scan.sh\""),
+                "{name} calls run_scanner without sourcing lib/scan.sh"
+            );
+        }
+    }
+    assert!(
+        bare.is_empty(),
+        "every awk program runs through lib/scan.sh's run_scanner; these invoke awk directly: {bare:#?}"
+    );
+    assert!(
+        scanners >= 8,
+        "expected every awk-running scanner to be walked, found {scanners}"
+    );
+}
+
+/// The companion to `a_scanner_that_cannot_load_its_awk_library_fails_loudly`
+/// for a scanner whose program is INLINE: it loads no `lib/*.awk`, so an empty
+/// library directory proves nothing about it. Break the program itself instead
+/// — the same failure a bad dynamic regex or a mistyped function produces.
+#[test]
+fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let scripts = repo.join(".claude/scripts");
+    let dir = TempDir::new().expect("temp dir");
+    let lib = dir.path().join("lib");
+    std::fs::create_dir(&lib).expect("lib dir");
+    for entry in std::fs::read_dir(scripts.join("lib")).expect("lib dir") {
+        let src = entry.expect("lib entry").path();
+        std::fs::copy(&src, lib.join(src.file_name().expect("file name"))).expect("copy lib file");
+    }
+
+    const SCRIPT: &str = "audit-log-status.sh";
+    let body = std::fs::read_to_string(scripts.join(SCRIPT)).expect("script body");
+    assert!(
+        !body.contains("-f \"$LIB_DIR/"),
+        "{SCRIPT} no longer runs an inline program; point this probe at one that does"
+    );
+    let broken = body.replacen("<<'AWK'\n", "<<'AWK'\n(((\n", 1);
+    assert_ne!(
+        broken, body,
+        "{SCRIPT} no longer opens its program with <<'AWK'"
+    );
+    let copy = dir.path().join(SCRIPT);
+    std::fs::write(&copy, broken).expect("write the broken copy");
+
+    let out = Command::new("bash")
+        .arg(&copy)
+        .arg(&repo)
+        .output()
+        .expect("running the broken scanner");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a syntax error in the program must exit 2, not the violations-found 1.\n{stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("audit-log-status: awk scanner exited")
+            && stderr.contains("the scan did not run"),
+        "the runner must name the script and say the scan did not run, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("awk:"),
+        "awk's own diagnostic must stay visible, got: {stderr}"
+    );
 }

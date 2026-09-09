@@ -25,6 +25,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -45,8 +46,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
     exit 1
 fi
 
-violations="$(
-awk -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip_test_regions=1 -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+run_scanner violations -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip_test_regions=1 -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
     BEGIN {
         n = split(allow, keys, "\n")
         for (i = 1; i <= n; i++) ok[keys[i]] = 1
@@ -66,7 +66,6 @@ awk -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip_test_regions=1 -f 
             printf("%s:%d (fn %s): %s\n", FILENAME, FNR, fname, trim($0))
     }
 AWK
-)"
 
 accessor_hits="$(grep -c '\.get("binary")' crates/core/src/artifact/registry.rs || true)"
 if [[ "$accessor_hits" -ne 1 ]]; then

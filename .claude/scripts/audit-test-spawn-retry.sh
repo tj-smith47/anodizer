@@ -35,6 +35,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -68,62 +69,50 @@ fi
 #     opener, which precede the `Command::new` by a handful of lines; OR
 #   - a `// spawn-retry-ok: <non-space>` marker sits on its line or the line
 #     directly above it.
-report() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
-        FNR == 1 {
-            whole_file_is_test = is_test_file(FILENAME)
-            prev_ok = 0; this_ok = 0
-            retry_window = 0
-        }
+run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+    FNR == 1 {
+        whole_file_is_test = is_test_file(FILENAME)
+        prev_ok = 0; this_ok = 0
+        retry_window = 0
+    }
 
-        {
-            line = $0
-            in_test = (whole_file_is_test || in_test_region)
-            is_comment = (line ~ /^[[:space:]]*\/\//) ? 1 : 0
-            # A `// spawn-retry-ok:` marker arms an exemption that stays live
-            # across the contiguous comment block directly above the spawn (a
-            # multi-line rationale is common), so the marker need not sit on
-            # the spawn line. Any non-comment line that is NOT the spawn site
-            # disarms it (handled in the Command::new block + the fall-through).
-            if (line ~ /\/\/[[:space:]]*spawn-retry-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
-            # Opening the helper (or its closure) starts a short exemption
-            # window covering the Command::new a few lines below — 8 lines
-            # tolerates a closure that binds locals before building the Command.
-            if (line ~ /output_with_spawn_retry[[:space:]]*\(/ || line ~ /\|\|[[:space:]]*\{/) {
-                if (retry_window < 8) retry_window = 8
-            }
+    {
+        line = $0
+        in_test = (whole_file_is_test || in_test_region)
+        is_comment = (line ~ /^[[:space:]]*\/\//) ? 1 : 0
+        # A `// spawn-retry-ok:` marker arms an exemption that stays live
+        # across the contiguous comment block directly above the spawn (a
+        # multi-line rationale is common), so the marker need not sit on
+        # the spawn line. Any non-comment line that is NOT the spawn site
+        # disarms it (handled in the Command::new block + the fall-through).
+        if (line ~ /\/\/[[:space:]]*spawn-retry-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
+        # Opening the helper (or its closure) starts a short exemption
+        # window covering the Command::new a few lines below — 8 lines
+        # tolerates a closure that binds locals before building the Command.
+        if (line ~ /output_with_spawn_retry[[:space:]]*\(/ || line ~ /\|\|[[:space:]]*\{/) {
+            if (retry_window < 8) retry_window = 8
         }
+    }
 
-        /Command::new\("(git|node)"\)/ {
-            # A `Command::new(...)` mentioned inside a comment (`//` / `///`
-            # appears before it on the line) is documentation, not a spawn.
-            if (in_test && !is_comment && !retry_window && !marker_armed) {
-                printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-            }
+    /Command::new\("(git|node)"\)/ {
+        # A `Command::new(...)` mentioned inside a comment (`//` / `///`
+        # appears before it on the line) is documentation, not a spawn.
+        if (in_test && !is_comment && !retry_window && !marker_armed) {
+            printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
         }
+    }
 
-        # Disarm the spawn-retry-ok marker once a non-comment, non-blank line
-        # that is NOT itself the spawn passes — the marker only covers the
-        # comment block immediately preceding its spawn.
-        {
-            if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ && line !~ /Command::new\("(git|node)"\)/) marker_armed = 0
-        }
+    # Disarm the spawn-retry-ok marker once a non-comment, non-blank line
+    # that is NOT itself the spawn passes — the marker only covers the
+    # comment block immediately preceding its spawn.
+    {
+        if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ && line !~ /Command::new\("(git|node)"\)/) marker_armed = 0
+    }
 
-        # Decrement the window AFTER the Command::new check so the spawn line
-        # itself is still covered.
-        { if (retry_window > 0) retry_window-- }
+    # Decrement the window AFTER the Command::new check so the spawn line
+    # itself is still covered.
+    { if (retry_window > 0) retry_window-- }
 AWK
-}
-
-# The scanner prints its findings and exits 0; a non-zero status is awk
-# itself failing (a missing library, a bad regex), which `|| true` would
-# otherwise swallow as a clean scan of nothing.
-scan_status=0
-violations="$(report "${FILES[@]}")" || scan_status=$?
-if ((scan_status != 0)); then
-    echo "audit-test-spawn-retry: scanner exited $scan_status; the scan did not run." >&2
-    exit 2
-fi
 
 if [[ -n "$violations" ]]; then
     echo "UNRETRIED git/node SPAWN IN TESTS — Windows nextest process-creation flake."

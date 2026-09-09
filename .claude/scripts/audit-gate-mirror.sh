@@ -10,6 +10,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -99,8 +100,17 @@ else
         echo "audit-gate-mirror: FAIL — no \`task\` binary on PATH and ${taskfile} not found for the grep fallback." >&2
         exit 2
     fi
-    gate_block=$(awk '/^  gate:/{flag=1} flag{print} flag && /^  [A-Za-z_].*:$/ && !/^  gate:/{if(NR>1)exit}' "$taskfile")
-    ci_block=$(awk '/^  ci:/{flag=1} flag{print} flag && /^  [A-Za-z_].*:$/ && !/^  ci:/{if(NR>1)exit}' "$taskfile")
+    # The `cmds:` body of one top-level Taskfile target, ended by the next
+    # target's key.
+    task_block() {
+        run_scanner "$1" -v target="$2" -f - "$3" <<'AWK'
+            $0 ~ "^  " target ":"                                { flag = 1 }
+            flag                                                 { print }
+            flag && /^  [A-Za-z_].*:$/ && $0 !~ "^  " target ":" { if (NR > 1) exit }
+AWK
+    }
+    task_block gate_block gate "$taskfile"
+    task_block ci_block ci "$taskfile"
     combined="${gate_block}"$'\n'"${ci_block}"
     for job in "${!JOB_MIRROR[@]}"; do
         local_target="${JOB_MIRROR[$job]}"

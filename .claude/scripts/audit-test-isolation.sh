@@ -80,6 +80,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -106,36 +107,6 @@ mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(
 # enclosing-scope inference (brace/`fn` counting corrupts on `fn`/`{` inside
 # string literals, e.g. an embedded stub-program source) — the explicit marker
 # is the contract.
-report() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
-        FNR == 1 {
-            whole_file_is_test = is_test_file(FILENAME)
-            prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0
-        }
-
-        {
-            line = $0
-            in_test = (whole_file_is_test || in_test_region)
-            prev_envok = this_envok
-            this_envok = (line ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
-            prev_cwdok = this_cwdok
-            this_cwdok = (line ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
-        }
-
-        /std::env::(set_var|remove_var)\(/ {
-            if (!in_test) next                  # production startup code
-            if (this_envok || prev_envok) next  # justified at the call site
-            printf("%s:%d: [env] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-        }
-
-        /std::env::set_current_dir\(/ {
-            if (!in_test) next                  # production / library code
-            if (this_cwdok || prev_cwdok) next  # justified at the call site
-            printf("%s:%d: [cwd] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-        }
-AWK
-}
-
 # The #[cfg(unix)]-gated cwd-swap test helpers in
 # crates/cli/src/commands/helpers.rs. WHY a named allow-list rather than
 # discovering "any fn matching with_*_cwd": a third helper joining this club
@@ -203,11 +174,42 @@ all_helper_alt="${helper_alt}|${portable_alt}"
 # (`use ...with_empty_git_repo_cwd as x; x(...)`) would not be recognized as
 # a call. No such alias exists in-tree; adding one under a new name requires
 # adding that name to CWD_SWAP_HELPERS.
-report_cwd_helper_pairing() {
-    local helper_alt="$1"
-    local portable_alt="$2"
-    shift 2
-    awk -v helper_alt="$helper_alt" -v portable_alt="$portable_alt" '
+violations=""
+if [[ ${#FILES[@]} -gt 0 ]]; then
+    run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+        FNR == 1 {
+            whole_file_is_test = is_test_file(FILENAME)
+            prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0
+        }
+
+        {
+            line = $0
+            in_test = (whole_file_is_test || in_test_region)
+            prev_envok = this_envok
+            this_envok = (line ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
+            prev_cwdok = this_cwdok
+            this_cwdok = (line ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
+        }
+
+        /std::env::(set_var|remove_var)\(/ {
+            if (!in_test) next                  # production startup code
+            if (this_envok || prev_envok) next  # justified at the call site
+            printf("%s:%d: [env] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+        }
+
+        /std::env::set_current_dir\(/ {
+            if (!in_test) next                  # production / library code
+            if (this_cwdok || prev_cwdok) next  # justified at the call site
+            printf("%s:%d: [cwd] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+        }
+AWK
+fi
+
+mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
+
+helper_violations=""
+if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
+    run_scanner helper_violations -v helper_alt="$helper_alt" -v portable_alt="$portable_alt" '
         BEGIN {
             n_helpers = split(helper_alt, helpers, "|")
             n_portable = split(portable_alt, portable, "|")
@@ -322,35 +324,7 @@ report_cwd_helper_pairing() {
             finalize()             # flush the last file last tracked fn …
             check_counts(cur_file) # … then compare that final file counts
         }
-    ' "$@"
-}
-
-violations=""
-if [[ ${#FILES[@]} -gt 0 ]]; then
-    # The scanner prints its findings and exits 0; a non-zero status is awk
-    # itself failing (a missing library, a bad regex), which `|| true` would
-    # otherwise swallow as a clean scan of nothing.
-    scan_status=0
-    violations="$(report "${FILES[@]}")" || scan_status=$?
-    if ((scan_status != 0)); then
-        echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
-        exit 2
-    fi
-fi
-
-mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
-
-helper_violations=""
-if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
-    # The scanner prints its findings and exits 0; a non-zero status is awk
-    # itself failing (a missing library, a bad regex), which `|| true` would
-    # otherwise swallow as a clean scan of nothing.
-    scan_status=0
-    helper_violations="$(report_cwd_helper_pairing "$helper_alt" "$portable_alt" "${HELPER_FILES[@]}")" || scan_status=$?
-    if ((scan_status != 0)); then
-        echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
-        exit 2
-    fi
+' "${HELPER_FILES[@]}"
 fi
 
 if [[ -n "$violations" ]]; then

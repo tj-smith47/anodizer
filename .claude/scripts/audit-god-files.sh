@@ -55,6 +55,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -133,54 +134,34 @@ resolve_mod_file() {
     done
 }
 
-# Every `mod NAME;` declaration in the whole tree, in ONE awk pass, as
-# "<file>\t<gated>\t<name>" where <gated> is 1 when the declaration is preceded
-# by (or shares a line with) a test-only cfg attribute. One pass rather than one
-# awk per file: at ~800 files the process spawns cost more than the scan.
-collect_mod_decls() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f - "$@" <<'AWK'
-        FNR == 1 { pend = 0 }
-        { line = $0 }
-        is_test_only_cfg(line) { pend = 1 }
-        match(line, /^[[:space:]]*(pub[[:space:]]*(\([^)]*\)[[:space:]]*)?)?mod[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]*;/) {
-            name = substr(line, RSTART, RLENGTH)
-            sub(/[[:space:]]*;[[:space:]]*$/, "", name)
-            sub(/^.*[[:space:]]/, "", name)
-            printf("%s\t%d\t%s\n", FILENAME, pend, name)
-            pend = 0
-            next
-        }
-        # Only attributes and doc comments may sit between the cfg attribute and
-        # the item it gates; anything else means the attribute governed something
-        # other than a module declaration.
-        /^[[:space:]]*(#|\/\/)/ { next }
-        /^[[:space:]]*$/        { next }
-        { pend = 0 }
-AWK
-}
-
-# Files whose whole body is gated to test builds by an inner `#![cfg(...)]`.
-inner_cfg_test_files() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f - "$@" <<'AWK'
-        is_test_only_inner_cfg($0) { print FILENAME; nextfile }
-AWK
-}
-
 declare -A IS_TEST_FILE=()
 declare -A GATED_DECLS=()
 declare -A ALL_DECLS=()
 WORKLIST=()
 
-# The scanner prints its findings and exits 0; a non-zero status is awk itself
-# failing (a missing library, a bad regex). Capturing before the loop is what
-# makes that visible: a process substitution feeding `while read` discards the
-# scanner's status, so a lexer that never ran reads as a tree with no hits.
-scan_status=0
-mod_decls="$(collect_mod_decls "${ALL_RS[@]}")" || scan_status=$?
-if ((scan_status != 0)); then
-    echo "audit-god-files: mod-declaration scanner exited $scan_status; the scan did not run." >&2
-    exit 2
-fi
+# Every `mod NAME;` declaration in the whole tree, in ONE awk pass, as
+# "<file>\t<gated>\t<name>" where <gated> is 1 when the declaration is preceded
+# by (or shares a line with) a test-only cfg attribute. One pass rather than one
+# awk per file: at ~800 files the process spawns cost more than the scan.
+run_scanner mod_decls -f "$LIB_DIR/rust-lex.awk" -f - "${ALL_RS[@]}" <<'AWK'
+    FNR == 1 { pend = 0 }
+    { line = $0 }
+    is_test_only_cfg(line) { pend = 1 }
+    match(line, /^[[:space:]]*(pub[[:space:]]*(\([^)]*\)[[:space:]]*)?)?mod[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]*;/) {
+        name = substr(line, RSTART, RLENGTH)
+        sub(/[[:space:]]*;[[:space:]]*$/, "", name)
+        sub(/^.*[[:space:]]/, "", name)
+        printf("%s\t%d\t%s\n", FILENAME, pend, name)
+        pend = 0
+        next
+    }
+    # Only attributes and doc comments may sit between the cfg attribute and
+    # the item it gates; anything else means the attribute governed something
+    # other than a module declaration.
+    /^[[:space:]]*(#|\/\/)/ { next }
+    /^[[:space:]]*$/        { next }
+    { pend = 0 }
+AWK
 
 while IFS=$'\t' read -r file gated name; do
     [[ -n "$file" ]] || continue
@@ -193,12 +174,9 @@ done <<< "$mod_decls"
 # `#![cfg(test)]` does, and a second spelling of the predicate rule drifts.
 # One awk pass over the whole tree, `nextfile` on the first hit.
 declare -A INNER_CFG_TEST=()
-scan_status=0
-inner_cfg="$(inner_cfg_test_files "${ALL_RS[@]}")" || scan_status=$?
-if ((scan_status != 0)); then
-    echo "audit-god-files: inner-cfg scanner exited $scan_status; the scan did not run." >&2
-    exit 2
-fi
+run_scanner inner_cfg -f "$LIB_DIR/rust-lex.awk" -f - "${ALL_RS[@]}" <<'AWK'
+    is_test_only_inner_cfg($0) { print FILENAME; nextfile }
+AWK
 
 while IFS= read -r f; do
     [[ -n "$f" ]] && INNER_CFG_TEST["$f"]=1
@@ -246,71 +224,6 @@ for f in "${ALL_RS[@]}"; do
     [[ -n "${IS_TEST_FILE[$f]:-}" ]] || PROD_FILES+=("$f")
 done
 
-# Per-file production-line count. Emits "<count>\t<path>" per input file.
-#
-# The gated item's extent is found by BRACE DEPTH over code with string and
-# comment content elided (`strip_code`). Two cheaper designs were measured
-# against a reference implementation over all 818 tracked files and both were
-# wrong on real code, so neither is used:
-#
-#   * naive trailing-comment strip (`sub(/\/\/.*$/, "")`) — cuts the line at the
-#     `//` inside `"https://…"`, so a `const URL: &str = "https://…";` no longer
-#     looks statement-terminated and the region swallows the rest of the file.
-#     `stage-publish/src/util/attribution.rs` under-reported 21 lines as 8, and
-#     under-reporting is the fail-OPEN direction.
-#   * indent-anchored close (first `}` at the opener's indent) — a `}` at column
-#     0 inside a multi-line raw-string fixture ends the region early;
-#     `schema_validation/nix.rs` over-reported 412 lines as 709.
-#
-# Eliding literals first removes both failure modes at their shared root: every
-# brace, semicolon and `//` the scanner sees is then real code.
-count_prod_lines() {
-    awk -f "$LIB_DIR/rust-lex.awk" -f - "$@" <<'AWK'
-        function flush() { if (cur != "") printf("%d\t%s\n", prod, cur) }
-
-        FNR == 1 {
-            flush()
-            cur = FILENAME; prod = 0; state = "idle"
-            depth = 0; opened = 0
-            reset_lex()
-        }
-
-        {
-            line = $0
-            code = strip_code(line)
-        }
-
-        # Inside the gated item: consume until its brace block closes, or — for
-        # a braceless item (`mod tests;`, a `use`, a multi-line `const`) — until
-        # the statement terminates.
-        state == "region" {
-            depth += count_char(code, "{") - count_char(code, "}")
-            if (index(code, "{") > 0) opened = 1
-            if (opened) {
-                if (depth <= 0) state = "idle"
-            } else if (code ~ /;[[:space:]]*$/) {
-                state = "idle"
-            }
-            next
-        }
-
-        {
-            if (is_test_only_cfg(line)) {
-                state = "region"; depth = 0; opened = 0
-                # Re-run the region rule against this same line: a one-liner
-                # (`#[cfg(test)] use x;`) is its whole own region.
-                depth += count_char(code, "{") - count_char(code, "}")
-                if (index(code, "{") > 0) opened = 1
-                if (opened && depth <= 0) state = "idle"
-                next
-            }
-            prod++
-        }
-
-        END { flush() }
-AWK
-}
-
 # Both pinned lists indexed by path once, so the per-file loop below is a hash
 # lookup rather than a scan inside a command substitution.
 declare -A PIN_CEILING=()
@@ -334,12 +247,69 @@ debt_seen=""
 largest_count=0
 largest_path=""
 
-scan_status=0
-prod_counts="$(count_prod_lines "${PROD_FILES[@]}" | sort -rn)" || scan_status=$?
-if ((scan_status != 0)); then
-    echo "audit-god-files: line-count scanner exited $scan_status; the scan did not run." >&2
-    exit 2
-fi
+# Per-file production-line count. Emits "<count>\t<path>" per input file.
+#
+# The gated item's extent is found by BRACE DEPTH over code with string and
+# comment content elided (`strip_code`). Two cheaper designs were measured
+# against a reference implementation over all 818 tracked files and both were
+# wrong on real code, so neither is used:
+#
+#   * naive trailing-comment strip (`sub(/\/\/.*$/, "")`) — cuts the line at the
+#     `//` inside `"https://…"`, so a `const URL: &str = "https://…";` no longer
+#     looks statement-terminated and the region swallows the rest of the file.
+#     `stage-publish/src/util/attribution.rs` under-reported 21 lines as 8, and
+#     under-reporting is the fail-OPEN direction.
+#   * indent-anchored close (first `}` at the opener's indent) — a `}` at column
+#     0 inside a multi-line raw-string fixture ends the region early;
+#     `schema_validation/nix.rs` over-reported 412 lines as 709.
+#
+# Eliding literals first removes both failure modes at their shared root: every
+# brace, semicolon and `//` the scanner sees is then real code.
+run_scanner prod_lines -f "$LIB_DIR/rust-lex.awk" -f - "${PROD_FILES[@]}" <<'AWK'
+    function flush() { if (cur != "") printf("%d\t%s\n", prod, cur) }
+
+    FNR == 1 {
+        flush()
+        cur = FILENAME; prod = 0; state = "idle"
+        depth = 0; opened = 0
+        reset_lex()
+    }
+
+    {
+        line = $0
+        code = strip_code(line)
+    }
+
+    # Inside the gated item: consume until its brace block closes, or — for
+    # a braceless item (`mod tests;`, a `use`, a multi-line `const`) — until
+    # the statement terminates.
+    state == "region" {
+        depth += count_char(code, "{") - count_char(code, "}")
+        if (index(code, "{") > 0) opened = 1
+        if (opened) {
+            if (depth <= 0) state = "idle"
+        } else if (code ~ /;[[:space:]]*$/) {
+            state = "idle"
+        }
+        next
+    }
+
+    {
+        if (is_test_only_cfg(line)) {
+            state = "region"; depth = 0; opened = 0
+            # Re-run the region rule against this same line: a one-liner
+            # (`#[cfg(test)] use x;`) is its whole own region.
+            depth += count_char(code, "{") - count_char(code, "}")
+            if (index(code, "{") > 0) opened = 1
+            if (opened && depth <= 0) state = "idle"
+            next
+        }
+        prod++
+    }
+
+    END { flush() }
+AWK
+prod_counts="$(sort -rn <<< "$prod_lines")"
 
 while IFS=$'\t' read -r count path; do
     [[ -n "$path" ]] || continue

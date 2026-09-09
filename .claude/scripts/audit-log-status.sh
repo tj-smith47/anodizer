@@ -39,6 +39,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -58,8 +59,7 @@ fi
 # shape (and carries no (dry-run)/status-ok: exemption). `prev` lets a marker
 # on the line directly above the call exempt it (the rustfmt-wrapped form keeps
 # the marker above the `.status(&format!(` opener).
-violations="$(
-awk '
+run_scanner violations -f - "${FILES[@]}" <<'AWK'
     function trim(s)            { sub(/^[[:space:]]+/, "", s); return s }
     function exempt(b, p)       { return (b ~ /\(dry-run\)/) || (b ~ /status-ok:/) || (p ~ /status-ok:/) }
     function echoes(b,    verb) {
@@ -105,8 +105,7 @@ awk '
     }
 
     { prev = $0 }
-' "${FILES[@]}"
-)"
+AWK
 
 if [[ -n "$violations" ]]; then
     echo "LOG STATUS-LEVEL COMMAND ECHO — default output must stay concise."
