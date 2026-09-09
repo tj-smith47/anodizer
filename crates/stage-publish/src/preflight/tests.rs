@@ -810,6 +810,52 @@ impl CheckerFactory for CannedFactory {
     }
 }
 
+/// The one-way-door probe searches the community repository by
+/// PackageIdentifier, so a templated identifier must be rendered before it
+/// reaches the query — an unrendered `{{ … }}` becomes `%7B%7B` in the
+/// search URL and matches nothing.
+#[test]
+fn winget_preflight_probes_the_rendered_package_identifier() {
+    use anodizer_core::config::{Config, CrateConfig, PublishConfig, WingetConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let crate_cfg = CrateConfig {
+        name: "mytool".to_string(),
+        publish: Some(PublishConfig {
+            winget: Some(WingetConfig {
+                package_identifier: Some("{{ .Env.WINGET_OWNER }}.tool".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let config = Config {
+        project_name: "mytool".to_string(),
+        crates: vec![crate_cfg],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set_env("WINGET_OWNER", "Acme");
+    let log = StageLogger::new("preflight", Verbosity::Normal);
+
+    let factory = CannedFactory {
+        cargo_state: PublisherState::Clean,
+        choco_state: PublisherState::Clean,
+        winget_state: PublisherState::Clean,
+        aur_state: PublisherState::Clean,
+    };
+    let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
+    let winget = report
+        .entries
+        .iter()
+        .find(|e| e.publisher == "winget")
+        .expect("a winget entry");
+    assert_eq!(winget.package, "Acme.tool");
+}
+
 #[test]
 fn run_preflight_aggregates_per_publisher_in_config_order() {
     use anodizer_core::config::{

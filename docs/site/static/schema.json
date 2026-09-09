@@ -16898,7 +16898,7 @@
           ]
         },
         "package_identifier": {
-          "description": "WinGet package identifier (e.g. \"Publisher.AppName\"). Auto-generated if empty.",
+          "description": "WinGet package identifier (e.g. \"Publisher.AppName\"), template-rendered. Auto-generated as `<publisher>.<name>` if empty.",
           "default": null,
           "type": [
             "string",

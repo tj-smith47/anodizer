@@ -288,11 +288,10 @@ pub(crate) fn resolve_winget_identity(
         resolve_winget_publisher_name(winget_cfg, &repo_owner, crate_name, log)?.to_string();
 
     let auto_pkg_id = auto_package_identifier(&publisher_name, &name);
-    let package_id = winget_cfg
-        .package_identifier
-        .as_deref()
-        .unwrap_or(&auto_pkg_id)
-        .to_string();
+    // Render before validating so an identifier that renders invalid is
+    // reported as the text winget would receive, not as the template.
+    let package_id =
+        super::identifier::render_package_identifier(ctx, log, winget_cfg, &auto_pkg_id)?;
 
     validate_package_identifier(&package_id)
         .map_err(|e| anodizer_core::pipe_skip::entry_skip(e.to_string()))?;

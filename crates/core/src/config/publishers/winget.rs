@@ -17,7 +17,8 @@ pub struct WingetConfig {
     pub name: Option<String>,
     /// Package name as displayed (default: same as name).
     pub package_name: Option<String>,
-    /// WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty.
+    /// WinGet package identifier (e.g. "Publisher.AppName"), template-rendered.
+    /// Auto-generated as `<publisher>.<name>` if empty.
     pub package_identifier: Option<String>,
     /// Publisher name (required).
     pub publisher: Option<String>,

@@ -383,6 +383,58 @@ fn msi_installer_manifest_emits_silent_switch() {
     assert!(!inst.contains("NestedInstallerType"), "msi is not nested");
 }
 
+/// `package_identifier` is a template like every sibling field: the
+/// rendered value is what the manifests, the manifest filenames and the
+/// publish branch carry.
+#[test]
+fn package_identifier_is_templated() {
+    let crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "{{ .Env.WINGET_OWNER }}.tool");
+
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set_env("WINGET_OWNER", "Acme");
+    add_windows_zip(&mut ctx, "widget");
+
+    let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+        .expect("render ok")
+        .expect("widget not skipped");
+
+    assert_eq!(rendered.package_id, "Acme.tool");
+    for yaml in [
+        &rendered.version_yaml,
+        &rendered.installer_yaml,
+        &rendered.locale_yaml,
+    ] {
+        assert!(
+            yaml.contains("PackageIdentifier: Acme.tool"),
+            "unrendered identifier in manifest:\n{yaml}"
+        );
+    }
+}
+
+/// Validation reads the rendered identifier, so the refusal names the text
+/// winget would actually receive.
+#[test]
+fn invalid_rendered_package_identifier_is_rejected() {
+    let crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "Acme.{{ .Env.WINGET_SUFFIX }}");
+
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set_env("WINGET_SUFFIX", "bad id");
+    add_windows_zip(&mut ctx, "widget");
+
+    let err = match render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish")) {
+        Ok(_) => panic!("an identifier that renders invalid must be refused"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(msg.contains("Acme.bad id"), "{msg}");
+}
+
 /// A `silent_switch` is only meaningful for an actual installer
 /// (msi/wix/exe/nsis) winget runs. When the only Windows artifacts are
 /// zip/portable (which winget unpacks, never runs), the switch is dead

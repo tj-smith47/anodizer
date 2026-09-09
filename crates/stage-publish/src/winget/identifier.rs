@@ -52,6 +52,27 @@ pub fn static_package_identifier(
     Some(auto_package_identifier(&publisher, name))
 }
 
+/// Resolve a crate's WinGet PackageIdentifier for a live release: the
+/// configured `package_identifier` template rendered against the run's
+/// variables, or `auto` when the field is unset.
+///
+/// Every consumer — the one-way-door preflight probe, the emission-validate
+/// pass, the manifest bodies, the manifest filenames and the publish branch —
+/// resolves the identifier here, so the rendered value is the only one any of
+/// them ever sees. A raw `{{ … }}` reaching a search URL or a manifest is the
+/// failure this seam exists to prevent.
+pub(crate) fn render_package_identifier(
+    ctx: &anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+    cfg: &anodizer_core::config::WingetConfig,
+    auto: &str,
+) -> Result<String> {
+    match cfg.package_identifier.as_deref() {
+        Some(raw) => crate::util::render_or_warn(ctx, log, "winget.package_identifier", raw),
+        None => Ok(auto.to_string()),
+    }
+}
+
 /// Derive the automatic WinGet PackageIdentifier from a publisher display
 /// name and a package name: `<publisher-without-spaces>.<name>` — the single
 /// definition of the auto-id rule.

@@ -278,11 +278,7 @@ pub(crate) fn collect_winget_target(
     };
 
     let auto_pkg_id = auto_package_identifier(&publisher_name, &name_rendered);
-    let package_id = cfg
-        .package_identifier
-        .as_deref()
-        .map(|s| s.to_string())
-        .unwrap_or(auto_pkg_id);
+    let package_id = super::identifier::render_package_identifier(ctx, log, cfg, &auto_pkg_id)?;
 
     let version = ctx.version();
     let auto_branch = format!("{}-{}", package_id, version);

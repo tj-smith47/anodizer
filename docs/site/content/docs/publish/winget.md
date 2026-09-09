@@ -84,13 +84,15 @@ Examples of valid identifiers:
 
 If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Name` (with spaces stripped from the publisher name).
 
+`package_identifier` is template-rendered like every sibling field, and the rendered value is what the identifier check, the manifests, the manifest filenames and the publish branch all use — so `package_identifier: "{{ .Env.WINGET_OWNER }}.mytool"` resolves before anything validates or publishes it.
+
 ## WinGet config fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | crate name | Override the package name |
 | `package_name` | string | same as `name` | Display name shown in WinGet gallery |
-| `package_identifier` | string | `Publisher.Name` | WinGet package identifier (e.g. `Publisher.AppName`) |
+| `package_identifier` | string | `Publisher.Name` | WinGet package identifier (e.g. `Publisher.AppName`); template-rendered |
 | `publisher` | string | repo owner | Publisher name (required) |
 | `publisher_url` | string | none | Publisher homepage URL |
 | `publisher_support_url` | string | none | Publisher support URL |

@@ -1344,7 +1344,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `license_url` | string | — | License URL. |
 | `moniker` | string | — | Short invoke alias shown as the package `Moniker` (e.g. `rg` for ripgrep, `fd` for fd). This is the command users type, NOT the package/crate name. When unset, anodizer derives it from the single published binary name; with multiple binaries and no override the Moniker is omitted (winget treats it as optional).<br><br>Example: `moniker: "rg"`. |
 | `name` | string | — | Override the package name (default: crate name). |
-| `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty. |
+| `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"), template-rendered. Auto-generated as `<publisher>.<name>` if empty. |
 | `package_name` | string | — | Package name as displayed (default: same as name). |
 | `path` | string | — | Manifest file path (auto-generated if empty from publisher/name/version). |
 | `post_publish_poll` | PostPublishPollConfig | — | Post-publish PR-validation polling settings. Polling is disabled by default — winget-pkgs PR validation routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
