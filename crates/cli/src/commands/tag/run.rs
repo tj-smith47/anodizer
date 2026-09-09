@@ -814,7 +814,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                     .clone()
                     .unwrap_or_else(|| loaded_config.project_name.clone());
                 let vf_plan =
-                    version_files_plan(&crate_version_files, old, &new_version, &vf_owner);
+                    version_files_plan(&crate_version_files, old, &new_version, &vf_owner)?;
                 rewrite_and_stage_version_files(&workspace_root_path, &vf_plan, opts.dry_run, &log)?
             }
             None => Vec::new(),

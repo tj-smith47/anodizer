@@ -2467,7 +2467,7 @@ fn top_level_version_files_drive_a_single_crate_plan() {
     let files = top_level_version_files(&config);
     assert_eq!(files.len(), 2, "top-level enrollment dropped: {files:?}");
 
-    let plan = version_files_plan(&files, "1.2.3", "1.3.0", "app");
+    let plan = version_files_plan(&files, "1.2.3", "1.3.0", "app").unwrap();
     let got: Vec<(&str, Option<&str>)> = plan
         .iter()
         .map(|r| (r.file.as_str(), r.anchor.as_deref()))
@@ -2480,6 +2480,38 @@ fn top_level_version_files_drive_a_single_crate_plan() {
         ],
         "plan: {plan:?}"
     );
+}
+
+/// One `(old, new)` pair is not a safety guarantee: a prerelease target still
+/// matches its own old version, so a bare entry and an anchored entry on one
+/// file would rewrite the same bytes twice. The single-crate/lockstep builder
+/// must refuse it exactly as the per-crate builder does.
+#[test]
+fn version_files_plan_refuses_a_prerelease_chain_on_one_file() {
+    let files = vec![vf("chart.yaml"), vf_at("chart.yaml", r"pin: v{version}")];
+    let err = version_files_plan(&files, "1.2.3", "1.2.3-rc1", "app")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("bumps chain"), "err: {err}");
+    assert!(
+        err.contains("whole-file entry overlaps match pin: v{version}"),
+        "err: {err}"
+    );
+    assert!(
+        err.contains("give each enrollment its own `match` anchor"),
+        "err: {err}"
+    );
+}
+
+/// The same guard must reject the shape whichever order the entries are
+/// enrolled in — the bare sweep overlaps the anchored region either way.
+#[test]
+fn version_files_plan_refuses_a_prerelease_chain_anchored_first() {
+    let files = vec![vf_at("chart.yaml", r"pin: v{version}"), vf("chart.yaml")];
+    let err = version_files_plan(&files, "1.2.3", "1.2.3-rc1", "app")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("bumps chain"), "err: {err}");
 }
 
 /// A config that DOES declare crates reaches the lockstep or per-crate engine,

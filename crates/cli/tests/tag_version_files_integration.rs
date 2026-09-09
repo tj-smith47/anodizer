@@ -1114,3 +1114,101 @@ fn no_crates_block_rewrites_top_level_version_files() {
     assert_eq!(show_head(root, "README.md"), "Install app 1.3.0 today.\n");
     assert_eq!(show_head(root, "chart.yaml"), chart);
 }
+
+/// A prerelease target still matches its own old version, so a bare entry and
+/// an anchored entry on one file would rewrite the same bytes twice. The guard
+/// runs in single-crate mode, not only per-crate.
+#[test]
+fn single_crate_bare_plus_anchored_prerelease_bails() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"1.2.3\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(root.join("chart.yaml"), "pin: v1.2.3\nother: 1.2.3\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: app\nversion_files:\n  - chart.yaml\n  - path: chart.yaml\n    match: 'pin: v{version}'\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v1.2.3"]);
+    fs::write(root.join("src/main.rs"), "fn main() {}\n// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--version", "1.2.3-rc1", "--dry-run"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "the double rewrite must bail: {combined}"
+    );
+    assert!(
+        combined.contains("bumps chain (app 1.2.3 → 1.2.3-rc1 then app 1.2.3 → 1.2.3-rc1)"),
+        "chain refusal missing: {combined}"
+    );
+    assert_eq!(read(root, "chart.yaml"), "pin: v1.2.3\nother: 1.2.3\n");
+}
+
+/// The same guard in lockstep mode, where the top-level enrollment is shared by
+/// every workspace crate under one version.
+#[test]
+fn lockstep_bare_plus_anchored_prerelease_bails() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"2.0.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(root.join("chart.yaml"), "pin: v2.0.0\nother: 2.0.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: suite\ncrates:\n  - name: a\n    path: crates/a\nversion_files:\n  - chart.yaml\n  - path: chart.yaml\n    match: 'pin: v{version}'\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v2.0.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--version", "2.0.0-rc1", "--dry-run"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "the double rewrite must bail: {combined}"
+    );
+    assert!(
+        combined.contains("bumps chain (suite 2.0.0 → 2.0.0-rc1 then suite 2.0.0 → 2.0.0-rc1)"),
+        "chain refusal missing: {combined}"
+    );
+    assert_eq!(read(root, "chart.yaml"), "pin: v2.0.0\nother: 2.0.0\n");
+}

@@ -131,7 +131,7 @@ pub(crate) fn apply_workspace_bump(
             new_version
         ));
         if let Some(old) = vf.old {
-            let plan = version_files_plan(vf.files, old, new_version, vf.owner);
+            let plan = version_files_plan(vf.files, old, new_version, vf.owner)?;
             rewrite_and_stage_version_files(workspace_root, &plan, true, log)?;
         }
         render_and_stage_changelogs(
@@ -191,7 +191,7 @@ pub(crate) fn apply_workspace_bump(
     // version_files are repo-root-relative already; rewrite the shared old→new
     // and fold the changed paths into the same bump commit.
     if let Some(old) = vf.old {
-        let plan = version_files_plan(vf.files, old, new_version, vf.owner);
+        let plan = version_files_plan(vf.files, old, new_version, vf.owner)?;
         let vf_changed = rewrite_and_stage_version_files(workspace_root, &plan, false, log)?;
         for f in vf_changed {
             if !staged_rel.contains(&f) {

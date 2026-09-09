@@ -100,8 +100,7 @@ pub(crate) fn rewrite_and_stage_version_files(
 pub(crate) fn plan_version_files_rewrites(
     tag_results: &[GroupTagResult],
 ) -> Result<Vec<VersionFileRewrite>> {
-    let mut plan: Vec<VersionFileRewrite> = Vec::new();
-
+    let mut units: Vec<PlanUnit<'_>> = Vec::new();
     for group_result in tag_results {
         let Some(ref old) = group_result.old_version else {
             continue;
@@ -109,37 +108,63 @@ pub(crate) fn plan_version_files_rewrites(
         let owner = group_result
             .crate_names
             .first()
-            .cloned()
-            .unwrap_or_else(|| "?".to_string());
+            .map(String::as_str)
+            .unwrap_or("?");
         for ((_, new_version), files) in group_result
             .version_updates
             .iter()
             .zip(group_result.crate_version_files.iter())
         {
-            for entry in files {
-                let candidate = VersionFileRewrite {
-                    file: entry.path().to_string(),
-                    anchor: entry.anchor().map(str::to_string),
-                    old: old.clone(),
-                    new: new_version.clone(),
-                    owner: owner.clone(),
-                };
-                if plan.iter().any(|p| {
-                    p.file == candidate.file
-                        && p.anchor == candidate.anchor
-                        && p.old == candidate.old
-                        && p.new == candidate.new
-                }) {
-                    continue;
-                }
-                for existing in &plan {
-                    check_rewrite_pair(existing, &candidate)?;
-                }
-                plan.push(candidate);
-            }
+            units.push(PlanUnit {
+                files,
+                old,
+                new: new_version,
+                owner,
+            });
         }
     }
+    build_version_files_plan(&units)
+}
 
+/// One enrolling unit: an entry list under a single `old` → `new` bump, owned
+/// by the named crate (or project).
+pub(crate) struct PlanUnit<'a> {
+    pub files: &'a [anodizer_core::config::VersionFileEntry],
+    pub old: &'a str,
+    pub new: &'a str,
+    pub owner: &'a str,
+}
+
+/// The one `version_files` plan builder: dedupe, guard, order.
+///
+/// Every config mode funnels through here so the conflict guard cannot hold in
+/// one mode and not another. A single unit is the single-crate and lockstep
+/// shape; several units are the per-crate shape.
+fn build_version_files_plan(units: &[PlanUnit<'_>]) -> Result<Vec<VersionFileRewrite>> {
+    let mut plan: Vec<VersionFileRewrite> = Vec::new();
+    for unit in units {
+        for entry in unit.files {
+            let candidate = VersionFileRewrite {
+                file: entry.path().to_string(),
+                anchor: entry.anchor().map(str::to_string),
+                old: unit.old.to_string(),
+                new: unit.new.to_string(),
+                owner: unit.owner.to_string(),
+            };
+            if plan.iter().any(|p| {
+                p.file == candidate.file
+                    && p.anchor == candidate.anchor
+                    && p.old == candidate.old
+                    && p.new == candidate.new
+            }) {
+                continue;
+            }
+            for existing in &plan {
+                check_rewrite_pair(existing, &candidate)?;
+            }
+            plan.push(candidate);
+        }
+    }
     sort_plan(&mut plan);
     Ok(plan)
 }
@@ -185,7 +210,7 @@ pub(crate) fn bump_top_level_version_files(
     let Some(old) = git::version_from_tag(old_tag) else {
         return Ok(());
     };
-    let plan = version_files_plan(files, &old, new_version, project_name);
+    let plan = version_files_plan(files, &old, new_version, project_name)?;
     let changed = rewrite_and_stage_version_files(root, &plan, dry_run, log)?;
     if dry_run || changed.is_empty() {
         return Ok(());
@@ -199,35 +224,27 @@ pub(crate) fn bump_top_level_version_files(
     Ok(())
 }
 
-/// Build the deduped plan for ONE crate's enrollment list under a single
-/// `old` → `new` bump: the single-crate (`--crate`) and lockstep-workspace
-/// shape, where every entry shares one pair so the interaction hazards
-/// [`plan_version_files_rewrites`] guards against cannot arise. `owner` names
-/// the crate (or the project) in the unmatched-anchor error.
+/// Build the deduped, conflict-checked plan for ONE enrollment list under a
+/// single `old` → `new` bump: the single-crate (`--crate`), no-`crates:` and
+/// lockstep-workspace shape. `owner` names the crate (or the project) in the
+/// unmatched-anchor error.
+///
+/// One `(old, new)` pair does NOT make the file safe: when `new` still matches
+/// `old`'s matcher — any prerelease target such as `1.2.3` → `1.2.3-rc1` — a
+/// bare entry and an anchored entry on the same file rewrite the same bytes
+/// twice, so the same guard [`plan_version_files_rewrites`] applies runs here.
 pub(crate) fn version_files_plan(
     files: &[anodizer_core::config::VersionFileEntry],
     old: &str,
     new: &str,
     owner: &str,
-) -> Vec<VersionFileRewrite> {
-    let mut plan: Vec<VersionFileRewrite> = Vec::new();
-    for entry in files {
-        let candidate = VersionFileRewrite {
-            file: entry.path().to_string(),
-            anchor: entry.anchor().map(str::to_string),
-            old: old.to_string(),
-            new: new.to_string(),
-            owner: owner.to_string(),
-        };
-        if !plan
-            .iter()
-            .any(|p| p.file == candidate.file && p.anchor == candidate.anchor)
-        {
-            plan.push(candidate);
-        }
-    }
-    sort_plan(&mut plan);
-    plan
+) -> Result<Vec<VersionFileRewrite>> {
+    build_version_files_plan(&[PlanUnit {
+        files,
+        old,
+        new,
+        owner,
+    }])
 }
 
 /// Order the plan the way the engine applies it: first-seen file order, and
