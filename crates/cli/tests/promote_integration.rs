@@ -3,9 +3,16 @@
 //! `promote::run` — config discovery, the `--from` default, the dry-run
 //! preflight skip, the per-publisher summary loop and the aggregated exit
 //! code — is only reachable by spawning the binary, so these spawn it against
-//! a fixture `.anodizer.yaml` in each of the three config modes. The box under
-//! test has no `snapcraft` installed: a dry-run that still exits 0 is itself
-//! the proof that nothing was spawned.
+//! a fixture `.anodizer.yaml` in each of the three config modes.
+//!
+//! Exiting 0 here does NOT by itself prove the dry-run spawned no `snapcraft`:
+//! a host that has the tool would also exit 0. The no-spawn property is pinned
+//! where it can be observed — `promote_dry_run_names_plan_and_spawns_nothing`
+//! in the snapcraft promoter and
+//! `dry_run_dispatch_emits_would_promote_and_spawns_nothing` in the verb's own
+//! dispatch. What these tests pin is the surface only a spawn reaches:
+//! config discovery, the `--from` default, the per-publisher summary loop and
+//! the aggregated exit code.
 
 use std::path::Path;
 use std::process::Command;
@@ -89,7 +96,7 @@ workspaces:
 
 /// Omitting `--from` promotes from the canonical `prerelease` track, which the
 /// snapcraft promoter resolves to its native `candidate`. Pins that default
-/// and the no-spawn dry-run on a box with no `snapcraft` on PATH.
+/// and the dry-run's zero exit in single-crate mode.
 #[test]
 fn promote_dry_run_single_crate_mode_names_default_from_track() {
     let dir = project(SINGLE_CRATE);
