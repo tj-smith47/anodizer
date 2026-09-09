@@ -21,6 +21,15 @@ tasks:
       - sh: '[ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
+  _check:mem-headroom:
+    internal: true
+    desc: "Precondition: at least 8 GB of memory available — rustdoc over this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host."
+    preconditions:
+      # MemAvailable is in kB; 8 GB = 8388608 kB. Only Linux exposes /proc/meminfo;
+      # the macOS, Windows and GitHub runners are never short of it for this step.
+      - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 8388608 ]'
+        msg: "Under 8 GB of memory available: rustdoc for this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate and `task push`'s; run it there, or free the memory first."
+
   build:
     desc: Build all default workspace members in release mode
     deps: [_check:tmp-headroom]
@@ -372,7 +381,6 @@ tasks:
       - task: audit:test-spawn
       - task: audit:test-exec-writer
       - task: audit:repo-identity
-      - task: audit:doc-links
       - task: audit:god-files
       - task: audit:serial-groups
 
@@ -381,14 +389,14 @@ tasks:
     cmds:
       - .claude/scripts/audit-serial-groups.sh
 
-  audit:doc-links:
+  doc:
     # rustdoc's intra-doc link resolution is the only checker for `[`Foo`]`
     # references; nothing else in the toolchain reads them. The lint is
-    # warn-by-default and `cargo doc` is not part of any other local target,
-    # so a broken link is invisible until a reader clicks dead text on the
-    # rendered docs. `--document-private-items` widens the check to private
-    # items' doc comments too — that is where the god-file splits do their
-    # damage, since a moved item keeps its name and loses its path.
+    # warn-by-default and no commit-time chain runs `cargo doc`, so a broken
+    # link is invisible until a reader clicks dead text on the rendered docs.
+    # `--document-private-items` widens the check to private items' doc
+    # comments too — that is where the god-file splits do their damage, since
+    # a moved item keeps its name and loses its path.
     # `private_intra_doc_links` is a separate lint for the inverse case: a
     # public item linking to a private one. It resolves locally and passes the
     # broken-link check, then renders as dead text on docs.rs, where the target
@@ -397,8 +405,8 @@ tasks:
     # `<email>` / `<label>` is parsed as an HTML tag and swallows the text
     # after it, a bare URL renders as unclickable plain text, and a redundant
     # explicit target hides the fact that the short form already resolved.
-    desc: "Guard: every rustdoc link resolves and renders (dead links are otherwise invisible)."
-    deps: [_check:tmp-headroom]
+    desc: "CI's rustdoc gate: every rustdoc link resolves and renders, all rustdoc lints denied. Runs in CI (`rustdoc` job), `task gate` and so `task push`; never `task commit`. Refuses to start under 8 GB available."
+    deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: >-
         -D rustdoc::broken_intra_doc_links
@@ -420,7 +428,7 @@ tasks:
       - task: audit:workflows
 
   ci:
-    desc: Run all CI checks (everything except cross-platform builds)
+    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which CI's rustdoc job and task gate run)
     cmds:
       - task: fmt:check
       - task: clippy
@@ -439,13 +447,14 @@ tasks:
     desc: "Pre-push floor: every blocking CI job, mirrored locally. Slow."
     cmds:
       - task: ci                              # fmt:check, clippy, test, docs:check, package
+      - task: doc                             # rustdoc
       - task: audit:deps                      # cargo-audit
       - task: docs:validate-readme            # validate-readme
       - task: check:config                    # check-config
       - task: check:native-object-determinism # native-object-determinism (windows-only; no-ops elsewhere)
       - task: snapshot                        # snapshot (dry-run)
       - task: audit:workflows                 # actionlint
-      - task: audit:code                      # convention guards (no CI job yet)
+      - task: audit:code                      # convention guards (no CI job)
       - task: coverage:gate                   # coverage floor
 
   commit:
@@ -467,7 +476,7 @@ tasks:
       - git commit {{.CLI_ARGS}}
 
   push:
-    desc: "Run task gate, then push. Usage: task push [-- <git push args>] (default: origin master)."
+    desc: "Run task gate (rustdoc, coverage, every CI job), then push. Usage: task push [-- <git push args>] (default: origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.

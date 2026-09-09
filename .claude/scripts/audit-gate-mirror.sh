@@ -31,6 +31,7 @@ declare -A JOB_MIRROR=(
     [actionlint]="audit:workflows"
     [fmt]="fmt:check"
     [clippy]="clippy"
+    [rustdoc]="doc"
     [cargo-audit]="audit:deps"
     [test]="test"
     [package]="package"

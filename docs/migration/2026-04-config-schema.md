@@ -220,5 +220,6 @@ $ cargo run --bin anodizer -- release --snapshot --single-target --clean --dry-r
 ```
 
 The snapshot dry-run is the actual gate — it must complete end-to-end with
-the migrated YAML. `task lint` chains fmt → clippy → release build → docs →
-snapshot dry-run, and is the precondition `task commit` enforces.
+the migrated YAML. `task lint` chains fmt → generated docs → clippy → release
+build → snapshot dry-run → the source-convention and workflow audits, and is
+the precondition `task commit` enforces.

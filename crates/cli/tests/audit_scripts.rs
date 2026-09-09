@@ -525,6 +525,93 @@ fn test_only_cfg_predicate_agrees_with_the_awk_lexer() {
     );
 }
 
+/// The `cmds:` body of one top-level Taskfile target: from its key line to the
+/// next top-level key, mirroring `task_block` in `audit-gate-mirror.sh`.
+fn taskfile_block(taskfile: &str, target: &str) -> String {
+    let key = format!("  {target}:");
+    let mut lines = taskfile.lines().skip_while(|l| *l != key).peekable();
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("no `{key}` in Taskfile.yml"));
+    let mut block = String::from(first);
+    for line in lines {
+        let top_level_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && line.ends_with(':')
+            && line[2..3]
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || c == '_');
+        if top_level_key {
+            break;
+        }
+        block.push('\n');
+        block.push_str(line);
+    }
+    block
+}
+
+/// Whether a Taskfile `cmds:` block runs `target` as a subtask. Anchored on
+/// the whole target name so `docs:validate-readme` never reads as `doc`.
+fn runs_task(block: &str, target: &str) -> bool {
+    block.lines().any(|line| {
+        line.trim()
+            .strip_prefix("- task: ")
+            .and_then(|rest| rest.strip_prefix(target))
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+    })
+}
+
+/// Rustdoc over this workspace holds several GB, so it may not run on the
+/// commit path; it is CI's job and `task gate`'s (and so `task push`'s). The
+/// wiring spans four files that no compiler ties together — a rename or a
+/// dropped line on one side leaves the gate silently ungated — so pin all of
+/// them textually, with no dependency on a `task` binary being installed.
+#[test]
+fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let taskfile = std::fs::read_to_string(repo.join("Taskfile.yml")).expect("Taskfile.yml");
+
+    let doc = taskfile_block(&taskfile, "doc");
+    assert!(
+        doc.contains("_check:mem-headroom"),
+        "the `doc:` target must refuse to start without memory headroom, got:\n{doc}"
+    );
+    assert!(
+        doc.contains("cargo doc --workspace --no-deps --document-private-items"),
+        "the `doc:` target must run the workspace rustdoc, got:\n{doc}"
+    );
+
+    let gate = taskfile_block(&taskfile, "gate");
+    assert!(
+        runs_task(&gate, "doc"),
+        "`task gate` must run the rustdoc gate, got:\n{gate}"
+    );
+    for commit_path in ["audit:code", "lint"] {
+        let block = taskfile_block(&taskfile, commit_path);
+        assert!(
+            !runs_task(&block, "doc"),
+            "`task {commit_path}` runs on every commit and must not chain the rustdoc gate, got:\n{block}"
+        );
+    }
+
+    let ci = std::fs::read_to_string(repo.join(".github/workflows/ci.yml")).expect("ci.yml");
+    assert!(
+        ci.contains("\n  rustdoc:\n"),
+        "ci.yml must carry a `rustdoc` job"
+    );
+    assert!(
+        ci.contains("run: task doc"),
+        "ci.yml's rustdoc job must run `task doc`"
+    );
+
+    let mirror = std::fs::read_to_string(repo.join(".claude/scripts/audit-gate-mirror.sh"))
+        .expect("audit-gate-mirror.sh");
+    assert!(
+        mirror.contains(r#"[rustdoc]="doc""#),
+        "the gate mirror must map ci.yml's rustdoc job to the local `doc` target"
+    );
+}
+
 /// Every whole test source file under `dir`, recursively — whatever
 /// `is_test_source_path` (and so `lib/test-regions.awk`'s `is_test_file`)
 /// names.

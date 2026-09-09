@@ -73,15 +73,17 @@ it's correct in single-crate, workspace-lockstep, per-crate, and `--all` modes.
 It is the local gate that catches the "release succeeds but is silently wrong"
 class before you push.
 
-## Two local gates: slim `snapshot` vs full `prepush`
+## Local gates: slim `snapshot`, full `prepush`, and the rustdoc gate
 
 anodizer's own `Taskfile.yml` wires two snapshot gates with different
-cost/coverage trade-offs. A consumer project can mirror the same shape:
+cost/coverage trade-offs, plus a rustdoc gate too heavy for the commit path.
+A consumer project can mirror the same shape:
 
 | Task | What it runs | When |
 |---|---|---|
 | `task snapshot` | dry-run pipeline, `--single-target`, no real build — fast | wired into the commit hook (via `task lint` → `task commit`) |
 | `task prepush` | **real** build of every host-buildable target (`--host-targets`) + archive/sign/checksum + emission validation | before pushing |
+| `task doc` | rustdoc over the workspace with every rustdoc lint denied (dead intra-doc links, bare URLs, unclosed HTML tags) | CI's `rustdoc` job, `task gate` → `task push`; never `task commit` |
 
 ```bash
 # Slim, fast — compiles nothing, single target. Runs on every commit.

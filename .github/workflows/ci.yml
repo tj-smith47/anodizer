@@ -80,6 +80,28 @@ jobs:
       - name: Check formatting
         run: task fmt:check
 
+  # Rustdoc is the longest single first-wave step, so it gets its own job
+  # instead of queueing behind clippy.
+  rustdoc:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          sccache: "true"
+          task: "true"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rustdoc
+        run: task doc
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
