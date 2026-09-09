@@ -135,12 +135,7 @@ resolve_mod_file() {
 # by (or shares a line with) a test-only cfg attribute. One pass rather than one
 # awk per file: at ~800 files the process spawns cost more than the scan.
 collect_mod_decls() {
-    awk '
-        function is_test_only_cfg(l) {
-            if (l !~ /#!?\[cfg\(/) return 0
-            if (l ~ /\(any\(/) return 0            # any(): satisfiable outside test
-            return (l ~ /(^|[(,[:space:]])test([),]|$)/)
-        }
+    awk -f "$LIB_DIR/rust-lex.awk" -f - "$@" <<'AWK'
         FNR == 1 { pend = 0 }
         { line = $0 }
         is_test_only_cfg(line) { pend = 1 }
@@ -158,7 +153,7 @@ collect_mod_decls() {
         /^[[:space:]]*(#|\/\/)/ { next }
         /^[[:space:]]*$/        { next }
         { pend = 0 }
-    ' "$@"
+AWK
 }
 
 declare -A IS_TEST_FILE=()

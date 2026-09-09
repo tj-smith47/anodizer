@@ -65,9 +65,8 @@ pub fn is_test_source_path(path: &Path) -> bool {
 /// `mod.rs`/`lib.rs`/`main.rs` beside it, or the 2018-layout `<dir>.rs` next
 /// to its directory. The gating attribute may sit on the item's own line or
 /// anywhere in the contiguous run of attribute and comment lines directly
-/// above it, and may be `#[cfg(test)]`, `#[cfg(all(test, …))]` or
-/// `#[cfg(any(…, test, …))]`; `test` must appear as a whole token and a
-/// `not(…)` predicate never gates.
+/// above it, and must be test-only by [`is_test_only_cfg`] — `#[cfg(test)]`
+/// or an `#[cfg(all(…))]` naming `test`, never an `any(…)` or a `not(test)`.
 ///
 /// The `Err` message names both the module file and the parent that should
 /// have declared it.
@@ -107,7 +106,7 @@ pub fn declared_under_test_cfg(module_file: &Path) -> Result<(), String> {
             let trimmed = lines[i].trim_start();
             i == item || trimmed.starts_with("#[") || trimmed.starts_with("//")
         })
-        .any(|i| gates_on_test(lines[i]));
+        .any(|i| is_test_only_cfg(lines[i]));
     if gated {
         return Ok(());
     }
@@ -149,33 +148,84 @@ fn is_mod_item(line: &str, stem: &str) -> bool {
         .is_some_and(|rest| rest.trim_start() == ";")
 }
 
-/// Whether a line carries a `cfg(…)` predicate that names `test` as a whole
-/// token outside any `not(…)`.
-fn gates_on_test(line: &str) -> bool {
-    let Some(open) = line.find("cfg(") else {
-        return false;
-    };
-    let rest = &line[open + "cfg(".len()..];
+/// Whether `line` is an attribute whose `cfg(…)` predicate can hold ONLY
+/// under `cargo test`, exactly as `.claude/scripts/lib/rust-lex.awk`'s
+/// `is_test_only_cfg` decides it.
+///
+/// Gates: bare `test`, and an `all(…)` one of whose top-level terms is
+/// itself test-only — so a conjunction may carry any other terms it likes,
+/// `not(…)` ones included.
+///
+/// Never gates: an `any(…)` wrapping the `test` term at any depth (the
+/// disjunction is satisfied by its other terms, so the item compiles into a
+/// production build too), `not(test)`, and any predicate that never names
+/// `test` as a term.
+///
+/// ```
+/// # use anodizer_core::test_helpers::test_sources::is_test_only_cfg;
+/// assert!(is_test_only_cfg("#[cfg(test)]"));
+/// assert!(is_test_only_cfg("#[cfg(all(test, not(windows)))]"));
+/// assert!(!is_test_only_cfg("#[cfg(any(test, feature = \"x\"))]"));
+/// assert!(!is_test_only_cfg("#[cfg(not(test))]"));
+/// ```
+pub fn is_test_only_cfg(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("#[cfg(")
+        .and_then(split_group)
+        .is_some_and(|(predicate, _)| predicate_is_test_only(predicate))
+}
+
+/// Split `rest` — the text after an opening `(` — at the `)` that closes it,
+/// into the group's contents and whatever follows the `)`. `None` when the
+/// group never closes.
+fn split_group(rest: &str) -> Option<(&str, &str)> {
     let mut depth = 1usize;
-    let mut end = rest.len();
     for (index, ch) in rest.char_indices() {
         match ch {
             '(' => depth += 1,
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    end = index;
-                    break;
+                    return Some((&rest[..index], &rest[index + 1..]));
                 }
             }
             _ => {}
         }
     }
-    let predicate = &rest[..end];
-    !predicate.contains("not(")
-        && predicate
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|token| token == "test")
+    None
+}
+
+/// Whether one `cfg` predicate term is test-only; see [`is_test_only_cfg`].
+fn predicate_is_test_only(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if predicate == "test" {
+        return true;
+    }
+    let Some((terms, tail)) = predicate.strip_prefix("all(").and_then(split_group) else {
+        return false;
+    };
+    tail.is_empty() && top_level_terms(terms).any(predicate_is_test_only)
+}
+
+/// The comma-separated terms of a predicate list, split only at nesting
+/// depth zero so a term's own parenthesised list survives intact.
+fn top_level_terms(terms: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut out = Vec::new();
+    for (index, ch) in terms.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&terms[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&terms[start..]);
+    out.into_iter()
 }
 
 #[cfg(test)]
@@ -253,9 +303,11 @@ mod tests {
         declared_under_test_cfg(&tests).unwrap();
     }
 
-    /// An `any(…)` disjunction naming `test` gates the module.
+    /// An `any(…)` disjunction compiles the module into a production build
+    /// whenever another term holds, so it never gates — and the failure
+    /// names both files, like every other ungated declaration.
     #[test]
-    fn cfg_any_test_or_feature_is_accepted() {
+    fn cfg_any_test_or_feature_is_rejected() {
         let tmp = tempfile::TempDir::new().unwrap();
         let tests = synthetic_module(
             tmp.path(),
@@ -263,16 +315,86 @@ mod tests {
             "#[cfg(any(test, feature = \"x\"))]\nmod tests;\n",
             false,
         );
+        let msg = declared_under_test_cfg(&tests).expect_err("`any(…)` is not a test-only gate");
+        let parent = tmp.path().join("m").join("mod.rs");
+        assert!(
+            msg.contains(&tests.display().to_string())
+                && msg.contains(&parent.display().to_string()),
+            "message must name the module file and its parent: {msg}"
+        );
+    }
+
+    /// A `not(…)` term BESIDE a top-level `test` is a legitimate gate: the
+    /// conjunction still cannot hold outside `cargo test`.
+    #[test]
+    fn cfg_all_test_and_not_windows_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "#[cfg(all(test, not(windows)))]\nmod tests;\n",
+            false,
+        );
         declared_under_test_cfg(&tests).unwrap();
     }
 
-    /// `not(test)` compiles the module OUTSIDE tests, so it never gates —
-    /// and neither does a token that merely contains `test`.
+    /// The `test` term of an `all(…)` may sit anywhere in the list.
     #[test]
-    fn cfg_not_test_and_a_longer_token_never_gate() {
-        assert!(!gates_on_test("#[cfg(not(test))]"));
-        assert!(!gates_on_test("#[cfg(feature = \"testing\")]"));
-        assert!(gates_on_test("#[cfg(test)]"));
+    fn cfg_all_feature_then_test_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "#[cfg(all(feature = \"x\", test))]\nmod tests;\n",
+            false,
+        );
+        declared_under_test_cfg(&tests).unwrap();
+    }
+
+    /// `not(test)` compiles the module OUTSIDE tests, so it never gates.
+    #[test]
+    fn cfg_not_test_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = synthetic_module(
+            tmp.path(),
+            "m/mod.rs",
+            "#[cfg(not(test))]\nmod tests;\n",
+            false,
+        );
+        let msg = declared_under_test_cfg(&tests).expect_err("`not(test)` is not a test-only gate");
+        let parent = tmp.path().join("m").join("mod.rs");
+        assert!(
+            msg.contains(&tests.display().to_string())
+                && msg.contains(&parent.display().to_string()),
+            "message must name the module file and its parent: {msg}"
+        );
+    }
+
+    /// The predicate shapes the parser rules on, straight to the predicate.
+    #[test]
+    fn only_a_test_only_predicate_gates() {
+        for line in [
+            "#[cfg(test)]",
+            "  #[cfg(test)] mod tests;",
+            "#[cfg(all(test, unix))]",
+            "#[cfg(all(test, not(windows)))]",
+            "#[cfg(all(feature = \"x\", test))]",
+            "#[cfg(all(all(test), unix))]",
+        ] {
+            assert!(is_test_only_cfg(line), "{line}");
+        }
+        for line in [
+            "#[cfg(any(test, feature = \"x\"))]",
+            "#[cfg(all(any(test, unix), windows))]",
+            "#[cfg(not(test))]",
+            "#[cfg(not(all(test, unix)))]",
+            "#[cfg(feature = \"testing\")]",
+            "#[cfg(unix)]",
+            "// gated by #[cfg(test)] somewhere else",
+            "mod tests;",
+        ] {
+            assert!(!is_test_only_cfg(line), "{line}");
+        }
     }
 
     /// The 2018 layout declares `m/tests.rs` from `m.rs` beside the directory.

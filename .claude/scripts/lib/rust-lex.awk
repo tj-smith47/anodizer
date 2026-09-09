@@ -68,11 +68,50 @@ function count_char(s, ch,   i, n, t) {
     return t
 }
 
-# A cfg predicate is test-only when it cannot hold outside `cargo test`:
-# bare `test`, or an `all(…)` one of whose terms is `test`. An `any(…)`
-# is satisfiable by its other terms, so it is production.
-function is_test_only_cfg(l) {
+# Whether l is an attribute whose cfg(...) predicate can hold ONLY under
+# `cargo test`: bare `test`, or an `all(...)` one of whose top-level terms is
+# itself test-only. An `any(...)` is satisfiable by its other terms and a
+# `not(...)` inverts the gate, so neither ever gates test code. The Rust twin
+# is crates/core/src/test_helpers/test_sources.rs `is_test_only_cfg`, and
+# crates/cli/tests/audit_scripts.rs drives both over one vector.
+function is_test_only_cfg(l,   start, i, n, depth, c) {
     if (l !~ /^[[:space:]]*#\[cfg\(/) return 0
-    if (l ~ /\(any\(/) return 0
-    return (l ~ /(^|[(,[:space:]])test([),]|$)/)
+    start = index(l, "#[cfg(") + 6
+    depth = 1; n = length(l)
+    for (i = start; i <= n; i++) {
+        c = substr(l, i, 1)
+        if (c == "(") depth++
+        else if (c == ")") {
+            depth--
+            if (depth == 0) return pred_is_test_only(substr(l, start, i - start))
+        }
+    }
+    return 0
+}
+
+# Whether one cfg predicate term is test-only; see is_test_only_cfg.
+function pred_is_test_only(p,   n, i, depth, c, end_at, inner, start) {
+    sub(/^[[:space:]]+/, "", p); sub(/[[:space:]]+$/, "", p)
+    if (p == "test") return 1
+    if (substr(p, 1, 4) != "all(") return 0
+    depth = 1; n = length(p); end_at = 0
+    for (i = 5; i <= n; i++) {
+        c = substr(p, i, 1)
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0) { end_at = i; break } }
+    }
+    # Text after the closing paren means `all(...)` was not the whole term.
+    if (end_at != n) return 0
+    inner = substr(p, 5, n - 5)
+    depth = 0; start = 1; n = length(inner)
+    for (i = 1; i <= n; i++) {
+        c = substr(inner, i, 1)
+        if (c == "(") depth++
+        else if (c == ")") depth--
+        else if (c == "," && depth == 0) {
+            if (pred_is_test_only(substr(inner, start, i - start))) return 1
+            start = i + 1
+        }
+    }
+    return pred_is_test_only(substr(inner, start, n - start + 1))
 }

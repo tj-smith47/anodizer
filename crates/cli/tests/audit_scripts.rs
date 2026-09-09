@@ -27,7 +27,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use anodizer_core::test_helpers::test_sources::{declared_under_test_cfg, is_test_source_path};
+use anodizer_core::test_helpers::test_sources::{
+    declared_under_test_cfg, is_test_only_cfg, is_test_source_path,
+};
 
 use tempfile::TempDir;
 
@@ -293,6 +295,86 @@ fn test_source_predicate_agrees_with_the_awk_lexer() {
     assert!(
         disagreements.is_empty(),
         "is_test_file and is_test_source_path must agree: {disagreements:?}"
+    );
+}
+
+/// The `cfg(…)` predicates whose test-only verdict both lexers must share.
+/// Every accepted shape, every rejection the accepted ones are one token away
+/// from, and the two non-attribute lines that must never be mistaken for a
+/// gate.
+const AGREEMENT_CFG_LINES: &[&str] = &[
+    "#[cfg(test)]",
+    "  #[cfg(test)] mod tests;",
+    "#[cfg(all(test, unix))]",
+    "#[cfg(all(test, not(windows)))]",
+    "#[cfg(all(feature = \"x\", test))]",
+    "#[cfg(all(all(test), unix))]",
+    "#[cfg(any(test, feature = \"x\"))]",
+    "#[cfg(all(any(test, unix), windows))]",
+    "#[cfg(not(test))]",
+    "#[cfg(not(all(test, unix)))]",
+    "#[cfg(feature = \"testing\")]",
+    "#[cfg(unix)]",
+    "// gated by #[cfg(test)] somewhere else",
+    "mod tests;",
+];
+
+/// The awk lexer's `is_test_only_cfg` and the Rust `is_test_only_cfg` decide
+/// which `cfg(…)` predicates gate test code — the shell scanners bound their
+/// test regions with one, the crates' structural walks check the premise
+/// behind a name match with the other. A rule loosened on one side alone (an
+/// `any(…)` counted as a gate, a `not(…)` term rejected beside a `test` one)
+/// lets a production module be skipped as test code, or the reverse. Feed
+/// both the same predicate lines and compare verdicts.
+#[test]
+fn test_only_cfg_predicate_agrees_with_the_awk_lexer() {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/lib");
+    let dir = TempDir::new().expect("temp dir");
+    let driver = dir.path().join("driver.awk");
+    std::fs::write(
+        &driver,
+        "{ print (is_test_only_cfg($0) ? \"1\" : \"0\") }\n",
+    )
+    .expect("driver");
+    let list = dir.path().join("cfg-lines.txt");
+    std::fs::write(&list, format!("{}\n", AGREEMENT_CFG_LINES.join("\n"))).expect("cfg lines");
+
+    let out = Command::new("awk")
+        .arg("-f")
+        .arg(lib.join("rust-lex.awk"))
+        .arg("-f")
+        .arg(&driver)
+        .arg(&list)
+        .output()
+        .expect("running awk");
+    assert!(
+        out.status.success(),
+        "awk failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let awk: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .expect("awk output is utf-8")
+        .lines()
+        .collect();
+    assert_eq!(
+        awk.len(),
+        AGREEMENT_CFG_LINES.len(),
+        "awk answered {} of {} predicate lines",
+        awk.len(),
+        AGREEMENT_CFG_LINES.len()
+    );
+    let disagreements: Vec<String> = AGREEMENT_CFG_LINES
+        .iter()
+        .zip(&awk)
+        .map(|(line, verdict)| (line, *verdict == "1", is_test_only_cfg(line)))
+        .filter(|(_, awk_says, rust_says)| awk_says != rust_says)
+        .map(|(line, awk_says, rust_says)| format!("{line}: awk={awk_says} rust={rust_says}"))
+        .collect();
+    assert!(
+        disagreements.is_empty(),
+        "the two `is_test_only_cfg` spellings must agree: {disagreements:?}"
     );
 }
 
