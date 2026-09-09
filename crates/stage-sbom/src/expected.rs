@@ -82,6 +82,7 @@ pub fn expected_sbom_assets(
                     Path::new(""),
                     &std::collections::HashMap::new(),
                     None,
+                    None,
                 );
                 for doc_tpl in &documents {
                     let rendered =
@@ -139,6 +140,7 @@ pub fn expected_sbom_assets(
                 &artifact.path,
                 &artifact.metadata,
                 artifact.target.as_deref(),
+                Some(artifact.kind),
             );
             // The external command path renders and registers EVERY documents
             // entry per artifact (genuinely-distinct per-archive scans).

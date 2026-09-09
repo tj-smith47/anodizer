@@ -662,8 +662,47 @@ fn test_sbom_resolved_artifacts_user_value_wins() {
 fn test_sbom_resolved_documents_default_binary() {
     assert_eq!(
         SbomConfig::default().resolved_documents("binary"),
-        vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()]
+        vec![format!(
+            "{}.sbom.json",
+            crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
+        )]
     );
+}
+
+/// The default binary document is the binary's own default name plus
+/// `.sbom.json`; drift between the two would let a variant build overwrite
+/// its sibling's document.
+#[test]
+fn default_binary_sbom_document_matches_the_binary_name_template() {
+    assert_eq!(
+        SbomConfig::DEFAULT_DOCUMENT_BINARY,
+        format!(
+            "{}.sbom.json",
+            crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
+        )
+    );
+}
+
+/// Two amd64 micro-architecture builds of one binary must catalog into two
+/// documents — the `v1` baseline keeps the historical suffix-free name.
+#[test]
+fn binary_sbom_documents_disambiguate_amd64_variants() {
+    let tpl = SbomConfig::default().resolved_documents("binary").remove(0);
+    let render = |variant: &str| {
+        let mut vars = crate::template::TemplateVars::new();
+        vars.set("Binary", "demo");
+        vars.set("Version", "1.2.3");
+        vars.set("Os", "linux");
+        vars.set("Arch", "amd64");
+        crate::archive_name::seed_variant_vars(
+            &mut vars,
+            "x86_64-unknown-linux-gnu",
+            Some(variant),
+        );
+        crate::template::render(&tpl, &vars).expect("render document template")
+    };
+    assert_eq!(render("v1"), "demo_1.2.3_linux_amd64.sbom.json");
+    assert_eq!(render("v3"), "demo_1.2.3_linux_amd64v3.sbom.json");
 }
 
 #[test]

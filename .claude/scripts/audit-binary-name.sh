@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Guard: an artifact's binary name is read through ONE accessor.
 #
-# Contract (crates/core/src/artifact/registry.rs): `Artifact::binary_name()`
-# is the only answer to "what binary is this artifact". It reads the `binary`
+# Contract (crates/core/src/artifact/registry.rs): `binary_name_of()` is the
+# only answer to "what binary is this artifact"; `Artifact::binary_name()` is
+# its method form and delegates. It reads the `binary`
 # metadata the build stage records and, for a binary-like kind, falls back to
 # the on-disk file name with a trailing `.exe` removed. Every raw read of the
 # key supplied its own fallback — "" in one filter, the crate name in a bail,
@@ -31,7 +32,7 @@ cd "$ROOT"
 
 # `<file>::<fn>` — the one function that must read the raw key.
 BINARY_READ_OK=(
-    "crates/core/src/artifact/registry.rs::binary_name — the accessor itself"
+    "crates/core/src/artifact/registry.rs::binary_name_of — the accessor itself"
 )
 
 allow_keys="$(printf '%s\n' "${BINARY_READ_OK[@]}" | sed 's/ — .*$//')"
@@ -77,7 +78,7 @@ fi
 collect_files ACCESSOR_READS -n -- '\.get("binary")' "$REGISTRY"
 accessor_hits=${#ACCESSOR_READS[@]}
 if [[ "$accessor_hits" -ne 1 ]]; then
-    echo "audit-binary-name: expected exactly one raw read inside Artifact::binary_name, found $accessor_hits in $REGISTRY"
+    echo "audit-binary-name: expected exactly one raw read inside binary_name_of, found $accessor_hits in $REGISTRY"
     exit 1
 fi
 

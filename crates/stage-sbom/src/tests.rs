@@ -710,6 +710,127 @@ fn external_cmd_binary_artifacts_substitutes_artifact_and_document() {
     assert_eq!(sbom_names, vec!["myproj-linux.spdx.json"]);
 }
 
+/// Two amd64 micro-architecture builds of one binary catalog into two
+/// documents under the default `documents:`. Pins both halves: the default
+/// template carries the variant suffix, and the stage seeds the `Binary` /
+/// `Amd64` vars it renders against.
+#[cfg(unix)]
+#[test]
+fn external_cmd_default_binary_documents_disambiguate_amd64_variants() {
+    let tools = FakeToolDir::new();
+    tools
+        .tool("syft")
+        .script("for a in \"$@\"; do case \"$a\" in *=*) echo '{}' > \"${a#*=}\";; esac; done")
+        .install();
+
+    let (mut ctx, tmp) = external_ctx(
+        tools.tool_path("syft"),
+        SbomConfig {
+            id: Some("bin".into()),
+            artifacts: Some("binary".into()),
+            // documents unset — this is the default under test.
+            args: Some(vec![
+                "$artifact".into(),
+                "--output".into(),
+                "spdx-json=$document".into(),
+            ]),
+            env: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    let dist = tmp.path().to_path_buf();
+    for variant in ["v1", "v3"] {
+        let dir = dist.join(variant);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("myproj");
+        std::fs::write(&path, b"\x7fELF fake").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myproj".into(),
+            path,
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            crate_name: "myproj".into(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myproj".to_string()),
+                ("amd64_variant".to_string(), variant.to_string()),
+            ]),
+            size: None,
+        });
+    }
+
+    SbomStage.run(&mut ctx).expect("sbom stage");
+
+    let mut sbom_names: Vec<String> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::Sbom)
+        .map(|a| a.name.clone())
+        .collect();
+    sbom_names.sort();
+    assert_eq!(
+        sbom_names,
+        vec![
+            "myproj_1.0.0_linux_amd64.sbom.json".to_string(),
+            "myproj_1.0.0_linux_amd64v3.sbom.json".to_string(),
+        ],
+        "the v1 baseline keeps the historical name and v3 sits beside it"
+    );
+}
+
+/// A binary named by a path relative to the repo root — the build stage
+/// records `target/<triple>/release/<bin>` — is handed to the generator
+/// absolutely, because the generator runs with `dist` as its working
+/// directory and would otherwise resolve the path against dist and report a
+/// missing file.
+#[cfg(unix)]
+#[test]
+fn external_cmd_names_an_out_of_dist_binary_absolutely() {
+    let tools = FakeToolDir::new();
+    tools
+        .tool("syft")
+        .script("for a in \"$@\"; do case \"$a\" in *=*) echo '{}' > \"${a#*=}\";; esac; done")
+        .install();
+
+    let (mut ctx, _tmp) = external_ctx(
+        tools.tool_path("syft"),
+        SbomConfig {
+            id: Some("bin".into()),
+            artifacts: Some("binary".into()),
+            documents: Some(vec!["{{ .ArtifactName }}.spdx.json".into()]),
+            args: Some(vec![
+                "$artifact".into(),
+                "--output".into(),
+                "spdx-json=$document".into(),
+            ]),
+            env: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    let relative = PathBuf::from("target/x86_64-unknown-linux-gnu/release/myproj");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "myproj".into(),
+        path: relative.clone(),
+        target: Some("x86_64-unknown-linux-gnu".into()),
+        crate_name: "myproj".into(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    SbomStage.run(&mut ctx).expect("sbom stage");
+
+    let call = &tools.calls("syft")[0];
+    assert_eq!(
+        call[0],
+        std::path::absolute(&relative)
+            .expect("absolute")
+            .display()
+            .to_string(),
+        "a binary outside dist must be named absolutely: {call:?}"
+    );
+}
+
 /// `artifacts: archive` matching zero artifacts in non-strict mode is a
 /// silent skip: no error, no tool run, no SBOM registered.
 #[cfg(unix)]

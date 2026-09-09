@@ -7,6 +7,10 @@ pub struct Artifact {
 
 impl Artifact {
     pub fn binary_name(&self) -> Option<&String> {
-        self.metadata.get("binary")
+        binary_name_of(&self.metadata)
     }
+}
+
+pub fn binary_name_of(metadata: &HashMap<String, String>) -> Option<&String> {
+    metadata.get("binary")
 }

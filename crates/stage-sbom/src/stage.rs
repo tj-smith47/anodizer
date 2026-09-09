@@ -221,14 +221,20 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     };
 
     for (artifact_path, artifact_meta, artifact_target, artifact_kind) in &artifact_list {
+        // The generator runs with `dist` as its working directory, so an
+        // artifact that lives outside dist (a build binary under `target/`)
+        // must be named absolutely or the tool resolves it against dist and
+        // reports a missing file.
         let artifact_rel = if artifact_path.as_os_str().is_empty() {
             String::new()
         } else {
-            artifact_path
-                .strip_prefix(dist)
-                .unwrap_or(artifact_path)
-                .display()
-                .to_string()
+            match artifact_path.strip_prefix(dist) {
+                Ok(rel) => rel.display().to_string(),
+                Err(_) => std::path::absolute(artifact_path)
+                    .unwrap_or_else(|_| artifact_path.to_path_buf())
+                    .display()
+                    .to_string(),
+            }
         };
 
         let vars = artifact_template_vars(
@@ -236,6 +242,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             artifact_path,
             artifact_meta,
             artifact_target.as_deref(),
+            *artifact_kind,
         );
 
         let mut rendered_docs: Vec<String> = Vec::new();

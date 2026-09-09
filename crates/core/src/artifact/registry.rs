@@ -97,22 +97,7 @@ impl Artifact {
     /// an archive's file name is not a binary name, and the last-resort
     /// substitute (a crate or package name) is the caller's to choose.
     pub fn binary_name(&self) -> Option<String> {
-        if let Some(name) = self.metadata.get("binary") {
-            return Some(name.clone());
-        }
-        if !matches!(
-            self.kind,
-            ArtifactKind::Binary | ArtifactKind::UploadableBinary | ArtifactKind::UniversalBinary
-        ) {
-            return None;
-        }
-        let file_name = self.path.file_name()?.to_string_lossy();
-        Some(
-            file_name
-                .strip_suffix(".exe")
-                .unwrap_or(&file_name)
-                .to_string(),
-        )
+        binary_name_of(Some(self.kind), &self.metadata, &self.path)
     }
 
     /// Resolve the artifact's canonical file extension (including the leading
@@ -411,5 +396,31 @@ fn should_relativize_path(kind: ArtifactKind) -> bool {
             | ArtifactKind::PublishableDockerImage
             | ArtifactKind::DockerManifest
             | ArtifactKind::DockerDigest
+    )
+}
+
+/// [`Artifact::binary_name`]'s rule, over the parts rather than the artifact —
+/// for callers that carry a `(kind, metadata, path)` triple instead of the
+/// artifact itself. An unknown kind is never binary-like.
+pub fn binary_name_of(
+    kind: Option<ArtifactKind>,
+    metadata: &std::collections::HashMap<String, String>,
+    path: &std::path::Path,
+) -> Option<String> {
+    if let Some(name) = metadata.get("binary") {
+        return Some(name.clone());
+    }
+    if !matches!(
+        kind,
+        Some(ArtifactKind::Binary | ArtifactKind::UploadableBinary | ArtifactKind::UniversalBinary)
+    ) {
+        return None;
+    }
+    let file_name = path.file_name()?.to_string_lossy();
+    Some(
+        file_name
+            .strip_suffix(".exe")
+            .unwrap_or(&file_name)
+            .to_string(),
     )
 }

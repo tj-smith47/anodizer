@@ -37,8 +37,8 @@ pub(crate) fn typed_artifact_kind(artifacts_type: &str, id: &str) -> Result<Arti
 
 /// Build the per-artifact template-variable overlay used to render SBOM
 /// `documents:` / `args:` / `env:` templates (`ArtifactName`, `ArtifactExt`,
-/// `ArtifactID`, and `Os`/`Arch`/`Target` when the artifact has a build
-/// target).
+/// `ArtifactID`, `Binary`, and `Os`/`Arch`/`Target` plus the
+/// micro-architecture variant vars when the artifact has a build target).
 ///
 /// Returns a CLONE of the context's vars with the bindings applied — the
 /// shared context is never mutated, so one artifact's `Os`/`Arch`/`Target`
@@ -50,6 +50,7 @@ pub(crate) fn artifact_template_vars(
     artifact_path: &Path,
     artifact_meta: &HashMap<String, String>,
     artifact_target: Option<&str>,
+    artifact_kind: Option<ArtifactKind>,
 ) -> anodizer_core::template::TemplateVars {
     let artifact_name = artifact_path
         .file_name()
@@ -69,12 +70,29 @@ pub(crate) fn artifact_template_vars(
         "ArtifactID",
         artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
     );
+    if let Some(binary) =
+        anodizer_core::artifact::binary_name_of(artifact_kind, artifact_meta, artifact_path)
+    {
+        vars.set("Binary", &binary);
+    }
+    // A stage that ran earlier may have left its own target's variant vars on
+    // the shared context, so every render starts from a cleared set rather
+    // than inheriting a suffix from an unrelated artifact.
+    anodizer_core::archive_name::reset_variant_vars(&mut vars);
     let target = artifact_target.or_else(|| artifact_meta.get("target").map(String::as_str));
     if let Some(target) = target {
         let (os, arch) = anodizer_core::target::map_target(target);
         vars.set("Os", &os);
         vars.set("Arch", &arch);
         vars.set("Target", target);
+        // `Arch` carries the composite token (`armv7`), so this is the policy
+        // that leaves `Arm`/`Mips` empty — seeding them would double the
+        // suffix the default document template appends.
+        anodizer_core::archive_name::seed_variant_vars(
+            &mut vars,
+            target,
+            artifact_meta.get("amd64_variant").map(String::as_str),
+        );
     }
     vars
 }
