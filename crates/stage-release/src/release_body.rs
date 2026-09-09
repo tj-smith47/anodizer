@@ -10,6 +10,7 @@
 use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, ReleaseConfig};
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
+use std::borrow::Cow;
 
 /// Resolve header/footer precedence for the GitHub release body.
 ///
@@ -114,35 +115,73 @@ pub(crate) fn full_changelog_element(
     Ok(Some(format!("---\n**Full Changelog**: {url}")))
 }
 
+/// Line endings stripped from the end of each release-body part before the
+/// join. A YAML block scalar (`header: |`) contributes `\n`; a `from_file`
+/// source authored on Windows contributes `\r\n`, which `read_to_string`
+/// hands over untranslated.
+const PART_TRAILING_LINE_ENDINGS: [char; 2] = ['\n', '\r'];
+
 /// Construct the release body by wrapping the changelog with optional
 /// header and footer from the release config.
 ///
-/// Each part's own trailing newlines are dropped before the join: a YAML block
-/// scalar (`header: |`) carries one, and keeping it would render a second
-/// blank line between the header and the changelog that the author never
-/// wrote. The join owns the separation.
+/// Each part's own trailing line endings are dropped before the join: a YAML
+/// block scalar (`header: |`) carries one, and keeping it would render a
+/// second blank line between the header and the changelog that the author
+/// never wrote. The join owns the separation.
+///
+/// When the assembled body would exceed [`GITHUB_RELEASE_BODY_MAX_CHARS`],
+/// only the changelog is cut, and it carries the ellipsis marker. The header
+/// and the footer — which holds the derived `**Full Changelog**` link and the
+/// attribution line — are reserved, so the elements anodizer itself owns are
+/// never the first thing an oversized release loses.
 pub(crate) fn build_release_body(
     changelog_body: &str,
     header: Option<&str>,
     footer: Option<&str>,
 ) -> String {
-    let trimmed = |s: &str| -> usize { s.trim_end_matches('\n').len() };
+    let header = header
+        .map(|h| h.trim_end_matches(PART_TRAILING_LINE_ENDINGS))
+        .filter(|h| !h.is_empty());
+    let footer = footer
+        .map(|f| f.trim_end_matches(PART_TRAILING_LINE_ENDINGS))
+        .filter(|f| !f.is_empty());
+    let changelog = changelog_body.trim_end_matches(PART_TRAILING_LINE_ENDINGS);
+
+    let assembled_len = |changelog_len: usize| -> usize {
+        let count = usize::from(header.is_some())
+            + usize::from(changelog_len > 0)
+            + usize::from(footer.is_some());
+        if count == 0 {
+            return 0;
+        }
+        // Header / changelog / footer are separated by a blank line ("\n\n"),
+        // and the body ends in a single newline.
+        header.map_or(0, str::len)
+            + changelog_len
+            + footer.map_or(0, str::len)
+            + 2 * (count - 1)
+            + 1
+    };
+
+    let reserved = assembled_len(changelog.len()).saturating_sub(changelog.len());
+    let changelog = if assembled_len(changelog.len()) > GITHUB_RELEASE_BODY_MAX_CHARS {
+        Cow::Owned(truncate_with_ellipsis(
+            changelog,
+            GITHUB_RELEASE_BODY_MAX_CHARS.saturating_sub(reserved),
+        ))
+    } else {
+        Cow::Borrowed(changelog)
+    };
+
     let mut parts: Vec<&str> = Vec::new();
-
-    if let Some(h) = header
-        && trimmed(h) > 0
-    {
-        parts.push(&h[..trimmed(h)]);
+    if let Some(h) = header {
+        parts.push(h);
     }
-
-    if trimmed(changelog_body) > 0 {
-        parts.push(&changelog_body[..trimmed(changelog_body)]);
+    if !changelog.is_empty() {
+        parts.push(&changelog);
     }
-
-    if let Some(f) = footer
-        && trimmed(f) > 0
-    {
-        parts.push(&f[..trimmed(f)]);
+    if let Some(f) = footer {
+        parts.push(f);
     }
 
     if parts.is_empty() {
@@ -154,6 +193,32 @@ pub(crate) fn build_release_body(
         s.push('\n');
         s
     }
+}
+
+/// The marker anodizer appends where it cut an over-long release body.
+/// GoReleaser's is the same three-dot ellipsis.
+const TRUNCATION_ELLIPSIS: &str = "...";
+
+/// Cut `s` down to at most `max_len` bytes, ending it with
+/// [`TRUNCATION_ELLIPSIS`], never splitting a UTF-8 character.
+///
+/// A `max_len` too small to hold even the marker yields an empty string —
+/// nothing of the original survives, and a partial marker would read as
+/// content.
+fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let Some(max_content) = max_len.checked_sub(TRUNCATION_ELLIPSIS.len()) else {
+        return String::new();
+    };
+    let safe_end = s
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| end <= max_content)
+        .last()
+        .unwrap_or(0);
+    format!("{}{}", &s[..safe_end], TRUNCATION_ELLIPSIS)
 }
 
 /// Render the "Non-deterministic exemptions:" block injected above the
@@ -445,23 +510,11 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
     // description provided" instead of a literal empty line above the
     // asset list.
     if !body.is_empty() {
-        let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
-            // Truncation marker —
-            //     ellipsis = "..."
-            // Anodizer previously appended `"\n\n...(truncated)"` (16 chars);
-            // a literal three-dot ellipsis.
-            let suffix = "...";
-            let max_content = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
-            let safe_end = body
-                .char_indices()
-                .map(|(i, c)| i + c.len_utf8())
-                .take_while(|&end| end <= max_content)
-                .last()
-                .unwrap_or(0);
-            format!("{}{}", &body[..safe_end], suffix)
-        } else {
-            body.to_string()
-        };
+        // The backstop for bodies composed outside `build_release_body` — the
+        // `append` / `prepend` modes concatenate an existing release body with
+        // a new one. A body that came through `build_release_body` already
+        // fits, with its header and footer reserved.
+        let truncated_body = truncate_with_ellipsis(body, GITHUB_RELEASE_BODY_MAX_CHARS);
         json["body"] = serde_json::Value::String(truncated_body);
     }
     if let Some(ml) = make_latest {

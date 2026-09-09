@@ -567,6 +567,38 @@ fn block_scalar_header_and_footer_do_not_double_the_blank_line() {
 
     let only_newlines = build_release_body("changes", Some("\n"), Some("\n\n"));
     assert_eq!(only_newlines, "changes\n");
+
+    // A `from_file` source authored on Windows reaches the join with CRLF
+    // endings: `read_to_string` does not translate them.
+    let crlf = build_release_body("changes\r\n", Some("HEADER\r\n"), Some("FOOTER\r\n\r\n"));
+    assert_eq!(crlf, "HEADER\n\nchanges\n\nFOOTER\n");
+}
+
+#[test]
+fn oversized_body_truncates_the_changelog_and_keeps_the_trailer() {
+    let trailer = format!(
+        "---\n**Full Changelog**: https://github.com/myorg/myapp/compare/v1.2.2...v1.2.3\n{}",
+        ReleaseConfig::DEFAULT_FOOTER
+    );
+    let header = "## What's new in v1.2.3";
+    let changelog = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS);
+
+    let body = build_release_body(&changelog, Some(header), Some(&trailer));
+
+    // The cut fills the limit exactly: the reserved header (23 B), the
+    // reserved trailer (148 B) and the two blank-line joins keep their bytes,
+    // and the changelog takes what is left.
+    assert_eq!(body.len(), GITHUB_RELEASE_BODY_MAX_CHARS);
+    assert!(body.starts_with(header), "the header must survive");
+    assert!(
+        body.ends_with(&format!("{}\n", trailer)),
+        "the derived link and the attribution must survive the cut"
+    );
+    // The marker sits on the changelog, which is the part that was cut.
+    assert!(
+        body.contains(&format!("a...\n\n{}", trailer)),
+        "the ellipsis must end the truncated changelog"
+    );
 }
 
 #[test]
