@@ -125,17 +125,13 @@ report() {
             if (!in_test) next                  # production startup code
             if (this_envok || prev_envok) next  # justified at the call site
             printf("%s:%d: [env] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-            bad = 1
         }
 
         /std::env::set_current_dir\(/ {
             if (!in_test) next                  # production / library code
             if (this_cwdok || prev_cwdok) next  # justified at the call site
             printf("%s:%d: [cwd] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-            bad = 1
         }
-
-        END { exit bad ? 2 : 0 }
 AWK
 }
 
@@ -248,7 +244,6 @@ report_cwd_helper_pairing() {
                 if (needs_unix && !fn_has_cfg_unix) missing = missing " #[cfg(unix)]"
                 if (!fn_has_serial_cwd) missing = missing " #[serial_test::serial(cwd)]"
                 printf("%s:%d: fn %s calls a cwd-swap helper but is missing:%s\n", fn_file, fn_line, fn_name, missing)
-                bad = 1
             }
         }
 
@@ -260,7 +255,6 @@ report_cwd_helper_pairing() {
         function check_counts(f) {
             if (file_test_attrs != file_tracked_test_fns) {
                 printf("%s: unexpected test-module structure: %d #[test] attrs but %d attributed to a flat fn; the cwd-helper pairing scanner assumes a flat test module — 0-space in a sibling `tests.rs`, or 4-space in an inline `mod tests` (no deeper nested `mod`) — flatten the nested module or extend report_cwd_helper_pairing\n", f, file_test_attrs, file_tracked_test_fns)
-                bad = 1
             }
         }
 
@@ -326,21 +320,20 @@ report_cwd_helper_pairing() {
         END {
             finalize()             # flush the last file last tracked fn …
             check_counts(cur_file) # … then compare that final file counts
-            exit bad ? 3 : 0
         }
     ' "$@"
 }
 
 violations=""
 if [[ ${#FILES[@]} -gt 0 ]]; then
-        # `|| true` here would swallow a scanner that never ran — a missing awk
-    # library, a bad regex — as a clean scan, so only the two exits the scanner
-    # defines are accepted.
+    # The scanner prints its findings and exits 0; a non-zero status is awk
+    # itself failing (a missing library, a bad regex), which `|| true` would
+    # otherwise swallow as a clean scan of nothing.
     scan_status=0
     violations="$(report "${FILES[@]}")" || scan_status=$?
-    if ((scan_status != 0 && scan_status != 2)); then
+    if ((scan_status != 0)); then
         echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
-        exit 1
+        exit 2
     fi
 fi
 
@@ -348,19 +341,17 @@ mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --in
 
 helper_violations=""
 if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
-        # `|| true` here would swallow a scanner that never ran — a missing awk
-    # library, a bad regex — as a clean scan, so only the two exits the scanner
-    # defines are accepted.
+    # The scanner prints its findings and exits 0; a non-zero status is awk
+    # itself failing (a missing library, a bad regex), which `|| true` would
+    # otherwise swallow as a clean scan of nothing.
     scan_status=0
     helper_violations="$(report_cwd_helper_pairing "$helper_alt" "$portable_alt" "${HELPER_FILES[@]}")" || scan_status=$?
-    if ((scan_status != 0 && scan_status != 3)); then
+    if ((scan_status != 0)); then
         echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
-        exit 1
+        exit 2
     fi
 fi
 
-# awk exits non-zero on a finding; re-derive pass/fail from emptiness so
-# `set -e` does not abort on the expected non-zero status.
 if [[ -n "$violations" ]]; then
     echo "UNJUSTIFIED PROCESS-GLOBAL MUTATION IN TESTS — parallel tests race."
     echo

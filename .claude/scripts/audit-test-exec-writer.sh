@@ -119,7 +119,6 @@ report() {
         $0 ~ exec_mode_re {
             if (in_test && !is_comment && !marker_armed) {
                 printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
-                bad = 1
             }
         }
 
@@ -127,19 +126,17 @@ report() {
             if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ \
                 && line !~ exec_mode_re) marker_armed = 0
         }
-
-        END { exit bad ? 2 : 0 }
 AWK
 }
 
-# `|| true` here would swallow a scanner that never ran — a missing awk
-# library, a bad regex — as a clean scan, so only the two exits the scanner
-# defines are accepted.
+# The scanner prints its findings and exits 0; a non-zero status is awk
+# itself failing (a missing library, a bad regex), which `|| true` would
+# otherwise swallow as a clean scan of nothing.
 scan_status=0
 violations="$(report "${FILES[@]}")" || scan_status=$?
-if ((scan_status != 0 && scan_status != 2)); then
+if ((scan_status != 0)); then
     echo "audit-test-exec-writer: scanner exited $scan_status; the scan did not run." >&2
-    exit 1
+    exit 2
 fi
 
 if [[ -n "$violations" ]]; then

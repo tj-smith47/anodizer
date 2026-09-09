@@ -177,20 +177,38 @@ declare -A GATED_DECLS=()
 declare -A ALL_DECLS=()
 WORKLIST=()
 
+# The scanner prints its findings and exits 0; a non-zero status is awk itself
+# failing (a missing library, a bad regex). Capturing before the loop is what
+# makes that visible: a process substitution feeding `while read` discards the
+# scanner's status, so a lexer that never ran reads as a tree with no hits.
+scan_status=0
+mod_decls="$(collect_mod_decls "${ALL_RS[@]}")" || scan_status=$?
+if ((scan_status != 0)); then
+    echo "audit-god-files: mod-declaration scanner exited $scan_status; the scan did not run." >&2
+    exit 2
+fi
+
 while IFS=$'\t' read -r file gated name; do
     [[ -n "$file" ]] || continue
     ALL_DECLS["$file"]+="$name "
     [[ "$gated" == "1" ]] && GATED_DECLS["$file"]+="$name "
-done < <(collect_mod_decls "${ALL_RS[@]}")
+done <<< "$mod_decls"
 
 # The whole-file inner attribute, through the shared lexer rather than a
 # literal-string grep: `#![cfg(all(test, unix))]` gates the file just as
 # `#![cfg(test)]` does, and a second spelling of the predicate rule drifts.
 # One awk pass over the whole tree, `nextfile` on the first hit.
 declare -A INNER_CFG_TEST=()
+scan_status=0
+inner_cfg="$(inner_cfg_test_files "${ALL_RS[@]}")" || scan_status=$?
+if ((scan_status != 0)); then
+    echo "audit-god-files: inner-cfg scanner exited $scan_status; the scan did not run." >&2
+    exit 2
+fi
+
 while IFS= read -r f; do
     [[ -n "$f" ]] && INNER_CFG_TEST["$f"]=1
-done < <(inner_cfg_test_files "${ALL_RS[@]}")
+done <<< "$inner_cfg"
 
 for f in "${ALL_RS[@]}"; do
     case "$f" in
@@ -322,6 +340,13 @@ debt_seen=""
 largest_count=0
 largest_path=""
 
+scan_status=0
+prod_counts="$(count_prod_lines "${PROD_FILES[@]}" | sort -rn)" || scan_status=$?
+if ((scan_status != 0)); then
+    echo "audit-god-files: line-count scanner exited $scan_status; the scan did not run." >&2
+    exit 2
+fi
+
 while IFS=$'\t' read -r count path; do
     [[ -n "$path" ]] || continue
 
@@ -351,7 +376,7 @@ while IFS=$'\t' read -r count path; do
     if [[ "$count" -gt "$GOD_FILE_LIMIT" ]]; then
         violations+="$path: $count production lines (ceiling $GOD_FILE_LIMIT)"$'\n'
     fi
-done < <(count_prod_lines "${PROD_FILES[@]}" | sort -rn)
+done <<< "$prod_counts"
 
 if [[ -n "$violations" ]]; then
     echo "GOD FILE — production code over the ${GOD_FILE_LIMIT}-line ceiling."

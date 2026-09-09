@@ -196,6 +196,59 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     assert_eq!(code, 1, "{out}");
 }
 
+/// A scanner that could not run must never read as a clean scan. Every audit
+/// script that loads an awk library from `.claude/scripts/lib` is driven from
+/// a copy whose sibling `lib/` is empty, so awk dies loading its source: the
+/// script has to fail with that error visible instead of printing an empty hit
+/// list and exiting 0.
+#[test]
+fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::create_dir(dir.path().join("lib")).expect("empty lib dir");
+
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(repo.join(".claude/scripts")).expect("scripts dir") {
+        let src = entry.expect("script entry").path();
+        let name = src
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        if !name.starts_with("audit-") || !name.ends_with(".sh") {
+            continue;
+        }
+        if !std::fs::read_to_string(&src)
+            .expect("script body")
+            .contains("$LIB_DIR/")
+        {
+            continue;
+        }
+        checked += 1;
+        let copy = dir.path().join(&name);
+        std::fs::copy(&src, &copy).expect("copy the script beside an empty lib dir");
+        let out = Command::new("bash")
+            .arg(&copy)
+            .arg(&repo)
+            .output()
+            .unwrap_or_else(|e| panic!("running {name}: {e}"));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "{name} exited 0 with no awk library — a scan that never ran read as clean.\n{stdout}{stderr}"
+        );
+        assert!(
+            stderr.contains(".awk"),
+            "{name} must leave the awk error visible, got: {stderr}"
+        );
+    }
+    assert!(
+        checked >= 6,
+        "expected every awk-library scanner to be driven, found {checked}"
+    );
+}
+
 /// The premise behind `is_test_file`'s name match: every `tests.rs` and
 /// `<name>_tests.rs` under `crates/*/src` is declared `mod <stem>;` under a
 /// test-only `cfg` by its parent module (`mod.rs`/`lib.rs`/`main.rs` beside
