@@ -640,17 +640,16 @@ fn is_top_level_key(line: &str) -> bool {
     strip_trailing_comment(line).ends_with(':')
 }
 
-/// The `cmds:` body of one top-level Taskfile target: from its key line to the
-/// next top-level key, mirroring `task_block` in `audit-gate-mirror.sh`.
-fn taskfile_block(taskfile: &str, target: &str) -> String {
+/// The `cmds:` body of one top-level Taskfile target, or `None` when the file
+/// declares no such target. The walk needs to tell a target that is absent
+/// from one whose NAME it mis-parsed, so the fallible form is the primitive.
+fn taskfile_block_opt(taskfile: &str, target: &str) -> Option<String> {
     let key = format!("  {target}:");
     let mut lines = taskfile
         .lines()
         .skip_while(|l| strip_trailing_comment(l) != key)
         .peekable();
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("no `{key}` in Taskfile.yml"));
+    let first = lines.next()?;
     let mut block = String::from(first);
     for line in lines {
         if is_top_level_key(line) {
@@ -659,7 +658,14 @@ fn taskfile_block(taskfile: &str, target: &str) -> String {
         block.push('\n');
         block.push_str(line);
     }
-    block
+    Some(block)
+}
+
+/// The `cmds:` body of one top-level Taskfile target: from its key line to the
+/// next top-level key, mirroring `task_block` in `audit-gate-mirror.sh`.
+fn taskfile_block(taskfile: &str, target: &str) -> String {
+    taskfile_block_opt(taskfile, target)
+        .unwrap_or_else(|| panic!("no `  {target}:` in Taskfile.yml"))
 }
 
 /// The targets one target block names: every `- task: <name>` item, plus
@@ -706,14 +712,29 @@ fn child_tasks(block: &str) -> Vec<String> {
 /// convention, and a diamond would otherwise re-walk a shared child.
 fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
-    let mut queue: Vec<String> = roots.iter().map(|r| (*r).to_string()).collect();
-    while let Some(name) = queue.pop() {
+    // Each queued child carries the parent whose block named it, so an edge
+    // this parser did not understand can say where it came from.
+    let mut queue: Vec<(String, Option<String>)> =
+        roots.iter().map(|r| ((*r).to_string(), None)).collect();
+    while let Some((name, parent)) = queue.pop() {
         if seen.contains(&name) {
             continue;
         }
-        let block = taskfile_block(taskfile, &name);
+        let block = match (taskfile_block_opt(taskfile, &name), &parent) {
+            (Some(block), _) => block,
+            // A child with no block is an edge whose text was mis-read, not a
+            // missing target: reporting it as missing sends the reader hunting
+            // for a target nobody ever wrote. A root, named by the caller, is
+            // the other case and keeps the plain lookup panic.
+            (None, Some(parent)) => {
+                panic!("`task {parent}` has a dep the walk cannot parse: `{name}`")
+            }
+            (None, None) => taskfile_block(taskfile, &name),
+        };
+        for child in child_tasks(&block) {
+            queue.push((child, Some(name.clone())));
+        }
         seen.push(name);
-        queue.extend(child_tasks(&block));
     }
     seen.sort();
     seen
@@ -754,18 +775,46 @@ fn a_multibyte_char_at_the_key_column_is_not_a_key() {
     assert!(!is_top_level_key("      - task: doc"));
 }
 
-/// The walk's `seen` guard carries both jobs: it collapses a diamond to one
-/// visit and it is the only thing that terminates a cycle. Taskfile graphs are
-/// acyclic by convention, not by construction, so pin both here rather than
-/// discover them as a hung test run.
+/// The `seen` guard collapses a diamond to one visit. Kept acyclic so that
+/// losing the guard fails as a duplicated name rather than as a hung run —
+/// a named assertion is the failure a reader can act on.
 #[test]
-fn the_task_walk_visits_a_diamond_once_and_survives_a_cycle() {
-    let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n      - task: c\n  b:\n    deps: [d]\n  c:\n    cmds:\n      - task: d\n  d:\n    cmds:\n      - task: a\n";
+fn the_task_walk_visits_a_diamond_once() {
+    let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n      - task: c\n  b:\n    deps: [d]\n  c:\n    cmds:\n      - task: d\n  d:\n    cmds:\n      - echo leaf\n";
     let walked = reachable_tasks(snippet, &["a"]);
     assert_eq!(
         walked,
         vec!["a", "b", "c", "d"],
-        "each target is visited once, the shared child `d` included"
+        "the shared child `d` is walked once, not once per parent"
+    );
+}
+
+/// The same guard is the only thing that terminates a cycle. Taskfile graphs
+/// are acyclic by convention, not by construction, so pin the cycle too.
+#[test]
+fn the_task_walk_terminates_on_a_cycle() {
+    let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n  b:\n    cmds:\n      - task: a\n";
+    assert_eq!(reachable_tasks(snippet, &["a"]), vec!["a", "b"]);
+}
+
+/// A dep spelling this parser does not understand yields a child name that
+/// names no target. Saying "no such target" would describe a Taskfile bug that
+/// does not exist; the bug is in the walk, so the message says so and names
+/// the parent and the raw text.
+#[test]
+fn an_unparsed_dep_names_its_parent_and_its_raw_text() {
+    let snippet = "tasks:\n  t:\n    deps: [{task: x}]\n    cmds:\n      - echo hi\n";
+    let panic = std::panic::catch_unwind(|| reachable_tasks(snippet, &["t"]))
+        .expect_err("an unparsed dep must fail the walk");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        message, "`task t` has a dep the walk cannot parse: `{task: x}`",
+        "the failure must name the walk's own gap, not a missing target"
     );
 }
 
