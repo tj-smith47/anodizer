@@ -574,29 +574,76 @@ fn test_only_cfg_predicate_agrees_with_the_awk_lexer() {
     );
 }
 
+/// A Taskfile line with any trailing `#…` comment removed. Only ever applied
+/// to key lines, whose value is empty, so no quoted `#` can be lost.
+fn strip_trailing_comment(line: &str) -> &str {
+    match line.split_once(" #") {
+        Some((before, _)) => before.trim_end(),
+        None => line.trim_end(),
+    }
+}
+
+/// Whether `line` opens a top-level Taskfile target: two spaces of indent, a
+/// name, and a colon that ends the line once any trailing comment is stripped
+/// (`  doc:  # rustdoc` opens a target just as `  doc:` does).
+fn is_top_level_key(line: &str) -> bool {
+    if !line.starts_with("  ") || line.starts_with("   ") {
+        return false;
+    }
+    if !line
+        .chars()
+        .nth(2)
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return false;
+    }
+    strip_trailing_comment(line).ends_with(':')
+}
+
 /// The `cmds:` body of one top-level Taskfile target: from its key line to the
 /// next top-level key, mirroring `task_block` in `audit-gate-mirror.sh`.
 fn taskfile_block(taskfile: &str, target: &str) -> String {
     let key = format!("  {target}:");
-    let mut lines = taskfile.lines().skip_while(|l| *l != key).peekable();
+    let mut lines = taskfile
+        .lines()
+        .skip_while(|l| strip_trailing_comment(l) != key)
+        .peekable();
     let first = lines
         .next()
         .unwrap_or_else(|| panic!("no `{key}` in Taskfile.yml"));
     let mut block = String::from(first);
     for line in lines {
-        let top_level_key = line.starts_with("  ")
-            && !line.starts_with("   ")
-            && line.ends_with(':')
-            && line[2..3]
-                .chars()
-                .all(|c| c.is_ascii_alphabetic() || c == '_');
-        if top_level_key {
+        if is_top_level_key(line) {
             break;
         }
         block.push('\n');
         block.push_str(line);
     }
     block
+}
+
+/// Every target reachable from `roots` through `- task: <name>` lines, roots
+/// included.
+fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut queue: Vec<String> = roots.iter().map(|r| (*r).to_string()).collect();
+    while let Some(name) = queue.pop() {
+        if seen.contains(&name) {
+            continue;
+        }
+        let block = taskfile_block(taskfile, &name);
+        seen.push(name);
+        for line in block.lines() {
+            if let Some(child) = line.trim().strip_prefix("- task: ") {
+                let child = child.split('#').next().unwrap_or("").trim();
+                if !child.is_empty() {
+                    queue.push(child.to_string());
+                }
+            }
+        }
+    }
+    seen.sort();
+    seen
 }
 
 /// Whether a Taskfile `cmds:` block runs `target` as a subtask. Anchored on
@@ -608,6 +655,35 @@ fn runs_task(block: &str, target: &str) -> bool {
             .and_then(|rest| rest.strip_prefix(target))
             .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
     })
+}
+
+/// A target key may carry a trailing comment. Ending a block only on a bare
+/// `…:` would swallow the next target whole, and every "the rustdoc gate is
+/// not in this block" assertion below would then read one block too wide and
+/// pass on a tree where it is.
+#[test]
+fn a_taskfile_key_with_a_trailing_comment_ends_the_previous_block() {
+    let snippet = "tasks:\n  first:\n    cmds:\n      - echo one\n  second:  # trailing\n    cmds:\n      - echo two\n";
+    let first = taskfile_block(snippet, "first");
+    assert!(
+        first.contains("echo one") && !first.contains("echo two"),
+        "the commented key must end the first block, got:\n{first}"
+    );
+    let second = taskfile_block(snippet, "second");
+    assert!(
+        second.contains("echo two"),
+        "a commented key must still open its own block, got:\n{second}"
+    );
+}
+
+/// The terminator inspects the third character of a line; a multi-byte one
+/// (a `—` opening an indented comment) must not split it.
+#[test]
+fn a_multibyte_char_at_the_key_column_is_not_a_key() {
+    assert!(!is_top_level_key("  — a dashed comment line"));
+    assert!(is_top_level_key("  doc:"));
+    assert!(is_top_level_key("  doc:  # rustdoc"));
+    assert!(!is_top_level_key("      - task: doc"));
 }
 
 /// Rustdoc over this workspace holds several GB, so it may not run on the
@@ -635,13 +711,21 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
         runs_task(&gate, "doc"),
         "`task gate` must run the rustdoc gate, got:\n{gate}"
     );
-    for commit_path in ["audit:code", "lint"] {
-        let block = taskfile_block(&taskfile, commit_path);
+    // Absent from `lint` alone proves nothing: `task commit` reaches the gate
+    // through whatever `lint` chains, so walk the whole closure.
+    let commit_path = reachable_tasks(&taskfile, &["lint"]);
+    for name in &commit_path {
+        let block = taskfile_block(&taskfile, name);
         assert!(
             !runs_task(&block, "doc"),
-            "`task {commit_path}` runs on every commit and must not chain the rustdoc gate, got:\n{block}"
+            "`task {name}` is reachable from `task lint`, which every commit runs, so it must not chain the rustdoc gate, got:\n{block}"
         );
     }
+    assert_eq!(
+        commit_path.len(),
+        23,
+        "the set of tasks `task lint` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
+    );
 
     let ci = std::fs::read_to_string(repo.join(".github/workflows/ci.yml")).expect("ci.yml");
     assert!(

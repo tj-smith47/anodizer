@@ -23,12 +23,22 @@ tasks:
 
   _check:mem-headroom:
     internal: true
-    desc: "Precondition: at least 8 GB of memory available — rustdoc over this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host."
+    desc: "Precondition: at least 8 GB of memory available on Linux — rustdoc over this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host."
+    vars:
+      # MemAvailable is reported in kB; the floor below is 8 GB = 8388608 kB.
+      # Only Linux publishes /proc/meminfo, so macOS and Windows skip both legs;
+      # GitHub's Linux runners carry ~16 GB, so CI's rustdoc job evaluates the
+      # floor and clears it.
+      MEM_AVAILABLE_KB:
+        sh: awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true
     preconditions:
-      # MemAvailable is in kB; 8 GB = 8388608 kB. Only Linux exposes /proc/meminfo;
-      # the macOS, Windows and GitHub runners are never short of it for this step.
-      - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 8388608 ]'
-        msg: "Under 8 GB of memory available: rustdoc for this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate and `task push`'s; run it there, or free the memory first."
+      # Without this leg an unreadable /proc/meminfo leaves the floor test below
+      # as `[ "" -ge 8388608 ]` — a shell error go-task reports with the floor's
+      # message, telling a host with a fine amount of memory that it is short.
+      - sh: '[ "$(uname)" != "Linux" ] || printf %s "{{.MEM_AVAILABLE_KB}}" | grep -qE "^[0-9]+$"'
+        msg: "Cannot read MemAvailable from /proc/meminfo, so the 8388608 kB (8 GB) floor cannot be checked. `task doc` is the rustdoc gate for `task gate` / `task push` and for CI's rustdoc job; rustdoc over this workspace holds ~7 GB, so it is refused rather than run blind."
+      - sh: '[ "$(uname)" != "Linux" ] || [ "{{.MEM_AVAILABLE_KB}}" -ge 8388608 ]'
+        msg: "MemAvailable is {{.MEM_AVAILABLE_KB}} kB, under the 8388608 kB (8 GB) floor: rustdoc over this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host. `task doc` is the rustdoc gate for `task gate` / `task push` and for CI's rustdoc job; free memory and re-run."
 
   build:
     desc: Build all default workspace members in release mode
@@ -405,7 +415,7 @@ tasks:
     # `<email>` / `<label>` is parsed as an HTML tag and swallows the text
     # after it, a bare URL renders as unclickable plain text, and a redundant
     # explicit target hides the fact that the short form already resolved.
-    desc: "CI's rustdoc gate: every rustdoc link resolves and renders, all rustdoc lints denied. Runs in CI (`rustdoc` job), `task gate` and so `task push`; never `task commit`. Refuses to start under 8 GB available."
+    desc: "CI's rustdoc gate: every rustdoc link resolves and renders, all rustdoc lints denied. Runs in CI (`rustdoc` job), `task gate` and so `task push`; never `task commit`. Refuses to start on Linux under 8 GB available."
     deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: >-
