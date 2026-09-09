@@ -436,6 +436,58 @@ fn propagation_rewrites_sibling_dep() {
     );
 }
 
+/// `anodizer bump` heals a floor on a sibling it is NOT bumping: the floor is
+/// wrong against that sibling's own manifest version whether or not this run
+/// touches it. `--exact` still opts out of every sibling edit.
+#[test]
+fn bump_heals_stale_floor_on_unbumped_sibling() {
+    for (args, expected) in [
+        (vec!["bump", "patch", "-p", "core", "-y"], "0.5.0"),
+        (
+            vec!["bump", "patch", "-p", "core", "--exact", "-y"],
+            "0.1.0",
+        ),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        two_crate_workspace(tmp.path());
+        fs::create_dir_all(tmp.path().join("crates/util")).unwrap();
+        fs::write(
+            tmp.path().join("crates/util/Cargo.toml"),
+            "[package]\nname = \"util\"\nversion = \"0.5.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/core\", \"crates/cli\", \"crates/util\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        let cli_manifest = fs::read_to_string(tmp.path().join("crates/cli/Cargo.toml")).unwrap();
+        fs::write(
+            tmp.path().join("crates/cli/Cargo.toml"),
+            format!("{cli_manifest}util = {{ path = \"../util\", version = \"0.1.0\" }}\n"),
+        )
+        .unwrap();
+        git_init(tmp.path());
+        git_add_commit(tmp.path(), "initial");
+
+        let out = anodizer()
+            .current_dir(tmp.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let cli = fs::read_to_string(tmp.path().join("crates/cli/Cargo.toml")).unwrap();
+        assert!(
+            cli.contains(&format!("path = \"../util\", version = \"{expected}\"")),
+            "{args:?}: util floor should read {expected}: {cli}"
+        );
+    }
+}
+
 #[test]
 fn commit_flag_creates_single_commit() {
     let tmp = TempDir::new().unwrap();

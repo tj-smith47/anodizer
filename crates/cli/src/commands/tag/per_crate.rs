@@ -381,6 +381,34 @@ pub(crate) fn run_per_crate_tag(
         && !changelog_routing.single_track
         && changelog_routing.root_crate_names.len() > 1;
 
+    // Build crate-name → new-version map from version_updates (path → version),
+    // joined against crate_names so the output uses canonical crate names rather
+    // than filesystem paths. Each group's crates share the same new version.
+    // BTreeMap so the emitted JSON key order is stable across runs — CI logs
+    // and doc examples must not flicker on HashMap iteration order.
+    let versions_map: std::collections::BTreeMap<String, String> = tag_results
+        .iter()
+        .flat_map(|r| {
+            r.crate_names
+                .iter()
+                .zip(r.version_updates.iter())
+                .map(|(name, (_, ver))| (name.clone(), ver.clone()))
+        })
+        .collect();
+
+    // One heal per distinct Cargo workspace behind this run's crates, on the
+    // same scoping `sync_workspace_deps` applies: an independent sibling
+    // workspace keeps its own cadence and is never rewritten from here.
+    let heal_scopes: std::collections::BTreeSet<PathBuf> = all_version_updates
+        .iter()
+        .map(|(path, _)| {
+            anodizer_stage_build::version_sync::cargo_workspace_root_for(
+                &workspace_root,
+                &workspace_root.join(path),
+            )
+        })
+        .collect();
+
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
         // Crate paths are repo-root-relative; resolve each against the
@@ -428,6 +456,15 @@ pub(crate) fn run_per_crate_tag(
                     log,
                 )?;
                 intra_ws_modified.extend(modified);
+            }
+        }
+
+        // Raise every remaining stale internal floor — including on crates no
+        // group released this run — so a bump commit stranded off the default
+        // branch cannot leave the next publish resolving an old sibling.
+        for scope in &heal_scopes {
+            for healed in heal_dep_floors(scope, &versions_map, false, log)? {
+                intra_ws_modified.push(healed.to_string_lossy().into_owned());
             }
         }
 
@@ -550,6 +587,13 @@ pub(crate) fn run_per_crate_tag(
         // without touching disk.
         rewrite_and_stage_version_files(&workspace_root, &vf_plan, true, log)?;
         render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
+        // Resolve every member from its manifest: a floor on a crate this run
+        // bumps is rewritten by `sync_workspace_deps` on the real path, so
+        // reporting it here would announce an edit the real run attributes
+        // elsewhere.
+        for scope in &heal_scopes {
+            heal_dep_floors(scope, &std::collections::BTreeMap::new(), true, log)?;
+        }
         // Dry-run previews the pre hooks too, matching the single/lockstep
         // closure (which invokes run_hooks in dry mode).
         let mut pre_fired: Vec<String> = Vec::new();
@@ -588,20 +632,6 @@ pub(crate) fn run_per_crate_tag(
     let crates_json =
         serde_json::to_string(&all_tagged_crates).unwrap_or_else(|_| "[]".to_string());
 
-    // Build crate-name → new-version map from version_updates (path → version),
-    // joined against crate_names so the output uses canonical crate names rather
-    // than filesystem paths. Each group's crates share the same new version.
-    // BTreeMap so the emitted JSON key order is stable across runs — CI logs
-    // and doc examples must not flicker on HashMap iteration order.
-    let versions_map: std::collections::BTreeMap<String, String> = tag_results
-        .iter()
-        .flat_map(|r| {
-            r.crate_names
-                .iter()
-                .zip(r.version_updates.iter())
-                .map(|(name, (_, ver))| (name.clone(), ver.clone()))
-        })
-        .collect();
     let versions_json = serde_json::to_string(&versions_map).unwrap_or_else(|_| "{}".to_string());
 
     // Per-crate auto-dispatch shares the fully-local default: a bare run pushes

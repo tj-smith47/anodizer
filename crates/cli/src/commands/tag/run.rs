@@ -746,57 +746,15 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
-        // `path` is the config-declared (repo-root-relative) crate directory.
-        // Resolve it against the discovered workspace root so the manifest /
-        // dep-scan file IO hits the same tree git operates on even when `tag`
-        // is invoked from a subdirectory.
-        let abs_crate_dir = workspace_root_path
-            .join(path)
-            .to_string_lossy()
-            .into_owned();
-        anodizer_stage_build::version_sync::sync_version(
+        // Cross-crate dep updates scan from the discovered workspace root.
+        let workspace_root = workspace_root_path.to_string_lossy().to_string();
+        let (crate_name, dep_modified) = sync_single_crate_manifests(
             &workspace_root_path,
             path,
             &new_version,
             opts.dry_run,
             &log,
         )?;
-
-        // Cross-crate dep updates scan from the discovered workspace root.
-        let workspace_root = workspace_root_path.to_string_lossy().to_string();
-
-        // Read the crate name from its Cargo.toml for dep scanning.
-        let crate_cargo = std::path::Path::new(&abs_crate_dir).join("Cargo.toml");
-        let crate_name = if let Ok(content) = std::fs::read_to_string(&crate_cargo) {
-            content
-                .parse::<toml_edit::DocumentMut>()
-                .ok()
-                .and_then(|doc| {
-                    doc.get("package")
-                        .and_then(|p| p.get("name"))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                })
-        } else {
-            None
-        };
-
-        // Update dependency version specs in other crates that belong to the
-        // SAME Cargo workspace as the bumped crate. Scoping to the owning
-        // workspace prevents this bump from rewriting a path-dep pin in an
-        // independent release group on a different cadence.
-        let dep_modified = if let Some(ref name) = crate_name {
-            anodizer_stage_build::version_sync::sync_workspace_deps(
-                &workspace_root,
-                &abs_crate_dir,
-                name,
-                &new_version,
-                opts.dry_run,
-                &log,
-            )?
-        } else {
-            vec![]
-        };
 
         // Rewrite enrolled version_files in the same bump commit so a Helm
         // Chart.yaml / install doc / README badge never drifts from the tag.

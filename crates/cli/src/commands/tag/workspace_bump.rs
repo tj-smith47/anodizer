@@ -23,11 +23,7 @@ pub(crate) fn apply_workspace_bump(
         .members
         .iter()
         .map(|m| {
-            let current = if m.inherits_workspace_version {
-                ws.workspace_package_version.clone().unwrap_or_default()
-            } else {
-                m.own_version.clone().unwrap_or_default()
-            };
+            let current = member_version(m, ws).unwrap_or_default();
             let level = if current == new_version {
                 BumpLevel::Skip
             } else {
@@ -148,9 +144,22 @@ pub(crate) fn apply_workspace_bump(
             true,
             log,
         )?;
+        // Resolve every member from its manifest, so the preview reports only
+        // the floors the sweep itself owns. A floor on a crate this run bumps
+        // is rewritten by `apply_plan`'s propagation on the real path, and
+        // claiming it here would announce an edit the real run attributes
+        // elsewhere.
+        heal_dep_floors(
+            workspace_root,
+            &std::collections::BTreeMap::new(),
+            true,
+            log,
+        )?;
         return Ok(false);
     }
 
+    // `apply_plan` heals every floor in this workspace as the last step of its
+    // dep-spec propagation, so the real path needs no separate sweep.
     apply_plan(workspace_root, &rows, false, log)?;
 
     let has_lockfile = super::refresh_cargo_lock(workspace_root, log);

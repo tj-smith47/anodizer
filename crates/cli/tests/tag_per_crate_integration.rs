@@ -471,6 +471,90 @@ fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
         .to_string()
 }
 
+/// A workspace member that no release group declares is never bumped, so the
+/// same-run propagation never touches floors that reference it. The bump commit
+/// must still raise them against that member's manifest version.
+#[test]
+fn per_crate_bump_heals_floor_on_crate_outside_this_run() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    flat_two_crate_workspace(root);
+    // A third member outside every configured group, already at 0.5.0.
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/core", "crates/cli", "crates/util"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/util/src")).unwrap();
+    fs::write(root.join("crates/util/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join("crates/util/Cargo.toml"),
+        "[package]\nname = \"util\"\nversion = \"0.5.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/cli/Cargo.toml"),
+        r#"[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+util = { path = "../util", version = "0.1.0" }
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.1.0"]);
+
+    // Only core changes, so only core's group releases.
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: core change");
+
+    // The dry run names the floor it would raise and writes nothing.
+    let before = fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap();
+    let preview = anodizer()
+        .current_dir(root)
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        preview.status.success(),
+        "tag --dry-run failed: {}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&preview.stderr)
+            .contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
+        "dry-run must preview the heal: {}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap(),
+        before,
+        "--dry-run must not edit manifests"
+    );
+
+    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(git_tag_exists(root, "core-v0.2.0"));
+    assert_eq!(read_crate_version(root, "crates/util"), "0.5.0");
+    assert_eq!(
+        read_dep_version(root, "crates/cli/Cargo.toml", "util"),
+        "0.5.0"
+    );
+}
+
 /// A workspace member that pins a sibling via `{ path = "...", version = "X" }`
 /// must have THAT version pin rewritten when the sibling is lockstep-bumped
 /// during a per-crate tag run. Without this, `cargo publish -p <sibling>`

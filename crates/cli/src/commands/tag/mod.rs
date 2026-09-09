@@ -28,7 +28,9 @@ use anyhow::{Result, bail};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 
-use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
+use crate::commands::bump::cargo_edit::{
+    WorkspaceInfo, apply_plan, heal_dep_floors, load_workspace, member_version,
+};
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
 use crate::commands::changelog_sync::{
     ChangelogRouting, ChangelogTarget, render_and_stage_changelogs, resolve_changelog_enabled,

@@ -7,6 +7,9 @@
 //!   - Rewrite sibling `[dependencies]` / `[dev-dependencies]` /
 //!     `[build-dependencies]` entries that reference a bumped member
 //!     by its new version (unless `--exact` is set).
+//!   - Heal every internal `path + version` dependency floor in the workspace
+//!     against the path crate's post-bump version, not only the crates bumped
+//!     in this run.
 
 use anodizer_core::log::StageLogger;
 use anyhow::{Context, Result, bail};
@@ -259,6 +262,7 @@ pub fn apply_plan(
         for m in member_index.values() {
             rewrite_member_dependencies(&m.manifest_path, &bumped, log)?;
         }
+        heal_dep_floors(workspace_root, &bumped, false, log)?;
     }
 
     Ok(())
@@ -428,12 +432,675 @@ fn rewrite_dep_entry(tbl: &mut toml_edit::Table, dep_name: &str, new_ver: &str) 
     }
 }
 
+/// The version a workspace member carries: its own literal `[package].version`,
+/// or the root `[workspace.package].version` when it inherits.
+pub(crate) fn member_version(m: &MemberInfo, ws: &WorkspaceInfo) -> Option<String> {
+    if m.inherits_workspace_version {
+        ws.workspace_package_version.clone()
+    } else {
+        m.own_version.clone()
+    }
+}
+
+/// The dependency sections a manifest may declare, both at the top level and
+/// under a `[target.<cfg>]` table.
+const DEP_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// The version requirement a dependency entry declares, across the bare-string,
+/// inline-table, and sub-table shapes.
+fn dep_version_spec(item: &Item) -> Option<&str> {
+    match item {
+        Item::Value(Value::String(s)) => Some(s.value()),
+        _ => item.get("version").and_then(|v| v.as_str()),
+    }
+}
+
+/// Whether a comparator bounds its requirement from below, i.e. whether the
+/// requirement admits a lowest version at all.
+fn is_lower_bounded(op: semver::Op) -> bool {
+    matches!(
+        op,
+        semver::Op::Exact
+            | semver::Op::Greater
+            | semver::Op::GreaterEq
+            | semver::Op::Tilde
+            | semver::Op::Caret
+    )
+}
+
+/// The lowest version a single-comparator requirement admits, or `None` when the
+/// requirement has no lower bound (`<`, `<=`, `*`), is unparseable, or carries
+/// more than one comparator.
+fn floor_minimum(spec: &str) -> Option<semver::Version> {
+    let req = semver::VersionReq::parse(spec).ok()?;
+    let [c] = req.comparators.as_slice() else {
+        return None;
+    };
+    if !is_lower_bounded(c.op) {
+        return None;
+    }
+    Some(semver::Version {
+        major: c.major,
+        minor: c.minor.unwrap_or(0),
+        patch: c.patch.unwrap_or(0),
+        pre: c.pre.clone(),
+        build: semver::BuildMetadata::EMPTY,
+    })
+}
+
+/// Re-render `spec` at `new`, preserving the comparator operator and the
+/// component precision the author wrote (`"0.6"` → `"0.7"`, `"^0.6.1"` →
+/// `"^0.7.0"`, `"=0.6.1"` → `"=0.7.0"`).
+///
+/// Returns `None` for a requirement `floor_minimum` also rejects.
+fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
+    let req = semver::VersionReq::parse(spec).ok()?;
+    let [c] = req.comparators.as_slice() else {
+        return None;
+    };
+    if !is_lower_bounded(c.op) {
+        return None;
+    }
+    // Everything the author wrote before the first digit is the operator,
+    // spacing included, so `">= 0.6.1"` keeps its space.
+    let op = &spec.trim()[..spec.trim().find(|ch: char| ch.is_ascii_digit())?];
+    // A comparator that carries no pre-release identifier never matches a
+    // pre-release version, so a pre-release target renders at full precision.
+    if !new.pre.is_empty() {
+        return Some(format!(
+            "{op}{}.{}.{}-{}",
+            new.major, new.minor, new.patch, new.pre
+        ));
+    }
+    Some(match (c.minor, c.patch) {
+        (None, _) => format!("{op}{}", new.major),
+        (Some(_), None) => format!("{op}{}.{}", new.major, new.minor),
+        _ => format!("{op}{}.{}.{}", new.major, new.minor, new.patch),
+    })
+}
+
+/// Everything one manifest's dep tables need to decide and report a heal.
+struct HealScope<'a> {
+    resolved: &'a BTreeMap<String, semver::Version>,
+    dirs: &'a BTreeMap<String, PathBuf>,
+    manifest_dir: PathBuf,
+    manifest_rel: String,
+    dry_run: bool,
+}
+
+/// Raise every stale internal floor in one dependency table. Returns whether
+/// anything was rewritten.
+fn heal_dep_table(tbl: &mut toml_edit::Table, scope: &HealScope<'_>, log: &StageLogger) -> bool {
+    // Decide against the immutable table first: `rewrite_dep_entry` needs the
+    // table mutably, and the decision needs to read every entry.
+    let mut writes: Vec<(String, String, String, String)> = Vec::new();
+    for (key, item) in tbl.iter() {
+        let dep_name = item.get("package").and_then(|p| p.as_str()).unwrap_or(key);
+        let (Some(want), Some(dir)) = (scope.resolved.get(dep_name), scope.dirs.get(dep_name))
+        else {
+            continue;
+        };
+        let Some(path) = item.get("path").and_then(|p| p.as_str()) else {
+            continue;
+        };
+        // A registry dep may share a member's name; only a `path` that lands on
+        // that member's directory is an internal floor.
+        if std::fs::canonicalize(scope.manifest_dir.join(path))
+            .ok()
+            .as_ref()
+            != Some(dir)
+        {
+            continue;
+        }
+        let Some(spec) = dep_version_spec(item) else {
+            continue;
+        };
+        let Some(floor) = floor_minimum(spec) else {
+            match semver::VersionReq::parse(spec) {
+                Ok(req) if req.comparators.len() > 1 => log.warn(&format!(
+                    "multi-comparator version requirement {dep_name} = \"{spec}\" in {}; dep floor left unchanged",
+                    scope.manifest_rel
+                )),
+                Err(_) => log.warn(&format!(
+                    "unparseable version requirement {dep_name} = \"{spec}\" in {}; dep floor left unchanged",
+                    scope.manifest_rel
+                )),
+                _ => {}
+            }
+            continue;
+        };
+        if floor >= *want {
+            continue;
+        }
+        let Some(next) = restyle_floor(spec, want) else {
+            continue;
+        };
+        if next == spec {
+            continue;
+        }
+        writes.push((
+            key.to_string(),
+            dep_name.to_string(),
+            spec.to_string(),
+            next,
+        ));
+    }
+
+    let mut changed = false;
+    for (key, dep_name, old, next) in writes {
+        if !rewrite_dep_entry(tbl, &key, &next) {
+            continue;
+        }
+        if scope.dry_run {
+            log.status(&format!(
+                "(dry-run) would heal dep floor {dep_name} {old} → {next} in {}",
+                scope.manifest_rel
+            ));
+        } else {
+            log.status(&format!(
+                "healed dep floor {dep_name} {old} → {next} in {}",
+                scope.manifest_rel
+            ));
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// Raise every internal `path + version` dependency floor in the Cargo
+/// workspace rooted at `scope_root` to at least the path crate's post-bump
+/// version.
+///
+/// A floor lower than the path crate's version is always wrong under
+/// `path + version` semantics — cargo requires the path crate to satisfy the
+/// floor at publish time — so it is rewritten regardless of whether that crate
+/// was bumped in this run. A prior bump commit that never reached the default
+/// branch therefore heals on the next bump instead of poisoning its publish.
+///
+/// `pending` maps crate name → the version this run is bumping it to; a member
+/// absent from it resolves its version from its own manifest (or the root
+/// `[workspace.package].version` when it inherits). Floors already at or above
+/// the resolved version are left byte-for-byte untouched, as are floors whose
+/// requirement is not a single lower-bounded comparator.
+///
+/// Returns the absolute paths of the manifests that changed, for staging into
+/// the bump commit. Writes nothing when `dry_run` is set.
+pub(crate) fn heal_dep_floors(
+    scope_root: &Path,
+    pending: &BTreeMap<String, String>,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<Vec<PathBuf>> {
+    let Some(ws) = load_workspace(scope_root)? else {
+        return Ok(Vec::new());
+    };
+    let mut resolved: BTreeMap<String, semver::Version> = BTreeMap::new();
+    let mut dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for m in &ws.members {
+        let Some(Ok(version)) = pending
+            .get(&m.name)
+            .cloned()
+            .or_else(|| member_version(m, &ws))
+            .map(|v| semver::Version::parse(&v))
+        else {
+            continue;
+        };
+        resolved.insert(m.name.clone(), version);
+        dirs.insert(
+            m.name.clone(),
+            std::fs::canonicalize(&m.crate_dir).unwrap_or_else(|_| m.crate_dir.clone()),
+        );
+    }
+    if resolved.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut manifests: Vec<PathBuf> = vec![scope_root.join("Cargo.toml")];
+    for m in &ws.members {
+        if !manifests.contains(&m.manifest_path) {
+            manifests.push(m.manifest_path.clone());
+        }
+    }
+
+    let mut healed: Vec<PathBuf> = Vec::new();
+    for manifest in manifests {
+        if !manifest.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&manifest)
+            .with_context(|| format!("failed to read {}", manifest.display()))?;
+        let mut doc = text
+            .parse::<DocumentMut>()
+            .with_context(|| format!("failed to parse {}", manifest.display()))?;
+        let scope = HealScope {
+            resolved: &resolved,
+            dirs: &dirs,
+            manifest_dir: manifest
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| scope_root.to_path_buf()),
+            manifest_rel: manifest
+                .strip_prefix(scope_root)
+                .unwrap_or(manifest.as_path())
+                .display()
+                .to_string(),
+            dry_run,
+        };
+
+        let mut changed = false;
+        for section in DEP_SECTIONS {
+            if let Some(tbl) = doc.get_mut(section).and_then(|i| i.as_table_mut()) {
+                changed |= heal_dep_table(tbl, &scope, log);
+            }
+        }
+        if let Some(target) = doc.get_mut("target").and_then(|i| i.as_table_mut()) {
+            for (_, item) in target.iter_mut() {
+                let Some(tt) = item.as_table_mut() else {
+                    continue;
+                };
+                for section in DEP_SECTIONS {
+                    if let Some(tbl) = tt.get_mut(section).and_then(|i| i.as_table_mut()) {
+                        changed |= heal_dep_table(tbl, &scope, log);
+                    }
+                }
+            }
+        }
+        if let Some(tbl) = doc
+            .get_mut("workspace")
+            .and_then(|w| w.as_table_mut())
+            .and_then(|w| w.get_mut("dependencies"))
+            .and_then(|d| d.as_table_mut())
+        {
+            changed |= heal_dep_table(tbl, &scope, log);
+        }
+
+        if !changed {
+            continue;
+        }
+        if !dry_run {
+            std::fs::write(&manifest, doc.to_string())
+                .with_context(|| format!("failed to write {}", manifest.display()))?;
+        }
+        healed.push(manifest);
+    }
+    Ok(healed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tmpdir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("tag", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    /// Write a workspace root plus `crates/<name>/Cargo.toml` for each member.
+    fn write_workspace(dir: &Path, root: &str, members: &[(&str, &str)]) {
+        std::fs::write(dir.join("Cargo.toml"), root).unwrap();
+        for (name, body) in members {
+            let crate_dir = dir.join("crates").join(name);
+            std::fs::create_dir_all(&crate_dir).unwrap();
+            std::fs::write(crate_dir.join("Cargo.toml"), body).unwrap();
+        }
+    }
+
+    fn pkg(name: &str, version: &str) -> String {
+        format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n")
+    }
+
+    fn ws_root(members: &[&str]) -> String {
+        let list = members
+            .iter()
+            .map(|m| format!("\"crates/{m}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[workspace]\nmembers = [{list}]\nresolver = \"2\"\n")
+    }
+
+    fn no_pending() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    fn ver(s: &str) -> semver::Version {
+        semver::Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn floor_minimum_reads_each_operator_form() {
+        assert_eq!(floor_minimum("0.6"), Some(ver("0.6.0")));
+        assert_eq!(floor_minimum("0.6.1"), Some(ver("0.6.1")));
+        assert_eq!(floor_minimum("^0.6.1"), Some(ver("0.6.1")));
+        assert_eq!(floor_minimum("~0.6.1"), Some(ver("0.6.1")));
+        assert_eq!(floor_minimum("=0.6.1"), Some(ver("0.6.1")));
+        assert_eq!(floor_minimum(">=0.6.1"), Some(ver("0.6.1")));
+        assert_eq!(floor_minimum("<0.9"), None);
+        assert_eq!(floor_minimum("*"), None);
+        assert_eq!(floor_minimum(">=0.6, <0.8"), None);
+        assert_eq!(floor_minimum("junk"), None);
+    }
+
+    #[test]
+    fn restyle_floor_preserves_operator_and_precision() {
+        let target = ver("0.7.0");
+        assert_eq!(restyle_floor("0.6", &target).as_deref(), Some("0.7"));
+        assert_eq!(restyle_floor("0.6.1", &target).as_deref(), Some("0.7.0"));
+        assert_eq!(restyle_floor("^0.6.1", &target).as_deref(), Some("^0.7.0"));
+        assert_eq!(restyle_floor("~0.6", &target).as_deref(), Some("~0.7"));
+        assert_eq!(restyle_floor("=0.6.1", &target).as_deref(), Some("=0.7.0"));
+        assert_eq!(
+            restyle_floor(">=0.6.1", &target).as_deref(),
+            Some(">=0.7.0")
+        );
+        // Two-component precision is kept even when the residual minimum sits
+        // below the target patch: the requirement is still satisfied.
+        assert_eq!(restyle_floor("0.6", &ver("0.7.1")).as_deref(), Some("0.7"));
+        // Identical rendering — the caller writes nothing.
+        assert_eq!(restyle_floor("0", &target).as_deref(), Some("0"));
+        assert_eq!(
+            restyle_floor("^0.6.1", &ver("0.7.0-rc.1")).as_deref(),
+            Some("^0.7.0-rc.1")
+        );
+        assert_eq!(restyle_floor("<0.9", &target), None);
+        assert_eq!(restyle_floor("junk", &target), None);
+    }
+
+    #[test]
+    fn heal_dep_floors_raises_stale_floor_on_non_bumped_dependent() {
+        let dir = tmpdir();
+        write_workspace(
+            dir.path(),
+            &ws_root(&["a", "b", "c"]),
+            &[
+                ("a", &pkg("a", "0.1.0")),
+                ("b", &pkg("b", "0.7.0")),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        assert_eq!(healed, vec![dir.path().join("crates/c/Cargo.toml")]);
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(c.contains("version = \"0.7.0\""), "{c}");
+    }
+
+    #[test]
+    fn heal_dep_floors_leaves_satisfied_floor_byte_identical() {
+        let dir = tmpdir();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n\n[dev-dependencies]\nb2 = {{ package = \"b\", path = \"../b\", version = \"0.9\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        assert!(healed.is_empty(), "{healed:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_preserves_caret_and_short_forms() {
+        let dir = tmpdir();
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[
+                ("b", &pkg("b", "0.7.0")),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"^0.6.1\" }}\n\n[build-dependencies]\nshort = {{ package = \"b\", path = \"../b\", version = \"0.6\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(c.contains("version = \"^0.7.0\""), "{c}");
+        assert!(c.contains("version = \"0.7\""), "{c}");
+    }
+
+    #[test]
+    fn heal_dep_floors_heals_exact_pin_to_new_version() {
+        let dir = tmpdir();
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[
+                ("b", &pkg("b", "0.7.0")),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"=0.6.1\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(c.contains("version = \"=0.7.0\""), "{c}");
+    }
+
+    #[test]
+    fn heal_dep_floors_walks_every_dep_table() {
+        let dir = tmpdir();
+        let root = format!(
+            "{}\n[workspace.dependencies]\nb = {{ path = \"crates/b\", version = \"0.6.1\" }}\n",
+            ws_root(&["b", "c"])
+        );
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n\n[dev-dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n\n[build-dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n\n[target.'cfg(windows)'.dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &root,
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        assert_eq!(healed.len(), 2, "{healed:?}");
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert_eq!(
+            c.matches("version = \"0.7.0\"").count(),
+            4,
+            "all four member tables must heal: {c}"
+        );
+        let root_after = std::fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
+        assert!(root_after.contains("version = \"0.7.0\""), "{root_after}");
+    }
+
+    #[test]
+    fn heal_dep_floors_ignores_registry_dep_without_path() {
+        let dir = tmpdir();
+        let c_manifest = format!("{}\n[dependencies]\nb = \"0.6.1\"\n", pkg("c", "0.1.0"));
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        assert!(
+            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_ignores_path_dep_outside_workspace() {
+        let dir = tmpdir();
+        let outside = dir.path().join("elsewhere/b");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Cargo.toml"), pkg("b", "0.1.0")).unwrap();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../../elsewhere/b\", version = \"0.1.0\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        assert!(
+            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_resolves_inheriting_member_version() {
+        let dir = tmpdir();
+        let root = format!(
+            "{}\n[workspace.package]\nversion = \"0.9.0\"\n",
+            ws_root(&["b", "c"])
+        );
+        write_workspace(
+            dir.path(),
+            &root,
+            &[
+                ("b", "[package]\nname = \"b\"\nversion.workspace = true\n"),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.6.1\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(c.contains("version = \"0.9.0\""), "{c}");
+    }
+
+    #[test]
+    fn heal_dep_floors_honors_renamed_package_key() {
+        let dir = tmpdir();
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[
+                ("b", &pkg("b", "0.7.0")),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nalias = {{ package = \"b\", path = \"../b\", version = \"0.6.1\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(c.contains("alias = { package = \"b\""), "{c}");
+        assert!(c.contains("version = \"0.7.0\""), "{c}");
+    }
+
+    #[test]
+    fn heal_dep_floors_pending_overrides_disk_under_dry_run() {
+        let dir = tmpdir();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let pending: BTreeMap<String, String> = [("b".to_string(), "0.8.0".to_string())]
+            .into_iter()
+            .collect();
+        let healed = heal_dep_floors(dir.path(), &pending, true, &quiet_log()).unwrap();
+        assert_eq!(healed, vec![dir.path().join("crates/c/Cargo.toml")]);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest,
+            "dry-run must write nothing"
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_is_idempotent() {
+        let dir = tmpdir();
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[
+                ("b", &pkg("b", "0.7.1")),
+                (
+                    "c",
+                    &format!(
+                        "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.6\" }}\n",
+                        pkg("c", "0.1.0")
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(
+            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
+                .unwrap()
+                .len(),
+            1
+        );
+        let after_first = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(after_first.contains("version = \"0.7\""), "{after_first}");
+        assert!(
+            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            after_first
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_warns_on_multi_comparator_floor() {
+        let dir = tmpdir();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \">=0.6, <0.8\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        assert!(
+            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
     }
 
     #[test]
