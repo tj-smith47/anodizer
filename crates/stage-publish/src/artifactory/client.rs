@@ -75,9 +75,10 @@ pub fn build_reqwest_client(
 /// (Os, Arch, Target, ArtifactName, ArtifactExt).
 ///
 /// When `custom_artifact_name` is false and the template does not already
-/// reference `ArtifactName`, the artifact name is appended after the
-/// rendered URL — guarding against the `…/foo.tar.gz/foo.tar.gz`
-/// double-name when a user writes `target: ".../{{ .ArtifactName }}"`.
+/// reference `ArtifactName`, the artifact name is appended to the rendered
+/// URL's path — guarding against the `…/foo.tar.gz/foo.tar.gz` double-name
+/// when a user writes `target: ".../{{ .ArtifactName }}"`. A query or fragment
+/// on the target stays at the end, and the appended name is percent-escaped.
 pub fn render_artifact_url(
     ctx: &Context,
     template: &str,
@@ -101,10 +102,20 @@ pub fn render_artifact_url(
     // The substring check matches both `ArtifactName` and `.ArtifactName`
     // so the same guard works for Tera and Go-template syntax.
     if !custom_artifact_name && !template.contains("ArtifactName") {
-        if !rendered.ends_with('/') {
-            rendered.push('/');
-        }
-        rendered.push_str(art_name);
+        // The name joins the PATH, not whatever the rendered target ends with:
+        // appending to `…/repo?props=a` would otherwise bury the file name
+        // inside the query. Its bytes are escaped the way a server escapes a
+        // path it received, so a space or `#` in an artifact name survives the
+        // round trip while a directory in the name stays a directory.
+        let (path, suffix) = match rendered.find(['?', '#']) {
+            Some(i) => rendered.split_at(i),
+            None => (rendered.as_str(), ""),
+        };
+        let mut out = path.trim_end_matches('/').to_string();
+        out.push('/');
+        out.push_str(&anodizer_core::url::percent_encode_url_path(art_name));
+        out.push_str(suffix);
+        rendered = out;
     }
 
     Ok(rendered)

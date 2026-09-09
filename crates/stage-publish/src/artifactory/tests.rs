@@ -897,6 +897,77 @@ fn render_artifact_url_template_referencing_artifact_name_suppresses_append() {
     assert_eq!(url, "https://art.example.com/repo/myapp-1.0.0.tar.gz");
 }
 
+/// One artifact under a target, so a table row reads as the URL pair it is.
+fn url_for(target: &str, artifact_name: &str, custom_artifact_name: bool) -> String {
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let artifact = Artifact {
+        kind: ArtifactKind::Archive,
+        name: artifact_name.to_string(),
+        path: PathBuf::from(format!("dist/{artifact_name}")),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    };
+    render_artifact_url(&ctx, target, &artifact, custom_artifact_name).unwrap()
+}
+
+/// An artifact name reaches the target as a path, so the bytes a path may not
+/// carry are escaped — while a directory inside the name stays a directory and
+/// the sub-delimiters a path does carry pass through.
+#[test]
+fn artifact_url_escapes_the_appended_name() {
+    for (name, want) in [
+        ("notes#draft.txt", "https://h/files/notes%23draft.txt"),
+        ("notes?draft.txt", "https://h/files/notes%3Fdraft.txt"),
+        ("notes%.txt", "https://h/files/notes%25.txt"),
+        ("sub/dir/notes.txt", "https://h/files/sub/dir/notes.txt"),
+        (
+            "sub dir/notes#draft.txt",
+            "https://h/files/sub%20dir/notes%23draft.txt",
+        ),
+        ("a;b,c.txt", "https://h/files/a;b,c.txt"),
+    ] {
+        assert_eq!(
+            url_for("https://h/files/", name, false),
+            want,
+            "name {name:?}"
+        );
+    }
+}
+
+/// The name joins the path, so a target carrying a query keeps it at the end
+/// — and an already-escaped byte in the target's own path is left alone.
+#[test]
+fn artifact_url_appends_before_the_query() {
+    assert_eq!(
+        url_for("https://h/files?token=abc", "notes.txt", false),
+        "https://h/files/notes.txt?token=abc"
+    );
+    assert_eq!(
+        url_for(
+            "https://h/projects/foo%2Fbar/files?token=abc",
+            "notes#draft.txt",
+            false
+        ),
+        "https://h/projects/foo%2Fbar/files/notes%23draft.txt?token=abc"
+    );
+}
+
+/// A target that already names the file is the whole answer — nothing is
+/// appended and nothing is re-escaped.
+#[test]
+fn custom_artifact_name_target_is_untouched() {
+    assert_eq!(
+        url_for(
+            "https://h/files/notes.txt?token=abc",
+            "ignored#draft.txt",
+            true
+        ),
+        "https://h/files/notes.txt?token=abc"
+    );
+}
+
 #[test]
 fn render_artifact_url_keeps_single_slash_when_template_trailing_slashed() {
     let config = Config::default();
