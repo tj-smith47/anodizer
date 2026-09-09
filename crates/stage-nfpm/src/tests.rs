@@ -8175,3 +8175,91 @@ fn advisory_env_requirements_track_configured_formats() {
     let no_nfpm = Context::new(Config::default(), ContextOptions::default());
     assert_eq!(names(&no_nfpm), Vec::<String>::new());
 }
+
+/// One 32-bit ARM build, both deb packagers: Termux collapses every ARM
+/// variant onto `arm`, while the plain deb keeps Debian's `armhf`. The YAML
+/// arch nfpm reads is the `armN` spelling its own tables are keyed on.
+#[test]
+fn test_armv7_termux_arch_is_arm_and_plain_deb_is_armhf() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string(), "termux.deb".to_string()],
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+        file_name_template: Some("{{ .ConventionalFileName }}".to_string()),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp"),
+        target: Some("armv7-unknown-linux-gnueabihf".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    NfpmStage.run(&mut ctx).unwrap();
+    let names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::LinuxPackage)
+        .iter()
+        .map(|a| a.path.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("myapp_1.0.0_armhf.deb")),
+        "plain deb must keep Debian's armhf: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.ends_with("myapp_1.0.0_arm.deb.termux.deb")),
+        "termux deb must collapse armv7 to arm: {names:?}"
+    );
+
+    let rendered = nfpm_yaml_configs_for_crate(&ctx, "myapp").unwrap();
+    let plain = rendered
+        .iter()
+        .find(|r| r.format == "deb")
+        .expect("deb yaml");
+    assert!(
+        plain.yaml.contains("arch: arm7"),
+        "nfpm must read the arm7 spelling it maps to armhf:\n{}",
+        plain.yaml
+    );
+    assert_eq!(
+        crate::control_arch("deb", "arm7"),
+        "armhf",
+        "the plain deb's Architecture control field"
+    );
+    let termux = rendered
+        .iter()
+        .find(|r| r.format == "termux.deb")
+        .expect("termux yaml");
+    assert!(
+        termux.yaml.lines().any(|l| l == "  arch: arm"),
+        "termux deb.arch override must be arm:\n{}",
+        termux.yaml
+    );
+}

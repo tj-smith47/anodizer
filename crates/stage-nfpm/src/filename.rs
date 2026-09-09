@@ -88,6 +88,24 @@ pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<St
 // deb
 // ---------------------------------------------------------------------------
 
+/// Translate anodizer's composite 32-bit ARM token (`armv5`/`armv6`/`armv7`)
+/// into the `armN` spelling nfpm keys its per-packager arch tables on.
+///
+/// nfpm names a 32-bit ARM package by GOARCH plus GOARM (`arm` + `7` =
+/// `arm7`), while anodizer carries the archive-naming token `armv7` all the
+/// way from the target triple. Handing nfpm `armv7` misses every table row,
+/// so the built package would stamp `Architecture: armv7` — a name no dpkg,
+/// rpm or apk understands — while anodizer's own conventional filename
+/// already said `armhf`. Non-ARM archs pass through unchanged.
+pub(crate) fn nfpm_arch(arch: &str) -> &str {
+    match arch {
+        "armv5" => "arm5",
+        "armv6" => "arm6",
+        "armv7" => "arm7",
+        other => other,
+    }
+}
+
 /// Debian arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToDebian`).
 ///
@@ -137,18 +155,21 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
 
 /// Termux arch translation, keyed on Go-style arch (matching GoReleaser's
 /// `termuxArchReplacer`: `386→i686`, `amd64→x86_64`, `arm64→aarch64`,
-/// `arm6→arm`), plus anodizer's `armv6` alias for the `arm6` key.
+/// `arm5`/`arm6`/`arm7`→`arm`), plus anodizer's `armvN` aliases for the
+/// `armN` keys.
 ///
 /// Termux's apt repository uses its own architecture nomenclature — NOT
 /// Debian's — so `arm64`/`amd64` names in the filename or the control-file
-/// `Architecture` field make the package uninstallable on Termux. Unmapped
-/// archs pass through, matching the replacer's behaviour.
+/// `Architecture` field make the package uninstallable on Termux. Termux
+/// knows exactly four architectures (`aarch64`, `arm`, `i686`, `x86_64`), so
+/// every 32-bit ARM variant collapses onto `arm`. Unmapped archs pass
+/// through, matching the replacer's behaviour.
 fn termux_arch(arch: &str) -> &str {
     match arch {
         "386" => "i686",
         "amd64" => "x86_64",
         "arm64" => "aarch64",
-        "arm6" | "armv6" => "arm",
+        "arm5" | "armv5" | "arm6" | "armv6" | "arm7" | "armv7" => "arm",
         other => other,
     }
 }
@@ -804,22 +825,53 @@ mod tests {
     }
 
     /// GoReleaser's `termuxArchReplacer`, verbatim: 386→i686, amd64→x86_64,
-    /// arm64→aarch64, arm6→arm — plus anodizer's `armv6` alias and the
-    /// unmapped-passthrough behaviour.
+    /// arm64→aarch64, arm5/arm6/arm7→arm — plus anodizer's `armvN` aliases
+    /// and the unmapped-passthrough behaviour.
     #[test]
-    fn termux_table_replicates_goreleaser() {
+    fn termux_arch_maps_every_32bit_arm_to_arm() {
         let replacer = [
             ("386", "i686"),
             ("amd64", "x86_64"),
             ("arm64", "aarch64"),
+            ("arm5", "arm"),
+            ("armv5", "arm"),
             ("arm6", "arm"),
             ("armv6", "arm"),
+            ("arm7", "arm"),
+            ("armv7", "arm"),
         ];
         for (k, v) in replacer {
             assert_eq!(termux_arch(k), v, "termux_arch({k})");
         }
-        // arm7 is NOT in GoReleaser's replacer — it passes through.
-        assert_eq!(termux_arch("arm7"), "arm7");
+        // An arch outside the replacer still passes through.
+        assert_eq!(termux_arch("riscv64"), "riscv64");
+    }
+
+    /// The conventional filenames the two deb packagers derive for one
+    /// 32-bit ARM build: Termux collapses to `arm`, plain Debian keeps the
+    /// `armhf` its dpkg expects.
+    #[test]
+    fn termux_deb_filename_uses_arm() {
+        let info = FileNameInfo {
+            name: "myapp",
+            version: "1.0.0",
+            arch: "armv7",
+            release: "",
+            prerelease: "",
+            version_metadata: "",
+            arch_override: None,
+        };
+        assert_eq!(
+            conventional_filename("termux.deb", &info).unwrap(),
+            "myapp_1.0.0_arm.deb"
+        );
+        assert_eq!(
+            conventional_filename("deb", &info).unwrap(),
+            "myapp_1.0.0_armhf.deb"
+        );
+        assert_eq!(control_arch("termux.deb", nfpm_arch("armv7")), "arm");
+        assert_eq!(control_arch("deb", nfpm_arch("armv7")), "armhf");
+        assert_eq!(control_arch("deb", nfpm_arch("armv5")), "armel");
     }
 
     /// nfpm `archToMSIX`, verbatim.

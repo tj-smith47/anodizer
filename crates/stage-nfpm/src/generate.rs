@@ -162,6 +162,12 @@ pub fn generate_nfpm_yaml_with_env(
 ) -> Result<String> {
     let version = target.version;
     let arch = target.arch;
+    // nfpm keys its per-packager arch tables on GOARCH+GOARM (`arm7`), while
+    // anodizer carries the archive-naming token (`armv7`) from the triple.
+    // The tables are what stamp the control-file `Architecture`, so the YAML
+    // must speak nfpm's spelling or a 32-bit ARM package ships an arch name
+    // no package manager resolves.
+    let nfpm_arch = crate::filename::nfpm_arch(arch);
     let format = target.format;
     let skip_sign = target.skip_sign;
     let is_meta = config.meta == Some(true);
@@ -376,8 +382,8 @@ pub fn generate_nfpm_yaml_with_env(
     // nfpm's `deb.arch` override, which bypasses its Go-arch→Debian mapping
     // (mirrors GoReleaser setting `Info.Deb.Arch` for termux.deb). This must
     // materialize a deb block even when the user configured none.
-    let termux_deb_arch =
-        (format == Some("termux.deb")).then(|| crate::filename::control_arch("termux.deb", arch));
+    let termux_deb_arch = (format == Some("termux.deb"))
+        .then(|| crate::filename::control_arch("termux.deb", nfpm_arch));
     let deb = match (
         config.deb.as_ref().filter(|d| !d.is_empty()),
         termux_deb_arch,
@@ -441,7 +447,7 @@ pub fn generate_nfpm_yaml_with_env(
 
     let yaml_config = NfpmYamlConfig {
         name: (!target.pkg_name.is_empty()).then(|| target.pkg_name.to_string()),
-        arch: arch.to_string(),
+        arch: nfpm_arch.to_string(),
         version: version.to_string(),
         epoch: config.epoch.clone(),
         release: config.release.clone(),
