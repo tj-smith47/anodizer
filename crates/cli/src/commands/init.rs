@@ -447,7 +447,7 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
     }
 
     // Single-crate / rootless layout: the root manifest's own version.
-    if let Ok(v) = read_cargo_version(&root.to_string_lossy()) {
+    if let Ok(v) = read_cargo_version(root, ".") {
         push(v);
     }
 

@@ -72,8 +72,12 @@ pub fn sync_version(
 /// Read the current `[package].version` from a crate's Cargo.toml, falling back
 /// to `"0.0.0"` when the manifest has no literal `[package].version` (e.g. a
 /// virtual or workspace-inheriting manifest).
-pub fn read_cargo_version(crate_path: &str) -> Result<String> {
-    Ok(read_cargo_version_opt(crate_path)?.unwrap_or_else(|| "0.0.0".to_string()))
+///
+/// `root` is the repo the crate directory is resolved against; every error this
+/// raises names the manifest relative to it, because these errors surface
+/// verbatim in `check version-files` findings a human reads.
+pub fn read_cargo_version(root: &Path, crate_path: &str) -> Result<String> {
+    Ok(read_cargo_version_opt(root, crate_path)?.unwrap_or_else(|| "0.0.0".to_string()))
 }
 
 /// Read the literal `[package].version` from a crate's Cargo.toml, returning
@@ -85,13 +89,14 @@ pub fn read_cargo_version(crate_path: &str) -> Result<String> {
 /// (e.g. a coherence check comparing sibling versions) need the absence
 /// preserved so a versionless member is skipped rather than compared as
 /// `0.0.0`.
-pub fn read_cargo_version_opt(crate_path: &str) -> Result<Option<String>> {
-    let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
+pub fn read_cargo_version_opt(root: &Path, crate_path: &str) -> Result<Option<String>> {
+    let cargo_toml_path = root.join(crate_path).join("Cargo.toml");
+    let shown = display_under_root(root, &cargo_toml_path);
     let content = std::fs::read_to_string(&cargo_toml_path)
-        .with_context(|| format!("failed to read {}", cargo_toml_path.display()))?;
+        .with_context(|| format!("failed to read {shown}"))?;
     let doc = content
         .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("failed to parse {}", cargo_toml_path.display()))?;
+        .with_context(|| format!("failed to parse {shown}"))?;
     Ok(doc
         .get("package")
         .and_then(|p| p.get("version"))
@@ -475,7 +480,6 @@ edition = "2024"
     #[test]
     fn read_cargo_version_opt_distinguishes_present_from_absent() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().to_str().unwrap();
 
         // Literal version present → Some(version).
         std::fs::write(
@@ -483,7 +487,10 @@ edition = "2024"
             "[package]\nname = \"x\"\nversion = \"0.3.1\"\n",
         )
         .unwrap();
-        assert_eq!(read_cargo_version_opt(p).unwrap().as_deref(), Some("0.3.1"));
+        assert_eq!(
+            read_cargo_version_opt(tmp.path(), ".").unwrap().as_deref(),
+            Some("0.3.1")
+        );
 
         // Workspace-inheriting / no literal version → None (NOT the 0.0.0
         // sentinel `read_cargo_version` substitutes).
@@ -492,8 +499,8 @@ edition = "2024"
             "[package]\nname = \"x\"\nversion.workspace = true\n",
         )
         .unwrap();
-        assert_eq!(read_cargo_version_opt(p).unwrap(), None);
-        assert_eq!(read_cargo_version(p).unwrap(), "0.0.0");
+        assert_eq!(read_cargo_version_opt(tmp.path(), ".").unwrap(), None);
+        assert_eq!(read_cargo_version(tmp.path(), ".").unwrap(), "0.0.0");
     }
 
     #[test]

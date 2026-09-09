@@ -928,3 +928,37 @@ fn lockstep_without_a_workspace_version_names_the_repo_relative_root() {
         "finding leaked the absolute workspace path: {combined}"
     );
 }
+
+/// A `crates:` entry pointing at a directory with no manifest cannot resolve a
+/// version, and the finding says which manifest is missing — repo-relative,
+/// because the error text from the manifest reader reaches the user verbatim.
+#[test]
+fn missing_manifest_finding_names_the_repo_relative_path() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = []\nresolver = \"2\"\n",
+    );
+    write(root, "README.md", "app is at 0.1.0\n");
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\ncrates:\n  - name: ghost\n    path: crates/ghost\n    version_files:\n      - README.md\n",
+    );
+
+    let run = run_check(root);
+    let combined = format!("{}{}", run.stdout, run.stderr);
+    assert!(!run.success, "a missing manifest must fail: {combined}");
+    assert!(
+        combined.contains(
+            "crate 'ghost': cannot read current version: failed to read crates/ghost/Cargo.toml"
+        ),
+        "finding must name the manifest repo-relative: {combined}"
+    );
+    assert!(
+        !combined.contains(&root.to_string_lossy().into_owned()),
+        "finding leaked the absolute manifest path: {combined}"
+    );
+}

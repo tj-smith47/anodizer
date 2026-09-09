@@ -265,7 +265,6 @@ pub(crate) fn bump_repo_level(
     } else {
         format!("{}/Cargo.toml", bump.manifest_dir)
     };
-    let manifest_dir = root.join(bump.manifest_dir).to_string_lossy().into_owned();
     let manifest_abs = root.join(bump.manifest_dir).join("Cargo.toml");
     if !manifest_abs.is_file() {
         bail!(
@@ -276,7 +275,7 @@ pub(crate) fn bump_repo_level(
             manifest_rel,
         );
     }
-    match anodizer_stage_build::version_sync::read_cargo_version_opt(&manifest_dir) {
+    match anodizer_stage_build::version_sync::read_cargo_version_opt(root, bump.manifest_dir) {
         Err(e) => bail!(
             "version_files: the repo-level bump must write {} into {}, but that manifest cannot \
              be read: {e:#}; fix the manifest, declare the crate under `crates:`, or drop the \

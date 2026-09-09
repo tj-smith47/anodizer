@@ -181,7 +181,7 @@ fn unit_reference_version(
 
     // Standalone / non-member crate: read its own manifest version through the
     // canonical single-crate accessor the tag path uses.
-    let own = read_cargo_version(&unit_dir.to_string_lossy())?;
+    let own = read_cargo_version(repo_root, &unit.path)?;
     // "0.0.0" is `read_cargo_version`'s sentinel for a non-literal
     // `[package].version` — i.e. `version.workspace = true`. A non-member crate
     // that inherits the workspace version has its real reference there, so

@@ -229,8 +229,7 @@ pub(crate) fn group_manifest_version(
     group
         .iter()
         .filter_map(|c| {
-            let crate_dir = workspace_root.join(&c.path);
-            anodizer_stage_build::version_sync::read_cargo_version_opt(&crate_dir.to_string_lossy())
+            anodizer_stage_build::version_sync::read_cargo_version_opt(workspace_root, &c.path)
                 .ok()
                 .flatten()
         })
@@ -340,9 +339,8 @@ pub(crate) fn check_shared_prefix_version_coherence(
     // members with no readable literal version (no value to compare).
     let mut versions: Vec<(String, String)> = Vec::new();
     for c in crates {
-        let crate_dir = workspace_root.join(&c.path);
         if let Ok(Some(ver)) =
-            anodizer_stage_build::version_sync::read_cargo_version_opt(&crate_dir.to_string_lossy())
+            anodizer_stage_build::version_sync::read_cargo_version_opt(workspace_root, &c.path)
         {
             versions.push((c.name.clone(), ver));
         }

@@ -608,8 +608,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     } else if version_sync_enabled && let Some(ref path) = crate_path {
         // Resolve against the discovered workspace root so the manifest read
         // matches the git working dir when `tag` runs from a subdirectory.
-        let abs = workspace_root_path.join(path);
-        anodizer_stage_build::version_sync::read_cargo_version(&abs.to_string_lossy()).ok()
+        anodizer_stage_build::version_sync::read_cargo_version(&workspace_root_path, path).ok()
     } else {
         None
     };
