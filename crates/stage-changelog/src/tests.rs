@@ -171,11 +171,11 @@ fn test_apply_filters() {
 
 /// This repository's own `.anodizer.yaml` exclude list is the only thing that
 /// keeps a test-only commit out of its release notes, and nothing else pins it.
-/// A `test:` TYPE is dropped by an explicit pattern, but a `test`/`tests` SCOPE
-/// on another type (`fix(test):`, `refactor(tests):`) is test-only just the
-/// same and would otherwise render under Bug Fixes, which groups
-/// `^(fix|refactor)`. Drive the real filter engine over the real file so an
-/// edit to that list has to face this vector.
+/// A `test:` TYPE is dropped by an explicit pattern, but a non-production
+/// SCOPE on another type (`fix(test):`, `refactor(tests):`, `fix(audit):`) is
+/// just as invisible to a consumer and would otherwise render under Bug Fixes,
+/// which groups `^(fix|refactor)`. Drive the real filter engine over the real
+/// file so an edit to that list has to face this vector.
 #[test]
 fn workspace_exclude_filters_drop_test_scoped_subjects() {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -229,7 +229,7 @@ fn workspace_exclude_filters_drop_test_scoped_subjects() {
             "fix(audit): catch a mode spelling",
             "fix",
             "catch",
-            "kept-fix",
+            "scoped-audit-fix",
         ),
         ci(
             "feat(test-helpers): expose a stub writer",
@@ -245,7 +245,7 @@ fn workspace_exclude_filters_drop_test_scoped_subjects() {
         .collect();
     assert_eq!(
         kept,
-        ["kept-refactor", "kept-fix", "kept-feat"],
+        ["kept-refactor", "kept-feat"],
         "only the consumer-visible subjects survive the workspace exclude list"
     );
 }

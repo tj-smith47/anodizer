@@ -953,11 +953,12 @@ changelog:
       - "^style(\\(.*\\))?!?:"
       - "^build(\\(.*\\))?!?:"
       - "^test(\\(.*\\))?!?:"
-      # The SCOPE, not the type, is what says a change is test-only: a
-      # `fix(test):` / `refactor(test):` subject touches nothing a consumer
-      # runs, and the type-anchored patterns above would still let it render
-      # under Bug Fixes.
-      - "^[a-z]+\\((test|tests)\\)!?:"
+      # The SCOPE, not the type, is what says a change is non-production: a
+      # `fix(test):` / `refactor(tests):` / `fix(audit):` subject touches
+      # nothing a consumer runs — the audit scopes name the repo's own
+      # `.claude/scripts` scanners — and the type-anchored patterns above would
+      # still let those render under Bug Fixes.
+      - "^[a-z]+\\((test|tests|audit)\\)!?:"
       - "^revert(\\(.*\\))?!?:"
       - "^Merge "
       - "Merge pull request"
