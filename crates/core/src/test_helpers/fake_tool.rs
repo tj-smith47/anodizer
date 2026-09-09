@@ -381,9 +381,16 @@ const EXEC_PROBE_VAR: &str = "ANODIZER_FAKE_TOOL_PROBE";
 /// no call and creates no file; once it succeeds the inode carries no writer
 /// anywhere, and the caller's real spawn cannot see `ETXTBSY`.
 ///
-/// `script` keeps its own interpreter: a leading `#!` line is preserved and
-/// the guard goes directly under it. A script written without one gets
-/// `/bin/sh`.
+/// A leading `#!` line is preserved and the guard goes directly under it; a
+/// script written without one gets `/bin/sh`. The guard is POSIX-shell syntax,
+/// so the interpreter must be `sh`-compatible (`sh`, `bash`, `dash`, …) — a
+/// stub under any other interpreter fails on the guard line, and this function
+/// panics rather than hand back a stub that dies on its caller's spawn.
+///
+/// # Panics
+/// Panics if the write fails, if the file stays `ETXTBSY`, or if the probe
+/// exits any way but through the guard (status 0, nothing on stderr) — the
+/// message names the path, the shebang, the status and the stderr.
 #[cfg(unix)]
 pub fn write_executable_script(path: &Path, script: &str) {
     let (shebang, body) = match script.starts_with("#!") {
@@ -402,7 +409,19 @@ pub fn write_executable_script(path: &Path, script: &str) {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            _ => return,
+            Err(e) => panic!("fake_tool: probe {}: {e}", path.display()),
+            // The guard is the only thing the probe may reach: it exits 0 and
+            // writes nothing. Anything else means the body ran, or the
+            // interpreter choked on the guard.
+            Ok(out) if out.status.success() && out.stderr.is_empty() => return,
+            Ok(out) => panic!(
+                "fake_tool: {} did not exit through the probe guard \
+                 (shebang {shebang:?}, status {}, stderr {:?}). The guard is \
+                 POSIX-shell syntax, so the interpreter must be sh-compatible.",
+                path.display(),
+                out.status,
+                String::from_utf8_lossy(&out.stderr),
+            ),
         }
     }
     panic!(
@@ -455,6 +474,43 @@ mod tests {
         let calls = tools.calls("widget");
         assert_eq!(calls[0], vec!["build", "--fast"]);
         assert_eq!(calls[1], vec!["clean"]);
+    }
+
+    /// The guard inserted under the shebang is POSIX-shell syntax, so a stub
+    /// whose interpreter cannot read it dies on its first line. The helper has
+    /// to say so: returning a stub that fails on the caller's own spawn moves
+    /// the failure somewhere it reads as a bug in the code under test.
+    #[test]
+    #[should_panic(expected = "#!/usr/bin/env python3")]
+    fn a_non_shell_interpreter_fails_the_probe() {
+        let dir = TempDir::new().unwrap();
+        write_executable_script(
+            &dir.path().join("py-stub"),
+            "#!/usr/bin/env python3\nprint(\"hi\")\n",
+        );
+    }
+
+    /// Any `sh`-compatible interpreter passes: the guard exits before the body,
+    /// which then runs normally on the caller's own spawn.
+    #[test]
+    fn a_bash_shebang_passes_the_probe() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bash-stub");
+        write_executable_script(&path, "#!/bin/bash\necho body\nexit 3\n");
+        let out = output_retrying_etxtbsy(&mut Command::new(&path));
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "body\n");
+    }
+
+    /// A script written without a shebang runs under `/bin/sh`, so the guard
+    /// runs there too.
+    #[test]
+    fn a_script_without_a_shebang_passes_the_probe() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bare-stub");
+        write_executable_script(&path, "echo bare\n");
+        let out = output_retrying_etxtbsy(&mut Command::new(&path));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "bare\n");
     }
 
     #[test]
