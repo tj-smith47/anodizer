@@ -4,10 +4,12 @@ use super::*;
 /// return the repo-relative paths that actually changed (so the caller can
 /// stage them into the bump commit).
 ///
-/// Enrolled paths are repo-root-relative; each is resolved against `root` (the
-/// discovered workspace root) for the read/write so the rewrite hits the same
-/// files git operates on even when `tag` is invoked from a subdirectory. The
-/// logged and returned paths stay repo-relative so staging via
+/// Enrolled paths are repo-root-relative and stay that way: the engine joins
+/// each against `root` (the discovered workspace root) for the read/write so
+/// the rewrite hits the same files git operates on even when `tag` is invoked
+/// from a subdirectory, and every message — including the engine's own
+/// unmatched-anchor error — names the relative path the user enrolled. The
+/// returned paths are relative too, so staging via
 /// [`git::stage_and_commit_in`] (rooted at the same `root`) matches.
 ///
 /// A BARE entry with zero matches is reported via `warn` but is not an error: a
@@ -29,14 +31,15 @@ pub(crate) fn rewrite_and_stage_version_files(
     let rewrites: Vec<anodizer_core::version_files::FileRewrite> = applicable
         .iter()
         .map(|r| anodizer_core::version_files::FileRewrite {
-            path: root.join(&r.file).to_string_lossy().into_owned(),
+            path: r.file.clone(),
             anchor: r.anchor.clone(),
             old: r.old.clone(),
             new: r.new.clone(),
             owner: r.owner.clone(),
         })
         .collect();
-    let outcomes = anodizer_core::version_files::rewrite_version_in_files(&rewrites, dry_run)?;
+    let outcomes =
+        anodizer_core::version_files::rewrite_version_in_files(root, &rewrites, dry_run)?;
     let mut changed = Vec::new();
     for (outcome, rewrite) in outcomes.iter().zip(applicable.iter()) {
         let anchor_suffix = match &rewrite.anchor {

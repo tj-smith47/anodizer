@@ -731,6 +731,55 @@ fn anchored_unmatched_anchor_fails_the_tag() {
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
 }
 
+/// Every `version_files` message names the path the user enrolled, in the one
+/// repo-relative spelling `check version-files` prints — including the engine's
+/// own unmatched-anchor error, which used to render the resolved absolute path
+/// beside siblings that printed `STALE: values.yaml`. Run from a SUBDIRECTORY,
+/// where the two spellings differ the most.
+#[test]
+fn unmatched_anchor_names_the_repo_relative_path() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    single_crate_fixture(
+        root,
+        "appVersion: v0.1.0\n",
+        "      - path: charts/values.yaml\n        match: 'nope: v{version}'",
+    );
+    fs::create_dir_all(root.join("charts")).unwrap();
+    fs::write(root.join("charts/values.yaml"), "image: app:v0.1.0\n").unwrap();
+
+    let config = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/app"))
+        .args([
+            "tag",
+            "--config",
+            config.to_str().unwrap(),
+            "--crate",
+            "app",
+            "--no-push",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an unmatched anchor must fail the tag"
+    );
+    let message = stderr
+        .lines()
+        .find(|l| l.contains("matched nothing"))
+        .unwrap_or_else(|| panic!("no unmatched-anchor error: {stderr}"));
+    assert!(
+        message.contains("enrolled charts/values.yaml with match"),
+        "error must name the enrolled repo-relative path: {message}"
+    );
+    assert!(
+        !message.contains(&root.to_string_lossy().into_owned()),
+        "error leaked the resolved absolute path: {message}"
+    );
+}
+
 /// A lockstep workspace's top-level anchored entry rewrites inside its anchor
 /// and leaves the rest of the file alone.
 #[test]

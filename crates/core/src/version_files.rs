@@ -38,12 +38,14 @@ pub struct RewriteOutcome {
     pub matched_regions: Option<usize>,
 }
 
-/// One planned rewrite: `path` (already resolved for IO), the optional `match`
-/// anchor, the `old` → `new` pair, and a label naming the enrolling crate for
-/// the unmatched-anchor error.
+/// One planned rewrite: `path` (repo-relative), the optional `match` anchor,
+/// the `old` → `new` pair, and a label naming the enrolling crate for the
+/// unmatched-anchor error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRewrite {
-    /// Path to read and write, resolved by the caller.
+    /// The enrolled path, relative to the repo root the caller passes in. It is
+    /// joined with that root for IO and printed as-is in every message, so a
+    /// user never sees two spellings of one enrollment.
     pub path: String,
     /// Regex scoping this rewrite to its own occurrences, or `None` to sweep
     /// the whole file.
@@ -177,6 +179,7 @@ fn apply_edits(original: &str, mut edits: Vec<Edit>) -> String {
 /// Errors if an enrolled file is missing or unreadable, if an anchor is invalid
 /// or matches nothing, or (outside `dry_run`) if a file cannot be written.
 pub fn rewrite_version_in_files(
+    root: &Path,
     rewrites: &[FileRewrite],
     dry_run: bool,
 ) -> Result<Vec<RewriteOutcome>> {
@@ -194,7 +197,7 @@ pub fn rewrite_version_in_files(
     let mut pending: Vec<(String, String)> = Vec::new();
 
     for (path, mut indices) in groups {
-        let original = fs::read_to_string(&path)
+        let original = fs::read_to_string(root.join(&path))
             .with_context(|| format!("failed to read version file {path}"))?;
         // Anchored entries claim their regions before the bare sweep sees the
         // file, and within each half the longest `old` goes first — a shorter
@@ -265,7 +268,7 @@ pub fn rewrite_version_in_files(
 
     if !dry_run {
         for (path, body) in pending {
-            crate::fs_atomic::atomic_write_str(Path::new(&path), &body)
+            crate::fs_atomic::atomic_write_str(&root.join(&path), &body)
                 .with_context(|| format!("failed to write version file {path}"))?;
         }
     }
@@ -302,17 +305,20 @@ pub fn contains_version(content: &str, version: &str) -> Result<bool> {
 /// contains `version`. A bare entry (`anchor` is `None`) matches anywhere in the
 /// file, bare or `v`-prefixed and word-boundary anchored; an anchored entry is
 /// present only when its `match` regex — compiled against `version` — selects a
-/// region. Returns one `(path, present)` pair per entry in input order.
+/// region. Paths are relative to `root`: joined with it for the read, echoed
+/// as given in every message. Returns one `(path, present)` pair per entry in
+/// input order.
 ///
 /// Errors if an enrolled file is missing or unreadable, or an anchor is invalid.
 pub fn check_version_present(
+    root: &Path,
     entries: &[(String, Option<String>)],
     version: &str,
 ) -> Result<Vec<(String, bool)>> {
     let (bare_re, prefixed_re) = version_regexes(version)?;
     let mut results = Vec::with_capacity(entries.len());
     for (path, anchor) in entries {
-        let content = fs::read_to_string(path)
+        let content = fs::read_to_string(root.join(path))
             .with_context(|| format!("failed to read version file {path}"))?;
         let present = match anchor {
             Some(anchor) => anchor_regex(path, anchor, version)?.is_match(&content),
@@ -329,10 +335,15 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Writes `name` under `dir` and returns the ROOT-RELATIVE name — the
+    /// spelling the engine takes, logs and errors with.
     fn write(dir: &TempDir, name: &str, body: &str) -> String {
-        let path = dir.path().join(name);
-        fs::write(&path, body).unwrap();
-        path.to_string_lossy().into_owned()
+        fs::write(dir.path().join(name), body).unwrap();
+        name.to_string()
+    }
+
+    fn read(dir: &TempDir, name: &str) -> String {
+        fs::read_to_string(dir.path().join(name)).unwrap()
     }
 
     fn bare(path: &str, old: &str, new: &str) -> FileRewrite {
@@ -356,9 +367,10 @@ mod tests {
     fn rewrites_bare_and_v_prefixed() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "Chart.yaml", "version: 0.1.0\nappVersion: v0.1.0\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
         assert_eq!(out[0].replacements, 2);
-        let body = fs::read_to_string(&f).unwrap();
+        let body = read(&dir, &f);
         assert_eq!(body, "version: 0.2.0\nappVersion: v0.2.0\n");
     }
 
@@ -366,45 +378,51 @@ mod tests {
     fn word_boundary_does_not_match_inside_longer_version() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "use 10.1.0 not 0.1.0\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
         assert_eq!(out[0].replacements, 1);
-        assert_eq!(fs::read_to_string(&f).unwrap(), "use 10.1.0 not 0.2.0\n");
+        assert_eq!(read(&dir, &f), "use 10.1.0 not 0.2.0\n");
     }
 
     #[test]
     fn zero_matches_is_not_an_error() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "no version here\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
         assert_eq!(out[0].replacements, 0);
-        assert_eq!(fs::read_to_string(&f).unwrap(), "no version here\n");
+        assert_eq!(read(&dir, &f), "no version here\n");
     }
 
     #[test]
     fn dry_run_computes_count_without_writing() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "v0.1.0\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.2.0")], true).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.2.0")], true).unwrap();
         assert_eq!(out[0].replacements, 1);
-        assert_eq!(fs::read_to_string(&f).unwrap(), "v0.1.0\n");
+        assert_eq!(read(&dir, &f), "v0.1.0\n");
     }
 
     #[test]
     fn equal_old_new_is_noop() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "0.1.0\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.1.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.1.0")], false).unwrap();
         assert_eq!(out[0].replacements, 0);
-        assert_eq!(fs::read_to_string(&f).unwrap(), "0.1.0\n");
+        assert_eq!(read(&dir, &f), "0.1.0\n");
     }
 
     #[test]
     fn prerelease_version_with_hyphen_rewrites() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "tag v0.1.0-beta here\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0-beta", "0.2.0-beta")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0-beta", "0.2.0-beta")], false)
+                .unwrap();
         assert_eq!(out[0].replacements, 1);
-        assert_eq!(fs::read_to_string(&f).unwrap(), "tag v0.2.0-beta here\n");
+        assert_eq!(read(&dir, &f), "tag v0.2.0-beta here\n");
     }
 
     /// Pin the raw engine behavior at the prerelease boundary: a hyphen is a
@@ -421,20 +439,27 @@ mod tests {
     fn bare_old_matches_release_core_of_a_prerelease_line() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "pinned at 0.1.0-rc1 today\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.1.0", "0.2.0")], false).unwrap();
         assert_eq!(out[0].replacements, 1);
-        assert_eq!(
-            fs::read_to_string(&f).unwrap(),
-            "pinned at 0.2.0-rc1 today\n"
-        );
+        assert_eq!(read(&dir, &f), "pinned at 0.2.0-rc1 today\n");
     }
 
     #[test]
     fn missing_file_is_an_error() {
         let dir = TempDir::new().unwrap();
-        let missing = dir.path().join("nope.yaml").to_string_lossy().into_owned();
-        let err = rewrite_version_in_files(&[bare(&missing, "0.1.0", "0.2.0")], false).unwrap_err();
-        assert!(err.to_string().contains("failed to read version file"));
+        let missing = "nope.yaml".to_string();
+        let err = rewrite_version_in_files(dir.path(), &[bare(&missing, "0.1.0", "0.2.0")], false)
+            .unwrap_err();
+        let err = err.to_string();
+        assert!(
+            err.contains("failed to read version file nope.yaml"),
+            "err: {err}"
+        );
+        assert!(
+            !err.contains(&dir.path().to_string_lossy().into_owned()),
+            "err leaked the resolved absolute path: {err}"
+        );
     }
 
     #[test]
@@ -454,7 +479,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let a = write(&dir, "has.md", "v0.1.0\n");
         let b = write(&dir, "hasnot.md", "10.1.0\n");
-        let res = check_version_present(&[(a.clone(), None), (b.clone(), None)], "0.1.0").unwrap();
+        let res =
+            check_version_present(dir.path(), &[(a.clone(), None), (b.clone(), None)], "0.1.0")
+                .unwrap();
         assert_eq!(res, vec![(a, true), (b, false)]);
     }
 
@@ -464,6 +491,7 @@ mod tests {
         let a = write(&dir, "a.md", "0.1.0\n0.1.0\n");
         let b = write(&dir, "b.md", "nothing\n");
         let out = rewrite_version_in_files(
+            dir.path(),
             &[bare(&a, "0.1.0", "0.2.0"), bare(&b, "0.1.0", "0.2.0")],
             false,
         )
@@ -515,6 +543,7 @@ mod tests {
             "operator:\n  image: ghcr.io/x/operator:v0.7.0\ncsi:\n  image: ghcr.io/x/csi:v0.7.0\n",
         );
         let out = rewrite_version_in_files(
+            dir.path(),
             &[anchored(
                 &f,
                 r"operator:\s+image:.*:v{version}",
@@ -527,7 +556,7 @@ mod tests {
         assert_eq!(out[0].replacements, 1);
         assert_eq!(out[0].matched_regions, Some(1));
         assert_eq!(
-            fs::read_to_string(&f).unwrap(),
+            read(&dir, &f),
             "operator:\n  image: ghcr.io/x/operator:v0.8.0\ncsi:\n  image: ghcr.io/x/csi:v0.7.0\n"
         );
     }
@@ -536,15 +565,15 @@ mod tests {
     fn anchored_rewrite_applies_to_every_match() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "pin: v0.7.0\nother: 0.7.0\npin: v0.7.0\n");
-        let out =
-            rewrite_version_in_files(&[anchored(&f, r"pin: v{version}", "0.7.0", "0.8.0")], false)
-                .unwrap();
+        let out = rewrite_version_in_files(
+            dir.path(),
+            &[anchored(&f, r"pin: v{version}", "0.7.0", "0.8.0")],
+            false,
+        )
+        .unwrap();
         assert_eq!(out[0].replacements, 2);
         assert_eq!(out[0].matched_regions, Some(2));
-        assert_eq!(
-            fs::read_to_string(&f).unwrap(),
-            "pin: v0.8.0\nother: 0.7.0\npin: v0.8.0\n"
-        );
+        assert_eq!(read(&dir, &f), "pin: v0.8.0\nother: 0.7.0\npin: v0.8.0\n");
     }
 
     #[test]
@@ -553,6 +582,7 @@ mod tests {
         let good = write(&dir, "good.md", "pin: v0.7.0\n");
         let bad = write(&dir, "bad.md", "nothing to see\n");
         let err = rewrite_version_in_files(
+            dir.path(),
             &[
                 bare(&good, "0.7.0", "0.8.0"),
                 anchored(&bad, r"pin: v{version}", "0.7.0", "0.8.0"),
@@ -564,15 +594,21 @@ mod tests {
         assert!(err.contains("crate 'app'"), "err: {err}");
         assert!(err.contains("bad.md"), "err: {err}");
         assert!(err.contains("matched nothing"), "err: {err}");
+        // The enrolled spelling, not the resolved one: one path per enrollment.
+        assert!(
+            !err.contains(&dir.path().to_string_lossy().into_owned()),
+            "err leaked the resolved absolute path: {err}"
+        );
         // The entry that DID match is left unwritten: validation precedes IO.
-        assert_eq!(fs::read_to_string(&good).unwrap(), "pin: v0.7.0\n");
+        assert_eq!(read(&dir, &good), "pin: v0.7.0\n");
     }
 
     #[test]
     fn bare_entry_zero_match_still_warns_not_errors() {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "doc.md", "nothing to see\n");
-        let out = rewrite_version_in_files(&[bare(&f, "0.7.0", "0.8.0")], false).unwrap();
+        let out =
+            rewrite_version_in_files(dir.path(), &[bare(&f, "0.7.0", "0.8.0")], false).unwrap();
         assert_eq!(out[0].replacements, 0);
         assert_eq!(out[0].matched_regions, None);
     }
@@ -586,6 +622,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write(&dir, "chart.yaml", "pin: v1.2.3\nother: 1.2.3\n");
         let outcomes = rewrite_version_in_files(
+            dir.path(),
             &[
                 bare(&path, "1.2.3", "1.2.4"),
                 anchored(&path, r"pin: v{version}", "1.2.3", "1.2.4"),
@@ -593,10 +630,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "pin: v1.2.4\nother: 1.2.4\n"
-        );
+        assert_eq!(read(&dir, &path), "pin: v1.2.4\nother: 1.2.4\n");
         assert_eq!(outcomes[0].replacements, 1, "bare: {outcomes:?}");
         assert_eq!(outcomes[1].replacements, 1, "anchored: {outcomes:?}");
         assert_eq!(outcomes[1].matched_regions, Some(1));
@@ -609,6 +643,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write(&dir, "chart.yaml", "pin: v0.9.0\nother: 0.9.0\n");
         let outcomes = rewrite_version_in_files(
+            dir.path(),
             &[
                 bare(&path, "0.9.0", "0.10.0"),
                 anchored(&path, r"pin: v{version}", "0.9.0", "0.10.0"),
@@ -616,10 +651,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "pin: v0.10.0\nother: 0.10.0\n"
-        );
+        assert_eq!(read(&dir, &path), "pin: v0.10.0\nother: 0.10.0\n");
         assert_eq!(outcomes[1].replacements, 1, "anchor starved: {outcomes:?}");
     }
 
@@ -630,11 +662,12 @@ mod tests {
         // First-seen order puts the SHORTER old first; the engine must still
         // rewrite `0.1.0-rc1` before the `0.1.0` matcher can eat its prefix.
         let out = rewrite_version_in_files(
+            dir.path(),
             &[bare(&f, "0.1.0", "0.5.0"), bare(&f, "0.1.0-rc1", "0.9.9")],
             false,
         )
         .unwrap();
-        assert_eq!(fs::read_to_string(&f).unwrap(), "a 0.9.9 b 0.5.0\n");
+        assert_eq!(read(&dir, &f), "a 0.9.9 b 0.5.0\n");
         assert_eq!(out[0].replacements, 1);
         assert_eq!(out[1].replacements, 1);
     }
@@ -644,6 +677,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let f = write(&dir, "values.yaml", "pin: v0.7.0\nloose: 0.9.0\n");
         let res = check_version_present(
+            dir.path(),
             &[(f.clone(), Some(r"pin: v{version}".to_string()))],
             "0.7.0",
         )
@@ -651,6 +685,7 @@ mod tests {
         assert_eq!(res, vec![(f.clone(), true)]);
         // 0.9.0 IS in the file, but not inside the anchor.
         let res = check_version_present(
+            dir.path(),
             &[(f.clone(), Some(r"pin: v{version}".to_string()))],
             "0.9.0",
         )

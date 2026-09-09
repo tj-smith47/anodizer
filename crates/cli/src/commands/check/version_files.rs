@@ -97,11 +97,8 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
             if !seen.insert((file.to_string(), anchor.clone(), version.clone())) {
                 continue;
             }
-            // Enrolled paths are repo-root-relative; resolve against the
-            // discovered root for the read while keeping `file` (relative) for
-            // user-facing messages.
-            let abs = repo_root.join(file).to_string_lossy().into_owned();
-            match check_version_present(&[(abs, anchor.clone())], &version) {
+            match check_version_present(repo_root, &[(file.to_string(), anchor.clone())], &version)
+            {
                 Ok(results) => {
                     checked += 1;
                     let present = results.first().map(|(_, p)| *p).unwrap_or(false);

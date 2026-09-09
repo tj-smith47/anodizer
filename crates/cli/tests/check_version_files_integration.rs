@@ -152,6 +152,13 @@ fn missing_enrolled_file_exits_nonzero() {
         "a missing file must not be reported as a version drift: {}",
         run.stderr
     );
+    // Every version_files message names the enrolled (repo-relative) path, so
+    // the read error inside the finding cannot spell it a second way.
+    assert!(
+        !run.stderr.contains(&root.to_string_lossy().into_owned()),
+        "the finding leaked an absolute path: {}",
+        run.stderr
+    );
 }
 
 /// Invoked from a SUBDIRECTORY with an explicit `--config` pointing at the
