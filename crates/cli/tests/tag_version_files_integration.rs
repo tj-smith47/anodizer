@@ -1495,29 +1495,7 @@ fn tag_and_check_agree_in_every_config_mode() {
 
     let lockstep = TempDir::new().unwrap();
     let root = lockstep.path();
-    fs::write(
-        root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
-    )
-    .unwrap();
-    fs::create_dir_all(root.join("crates/a/src")).unwrap();
-    fs::write(
-        root.join("crates/a/Cargo.toml"),
-        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
-    )
-    .unwrap();
-    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
-    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
-    fs::write(
-        root.join(".anodizer.yaml"),
-        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
-    )
-    .unwrap();
-    git_init(root);
-    git_add_commit(root, "initial");
-    run_git(root, &["tag", "v0.1.0"]);
-    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
-    git_add_commit(root, "fix: a bug");
+    lockstep_fixture(root);
     assert_tag_covers_what_check_validates(
         root,
         "lockstep",
@@ -1548,5 +1526,140 @@ fn tag_and_check_agree_in_every_config_mode() {
         &["tag", "--dry-run"],
         &["README.md"],
         "0.1.0",
+    );
+}
+
+/// A lockstep workspace (`[workspace.package].version = "0.1.0"`, no `crates:`
+/// block) enrolling one top-level `Chart.yaml`, with a `fix:` commit after
+/// `v0.1.0`.
+fn lockstep_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+}
+
+/// A flat repo with no `crates:` block: root `[package].version` at 1.2.3, one
+/// enrolled README, one `fix:` commit after `v1.2.3`.
+fn no_crates_block_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"1.2.3\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(root.join("README.md"), "Install app 1.2.3 today.\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: app\nversion_files:\n  - README.md\n",
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v1.2.3"]);
+    fs::write(root.join("src/main.rs"), "fn main() {}\n// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+}
+
+/// Runs a real bump, then `check version-files`: the bump moves the manifest
+/// and the enrolled files together, so a repo that was in sync before it is in
+/// sync after it. A path that rewrote the files without writing the manifest
+/// leaves a drift report no bump can clear.
+fn assert_bump_leaves_check_in_sync(root: &Path, mode: &str, tag_args: &[&str]) {
+    let out = anodizer()
+        .current_dir(root)
+        .args(tag_args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{mode}: tag failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = anodizer()
+        .current_dir(root)
+        .args(["check", "version-files"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{mode}: check went stale after its own bump: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Every shape a bump can take leaves `check version-files` green, because
+/// every shape writes the new version into the manifest `check` reads.
+#[test]
+fn every_bump_leaves_check_version_files_in_sync() {
+    let no_crates = TempDir::new().unwrap();
+    no_crates_block_fixture(no_crates.path());
+    assert_bump_leaves_check_in_sync(no_crates.path(), "no crates:", &["tag", "--no-push"]);
+
+    let one_crate = TempDir::new().unwrap();
+    one_declared_crate_fixture(one_crate.path());
+    assert_bump_leaves_check_in_sync(
+        one_crate.path(),
+        "one declared crate",
+        &["tag", "--no-push"],
+    );
+
+    let lockstep = TempDir::new().unwrap();
+    lockstep_fixture(lockstep.path());
+    assert_bump_leaves_check_in_sync(lockstep.path(), "lockstep", &["tag", "--no-push"]);
+
+    let per_crate = TempDir::new().unwrap();
+    shared_file_fixture(
+        per_crate.path(),
+        &[("core", "0.1.0"), ("cli", "0.1.0")],
+        "both at 0.1.0\n",
+    );
+    assert_bump_leaves_check_in_sync(per_crate.path(), "per-crate", &["tag", "--no-push"]);
+}
+
+/// The repo-level bump writes no manifest when it owns none: several declared
+/// crates dispatch elsewhere, and a lone declared crate that never opted into
+/// `version_sync` keeps its manifest (and, with it, its enrolled files) untouched.
+#[test]
+fn repo_level_manifest_is_the_one_check_reads() {
+    let one_crate = TempDir::new().unwrap();
+    one_declared_crate_fixture(one_crate.path());
+    let out = anodizer()
+        .current_dir(one_crate.path())
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    assert!(
+        combined.contains("would sync version in") && combined.contains("crates/app"),
+        "the declared crate's manifest is not in the planned writes: {combined}"
     );
 }

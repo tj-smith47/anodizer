@@ -2537,6 +2537,76 @@ fn top_level_version_files_cover_a_single_declared_crate() {
     );
 }
 
+/// The repo-level bump writes the manifest `check version-files` reads: the
+/// repo root's when no crate is declared, the single declared crate's when one
+/// is and it opted into `version_sync`.
+#[test]
+fn repo_level_manifest_dir_is_the_root_without_crates() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(repo_level_manifest_dir(&config), Some(".".to_string()));
+}
+
+#[test]
+fn repo_level_manifest_dir_is_a_lone_version_synced_crate() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "app".to_string(),
+            path: "crates/app".to_string(),
+            version_sync: Some(anodizer_core::config::VersionSyncConfig {
+                enabled: Some(true),
+                mode: None,
+            }),
+            ..Default::default()
+        }],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(
+        repo_level_manifest_dir(&config),
+        Some("crates/app".to_string())
+    );
+}
+
+/// No `version_sync` opt-in, no manifest write — and the arm then leaves the
+/// enrolled files alone too, exactly as `--crate` does.
+#[test]
+fn repo_level_manifest_dir_is_none_without_version_sync() {
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "app".to_string(),
+            path: "crates/app".to_string(),
+            ..Default::default()
+        }],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(repo_level_manifest_dir(&config), None);
+}
+
+/// Several declared crates dispatch to the lockstep or per-crate engine, each
+/// of which bumps its own manifests.
+#[test]
+fn repo_level_manifest_dir_is_none_with_several_crates() {
+    let crate_cfg = |name: &str| anodizer_core::config::CrateConfig {
+        name: name.to_string(),
+        path: format!("crates/{name}"),
+        ..Default::default()
+    };
+    let config = anodizer_core::config::Config {
+        project_name: "app".to_string(),
+        crates: vec![crate_cfg("a"), crate_cfg("b")],
+        version_files: Some(vec![vf("README.md")]),
+        ..Default::default()
+    };
+    assert_eq!(repo_level_manifest_dir(&config), None);
+}
+
 /// A crate's own `version_files` wins over the top-level list — the same
 /// precedence `resolve_version_files` gives `check version-files`.
 #[test]

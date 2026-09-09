@@ -925,15 +925,21 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 ),
             )?;
         }
-    } else if crate_path.is_none() && !crate_version_files.is_empty() {
-        bump_top_level_version_files(
+    } else if crate_path.is_none()
+        && !crate_version_files.is_empty()
+        && let Some(manifest_dir) = repo_level_manifest_dir(&loaded_config)
+    {
+        bump_repo_level(
             &workspace_root_path,
-            &crate_version_files,
-            old_tag_str,
-            &new_version,
-            &loaded_config.project_name,
-            opts.dry_run,
-            skip_ci_suffix(cfg.skip_ci_on_bump),
+            &RepoLevelBump {
+                manifest_dir: &manifest_dir,
+                files: &crate_version_files,
+                old_tag: old_tag_str,
+                new_version: &new_version,
+                project_name: &loaded_config.project_name,
+                dry_run: opts.dry_run,
+                skip_ci_suffix: skip_ci_suffix(cfg.skip_ci_on_bump),
+            },
             &log,
         )?;
     }

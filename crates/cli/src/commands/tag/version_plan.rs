@@ -195,39 +195,124 @@ pub(crate) fn top_level_version_files(
     }
 }
 
-/// Rewrite the top-level `version_files` of a config that declares no
-/// `crates:` block, and — outside dry-run — commit what changed.
+/// The manifest directory (repo-relative; `"."` for the repo root) the
+/// repo-level tag path writes the new version into, or `None` when this arm
+/// owns no manifest and must leave the tree alone.
 ///
-/// Such a config has no crate manifest for `tag` to version-sync, so nothing
-/// else in the bump would touch its enrollment; `check version-files` reads the
-/// same list, so leaving it unrewritten reports drift no bump could clear. The
-/// rewrite goes through the same plan/apply seam as the `--crate` case, so one
-/// file is swept once. Absent a previous tag there is no old version to rewrite
-/// from and this is a no-op.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn bump_top_level_version_files(
+/// `anodizer check version-files` compares every enrolled file against a
+/// MANIFEST version, so an arm that rewrote enrolled files without moving the
+/// manifest would leave a drift report no bump could ever clear. The arm
+/// therefore writes the same manifest `check` reads: the repo root's when no
+/// crate is declared, the single declared crate's when one is. A declared crate
+/// that has not opted into `version_sync` owns no manifest write here — exactly
+/// as under `--crate`, where the enrolled files are not rewritten either.
+///
+/// Several declared crates never reach this arm: they dispatch to the lockstep
+/// or per-crate engine, each of which bumps its own manifests.
+pub(crate) fn repo_level_manifest_dir(config: &Config) -> Option<String> {
+    match config.crate_universe().as_slice() {
+        [] => Some(".".to_string()),
+        [single] => single
+            .version_sync
+            .as_ref()
+            .and_then(|vs| vs.enabled)
+            .unwrap_or(false)
+            .then(|| single.path.clone()),
+        _ => None,
+    }
+}
+
+/// Everything the repo-level bump writes into one commit.
+pub(crate) struct RepoLevelBump<'a> {
+    /// Manifest directory from [`repo_level_manifest_dir`].
+    pub manifest_dir: &'a str,
+    pub files: &'a [anodizer_core::config::VersionFileEntry],
+    pub old_tag: &'a str,
+    pub new_version: &'a str,
+    pub project_name: &'a str,
+    pub dry_run: bool,
+    pub skip_ci_suffix: &'a str,
+}
+
+/// The repo-level (no `--crate`, no lockstep workspace) bump: write
+/// `new_version` into the manifest, rewrite the enrolled `version_files`, and
+/// land both in one commit before the tag is created — the shape every other
+/// tag path produces.
+///
+/// Refuses a manifest that declares no version rather than inventing a
+/// `[package]` table: a repo whose root manifest carries no version has none
+/// for `check version-files` to compare against either, so the enrollment is
+/// the thing to fix. Absent a previous tag there is no old version to rewrite
+/// the enrolled files from, and only the manifest moves.
+pub(crate) fn bump_repo_level(
     root: &Path,
-    files: &[anodizer_core::config::VersionFileEntry],
-    old_tag: &str,
-    new_version: &str,
-    project_name: &str,
-    dry_run: bool,
-    skip_ci_suffix: &str,
+    bump: &RepoLevelBump<'_>,
     log: &StageLogger,
 ) -> Result<()> {
-    let Some(old) = git::version_from_tag(old_tag) else {
-        return Ok(());
+    let manifest_rel = if bump.manifest_dir == "." {
+        "Cargo.toml".to_string()
+    } else {
+        format!("{}/Cargo.toml", bump.manifest_dir)
     };
-    let plan = version_files_plan(files, &old, new_version, project_name)?;
-    let changed = rewrite_and_stage_version_files(root, &plan, dry_run, log)?;
-    if dry_run || changed.is_empty() {
+    let manifest_dir = root.join(bump.manifest_dir).to_string_lossy().into_owned();
+    if anodizer_stage_build::version_sync::read_cargo_version_opt(&manifest_dir)
+        .unwrap_or(None)
+        .is_none()
+    {
+        bail!(
+            "version_files: the repo-level bump must write {} into a manifest, but {} declares              no [package].version and the workspace declares no [workspace.package].version;              give the manifest a version, declare the crate under `crates:`, or drop the              version_files enrollment",
+            bump.new_version,
+            manifest_rel,
+        );
+    }
+
+    anodizer_stage_build::version_sync::sync_version(
+        &manifest_dir,
+        bump.new_version,
+        bump.dry_run,
+        log,
+    )?;
+
+    let mut changed: Vec<String> = Vec::new();
+    if let Some(old) = git::version_from_tag(bump.old_tag) {
+        let plan = version_files_plan(bump.files, &old, bump.new_version, bump.project_name)?;
+        changed = rewrite_and_stage_version_files(root, &plan, bump.dry_run, log)?;
+    }
+    if bump.dry_run {
         return Ok(());
     }
-    let staged: Vec<&str> = changed.iter().map(String::as_str).collect();
+
+    // A bumped Cargo.toml beside a stale Cargo.lock dirties the tree the moment
+    // anything cargo-shaped runs against the tagged commit.
+    let lockfile = root.join("Cargo.lock");
+    if lockfile.is_file() {
+        match anodizer_core::cargo_lock::cargo_update_workspace(Some(root)) {
+            Ok(true) => {}
+            Ok(false) => warn_cargo_lock_stale(
+                log,
+                "`cargo update --workspace` exited non-zero after version sync",
+            ),
+            Err(e) => warn_cargo_lock_stale(
+                log,
+                &format!("could not spawn `cargo update --workspace` ({e})"),
+            ),
+        }
+    }
+
+    let mut staged: Vec<&str> = vec![&manifest_rel];
+    if lockfile.is_file() {
+        staged.push("Cargo.lock");
+    }
+    for f in &changed {
+        staged.push(f);
+    }
     git::stage_and_commit_in(
         root,
         &staged,
-        &git::release_bump_subject(&format!("{project_name} → {new_version}"), skip_ci_suffix),
+        &git::release_bump_subject(
+            &format!("{} → {}", bump.project_name, bump.new_version),
+            bump.skip_ci_suffix,
+        ),
     )?;
     Ok(())
 }
