@@ -615,10 +615,11 @@ fn resolve_push_branch_explicit_branch_wins_over_detached_head() {
 /// Write an executable stub standing in for the `gh` CLI.
 #[cfg(unix)]
 fn write_gh_stub(dir: &Path, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join("gh-stub");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &path,
+        &format!("#!/bin/sh\n{body}\n"),
+    );
     path
 }
 

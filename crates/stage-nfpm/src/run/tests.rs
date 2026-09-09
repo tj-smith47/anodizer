@@ -2,14 +2,13 @@ use super::*;
 
 /// Build a job whose "nfpm" is a stub script printing `msg` to stdout
 /// (where nfpm reports its errors) and exiting 1.
+#[cfg(unix)]
 fn failing_job(dir: &tempfile::TempDir, msg: &str) -> NfpmJob {
     let stub = dir.path().join("nfpm-stub.sh");
-    std::fs::write(&stub, format!("#!/bin/sh\necho '{msg}'\nexit 1\n")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &stub,
+        &format!("#!/bin/sh\necho '{msg}'\nexit 1\n"),
+    );
     NfpmJob {
         _tmp_dir: tempfile::TempDir::new().unwrap(),
         pkg_path: dir.path().join("out.msix"),

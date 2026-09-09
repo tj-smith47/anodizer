@@ -235,8 +235,13 @@ impl ToolSpec<'_> {
         let path = self.dir.tool_path(&self.name);
         let calls = self.dir.calls_path(&self.name);
         let body = self.render_script(&calls);
-        std::fs::write(&path, body).expect("fake_tool: write stub");
-        make_executable(&path);
+        #[cfg(unix)]
+        write_executable_script(&path, &body);
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, body).expect("fake_tool: write stub");
+            make_executable(&path);
+        }
     }
 
     #[cfg(unix)]
@@ -356,17 +361,63 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Marker env var that makes a script written by [`write_executable_script`]
+/// exit before its body runs.
+#[cfg(unix)]
+const EXEC_PROBE_VAR: &str = "ANODIZER_FAKE_TOOL_PROBE";
+
+/// Write `script` to `path` as an executable file, returning only once the
+/// file can actually be exec'd.
+///
+/// Every test that writes an executable and then spawns it goes through here.
+/// `execve` refuses a file any process still holds open for writing
+/// (`ETXTBSY`), and a sibling test thread that forks between this write's
+/// open and its close inherits the writable descriptor until its own `exec`
+/// (the descriptor is `CLOEXEC`, so the child releases it at `exec`, not at
+/// `fork`). The spawn that trips over it is usually production code, which
+/// has no business retrying `ETXTBSY` — so the window is drained here
+/// instead, by exec'ing the script once under [`EXEC_PROBE_VAR`]. A guard
+/// line inserted below the shebang exits on that marker, so the probe records
+/// no call and creates no file; once it succeeds the inode carries no writer
+/// anywhere, and the caller's real spawn cannot see `ETXTBSY`.
+///
+/// `script` keeps its own interpreter: a leading `#!` line is preserved and
+/// the guard goes directly under it. A script written without one gets
+/// `/bin/sh`.
+#[cfg(unix)]
+pub fn write_executable_script(path: &Path, script: &str) {
+    let (shebang, body) = match script.starts_with("#!") {
+        true => script.split_once('\n').unwrap_or((script, "")),
+        false => ("#!/bin/sh", script),
+    };
+    let script = format!("{shebang}\nif [ -n \"${EXEC_PROBE_VAR}\" ]; then exit 0; fi\n{body}");
+    std::fs::write(path, script)
+        .unwrap_or_else(|e| panic!("fake_tool: write {}: {e}", path.display()));
+    make_executable(path);
+    for _ in 0..500 {
+        match std::process::Command::new(path)
+            .env(EXEC_PROBE_VAR, "1")
+            .output()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            _ => return,
+        }
+    }
+    panic!(
+        "fake_tool: {} still reported ETXTBSY after 500 probes",
+        path.display()
+    );
+}
+
 /// `Command::output` with a bounded retry on `ETXTBSY` ("Text file busy").
 ///
-/// A test that installs a [`FakeToolDir`] stub and execs it immediately
-/// from the same process races every sibling test thread's `fork`: a child
-/// forked inside the install's write window briefly inherits the stub's
-/// writable fd, and the exec here fails with `ETXTBSY` until that child
-/// reaches its own `exec` (the fd is CLOEXEC). A short bounded retry is
-/// the standard remedy. Use this instead of routing the stub through
-/// `sh <stub>` — both close the race, but the retry keeps the real
-/// spawn-the-tool code path under test. Production code never
-/// writes-then-execs its own tools and cannot hit this.
+/// [`write_executable_script`] already drains that window before it returns,
+/// so a stub installed through it cannot report `ETXTBSY` here. This stays as
+/// the safety net for a command built from a path the caller wrote some other
+/// way, and it keeps the real spawn-the-tool code path under test rather than
+/// routing the stub through `sh <stub>`.
 #[cfg(unix)]
 pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::process::Output {
     for _ in 0..50 {

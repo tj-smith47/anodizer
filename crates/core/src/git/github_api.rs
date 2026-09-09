@@ -812,11 +812,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn create_tag_via_github_api_in_dry_run_sign_rejected_when_gh_present() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let gh = tmp.path().join("gh");
-        std::fs::write(&gh, "#!/bin/sh\necho 'gh version 2.0.0'\n").unwrap();
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_helpers::fake_tool::write_executable_script(
+            &gh,
+            "#!/bin/sh\necho 'gh version 2.0.0'\n",
+        );
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
         let slug = RepoSlug::for_test("owner", "repo");
         let err = create_tag_via_github_api_in(

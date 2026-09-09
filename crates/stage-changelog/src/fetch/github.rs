@@ -202,7 +202,7 @@ mod tests {
     use anodizer_core::context::ContextOptions;
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::CwdGuard;
-    use std::os::unix::fs::PermissionsExt;
+    use anodizer_core::test_helpers::fake_tool::write_executable_script;
     use std::process::Command;
 
     fn test_logger() -> StageLogger {
@@ -248,10 +248,10 @@ mod tests {
     /// `body` on stdout and exits 0. Returns the script path.
     fn write_gh_stub_stdout(dir: &Path, body: &str) -> std::path::PathBuf {
         let script = dir.join("gh");
-        let contents = format!("#!/bin/sh\ncat <<'__GH_EOF__'\n{body}\n__GH_EOF__\n");
-        std::fs::write(&script, contents).expect("write gh stub");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod gh stub");
+        write_executable_script(
+            &script,
+            &format!("#!/bin/sh\ncat <<'__GH_EOF__'\n{body}\n__GH_EOF__\n"),
+        );
         script
     }
 
@@ -454,11 +454,10 @@ mod tests {
         let args_file = dir.path().join("gh-args.txt");
         let args_file_str = args_file.display().to_string();
         let script = dir.path().join("gh");
-        let contents =
-            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args_file_str}'\nprintf '[]\\n'\n");
-        std::fs::write(&script, contents).expect("write gh stub");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod gh stub");
+        write_executable_script(
+            &script,
+            &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args_file_str}'\nprintf '[]\\n'\n"),
+        );
 
         let repo = temp_github_repo();
         let _cwd = CwdGuard::new(repo.path()).expect("cwd");
@@ -536,12 +535,12 @@ mod tests {
         // Stub exits 1 with stderr that includes the token verbatim,
         // simulating a verbose gh error that echoed an auth header.
         let script = dir.path().join("gh");
-        let contents = format!(
-            "#!/bin/sh\nprintf 'HTTP 401: bad credentials token={token}\\n' 1>&2\nexit 1\n"
+        write_executable_script(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf 'HTTP 401: bad credentials token={token}\\n' 1>&2\nexit 1\n"
+            ),
         );
-        std::fs::write(&script, contents).expect("write gh stub");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod gh stub");
 
         let repo = temp_github_repo();
         let _cwd = CwdGuard::new(repo.path()).expect("cwd");

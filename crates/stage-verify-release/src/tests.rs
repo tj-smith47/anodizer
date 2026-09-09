@@ -3277,11 +3277,8 @@ mod signature_crypto_verification {
 
     /// Write an executable shell script and return its path.
     fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
-        std::fs::write(&path, body).expect("write script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod script");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(&path, body);
         path
     }
 
@@ -3743,6 +3740,8 @@ mod signature_crypto_verification {
         std::fs::create_dir(&home).expect("gnupg home");
         {
             use std::os::unix::fs::PermissionsExt;
+            // exec-writer-ok: 0o700 on a GNUPGHOME DIRECTORY (gpg refuses a
+            // wider one); a directory is never exec'd.
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
                 .expect("chmod gnupg home");
         }

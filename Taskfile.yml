@@ -328,6 +328,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-test-spawn-retry.sh
 
+  audit:test-exec-writer:
+    desc: "Guard: TEST-context executable writes route through write_executable_script (ETXTBSY flake)."
+    cmds:
+      - .claude/scripts/audit-test-exec-writer.sh
+
   audit:job-timeouts:
     desc: "Guard: every .github/workflows job declares a positive-integer timeout-minutes (reusable-workflow callers exempt)."
     cmds:
@@ -365,6 +370,7 @@ tasks:
       - task: audit:binary-name
       - task: audit:test-isolation
       - task: audit:test-spawn
+      - task: audit:test-exec-writer
       - task: audit:repo-identity
       - task: audit:doc-links
       - task: audit:god-files

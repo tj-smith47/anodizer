@@ -3922,8 +3922,6 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
 #[test]
 #[serial_test::serial(npm_counter)]
 fn partial_publish_failure_preserves_rollback_evidence() {
-    use std::os::unix::fs::PermissionsExt;
-
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
@@ -3933,7 +3931,7 @@ fn partial_publish_failure_preserves_rollback_evidence() {
     // idempotency probe proceeds to publish); `publish` succeeds on attempt 1
     // and fails on attempt 2+.
     let npm = bin_dir.join("npm");
-    std::fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
 case "$1" in
@@ -3957,9 +3955,7 @@ case "$1" in
     ;;
 esac
 "#,
-    )
-    .expect("write fake npm");
-    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+    );
 
     // Two platform binaries → two per-platform publishes before the metapackage.
     let mut ctx = TestContextBuilder::new()
@@ -4036,8 +4032,6 @@ esac
 #[test]
 #[serial_test::serial(npm_counter)]
 fn missing_platform_binary_publishes_nothing() {
-    use std::os::unix::fs::PermissionsExt;
-
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
@@ -4046,7 +4040,7 @@ fn missing_platform_binary_publishes_nothing() {
     // Fake `npm`: `view` reports E404 (never-published); `publish` increments a
     // counter so the test can prove zero publishes occurred.
     let npm = bin_dir.join("npm");
-    std::fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
 case "$1" in
@@ -4066,9 +4060,7 @@ case "$1" in
     ;;
 esac
 "#,
-    )
-    .expect("write fake npm");
-    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+    );
 
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")
@@ -5125,14 +5117,11 @@ fn rollback_skips_target_whose_token_env_is_unset() {
 #[test]
 #[serial_test::serial(npm_counter)]
 fn rollback_unpublishes_recorded_target_with_valid_token() {
-    use std::os::unix::fs::PermissionsExt;
-
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
     let npm = bin_dir.join("npm");
-    std::fs::write(&npm, "#!/bin/sh\nexit 0\n").expect("write fake npm");
-    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&npm, "#!/bin/sh\nexit 0\n");
 
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")
@@ -5188,7 +5177,6 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
 fn promote_postinstall_version_retags_metapackage() {
     use super::promote::NpmPromoter;
     use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
-    use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
@@ -5196,9 +5184,9 @@ fn promote_postinstall_version_retags_metapackage() {
     let calls = tmp.path().join("calls");
 
     let npm = bin_dir.join("npm");
-    std::fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
-        format!(
+        &format!(
             r#"#!/bin/sh
 if [ "$1" = "dist-tag" ] && [ "$2" = "add" ]; then
   echo "$3 $4" >> "{calls}"
@@ -5208,9 +5196,7 @@ exit 0
 "#,
             calls = calls.display()
         ),
-    )
-    .expect("write fake npm");
-    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+    );
 
     let ctx = TestContextBuilder::new()
         .project_name("demo")
@@ -5270,7 +5256,6 @@ exit 0
 fn promote_optional_deps_newest_reads_dist_tag_and_family() {
     use super::promote::NpmPromoter;
     use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
-    use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
@@ -5278,9 +5263,9 @@ fn promote_optional_deps_newest_reads_dist_tag_and_family() {
     let calls = tmp.path().join("calls");
 
     let npm = bin_dir.join("npm");
-    std::fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
-        format!(
+        &format!(
             r#"#!/bin/sh
 case "$1 $2" in
   "dist-tag ls")
@@ -5303,9 +5288,7 @@ exit 0
 "#,
             calls = calls.display()
         ),
-    )
-    .expect("write fake npm");
-    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+    );
 
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")

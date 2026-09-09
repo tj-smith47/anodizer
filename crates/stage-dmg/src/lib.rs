@@ -2732,6 +2732,8 @@ crates:
         std::fs::write(&plist, b"<plist></plist>").unwrap();
         let inner_bin = macos.join("anodizer");
         std::fs::write(&inner_bin, b"\x7fELF fake mach-o").unwrap();
+        // exec-writer-ok: the file holds a fake Mach-O header for a staging
+        // tree walk; nothing execs it.
         std::fs::set_permissions(&inner_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let staging = tmp.path().join("staging");

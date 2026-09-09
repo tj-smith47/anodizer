@@ -809,6 +809,8 @@ signs:
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // exec-writer-ok: 0o700 on a GNUPGHOME DIRECTORY (gpg refuses a wider one);
+        // a directory is never exec'd.
         fs::set_permissions(&gnupghome, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let key_batch = "\

@@ -349,7 +349,6 @@ fn git_api_tagging_push_dry_run_previews_without_calling_the_api() {
     // operation and must honour `--push-dry-run`. A preview must NOT invoke
     // `gh api` — doing so would create a real remote tag on a commit no pushed
     // branch contains (an orphan tag), the exact footgun push-preview avoids.
-    use std::os::unix::fs::PermissionsExt;
 
     let work = TempDir::new().unwrap();
     let root = work.path();
@@ -390,12 +389,10 @@ fn git_api_tagging_push_dry_run_previews_without_calling_the_api() {
     let stub_dir = root.join("ghbin");
     fs::create_dir_all(&stub_dir).unwrap();
     let call_log = root.join("gh_calls.log");
-    fs::write(
-        stub_dir.join("gh"),
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &stub_dir.join("gh"),
         "#!/usr/bin/env bash\necho \"GH_CALLED: $*\" >> \"$GH_CALL_LOG\"\necho '{}'\n",
-    )
-    .unwrap();
-    fs::set_permissions(stub_dir.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let path = format!(
         "{}:{}",
         stub_dir.display(),

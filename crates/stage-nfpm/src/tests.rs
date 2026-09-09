@@ -7107,6 +7107,8 @@ fn provision_ephemeral_gpg_key() -> Option<(TempDir, std::path::PathBuf, String)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // exec-writer-ok: 0o700 on a GNUPGHOME DIRECTORY (gpg refuses a wider
+        // one); a directory is never exec'd.
         std::fs::set_permissions(&gnupghome, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     let params = dir.path().join("genkey.params");

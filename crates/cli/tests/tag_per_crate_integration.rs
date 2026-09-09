@@ -1027,7 +1027,6 @@ fn per_crate_first_release_group_does_not_inherit_previous_tag_env() {
     // ANODIZER_PREVIOUS_TAG is process env reused across the per-crate
     // group loop: a group with no previous tag must see it UNSET, not the
     // previous group's value (a wrong-crate tag range for its hooks).
-    use std::os::unix::fs::PermissionsExt;
     let tmp = TempDir::new().unwrap();
     fs::write(
         tmp.path().join("Cargo.toml"),
@@ -1045,12 +1044,10 @@ fn per_crate_first_release_group_does_not_inherit_previous_tag_env() {
         fs::write(tmp.path().join(path).join("src/lib.rs"), "").unwrap();
     }
     let script = tmp.path().join("record-env.sh");
-    fs::write(
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
         &script,
         "#!/bin/sh\necho \"${ANODIZER_CURRENT_TAG}|${ANODIZER_PREVIOUS_TAG-UNSET}\" >> hook-env.log\n",
-    )
-    .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     fs::write(
         tmp.path().join(".anodizer.yaml"),
         r#"project_name: myproj
