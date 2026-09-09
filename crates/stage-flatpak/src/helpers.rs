@@ -333,8 +333,14 @@ pub(crate) fn build_manifest(
         path: binary_name.to_string(),
         dest_filename: None,
     }];
+    // flatpak-builder hands each build-command to a shell, so a binary or
+    // extra file whose name carries a space, quote or glob character would
+    // otherwise split into several arguments.
+    let q = anodizer_core::shell::shell_single_quote;
     let mut build_commands = vec![format!(
-        "install -Dm755 {binary_name} /app/bin/{binary_name}"
+        "install -Dm755 {} {}",
+        q(binary_name),
+        q(&format!("/app/bin/{binary_name}"))
     )];
 
     for extra_name in extra_file_names {
@@ -344,7 +350,9 @@ pub(crate) fn build_manifest(
             dest_filename: None,
         });
         build_commands.push(format!(
-            "install -Dm644 {extra_name} /app/share/{app_id}/{extra_name}"
+            "install -Dm644 {} {}",
+            q(extra_name),
+            q(&format!("/app/share/{app_id}/{extra_name}"))
         ));
     }
 

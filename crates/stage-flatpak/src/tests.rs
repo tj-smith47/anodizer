@@ -10,6 +10,28 @@ use anodizer_core::stage::Stage;
 // -----------------------------------------------------------------------
 
 #[test]
+fn install_commands_quote_both_fields() {
+    let manifest = build_manifest(
+        "com.example.MyTool",
+        "org.freedesktop.Platform",
+        "23.08",
+        "org.freedesktop.Sdk",
+        "my tool",
+        vec![],
+        "my tool",
+        &["it's.txt".to_string()],
+    );
+    assert_eq!(
+        manifest.modules[0].build_commands[0],
+        "install -Dm755 'my tool' '/app/bin/my tool'"
+    );
+    assert_eq!(
+        manifest.modules[0].build_commands[1],
+        r"install -Dm644 'it'\''s.txt' '/app/share/com.example.MyTool/it'\''s.txt'"
+    );
+}
+
+#[test]
 fn test_arch_to_flatpak() {
     assert_eq!(arch_to_flatpak("amd64"), Some("x86_64"));
     assert_eq!(arch_to_flatpak("x86_64"), Some("x86_64"));
@@ -38,7 +60,7 @@ fn test_manifest_json_serialization() {
         modules: vec![ManifestModule {
             name: "org.example.MyApp".to_string(),
             buildsystem: "simple".to_string(),
-            build_commands: vec!["install -Dm755 myapp /app/bin/myapp".to_string()],
+            build_commands: vec!["install -Dm755 'myapp' '/app/bin/myapp'".to_string()],
             sources: vec![ManifestSource {
                 type_: "file".to_string(),
                 path: "myapp".to_string(),
@@ -67,7 +89,7 @@ fn test_manifest_json_serialization() {
 
     let build_cmds = modules[0]["build-commands"].as_array().unwrap();
     assert_eq!(build_cmds.len(), 1);
-    assert_eq!(build_cmds[0], "install -Dm755 myapp /app/bin/myapp");
+    assert_eq!(build_cmds[0], "install -Dm755 'myapp' '/app/bin/myapp'");
 
     let sources = modules[0]["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 1);
