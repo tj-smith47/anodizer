@@ -155,6 +155,28 @@ fn quiet_for_kms(log: &anodizer_core::log::StageLogger) -> anodizer_core::log::S
         .with_env(log.redaction_env())
 }
 
+/// The plaintext ceiling AWS KMS's direct `Encrypt` call accepts. Only AWS
+/// imposes one; GCP KMS and Azure Key Vault are bounded elsewhere.
+const AWS_KMS_MAX_PLAINTEXT: usize = 4096;
+
+/// Refuse a payload AWS KMS cannot encrypt in one call.
+///
+/// Only the `awskms` scheme carries the ceiling, and a key spelled some other
+/// way is left alone here — opening the keeper is what reports an unusable
+/// key, and reporting it as a size problem would send the user to the wrong
+/// place.
+pub(crate) fn validate_kms_plaintext_size(kms_key: &str, size: usize) -> Result<()> {
+    if kms_key.starts_with("awskms://") && size > AWS_KMS_MAX_PLAINTEXT {
+        anyhow::bail!(
+            "failed to encrypt with kms: awskms encryption supports files up to {} bytes, \
+             got {} bytes",
+            AWS_KMS_MAX_PLAINTEXT,
+            size,
+        );
+    }
+    Ok(())
+}
+
 /// Encrypt `data` client-side using the appropriate cloud CLI tool.
 ///
 /// Returns the encrypted ciphertext bytes. For `ServerSide`, returns the data
@@ -166,6 +188,9 @@ pub(crate) fn encrypt_with_kms(
     provider: KmsProvider,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<u8>> {
+    // Checked before the scheme dispatch so an oversized payload never leaves
+    // the machine: AWS would reject it only after being handed the plaintext.
+    validate_kms_plaintext_size(kms_key, data.len())?;
     match provider {
         KmsProvider::Aws => {
             // awskms://key-id  or  awskms:///arn:aws:kms:region:account:key/id

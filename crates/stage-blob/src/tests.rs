@@ -13,7 +13,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutOptions};
 
 use crate::BlobStage;
-use crate::kms::{KmsProvider, encrypt_with_kms, parse_kms_provider};
+use crate::kms::{KmsProvider, encrypt_with_kms, parse_kms_provider, validate_kms_plaintext_size};
 use crate::provider::Provider;
 use crate::store::build_s3_store;
 use crate::upload::{
@@ -368,6 +368,43 @@ fn test_parse_kms_provider_server_side() {
     );
     // Alias without scheme
     assert_eq!(parse_kms_provider("alias/my-key"), KmsProvider::ServerSide);
+}
+
+/// AWS KMS encrypts at most 4096 bytes in one call, and the refusal must
+/// arrive before the plaintext is handed to the CLI.
+#[test]
+fn awskms_rejects_payloads_over_4096_bytes() {
+    validate_kms_plaintext_size("awskms://my-key", 4096)
+        .expect("4096 bytes is at the ceiling, not over it");
+
+    let err = validate_kms_plaintext_size("awskms://my-key", 4097)
+        .expect_err("4097 bytes is over the ceiling");
+    assert_eq!(
+        format!("{err}"),
+        "failed to encrypt with kms: awskms encryption supports files up to 4096 bytes, \
+         got 4097 bytes"
+    );
+
+    // The same refusal reaches the caller through the encrypt entry point,
+    // which bails before spawning the CLI.
+    let log =
+        anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Quiet);
+    let err = encrypt_with_kms(&vec![b'x'; 4097], "awskms://my-key", KmsProvider::Aws, &log)
+        .expect_err("the guard fires before any spawn");
+    assert!(
+        format!("{err:#}").contains("supports files up to 4096 bytes, got 4097 bytes"),
+        "got: {err:#}"
+    );
+}
+
+/// Only AWS carries the ceiling; a GCP key of any size passes the guard.
+#[test]
+fn gcpkms_has_no_size_limit() {
+    validate_kms_plaintext_size(
+        "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k",
+        8192,
+    )
+    .expect("gcpkms has no direct-encrypt ceiling here");
 }
 
 #[test]
