@@ -7,8 +7,8 @@ use super::{
     Amd64Variant, AppBundleConfig, ArchiveConfig, ArchivesConfig, BinstallConfig, BlobConfig,
     ChecksumConfig, DmgConfig, DockerDigestConfig, DockerManifestConfig, DockerV2Config,
     FlatpakConfig, HookEntry, HooksConfig, MsiConfig, NfpmConfig, NsisConfig, PkgConfig,
-    PublishConfig, ReleaseConfig, SnapcraftConfig, StringOrBool, VersionSyncConfig,
-    deserialize_archives_config, deserialize_string_or_bool_opt,
+    PublishConfig, ReleaseConfig, SnapcraftConfig, StringOrBool, VersionFileEntry,
+    VersionSyncConfig, deserialize_archives_config, deserialize_string_or_bool_opt,
 };
 
 // ---------------------------------------------------------------------------
@@ -210,8 +210,10 @@ pub struct CrateConfig {
     /// has its occurrences of the old version rewritten to the new version —
     /// both bare and `v`-prefixed forms, word-boundary anchored — and is staged
     /// into the same bump commit as this crate's `Cargo.toml`. Overrides the
-    /// workspace-level `defaults.version_files`.
-    pub version_files: Option<Vec<String>>,
+    /// workspace-level `defaults.version_files`. An entry may instead be a
+    /// `path` + `match` mapping scoping the rewrite to the occurrences the
+    /// `match` regex selects, so several crates can share one file.
+    pub version_files: Option<Vec<VersionFileEntry>>,
     /// macOS universal binary (fat binary) configurations for this crate.
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
     /// When true (or template evaluating to "true"), all build outputs are

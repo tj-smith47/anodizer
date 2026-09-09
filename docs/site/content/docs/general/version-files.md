@@ -14,6 +14,18 @@ from the tag, and guards them in CI.
 
 ```yaml
 version_files:
+  - docs/installation.md                       # bare: whole-file literal sweep
+  - path: chart/cfgd/values.yaml
+    match: 'operator:\s+image:.*:v{version}'   # regex; {version} = this crate's version
+```
+
+An entry is either a bare repo-relative path (a whole-file sweep) or a `path` +
+`match` mapping that scopes the rewrite to the occurrences its regex selects —
+see [Scoping an entry to one occurrence](#scoping-an-entry-to-one-occurrence-match).
+A bare list stays exactly as it always was:
+
+```yaml
+version_files:
   - charts/myapp/Chart.yaml
   - docs/install.md
   - README.md
@@ -91,6 +103,13 @@ $ anodizer check version-files
    • all 3 version_files are in sync
 ```
 
+An anchored entry is verified INSIDE its anchor: the guard compiles the `match`
+regex against the crate's current version and reports
+`STALE: <file> (match <anchor>: expected <version>, not found)` when that anchor
+selects nothing — so a version present elsewhere in the file does not mask the
+drift. A `match` that omits `{version}` or is not a valid regex is reported as a
+finding rather than crashing the guard.
+
 When no crate enrolls any `version_files`, the guard is a no-op and exits 0 with
 a short note (`no version_files configured`). Wire it into CI as a pre-release
 gate:
@@ -129,7 +148,11 @@ anodizer init --version-files --exclude 'docs/**' --exclude CONTRIBUTING.md
 candidate — useful in scripts.
 
 Enrollment is idempotent (already-enrolled paths are never re-added) and
-preserves the existing comments and key order in `.anodizer.yaml`.
+preserves the existing comments and key order in `.anodizer.yaml`. Discovery has
+no basis to infer an anchor, so `init` only ever writes bare `- <path>` items —
+but it reads both forms, so a file already enrolled with a `match` anchor is
+never re-offered, and a new item lands after the anchored mapping, not inside
+it.
 
 ## Config modes
 
@@ -159,11 +182,103 @@ crates:
 Here `myapp-core`'s README is synced to the core crate's version while the
 chart and install doc track the CLI crate's version — independently.
 
+## Scoping an entry to one occurrence (`match`)
+
+A file that carries two crates' versions — a Helm values file pinning two
+images, an install doc showing two sample commands — cannot be enrolled bare by
+both crates: one whole-file sweep would rewrite the other crate's lines. Give
+each enrollment a `match` anchor and each rewrites only its own occurrences,
+even when both crates sit at the same literal version.
+
+```yaml
+# chart/cfgd/values.yaml — two crates, one literal
+operator:
+  image: ghcr.io/tj-smith47/cfgd-operator:v0.7.0
+csi:
+  image: ghcr.io/tj-smith47/cfgd-csi:v0.7.0
+```
+
+```yaml
+crates:
+  - name: cfgd-operator
+    path: crates/operator
+    version_files:
+      - path: chart/cfgd/values.yaml
+        match: 'operator:\s+image:.*:v{version}'
+  - name: cfgd-csi
+    path: crates/csi
+    version_files:
+      - path: chart/cfgd/values.yaml
+        match: 'csi:\s+image:.*:v{version}'
+```
+
+A minor bump of the operator and a patch bump of the CSI driver rewrite one pin
+each:
+
+```yaml
+# chart/cfgd/values.yaml — after
+operator:
+  image: ghcr.io/tj-smith47/cfgd-operator:v0.8.0
+csi:
+  image: ghcr.io/tj-smith47/cfgd-csi:v0.7.1
+```
+
+The rules:
+
+| Rule | Detail |
+|---|---|
+| `{version}` | Stands for the version being rewritten (the crate's current version), regex-escaped before matching — so its `.` separators are literal. Only the literal 8-character token is substituted, so regex quantifiers like `\d{2}` are untouched. |
+| Required | `match` must contain `{version}` at least once. An anchor without it cannot be verified and is refused. |
+| The rewrite | Inside a match, the replacement is the SAME word-boundary literal replace the bare form uses — bare and `v`-prefixed spellings both. `match` selects the region; it never supplies the new text. |
+| Every match | All regions the anchor selects are rewritten, not just the first. |
+| Zero matches | An **error** that fails the tag before any file is written (unlike a bare entry's warning). An anchor states a precise intent, so a silent no-op is a defect, not a nuisance. |
+| Two anchors | Two anchors on one file must select disjoint regions; anodizer does not check that they do. |
+
+```text
+$ anodizer tag
+       Error version_files: crate 'cfgd-csi' enrolled chart/cfgd/values.yaml with match "csi:\\s+image:.*:v{version}" but it matched nothing (expected version 0.7.0); fix the anchor or remove the enrollment
+```
+
+## Sharing one file between crates
+
+Two crates may enroll the same file. Which pairings are legal is decided before
+anything is written, identically in `--dry-run` and a real run:
+
+- **Distinct old versions, no chain** — both rewrite. `cfgd 0.9.0 → 0.10.0`
+  beside `cfgd-operator 0.7.0 → 0.8.0` in one `docs/installation.md` is fine:
+  each pair only matches its own literal.
+- **The same old version bumped to two different new ones** — refused. One
+  literal cannot become two versions; scope each side with a `match` anchor
+  instead.
+
+  ```text
+  version_files conflict: chart/cfgd/values.yaml is enrolled by crates bumping FROM the same version to different versions (cfgd-operator 0.7.0 → 0.8.0 vs cfgd-csi 0.7.0 → 0.7.1); a file cannot hold two new versions for one old one
+  ```
+
+- **A chain** — refused. When one crate's NEW version is still matched by
+  another's OLD matcher, the second rewrite consumes the first's output and no
+  apply order fixes it.
+
+  ```text
+  version_files conflict: shared.md is enrolled by crates whose bumps chain (core 0.1.0 → 0.2.0 then cli 0.2.0 → 0.3.0); the second rewrite would consume the first's output — give each enrollment its own `match` anchor
+  ```
+
+  The chain test is on the matcher, not on string equality, so a prerelease
+  beside its release base is a chain too: `0.1.0-rc1 → 0.1.0-rc2` beside
+  `0.1.0 → 0.2.0` is refused, because the word-boundary matcher for `0.1.0`
+  fires inside `0.1.0-rc2` and would corrupt it to `0.2.0-rc2`. Give each
+  enrollment its own `match` anchor.
+
+A **bare** entry sweeps the whole file, so it overlaps every anchored region in
+it: pairing a bare enrollment with an anchored one on the same file is refused
+the same way (`whole-file entry overlaps match …`). Once a file is shared, every
+enrollment of it should carry an anchor.
+
 ## A note on matching
 
 Rewriting replaces word-boundary occurrences of the old version literal. An
 unrelated line that coincidentally carries the same version string — say a
 documented minimum-dependency version that happens to equal the release version
-— would also be rewritten. Keep enrolled files focused on the lines that should
-track the release, and run `anodizer check version-files` in CI as the safety
-net.
+— would also be rewritten. A `match` anchor is the fix: scope the enrollment to
+the lines that should track the release. Keep enrolled files focused, and run
+`anodizer check version-files` in CI as the safety net.

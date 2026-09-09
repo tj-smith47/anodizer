@@ -662,3 +662,220 @@ crates:
         run.stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// Anchored entries (`path` + `match`) — checked INSIDE their anchor
+// ---------------------------------------------------------------------------
+
+/// A single-crate anchored enrollment passes when the crate's current version
+/// sits inside the anchor, and is STALE when the version is only present
+/// elsewhere in the file.
+#[test]
+fn check_anchored_entry_in_sync_and_stale() {
+    let config = r#"project_name: single
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_files:
+      - path: Chart.yaml
+        match: 'appVersion: v{version}'
+"#;
+    let fixture = |root: &Path, chart: &str| {
+        write(
+            root,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+        );
+        write(
+            root,
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        );
+        write(root, "crates/app/src/lib.rs", "");
+        write(root, "Chart.yaml", chart);
+        write(root, ".anodizer.yaml", config);
+    };
+
+    let fresh = TempDir::new().unwrap();
+    fixture(fresh.path(), "appVersion: v0.1.0\nunrelated: 0.0.9\n");
+    let run = run_check(fresh.path());
+    assert!(
+        run.success,
+        "anchored in-sync entry should pass: {}\n{}",
+        run.stdout, run.stderr
+    );
+
+    // 0.1.0 IS in the file, but not inside the anchor.
+    let stale = TempDir::new().unwrap();
+    fixture(stale.path(), "appVersion: v0.0.9\nelsewhere: 0.1.0\n");
+    let run = run_check(stale.path());
+    assert!(
+        !run.success,
+        "version outside the anchor must be STALE: {}\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stderr.contains(
+            "STALE: Chart.yaml (match appVersion: v{version}: expected 0.1.0, not found)"
+        ),
+        "expected an anchored STALE finding: {}",
+        run.stderr
+    );
+}
+
+/// The same rule in a lockstep workspace, where the anchored entry is declared
+/// top-level and checked against the inherited `[workspace.package].version`.
+#[test]
+fn check_anchored_entry_in_sync_and_stale_lockstep() {
+    let fixture = |root: &Path, chart: &str| {
+        write(
+            root,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.4.0\"\n",
+        );
+        write(
+            root,
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+        );
+        write(root, "crates/a/src/lib.rs", "");
+        write(root, "Chart.yaml", chart);
+        write(
+            root,
+            ".anodizer.yaml",
+            "project_name: lockstep\nversion_files:\n  - path: Chart.yaml\n    match: 'appVersion: v{version}'\n",
+        );
+    };
+
+    let fresh = TempDir::new().unwrap();
+    fixture(fresh.path(), "appVersion: v0.4.0\nunrelated: 0.3.0\n");
+    let run = run_check(fresh.path());
+    assert!(
+        run.success,
+        "anchored lockstep entry should pass: {}\n{}",
+        run.stdout, run.stderr
+    );
+
+    let stale = TempDir::new().unwrap();
+    fixture(stale.path(), "appVersion: v0.3.0\nelsewhere: 0.4.0\n");
+    let run = run_check(stale.path());
+    assert!(!run.success, "lockstep drift must fail: {}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("STALE: Chart.yaml (match appVersion: v{version}: expected 0.4.0"),
+        "expected an anchored STALE finding: {}",
+        run.stderr
+    );
+}
+
+/// Per-crate mode: two crates share one file at one literal, each scoped to its
+/// own anchor — the fresh pin passes and only the drifted one is reported.
+#[test]
+fn check_anchored_entry_in_sync_and_stale_per_crate() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/operator\", \"crates/csi\"]\nresolver = \"2\"\n",
+    );
+    for (name, ver) in [("operator", "0.8.0"), ("csi", "0.7.1")] {
+        write(
+            root,
+            &format!("crates/{name}/Cargo.toml"),
+            &format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        );
+        write(root, &format!("crates/{name}/src/lib.rs"), "");
+    }
+    // The operator pin is current; the csi pin has drifted (0.7.0, not 0.7.1).
+    write(
+        root,
+        "values.yaml",
+        "operator:\n  image: ghcr.io/x/operator:v0.8.0\ncsi:\n  image: ghcr.io/x/csi:v0.7.0\n",
+    );
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: split
+crates:
+  - name: operator
+    path: crates/operator
+    tag_template: "operator-v{{ .Version }}"
+    version_files:
+      - path: values.yaml
+        match: 'operator:\n  image: .*:v{version}'
+  - name: csi
+    path: crates/csi
+    tag_template: "csi-v{{ .Version }}"
+    version_files:
+      - path: values.yaml
+        match: 'csi:\n  image: .*:v{version}'
+"#,
+    );
+
+    let run = run_check(root);
+    assert!(
+        !run.success,
+        "the drifted csi pin must fail: {}\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stderr.contains("expected 0.7.1, not found"),
+        "expected the csi pin to be flagged at its own version: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("expected 0.8.0"),
+        "the fresh operator pin must not be flagged: {}",
+        run.stderr
+    );
+}
+
+/// A `match` that omits the `{version}` placeholder is reported as a finding
+/// (exit 1), not a panic or an opaque bail.
+#[test]
+fn check_invalid_anchor_is_a_finding() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    );
+    write(
+        root,
+        "crates/app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write(root, "crates/app/src/lib.rs", "");
+    write(root, "Chart.yaml", "appVersion: v0.1.0\n");
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: single
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_files:
+      - path: Chart.yaml
+        match: 'appVersion: .*'
+"#,
+    );
+
+    let run = run_check(root);
+    assert!(
+        !run.success,
+        "an anchor without {{version}} must fail: {}\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stderr.contains("STALE: Chart.yaml")
+            && run
+                .stderr
+                .contains("must contain the {version} placeholder"),
+        "expected an invalid-anchor finding: {}",
+        run.stderr
+    );
+}

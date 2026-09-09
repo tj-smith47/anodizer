@@ -423,3 +423,77 @@ fn block_not_at_eof_inserts_within_block() {
     );
     assert!(cfg.contains("\ndist: ./dist"), "trailing key lost:\n{cfg}");
 }
+
+// ---------------------------------------------------------------------------
+// Anchored entries already in the config
+// ---------------------------------------------------------------------------
+
+/// A file enrolled with a `path` + `match` mapping is already enrolled, and so
+/// is a bare entry listed AFTER it — a line scan breaks on the anchored item's
+/// `match:` continuation line and would re-offer everything below it.
+#[test]
+fn init_does_not_reoffer_a_file_enrolled_with_an_anchor() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\ndist: ./dist\nversion_files:\n  - path: Chart.yaml\n    match: 'appVersion: v{version}'\n  - docs/install.md\n",
+    );
+    git_add_commit(root, "enroll by hand");
+
+    let run = run_enroll(root, &["-y"]);
+    assert!(run.success, "stderr: {}", run.stderr);
+
+    let cfg = read(root, ".anodizer.yaml");
+    assert_eq!(
+        cfg.matches("Chart.yaml").count(),
+        1,
+        "Chart.yaml re-offered:\n{cfg}"
+    );
+    assert_eq!(
+        cfg.matches("docs/install.md").count(),
+        1,
+        "docs/install.md re-offered:\n{cfg}"
+    );
+    assert!(
+        run.stderr.contains("nothing to enroll") || run.stdout.contains("nothing to enroll"),
+        "expected the nothing-to-enroll note: {}\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+/// A newly discovered file is appended AFTER an anchored entry's mapping, never
+/// inside it, and the rewritten config still parses.
+#[test]
+fn init_appends_after_an_anchored_entry() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\ndist: ./dist\nversion_files:\n  - path: Chart.yaml\n    match: 'appVersion: v{version}'\n",
+    );
+    git_add_commit(root, "enroll by hand");
+
+    let run = run_enroll(root, &["-y"]);
+    assert!(run.success, "stderr: {}", run.stderr);
+
+    let cfg = read(root, ".anodizer.yaml");
+    assert!(
+        cfg.contains("    match: 'appVersion: v{version}'\n  - docs/install.md\n"),
+        "new item did not land after the anchored mapping:\n{cfg}"
+    );
+    // The rewritten config still parses through the typed schema.
+    let parsed: anodizer_core::config::Config = serde_yaml_ng::from_str(&cfg).unwrap();
+    let paths: Vec<String> = parsed
+        .version_files
+        .unwrap()
+        .iter()
+        .map(|e| e.path().to_string())
+        .collect();
+    assert_eq!(paths, vec!["Chart.yaml", "docs/install.md"]);
+}

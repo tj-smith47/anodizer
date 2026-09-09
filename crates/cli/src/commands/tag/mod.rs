@@ -227,7 +227,10 @@ fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
 /// from.
 pub(crate) struct VersionFilesBump<'a> {
     old: Option<&'a str>,
-    files: &'a [String],
+    files: &'a [anodizer_core::config::VersionFileEntry],
+    /// Crate (or project) name naming the enrollment in a conflict / unmatched
+    /// anchor error.
+    owner: &'a str,
 }
 
 /// Lockstep changelog-refresh inputs for [`apply_workspace_bump`]. The shared
@@ -310,7 +313,7 @@ pub(crate) struct GroupTagResult {
     prev_tag: Option<String>,
     /// Effective `version_files` enrollment per crate, parallel to
     /// `version_updates` (same crate order within the group).
-    crate_version_files: Vec<Vec<String>>,
+    crate_version_files: Vec<Vec<anodizer_core::config::VersionFileEntry>>,
 }
 
 /// Execute per-crate / hybrid-workspace tagging when no `--crate` is given
@@ -362,13 +365,18 @@ pub(crate) struct CrateTagInfo {
     version_sync: bool,
     /// Effective `version_files` enrollment for this crate (per-crate /
     /// defaults list, else the top-level `Config.version_files`).
-    version_files: Vec<String>,
+    version_files: Vec<anodizer_core::config::VersionFileEntry>,
 }
 
-/// One planned `version_files` rewrite: rewrite `old` → `new` in `file`.
+/// One planned `version_files` rewrite: rewrite `old` → `new` in `file`,
+/// scoped to the regions `anchor` selects when the enrollment carries one.
 #[derive(Debug, PartialEq)]
 pub(crate) struct VersionFileRewrite {
     file: String,
+    anchor: Option<String>,
     old: String,
     new: String,
+    /// Crate that enrolled this entry, named in the conflict / unmatched-anchor
+    /// errors.
+    owner: String,
 }

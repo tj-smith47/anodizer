@@ -354,7 +354,7 @@ pub fn enroll_version_files(
     let config_text = std::fs::read_to_string(config_path)
         .with_context(|| format!("failed to read {config_path}"))?;
 
-    let already_enrolled = existing_version_files(&config_text);
+    let already_enrolled = existing_version_files(&config_text)?;
     let versions = scan_versions(Path::new("."))?;
     if versions.is_empty() {
         anyhow::bail!(
@@ -454,43 +454,21 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
     Ok(versions)
 }
 
-/// Extract the paths already listed under a top-level `version_files:` key in
-/// the raw config text, so discovery can drop them (idempotency) without a full
-/// serde parse that would discard the user's comments. Handles BOTH spellings:
-///   * block style — `version_files:` followed by `- <path>` items at any
-///     indent (stops at the next non-item, non-blank line);
-///   * flow style — `version_files: [a.md, b.md]` inline on one line.
-fn existing_version_files(config_text: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let mut in_block = false;
-    for line in config_text.lines() {
-        let trimmed = line.trim_start();
-        if !in_block {
-            // A top-level key only (no leading indent) is the fallback list this
-            // flow writes to; a crate-scoped `version_files:` is nested/indented.
-            if let Some(inline) = line.strip_prefix("version_files:") {
-                let inline = inline.trim();
-                if inline.is_empty() {
-                    // Block style: items follow on subsequent lines.
-                    in_block = true;
-                } else {
-                    // Flow style (or a scalar): parse the inline value's members.
-                    for item in parse_flow_members(inline) {
-                        out.insert(item);
-                    }
-                }
-            }
-            continue;
-        }
-        if let Some(item) = parse_list_item(line) {
-            out.insert(item);
-        } else if trimmed.is_empty() {
-            continue;
-        } else {
-            break;
-        }
-    }
-    out
+/// Extract the paths already listed under the top-level `version_files:` key,
+/// so discovery can drop them (idempotency). Reads the file through the typed
+/// `Config`, so both spellings (block and flow) and both entry forms (a bare
+/// path and a `path` + `match` mapping) resolve to the same path set — a
+/// line-scan cannot see past an anchored entry's continuation line.
+fn existing_version_files(config_text: &str) -> Result<HashSet<String>> {
+    let config: anodizer_core::config::Config = serde_yaml_ng::from_str(config_text).context(
+        ".anodizer.yaml does not parse as an anodizer config; fix it before enrolling version files",
+    )?;
+    Ok(config
+        .version_files
+        .unwrap_or_default()
+        .iter()
+        .map(|e| e.path().to_string())
+        .collect())
 }
 
 /// Whether the top-level `version_files:` value is written FLOW style (an inline
@@ -505,22 +483,6 @@ fn version_files_is_flow_style(config_text: &str) -> bool {
             .map(|rest| rest.trim().starts_with('['))
             .unwrap_or(false)
     })
-}
-
-/// Parse the comma-separated members of an inline YAML flow sequence
-/// (`[a.md, "b c.md"]`), stripping the surrounding brackets and per-item quotes.
-/// A bare inline scalar (no brackets) yields that single unquoted value.
-fn parse_flow_members(inline: &str) -> Vec<String> {
-    let inner = inline
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(inline);
-    inner
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(unquote_scalar)
-        .collect()
 }
 
 /// Strip a single layer of matching surrounding `"` or `'` quotes from a YAML
@@ -704,7 +666,7 @@ fn add_version_files(config_text: &str, selected: &[String]) -> Result<(String, 
         );
     }
 
-    let existing = existing_version_files(config_text);
+    let existing = existing_version_files(config_text)?;
     let mut to_add: Vec<String> = Vec::new();
     for path in selected {
         if !existing.contains(path) && !to_add.contains(path) {
@@ -771,18 +733,22 @@ fn find_version_files_block(config_text: &str) -> Option<BlockInsertion> {
     }
     let start = start?;
     // Walk past the list items belonging to the block, capturing the first
-    // item's indent.
+    // item's indent. A line indented DEEPER than that is a continuation of the
+    // item above it (an anchored `- path:` item's `match:` line), so the walk
+    // must swallow it — stopping there would insert new items inside a mapping.
     let mut last_item = start;
     let mut indent: Option<String> = None;
     for (offset, line) in lines.iter().enumerate().skip(start + 1) {
+        let lead = line.chars().take_while(|c| c.is_whitespace()).count();
         if parse_list_item(line).is_some() {
             last_item = offset;
             if indent.is_none() {
-                let lead: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-                indent = Some(lead);
+                indent = Some(line.chars().take_while(|c| c.is_whitespace()).collect());
             }
         } else if line.trim().is_empty() {
             continue;
+        } else if indent.as_ref().is_some_and(|i| lead > i.chars().count()) {
+            last_item = offset;
         } else {
             break;
         }
@@ -803,7 +769,7 @@ fn validate_enrolled_yaml(new_text: &str, added: &[String]) -> Result<()> {
         .context("rewritten config is not valid YAML / config schema")?;
     let enrolled = config.version_files.unwrap_or_default();
     for path in added {
-        if !enrolled.contains(path) {
+        if !enrolled.iter().any(|e| e.path() == path) {
             anyhow::bail!("enrolled path {path:?} is missing from version_files after the edit");
         }
     }
@@ -1048,16 +1014,37 @@ path = "src/main.rs"
     // -----------------------------------------------------------------------
 
     #[test]
-    fn existing_version_files_parses_block_and_flow() {
+    fn existing_version_files_parses_block_flow_and_anchored() {
         let block = "project_name: app\nversion_files:\n  - a.md\n  - \"b c.md\"\n";
-        let got = existing_version_files(block);
+        let got = existing_version_files(block).unwrap();
         assert!(got.contains("a.md"));
         assert!(got.contains("b c.md"));
 
         let flow = "project_name: app\nversion_files: [a.md, \"b c.md\"]\n";
-        let got = existing_version_files(flow);
+        let got = existing_version_files(flow).unwrap();
         assert!(got.contains("a.md"), "flow members not parsed: {got:?}");
         assert!(got.contains("b c.md"), "flow members not parsed: {got:?}");
+
+        // An anchored entry contributes its `path`, and a bare entry AFTER it
+        // is still seen (a line scan breaks on the `match:` continuation line).
+        let anchored = "project_name: app\nversion_files:\n  - path: chart/values.yaml\n    match: 'op:.*v{version}'\n  - after.md\n";
+        let got = existing_version_files(anchored).unwrap();
+        assert!(got.contains("chart/values.yaml"), "got: {got:?}");
+        assert!(
+            got.contains("after.md"),
+            "anchored entry hid the next: {got:?}"
+        );
+    }
+
+    #[test]
+    fn existing_version_files_errors_on_an_unparseable_config() {
+        let err = existing_version_files("project_name: [unclosed\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not parse as an anodizer config"),
+            "err: {err}"
+        );
     }
 
     #[test]
@@ -1076,7 +1063,12 @@ path = "src/main.rs"
         assert!(out.contains("    - b.md"), "indent not matched:\n{out}");
         // Parses as valid YAML with both entries.
         let cfg: anodizer_core::config::Config = serde_yaml_ng::from_str(&out).unwrap();
-        let vf = cfg.version_files.unwrap();
+        let vf: Vec<String> = cfg
+            .version_files
+            .unwrap()
+            .iter()
+            .map(|e| e.path().to_string())
+            .collect();
         assert!(vf.contains(&"a.md".to_string()));
         assert!(vf.contains(&"b.md".to_string()));
     }

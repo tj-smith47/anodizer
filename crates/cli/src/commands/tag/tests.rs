@@ -2050,13 +2050,26 @@ fn conventional_classification_is_lockstep_between_tag_and_bump() {
 // plan_version_files_rewrites — small fixture builder for GroupTagResult.
 // -----------------------------------------------------------------------
 
+/// A bare `version_files` enrollment (whole-file sweep).
+fn vf(path: &str) -> anodizer_core::config::VersionFileEntry {
+    anodizer_core::config::VersionFileEntry::Path(path.to_string())
+}
+
+/// A `version_files` enrollment scoped to the occurrences `anchor` selects.
+fn vf_at(path: &str, anchor: &str) -> anodizer_core::config::VersionFileEntry {
+    anodizer_core::config::VersionFileEntry::Anchored(anodizer_core::config::AnchoredVersionFile {
+        path: path.to_string(),
+        match_pattern: anchor.to_string(),
+    })
+}
+
 fn group_result(
     crate_names: &[&str],
     new_tags: &[(&str, &str)],
     version_updates: &[(&str, &str)],
     old_version: Option<&str>,
     prev_tag: Option<&str>,
-    crate_version_files: Vec<Vec<String>>,
+    crate_version_files: Vec<Vec<anodizer_core::config::VersionFileEntry>>,
 ) -> GroupTagResult {
     GroupTagResult {
         crate_names: crate_names.iter().map(|s| s.to_string()).collect(),
@@ -2187,7 +2200,7 @@ fn plan_version_files_rewrites_dedupes_identical_lockstep_pair() {
         &[("crates/a", "0.2.0"), ("crates/b", "0.2.0")],
         Some("0.1.0"),
         Some("v0.1.0"),
-        vec![vec!["README.md".to_string()], vec!["README.md".to_string()]],
+        vec![vec![vf("README.md")], vec![vf("README.md")]],
     )];
     let plan = plan_version_files_rewrites(&groups).unwrap();
     assert_eq!(plan.len(), 1);
@@ -2196,10 +2209,74 @@ fn plan_version_files_rewrites_dedupes_identical_lockstep_pair() {
     assert_eq!(plan[0].new, "0.2.0");
 }
 
+/// A shared file whose enrolling crates bump from DISTINCT old versions is
+/// safe: each pair rewrites only its own literal, so both plan entries survive.
 #[test]
-fn plan_version_files_rewrites_conflicting_old_versions_bail() {
-    // Two crates enroll the SAME file but bump from different old versions:
-    // a file cannot hold two source versions in one tag run.
+fn plan_version_files_rewrites_distinct_olds_both_rewrite() {
+    let groups = vec![
+        group_result(
+            &["a"],
+            &[("a-v0.10.0", "m")],
+            &[("crates/a", "0.10.0")],
+            Some("0.9.0"),
+            Some("a-v0.9.0"),
+            vec![vec![vf("shared.txt")]],
+        ),
+        group_result(
+            &["b"],
+            &[("b-v0.8.0", "m")],
+            &[("crates/b", "0.8.0")],
+            Some("0.7.0"),
+            Some("b-v0.7.0"),
+            vec![vec![vf("shared.txt")]],
+        ),
+    ];
+    let plan = plan_version_files_rewrites(&groups).unwrap();
+    assert_eq!(plan.len(), 2, "plan: {plan:?}");
+    assert_eq!(
+        (plan[0].old.as_str(), plan[0].new.as_str()),
+        ("0.9.0", "0.10.0")
+    );
+    assert_eq!(
+        (plan[1].old.as_str(), plan[1].new.as_str()),
+        ("0.7.0", "0.8.0")
+    );
+}
+
+/// One old version cannot become two different new ones in the same file.
+#[test]
+fn plan_version_files_rewrites_same_old_different_new_bails() {
+    let groups = vec![
+        group_result(
+            &["a"],
+            &[("a-v0.8.0", "m")],
+            &[("crates/a", "0.8.0")],
+            Some("0.7.0"),
+            Some("a-v0.7.0"),
+            vec![vec![vf("shared.txt")]],
+        ),
+        group_result(
+            &["b"],
+            &[("b-v0.7.1", "m")],
+            &[("crates/b", "0.7.1")],
+            Some("0.7.0"),
+            Some("b-v0.7.0"),
+            vec![vec![vf("shared.txt")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("bumping FROM the same version") && err.contains("shared.txt"),
+        "conflict must name the hazard and the file, got: {err}"
+    );
+}
+
+/// One crate's NEW version being another's OLD version is a chain: the second
+/// rewrite would consume the first's output, and no apply order fixes it.
+#[test]
+fn plan_version_files_rewrites_chain_bails() {
     let groups = vec![
         group_result(
             &["a"],
@@ -2207,23 +2284,168 @@ fn plan_version_files_rewrites_conflicting_old_versions_bail() {
             &[("crates/a", "0.2.0")],
             Some("0.1.0"),
             Some("a-v0.1.0"),
-            vec![vec!["shared.txt".to_string()]],
+            vec![vec![vf("shared.txt")]],
         ),
         group_result(
             &["b"],
-            &[("b-v0.2.0", "m")],
-            &[("crates/b", "0.2.0")],
-            Some("0.1.5"),
-            Some("b-v0.1.5"),
-            vec![vec!["shared.txt".to_string()]],
+            &[("b-v0.3.0", "m")],
+            &[("crates/b", "0.3.0")],
+            Some("0.2.0"),
+            Some("b-v0.2.0"),
+            vec![vec![vf("shared.txt")]],
         ),
     ];
     let err = plan_version_files_rewrites(&groups)
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("version_files conflict") && err.contains("shared.txt"),
-        "conflict must name the file, got: {err}"
+        err.contains("chain") && err.contains("shared.txt"),
+        "conflict must name the chain and the file, got: {err}"
+    );
+}
+
+/// The chain test is on the MATCHER, not string equality: `0.1.0` is found
+/// inside `0.1.0-rc2` by the word-boundary matcher, so a prerelease bump beside
+/// a release bump of the same base corrupts the first rewrite's output.
+#[test]
+fn plan_version_files_rewrites_prefix_chain_bails() {
+    let groups = vec![
+        group_result(
+            &["a"],
+            &[("a-v0.1.0-rc2", "m")],
+            &[("crates/a", "0.1.0-rc2")],
+            Some("0.1.0-rc1"),
+            Some("a-v0.1.0-rc1"),
+            vec![vec![vf("shared.txt")]],
+        ),
+        group_result(
+            &["b"],
+            &[("b-v0.2.0", "m")],
+            &[("crates/b", "0.2.0")],
+            Some("0.1.0"),
+            Some("b-v0.1.0"),
+            vec![vec![vf("shared.txt")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("chain") && err.contains("shared.txt"),
+        "prefix chain must be refused, got: {err}"
+    );
+}
+
+/// Two crates sharing one file AND one literal are legal once each scopes
+/// itself to its own occurrence with a `match` anchor.
+#[test]
+fn plan_version_files_rewrites_distinct_anchors_do_not_conflict() {
+    let groups = vec![
+        group_result(
+            &["operator"],
+            &[("operator-v0.8.0", "m")],
+            &[("crates/operator", "0.8.0")],
+            Some("0.7.0"),
+            Some("operator-v0.7.0"),
+            vec![vec![vf_at(
+                "values.yaml",
+                r"operator:\s+image:.*:v{version}",
+            )]],
+        ),
+        group_result(
+            &["csi"],
+            &[("csi-v0.7.1", "m")],
+            &[("crates/csi", "0.7.1")],
+            Some("0.7.0"),
+            Some("csi-v0.7.0"),
+            vec![vec![vf_at("values.yaml", r"csi:\s+image:.*:v{version}")]],
+        ),
+    ];
+    let plan = plan_version_files_rewrites(&groups).unwrap();
+    assert_eq!(plan.len(), 2, "plan: {plan:?}");
+    assert_eq!(
+        plan[0].anchor.as_deref(),
+        Some(r"operator:\s+image:.*:v{version}")
+    );
+    assert_eq!(
+        plan[1].anchor.as_deref(),
+        Some(r"csi:\s+image:.*:v{version}")
+    );
+}
+
+/// A bare entry sweeps the WHOLE file, so it overlaps every anchored region in
+/// it — pairing one with an anchored entry at the same old version is refused.
+#[test]
+fn plan_version_files_rewrites_bare_conflicts_with_anchored() {
+    let groups = vec![
+        group_result(
+            &["operator"],
+            &[("operator-v0.8.0", "m")],
+            &[("crates/operator", "0.8.0")],
+            Some("0.7.0"),
+            Some("operator-v0.7.0"),
+            vec![vec![vf("values.yaml")]],
+        ),
+        group_result(
+            &["csi"],
+            &[("csi-v0.7.1", "m")],
+            &[("crates/csi", "0.7.1")],
+            Some("0.7.0"),
+            Some("csi-v0.7.0"),
+            vec![vec![vf_at("values.yaml", r"csi:\s+image:.*:v{version}")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("whole-file entry overlaps match") && err.contains("values.yaml"),
+        "conflict must name the whole-file overlap, got: {err}"
+    );
+}
+
+/// Two lockstep crates enrolling the same file with the same anchor and the
+/// same pair dedupe to one rewrite — while two DIFFERENT anchors on one file at
+/// the same pair stay two rewrites, because the anchor is part of the dedupe
+/// key.
+#[test]
+fn plan_version_files_rewrites_dedupes_identical_anchored_pair() {
+    let shared = r"pin: v{version}";
+    let groups = vec![group_result(
+        &["a", "b"],
+        &[("v0.2.0", "m"), ("v0.2.0", "m")],
+        &[("crates/a", "0.2.0"), ("crates/b", "0.2.0")],
+        Some("0.1.0"),
+        Some("v0.1.0"),
+        vec![
+            vec![
+                vf_at("values.yaml", shared),
+                vf_at("chart.yaml", r"one: v{version}"),
+            ],
+            vec![
+                vf_at("values.yaml", shared),
+                vf_at("chart.yaml", r"two: v{version}"),
+            ],
+        ],
+    )];
+    let plan = plan_version_files_rewrites(&groups).unwrap();
+    let values: Vec<&VersionFileRewrite> =
+        plan.iter().filter(|r| r.file == "values.yaml").collect();
+    assert_eq!(
+        values.len(),
+        1,
+        "identical anchored pair not deduped: {plan:?}"
+    );
+    assert_eq!(values[0].anchor.as_deref(), Some(shared));
+    let chart: Vec<Option<&str>> = plan
+        .iter()
+        .filter(|r| r.file == "chart.yaml")
+        .map(|r| r.anchor.as_deref())
+        .collect();
+    assert_eq!(
+        chart,
+        vec![Some(r"one: v{version}"), Some(r"two: v{version}")],
+        "two anchors on one file must both survive: {plan:?}"
     );
 }
 
@@ -2236,7 +2458,7 @@ fn plan_version_files_rewrites_skips_group_with_no_old_version() {
         &[("crates/new", "0.1.0")],
         None,
         None,
-        vec![vec!["VERSION".to_string()]],
+        vec![vec![vf("VERSION")]],
     )];
     let plan = plan_version_files_rewrites(&groups).unwrap();
     assert!(plan.is_empty());

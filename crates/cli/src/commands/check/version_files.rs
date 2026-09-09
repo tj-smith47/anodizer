@@ -13,7 +13,7 @@ use crate::commands::bump::cargo_edit::{MemberInfo, WorkspaceInfo, load_workspac
 use crate::commands::bump::plan::resolve_member_version;
 use crate::commands::version_files_resolve::resolve_version_files;
 use crate::pipeline;
-use anodizer_core::config::{Config, CrateConfig};
+use anodizer_core::config::{Config, CrateConfig, VersionFileEntry};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::version_files::check_version_present;
 use anodizer_stage_build::version_sync::read_cargo_version;
@@ -70,11 +70,13 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
     // version-file expectations against a wrong base.
     let ws = load_workspace(repo_root)?;
 
-    // De-duplicate (path, version) pairs so a file enrolled by several crates
-    // that resolve to the same version is reported once. The version is part of
-    // the key so the per-crate mode — where one shared file would be a genuine
-    // conflict at different versions — still surfaces both expectations.
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    // De-duplicate (path, anchor, version) triples so a file enrolled by several
+    // crates that resolve to the same version is reported once. The version is
+    // part of the key so the per-crate mode — where one shared file would be a
+    // genuine conflict at different versions — still surfaces both
+    // expectations, and the anchor is, so one file checked at two anchors
+    // reports both.
+    let mut seen: BTreeSet<(String, Option<String>, String)> = BTreeSet::new();
 
     for unit in units {
         let version = match unit_reference_version(repo_root, &unit, ws.as_ref()) {
@@ -89,22 +91,31 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
         };
         let file_list = unit.files;
 
-        for file in &file_list {
-            if !seen.insert((file.clone(), version.clone())) {
+        for entry in &file_list {
+            let file = entry.path();
+            let anchor = entry.anchor().map(str::to_string);
+            if !seen.insert((file.to_string(), anchor.clone(), version.clone())) {
                 continue;
             }
             // Enrolled paths are repo-root-relative; resolve against the
             // discovered root for the read while keeping `file` (relative) for
             // user-facing messages.
             let abs = repo_root.join(file).to_string_lossy().into_owned();
-            match check_version_present(std::slice::from_ref(&abs), &version) {
+            match check_version_present(&[(abs, anchor.clone())], &version) {
                 Ok(results) => {
                     checked += 1;
                     let present = results.first().map(|(_, p)| *p).unwrap_or(false);
-                    if present {
-                        log.verbose(&format!("{file} contains {version}"));
-                    } else {
-                        findings.push(format!("STALE: {file} (expected {version}, not found)"));
+                    match (present, &anchor) {
+                        (true, Some(anchor)) => {
+                            log.verbose(&format!("{file} contains {version} inside {anchor}"));
+                        }
+                        (true, None) => log.verbose(&format!("{file} contains {version}")),
+                        (false, Some(anchor)) => findings.push(format!(
+                            "STALE: {file} (match {anchor}: expected {version}, not found)"
+                        )),
+                        (false, None) => {
+                            findings.push(format!("STALE: {file} (expected {version}, not found)"))
+                        }
                     }
                 }
                 Err(e) => {
@@ -139,7 +150,7 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
 struct EnrolledUnit {
     label: String,
     path: String,
-    files: Vec<String>,
+    files: Vec<VersionFileEntry>,
     /// `true` only for the synthetic repo-root unit a lockstep workspace with no
     /// `crates:` block contributes. Its reference version is the shared
     /// `[workspace.package].version` — the only case allowed to fall back to it.

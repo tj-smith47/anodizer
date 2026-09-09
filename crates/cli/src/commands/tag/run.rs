@@ -94,7 +94,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // engine and the changelog's crate selection.
     let mut crate_path: Option<String> = None;
     let mut version_sync_enabled = false;
-    let mut crate_version_files: Vec<String> = Vec::new();
+    let mut crate_version_files: Vec<anodizer_core::config::VersionFileEntry> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name {
         crate::commands::helpers::validate_selection_against_universe(
             &loaded_config,
@@ -732,6 +732,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 vf: VersionFilesBump {
                     old: ws_old.as_deref(),
                     files: &ws_version_files,
+                    owner: &loaded_config.project_name,
                 },
                 cl: ChangelogBump {
                     enabled: changelog_enabled,
@@ -807,14 +808,15 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         // matches the lockstep and per-crate paths.
         let vf_old = git::version_from_tag(old_tag_str);
         let vf_changed = match vf_old {
-            Some(ref old) => rewrite_and_stage_version_files(
-                &workspace_root_path,
-                &crate_version_files,
-                old,
-                &new_version,
-                opts.dry_run,
-                &log,
-            )?,
+            Some(ref old) => {
+                let vf_owner = opts
+                    .crate_name
+                    .clone()
+                    .unwrap_or_else(|| loaded_config.project_name.clone());
+                let vf_plan =
+                    version_files_plan(&crate_version_files, old, &new_version, &vf_owner);
+                rewrite_and_stage_version_files(&workspace_root_path, &vf_plan, opts.dry_run, &log)?
+            }
             None => Vec::new(),
         };
 

@@ -5,7 +5,7 @@
 //! `check version-files` drift guard. Keeping one copy prevents the two paths
 //! from drifting apart.
 
-use anodizer_core::config::{Config, CrateConfig};
+use anodizer_core::config::{Config, CrateConfig, VersionFileEntry};
 
 /// Resolve the effective `version_files` list for a crate.
 ///
@@ -16,7 +16,7 @@ use anodizer_core::config::{Config, CrateConfig};
 pub(crate) fn resolve_version_files(
     crate_cfg: Option<&CrateConfig>,
     config: Option<&Config>,
-) -> Vec<String> {
+) -> Vec<VersionFileEntry> {
     crate_cfg
         .and_then(|c| c.version_files.clone())
         .or_else(|| config.and_then(|c| c.version_files.clone()))

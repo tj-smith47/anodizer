@@ -18,6 +18,7 @@ use super::sbom::SbomConfig;
 use super::snapcraft::SnapcraftConfig;
 use super::source::SourceConfig;
 use super::upx::UpxConfig;
+use super::version_files::VersionFileEntry;
 use super::{ChecksumConfig, CrossStrategy, DockerSignConfig, DockerV2Config, SignConfig};
 use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 
@@ -103,8 +104,9 @@ pub struct Defaults {
     /// Default repo-committed files whose embedded release version is rewritten
     /// at `tag` time (repo-root-relative path strings). Hoisted across crates;
     /// folded into each crate's `version_files` by `defaults_merge` when the
-    /// crate does not set its own list. Mirrors `CrateConfig.version_files`.
-    pub version_files: Option<Vec<String>>,
+    /// crate does not set its own list. Mirrors `CrateConfig.version_files`,
+    /// including the anchored `path` + `match` entry form.
+    pub version_files: Option<Vec<VersionFileEntry>>,
     /// Default cross-compilation strategy: auto, zigbuild, cross, or cargo.
     /// Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults.
     pub cross: Option<CrossStrategy>,

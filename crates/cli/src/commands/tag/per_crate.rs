@@ -162,7 +162,7 @@ pub(crate) fn compute_per_crate_tags(
         // Build per-crate tags and version updates.
         let mut new_tags: Vec<(String, String)> = Vec::new();
         let mut version_updates: Vec<(String, String)> = Vec::new();
-        let mut crate_version_files: Vec<Vec<String>> = Vec::new();
+        let mut crate_version_files: Vec<Vec<anodizer_core::config::VersionFileEntry>> = Vec::new();
         for crate_cfg in group {
             let crate_prefix =
                 git::per_crate_tag_prefix(&crate_cfg.name, &crate_cfg.tag_family_template());
@@ -464,19 +464,10 @@ pub(crate) fn run_per_crate_tag(
         // The plan is conflict-checked (a shared path with non-identical
         // (old,new) pairs bails) and deduped once, identically to the dry-run
         // branch, so the preview matches the real run.
-        for rewrite in &vf_plan {
-            let vf_changed = rewrite_and_stage_version_files(
-                &workspace_root,
-                std::slice::from_ref(&rewrite.file),
-                &rewrite.old,
-                &rewrite.new,
-                false,
-                log,
-            )?;
-            for f in vf_changed {
-                if !files_to_stage.contains(&f) {
-                    files_to_stage.push(f);
-                }
+        let vf_changed = rewrite_and_stage_version_files(&workspace_root, &vf_plan, false, log)?;
+        for f in vf_changed {
+            if !files_to_stage.contains(&f) {
+                files_to_stage.push(f);
             }
         }
 
@@ -565,16 +556,7 @@ pub(crate) fn run_per_crate_tag(
     } else {
         // Dry-run: preview the same conflict-checked, deduped rewrite plan
         // without touching disk.
-        for rewrite in &vf_plan {
-            rewrite_and_stage_version_files(
-                &workspace_root,
-                std::slice::from_ref(&rewrite.file),
-                &rewrite.old,
-                &rewrite.new,
-                true,
-                log,
-            )?;
-        }
+        rewrite_and_stage_version_files(&workspace_root, &vf_plan, true, log)?;
         render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
         // Dry-run previews the pre hooks too, matching the single/lockstep
         // closure (which invokes run_hooks in dry mode).

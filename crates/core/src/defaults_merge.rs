@@ -578,8 +578,8 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
 mod tests {
     use super::*;
     use crate::config::{
-        ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy, HomebrewCaskConfig,
-        HomebrewCaskUninstall, HomebrewConfig, StringOrBool,
+        AnchoredVersionFile, ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy,
+        HomebrewCaskConfig, HomebrewCaskUninstall, HomebrewConfig, StringOrBool, VersionFileEntry,
     };
 
     fn make_crate(name: &str) -> CrateConfig {
@@ -1780,37 +1780,51 @@ crates:
         );
     }
 
-    /// `defaults.version_files` is folded into a crate that declares none.
+    /// `defaults.version_files` is folded into a crate that declares none —
+    /// carrying the anchored `path` + `match` form intact alongside a bare one.
     #[test]
     fn defaults_version_files_fill_when_crate_unset() {
+        let anchored = VersionFileEntry::Anchored(AnchoredVersionFile {
+            path: "chart/values.yaml".to_string(),
+            match_pattern: "operator:.*v{version}".to_string(),
+        });
         let defaults = Defaults {
-            version_files: Some(vec!["charts/app/Chart.yaml".to_string()]),
+            version_files: Some(vec![
+                VersionFileEntry::Path("charts/app/Chart.yaml".to_string()),
+                anchored.clone(),
+            ]),
             ..Default::default()
         };
         let mut crate_cfg = CrateConfig::default();
         apply_to_crate(&defaults, &mut crate_cfg);
         assert_eq!(
             crate_cfg.version_files.as_deref(),
-            Some(&["charts/app/Chart.yaml".to_string()][..])
+            Some(
+                &[
+                    VersionFileEntry::Path("charts/app/Chart.yaml".to_string()),
+                    anchored,
+                ][..]
+            )
         );
     }
 
     /// A per-crate `version_files` list wins outright over the defaults list
-    /// (override-not-append).
+    /// (override-not-append), anchored entries included.
     #[test]
     fn crate_version_files_override_defaults() {
         let defaults = Defaults {
-            version_files: Some(vec!["from-defaults.md".to_string()]),
+            version_files: Some(vec![VersionFileEntry::Path("from-defaults.md".to_string())]),
             ..Default::default()
         };
+        let own = VersionFileEntry::Anchored(AnchoredVersionFile {
+            path: "from-crate.md".to_string(),
+            match_pattern: "pin v{version}".to_string(),
+        });
         let mut crate_cfg = CrateConfig {
-            version_files: Some(vec!["from-crate.md".to_string()]),
+            version_files: Some(vec![own.clone()]),
             ..Default::default()
         };
         apply_to_crate(&defaults, &mut crate_cfg);
-        assert_eq!(
-            crate_cfg.version_files.as_deref(),
-            Some(&["from-crate.md".to_string()][..])
-        );
+        assert_eq!(crate_cfg.version_files.as_deref(), Some(&[own][..]));
     }
 }

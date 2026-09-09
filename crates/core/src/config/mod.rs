@@ -242,12 +242,18 @@ pub struct Config {
     /// word-boundary anchored — and is staged into the same bump commit as
     /// `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
     ///
+    /// An entry may instead be a `path` + `match` mapping, scoping the rewrite
+    /// to the occurrences the `match` regex selects (`{version}` stands for the
+    /// version being rewritten) so two crates can share one file.
+    ///
     /// ```yaml
     /// version_files:
     ///   - charts/cfgd/Chart.yaml
     ///   - docs/installation.md
+    ///   - path: chart/cfgd/values.yaml
+    ///     match: 'operator:\s+image:.*:v{version}'
     /// ```
-    pub version_files: Option<Vec<String>>,
+    pub version_files: Option<Vec<VersionFileEntry>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
     /// Git-level tag discovery and sorting settings.
@@ -554,6 +560,13 @@ pub use legacy::*;
 
 mod env_files;
 pub use env_files::*;
+
+// ---------------------------------------------------------------------------
+// VersionFileEntry — accepts a bare path OR a path scoped by a `match` anchor
+// ---------------------------------------------------------------------------
+
+mod version_files;
+pub use version_files::*;
 
 // ---------------------------------------------------------------------------
 // Defaults
