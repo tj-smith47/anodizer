@@ -6230,6 +6230,54 @@ fn process_docker_manifest_dry_run_renders_name_and_images_into_artifact() {
     assert_eq!(a.metadata.get("id").unwrap(), "multi");
 }
 
+#[test]
+fn manifest_with_all_templates_rendering_empty_skips() {
+    use anodizer_core::config::{CrateConfig, DockerManifestConfig};
+    let (log, cap) = capturing_logger();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    };
+    let cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+        image_templates: vec!["{{ .Empty }}".to_string(), "  {{ .Empty }}  ".to_string()],
+        id: Some("all-empty".to_string()),
+        ..Default::default()
+    };
+    ctx.template_vars_mut().set("Empty", "");
+
+    let mut artifacts = Vec::new();
+    process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        true,
+        &mut artifacts,
+    )
+    .unwrap();
+
+    assert!(
+        artifacts.is_empty(),
+        "a manifest with no images registers no artifact"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage, "docker-manifest");
+    assert_eq!(events[0].label, "all-empty");
+    assert_eq!(events[0].reason, "manifest has no images");
+
+    let lines: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        !lines.iter().any(|l| l.contains("manifest create")),
+        "the manifest tool must never be invoked: {lines:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // write_combined_digest_file — sorted `<hex>  <name>` emission
 // ---------------------------------------------------------------------------

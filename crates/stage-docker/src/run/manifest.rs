@@ -70,6 +70,23 @@ pub(crate) fn process_docker_manifest(
         rendered_images.push(img);
     }
 
+    // A manifest whose every template rendered blank has nothing to point at.
+    // Skipping before `resolve_manifester` keeps the manifest tool out of the
+    // run entirely: no `manifest create` with zero images, and no failure on a
+    // missing docker/podman binary for a manifest that was never going to be
+    // built.
+    if rendered_images.is_empty() {
+        let fallback = format!("index {midx}");
+        let manifest_label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
+        let reason = "manifest has no images";
+        log.skip_line(
+            ctx.options.show_skipped,
+            &format!("skipped docker manifest '{manifest_label}' — {reason}"),
+        );
+        ctx.remember_skip("docker-manifest", manifest_label, reason);
+        return Ok(());
+    }
+
     // Determine the binary for manifest commands (see `resolve_manifester`
     // for the validation rationale).
     let manifest_bin = resolve_manifester(manifest_cfg.use_backend.as_deref())?;
