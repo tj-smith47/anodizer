@@ -551,7 +551,7 @@ impl TestContextBuilder {
             None => {
                 let dir = private_dist_dir();
                 config.dist = dir.path().to_path_buf();
-                Some(std::sync::Arc::new(dir))
+                Some(dir)
             }
         };
 
