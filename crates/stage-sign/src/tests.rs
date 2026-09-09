@@ -8,7 +8,8 @@ use super::helpers::{
     resolve_signature_path, should_sign_artifact,
 };
 use super::process::{
-    ArtifactFilter, COSIGN_CONSENT_ENV, ensure_cosign_consent_env, process_sign_configs,
+    ArtifactFilter, COSIGN_CONSENT_ENV, KEYLESS_COSIGN_HARNESS_SKIP, ensure_cosign_consent_env,
+    process_sign_configs,
 };
 use super::{BinarySignStage, DockerSignStage, SignStage};
 
@@ -2431,6 +2432,137 @@ fn keyless_cosign_is_skipped_under_harness() {
             .iter()
             .any(|(stage, label)| stage == "sign" && label == "cosign-keyless"),
         "keyless cosign must be recorded as skipped under the harness: {skips:?}"
+    );
+}
+
+fn keyless_checksum_sign(id: &str, args: Vec<&str>) -> SignConfig {
+    SignConfig {
+        id: Some(id.to_string()),
+        cmd: Some("cosign".to_string()),
+        args: Some(args.into_iter().map(str::to_string).collect()),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        authenticode: None,
+        verify: None,
+        if_condition: None,
+    }
+}
+
+/// Run the sign stage under the harness with NO artifact registered and
+/// return the recorded skips as `(stage, label, reason)`.
+fn run_signs_without_artifacts_under_harness(sign: SignConfig) -> Vec<(String, String, String)> {
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(vec![sign])
+        .env("ANODIZER_IN_DETERMINISM_HARNESS", "1")
+        .build();
+    ctx.template_vars_mut()
+        .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+    SignStage
+        .run(&mut ctx)
+        .expect("a config matching nothing signs nothing and succeeds");
+    ctx.skip_memento
+        .snapshot()
+        .into_iter()
+        .map(|e| (e.stage, e.label, e.reason))
+        .collect()
+}
+
+/// A keyless config that matches no artifact renders no per-artifact argv,
+/// so the harness skip must be classified from the config-level render and
+/// still be recorded: an unrecorded skip reads as "signed nothing, silently"
+/// in the emission report.
+#[test]
+fn keyless_config_matching_no_artifact_still_records_the_harness_skip() {
+    let sign = keyless_checksum_sign(
+        "cosign-keyless",
+        vec![
+            "sign-blob",
+            "--bundle=cosign.bundle",
+            "--yes",
+            "{{ Artifact }}",
+        ],
+    );
+    let skips = run_signs_without_artifacts_under_harness(sign);
+    assert!(
+        skips.iter().any(|(stage, label, reason)| {
+            stage == "sign" && label == "cosign-keyless" && reason == KEYLESS_COSIGN_HARNESS_SKIP
+        }),
+        "the harness skip must be recorded for a keyless config with no artifact: {skips:?}"
+    );
+}
+
+/// The empty-match classification is a config-level RENDER, not the raw
+/// template: a `--key` that arrives through `{{ .Env.X }}` makes the config
+/// keyed, so no harness skip is recorded for it.
+#[test]
+fn keyed_through_template_config_matching_no_artifact_records_no_harness_skip() {
+    let sign = keyless_checksum_sign(
+        "cosign-keyed",
+        vec![
+            "sign-blob",
+            "{{ .Env.COSIGN_KEY_FLAG }}",
+            "--yes",
+            "{{ Artifact }}",
+        ],
+    );
+    let skips = run_signs_without_artifacts_under_harness(sign);
+    assert!(
+        !skips
+            .iter()
+            .any(|(_, _, reason)| reason == KEYLESS_COSIGN_HARNESS_SKIP),
+        "a `--key` supplied through a template is keyed at config level too: {skips:?}"
+    );
+}
+
+/// The `docker_signs` sibling of the empty-match skip: a keyless config with
+/// no docker image renders no per-image argv, and the harness skip is still
+/// recorded from the config-level render.
+#[test]
+fn keyless_docker_config_matching_no_image_still_records_the_harness_skip() {
+    use anodizer_core::config::DockerSignConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .env("ANODIZER_IN_DETERMINISM_HARNESS", "1")
+        .build();
+    ctx.config.docker_signs = Some(vec![DockerSignConfig {
+        verify: None,
+        cmd: Some("cosign".to_string()),
+        args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        id: Some("image-cosign".to_string()),
+        env: None,
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    }]);
+    DockerSignStage
+        .run(&mut ctx)
+        .expect("a config matching no image signs nothing and succeeds");
+    let skips: Vec<(String, String, String)> = ctx
+        .skip_memento
+        .snapshot()
+        .into_iter()
+        .map(|e| (e.stage, e.label, e.reason))
+        .collect();
+    assert!(
+        skips.iter().any(|(stage, label, reason)| {
+            stage == "docker-sign"
+                && label == "image-cosign"
+                && reason == KEYLESS_COSIGN_HARNESS_SKIP
+        }),
+        "the harness skip must be recorded for a keyless docker config with no image: {skips:?}"
     );
 }
 

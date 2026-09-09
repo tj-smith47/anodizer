@@ -47,6 +47,22 @@ pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &
     is_keyless_cosign(cmd, args)
 }
 
+/// The argv a sign config would spawn, rendered against the config-level
+/// template context, for classifying a config that matched no artifact.
+///
+/// Every decision about a signer is taken on the rendered argv, but a config
+/// that matched nothing renders no per-artifact argv, so its harness skip
+/// would otherwise go unrecorded. The artifact placeholders resolve to empty
+/// strings and an arg that needs a per-artifact variable keeps its template
+/// text: keyless-ness is `cmd` plus the presence of `--key`, and nothing is
+/// ever spawned from this argv.
+pub(crate) fn render_args_without_artifact(args: &[String], ctx: &Context) -> Vec<String> {
+    crate::helpers::resolve_sign_args(args, "", "", None)
+        .into_iter()
+        .map(|arg| ctx.render_template(&arg).unwrap_or(arg))
+        .collect()
+}
+
 /// Force keyed cosign signing fully offline under the determinism harness by
 /// appending `--tlog-upload=false` to its args.
 ///

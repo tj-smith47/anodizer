@@ -475,6 +475,26 @@ impl Stage for DockerSignStage {
                     ));
                 }
 
+                // A config that matched no image renders no per-image argv,
+                // so the harness skip inside the pre-pass below never sees
+                // it; classify it once from the config-level render so the
+                // skip is still recorded.
+                if image_paths.is_empty()
+                    && crate::process::is_keyless_cosign_under_harness(
+                        &cmd,
+                        &crate::process::render_args_without_artifact(&args, ctx),
+                        ctx,
+                    )
+                {
+                    let reason = crate::process::KEYLESS_COSIGN_HARNESS_SKIP.to_string();
+                    log.verbose(&format!(
+                        "skipped docker-sign config '{}' — {}",
+                        sign_id, reason
+                    ));
+                    ctx.remember_skip("docker-sign", sign_id, &reason);
+                    continue;
+                }
+
                 // Rendered up front, once per image, for two consumers: the
                 // spawn below reuses each argv and env verbatim, and every
                 // decision about the signer — the harness skip, the

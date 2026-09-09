@@ -215,6 +215,21 @@ pub(crate) fn process_sign_configs(
             ));
         }
 
+        // A config that matched nothing renders no per-artifact argv, so the
+        // harness skip inside the loop below never sees it; classify it once
+        // from the config-level render so the skip is still recorded.
+        if artifact_paths.is_empty()
+            && is_keyless_cosign_under_harness(&cmd, &render_args_without_artifact(&args, ctx), ctx)
+        {
+            let reason = KEYLESS_COSIGN_HARNESS_SKIP.to_string();
+            log.verbose(&format!(
+                "skipped {} config '{}' — {}",
+                label, sub_label, reason
+            ));
+            ctx.remember_skip(label, &sub_label, &reason);
+            continue;
+        }
+
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
         let default_sig_template: &str = match filter_mode {
