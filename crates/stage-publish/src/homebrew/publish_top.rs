@@ -139,7 +139,7 @@ pub(crate) fn render_top_level_cask_entry(
     log: &StageLogger,
 ) -> Result<Option<RenderedTopCask>> {
     let project_name = &ctx.config.project_name;
-    let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
+    let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
 
     if crate::util::should_skip_upload(
         cask_cfg.skip_upload.as_ref(),
@@ -163,7 +163,7 @@ pub(crate) fn render_top_level_cask_entry(
         return Ok(None);
     }
 
-    render_top_level_cask_inner(ctx, cask_cfg, cask_name, log)
+    render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)
 }
 
 /// Skip-unaware top-level cask render: assumes `skip_upload` and `if:` have
@@ -184,6 +184,9 @@ fn render_top_level_cask_inner(
     log: &StageLogger,
 ) -> Result<Option<RenderedTopCask>> {
     let version = ctx.version();
+    // The token is normalised; the `name "..."` stanza is the human-readable
+    // name, so it carries the spelling the user wrote.
+    let display_name = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
 
     let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()) else {
         // Distinguish "no darwin build exists at all" (a genuine
@@ -429,7 +432,7 @@ fn render_top_level_cask_inner(
 
     let params = CaskParams {
         name: cask_name,
-        display_name: cask_name,
+        display_name,
         alternative_names: &alias_alts,
         version: &version,
         sha256: &sha256,
@@ -543,7 +546,8 @@ pub fn publish_top_level_homebrew_casks(
 
     for cask_cfg in &entries {
         let project_name = &ctx.config.project_name;
-        let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
+        let cask_name =
+            super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
         let version = ctx.version();
 
         // Check skip_upload.
@@ -576,7 +580,7 @@ pub fn publish_top_level_homebrew_casks(
             ctx,
             log,
             "homebrew-cask",
-            cask_name,
+            &cask_name,
             crate::util::resolve_repo_owner_name(repo_cfg).ok_or_else(|| {
                 anodizer_core::pipe_skip::entry_skip(super::MISSING_REPOSITORY_REASON)
             }),
@@ -611,7 +615,7 @@ pub fn publish_top_level_homebrew_casks(
         // return is a config-vs-scope mismatch — no in-scope macOS artifact —
         // which is not-applicable, not a failure. Same render the offline
         // schema validator drives.
-        let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, cask_name, log)? else {
+        let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)? else {
             continue;
         };
         applicable += 1;
@@ -661,14 +665,14 @@ pub fn publish_top_level_homebrew_casks(
         // Remove any stale `Formula/<name>.rb` shadowing this cask, staging
         // the deletion alongside the cask write so the cask is authoritative
         // in the same commit.
-        if let Some(removed) = stage_stale_formula_removal(repo_path, cask_name, log)? {
+        if let Some(removed) = stage_stale_formula_removal(repo_path, &cask_name, log)? {
             written_paths.push(removed);
         }
 
         // Render commit message.
         let commit_msg = render_commit_msg(
             cask_cfg.commit_msg_template.as_deref(),
-            cask_name,
+            &cask_name,
             &version,
             "cask",
             log,
@@ -682,7 +686,7 @@ pub fn publish_top_level_homebrew_casks(
         let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
         let commit_opts =
             crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref(), log)?;
-        let branch = crate::util::resolve_branch_or_versioned(ctx, repo_cfg, cask_name, &version);
+        let branch = crate::util::resolve_branch_or_versioned(ctx, repo_cfg, &cask_name, &version);
         let outcome = crate::util::commit_and_push_with_opts(
             repo_path,
             &path_refs,
@@ -725,7 +729,7 @@ pub fn publish_top_level_homebrew_casks(
                 branch_name: pr_branch,
                 update_existing_pr,
             },
-            &cask_pr_title(cask_name, &version),
+            &cask_pr_title(&cask_name, &version),
             &format!(
                 "## Cask\n- **Name**: {}\n- **Version**: {}\n\n{}",
                 cask_name,

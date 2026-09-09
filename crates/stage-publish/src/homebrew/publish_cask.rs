@@ -118,7 +118,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     };
 
     let version = ctx.version();
-    let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
+    let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(crate_name));
 
     if ctx.is_dry_run() {
         log.status(&format!(

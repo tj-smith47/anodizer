@@ -12,7 +12,7 @@ use anodizer_core::template::ruby_escape_str;
 use anyhow::Result;
 
 use super::cask::{
-    CaskArchEntry, CaskBinaryEntry, CaskParams, CaskPlatformBlock, generate_cask,
+    CaskArchEntry, CaskBinaryEntry, CaskParams, CaskPlatformBlock, cask_name_for, generate_cask,
     render_additional_url_params, render_alternative_names, render_generate_completions,
     render_uninstall_block, render_zap_block, split_alternative_names,
 };
@@ -218,7 +218,7 @@ pub(super) fn generate_cask_from_context(
     log: &anodizer_core::log::StageLogger,
 ) -> Result<CaskGenResult> {
     let version = ctx.version();
-    let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
+    let cask_name = cask_name_for(cask_cfg.name.as_deref().unwrap_or(crate_name));
 
     let url_template = cask_cfg
         .url_template
@@ -400,7 +400,7 @@ pub(super) fn generate_cask_from_context(
         ctx,
         cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
     )?;
-    let (alias_alts, versioned_alts) = split_alternative_names(&rendered_alts, cask_name);
+    let (alias_alts, versioned_alts) = split_alternative_names(&rendered_alts, &cask_name);
 
     // Template-render the user-supplied free-text fields here — the scope with
     // the real `Context`+`log` — so a value like `caveats: "see {{ .Tag }}"`
@@ -444,7 +444,7 @@ pub(super) fn generate_cask_from_context(
         .transpose()?;
 
     let params = CaskParams {
-        name: cask_name,
+        name: &cask_name,
         display_name,
         alternative_names: &alias_alts,
         version: &version,
@@ -534,7 +534,7 @@ pub(super) fn generate_cask_from_context(
 
     Ok(CaskGenResult {
         content,
-        cask_name: cask_name.to_string(),
+        cask_name,
         versioned_files,
     })
 }

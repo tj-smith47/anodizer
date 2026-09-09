@@ -4621,6 +4621,141 @@ fn formula_string_fields_are_template_rendered() {
     );
 }
 
+/// Context carrying one darwin archive and a single top-level `homebrew_casks:`
+/// entry, enough for `render_top_level_cask_entry` to produce a body.
+fn top_cask_ctx(cask_cfg: &anodizer_core::config::HomebrewCaskConfig) -> Context {
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    ctx
+}
+
+/// The cask token normaliser mirrors Homebrew's own: lowercase, spaces as
+/// dashes, nothing else.
+#[test]
+fn cask_name_for_matches_goreleaser() {
+    for (raw, want) in [
+        ("SomeBinary", "somebinary"),
+        ("Baton 1password", "baton-1password"),
+        ("somE_binarY", "some_binary"),
+        ("some binary@1", "some-binary@1"),
+        ("binary", "binary"),
+    ] {
+        assert_eq!(
+            super::cask::cask_name_for(raw),
+            want,
+            "cask token for {raw:?}"
+        );
+    }
+}
+
+/// A cask whose `name:` carries a capital and a space publishes under the
+/// normalised token: the `.rb` stem and the `cask "..."` header are the same
+/// string, so `brew install <token>` resolves the file that was written.
+#[test]
+fn cask_token_and_filename_use_the_normalised_name() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("Foo Bar".to_string()),
+        ..Default::default()
+    };
+    let ctx = rendered_field_ctx(HomebrewConfig::default());
+    let result = super::cask_scope::generate_cask_from_context(
+        &ctx,
+        "mytool",
+        &HomebrewConfig::default(),
+        &cask_cfg,
+        &test_log(),
+    )
+    .expect("cask render");
+    assert_eq!(
+        result.cask_name, "foo-bar",
+        "the `.rb` stem is the cask token"
+    );
+    assert!(
+        result.content.contains("cask \"foo-bar\" do"),
+        "cask header is not the normalised token:\n{}",
+        result.content
+    );
+
+    // Same property on the top-level `homebrew_casks:` path, which renders
+    // through `render_top_level_cask_inner` rather than the per-crate scope.
+    let top_cfg = HomebrewCaskConfig {
+        name: Some("Foo Bar".to_string()),
+        ..Default::default()
+    };
+    let top = super::publish_top::render_top_level_cask_entry(
+        &top_cask_ctx(&top_cfg),
+        &top_cfg,
+        &test_log(),
+    )
+    .expect("top-level cask render")
+    .expect("cask applies");
+    assert!(
+        top.content.contains("cask \"foo-bar\" do"),
+        "top-level cask header is not the normalised token:\n{}",
+        top.content
+    );
+}
+
+/// The `name "..."` stanza is Homebrew's human-readable name, so it keeps the
+/// spelling the user configured even though the token is normalised.
+#[test]
+fn cask_display_name_keeps_the_raw_value() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let ctx = rendered_field_ctx(HomebrewConfig::default());
+    let result = super::cask_scope::generate_cask_from_context(
+        &ctx,
+        "mytool",
+        &HomebrewConfig::default(),
+        &HomebrewCaskConfig {
+            name: Some("Foo Bar".to_string()),
+            ..Default::default()
+        },
+        &test_log(),
+    )
+    .expect("cask render");
+    assert!(
+        result.content.contains("name \"Foo Bar\""),
+        "per-crate cask dropped the human-readable name:\n{}",
+        result.content
+    );
+
+    let top_cfg = HomebrewCaskConfig {
+        name: Some("Foo Bar".to_string()),
+        ..Default::default()
+    };
+    let top = super::publish_top::render_top_level_cask_entry(
+        &top_cask_ctx(&top_cfg),
+        &top_cfg,
+        &test_log(),
+    )
+    .expect("top-level cask render")
+    .expect("cask applies");
+    assert!(
+        top.content.contains("name \"Foo Bar\""),
+        "top-level cask dropped the human-readable name:\n{}",
+        top.content
+    );
+}
+
 /// Per-crate cask `homepage` / `description` / `caveats` / `custom_block` /
 /// `app` / `service` carrying `{{ .Tag }}` are rendered before reaching the
 /// cask body. Drives `generate_cask_from_context` (shared by the per-crate

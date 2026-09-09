@@ -125,7 +125,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | project name | Cask name |
+| `name` | string | project name | Cask name. The token — the `.rb` file name and the `cask "..."` header — is this value lowercased with spaces as dashes (`Foo Bar` publishes `Casks/foo-bar.rb`); the human-readable `name "..."` stanza keeps it verbatim |
 | `repository` | object | **required** | Tap repository (`owner`, `name`) |
 | `directory` | string | `Casks` | Directory in the tap repo |
 | `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |

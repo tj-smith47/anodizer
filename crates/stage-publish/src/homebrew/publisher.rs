@@ -131,14 +131,16 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
                 // version; mirror publish_top's branch resolution (its
                 // nameless-cask fallback is the project name, not the
                 // "homebrew_casks" evidence label).
-                let cask_name = cask.name.as_deref().unwrap_or(&ctx.config.project_name);
+                let cask_name = super::cask::cask_name_for(
+                    cask.name.as_deref().unwrap_or(&ctx.config.project_name),
+                );
                 out.push(HomebrewTarget {
                     target: label.clone(),
                     repo_url: format!("https://github.com/{}/{}.git", owner, name),
                     branch: crate::util::resolve_branch_or_versioned(
                         ctx,
                         cask.repository.as_ref(),
-                        cask_name,
+                        &cask_name,
                         &ctx.version(),
                     ),
                     token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
@@ -327,12 +329,12 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
             )? =>
         {
             let raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
-            Some(crate::util::render_or_warn(
+            Some(super::cask::cask_name_for(&crate::util::render_or_warn(
                 ctx,
                 log,
                 "brew.cask.name",
                 raw,
-            )?)
+            )?))
         }
         _ => None,
     };
@@ -372,7 +374,12 @@ pub(crate) fn build_homebrew_top_cask_reconcile_target(
         &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
     let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
-    let package = crate::util::render_or_warn(ctx, log, "homebrew_casks.name", cask_name_raw)?;
+    let package = super::cask::cask_name_for(&crate::util::render_or_warn(
+        ctx,
+        log,
+        "homebrew_casks.name",
+        cask_name_raw,
+    )?);
     let version = ctx.version();
     Ok(Some(crate::util::PrReconcileTarget {
         publisher: HomebrewPublisher::PUBLISHER_NAME.into(),

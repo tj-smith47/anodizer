@@ -476,6 +476,15 @@ pub(super) fn render_additional_url_params(
 /// `myproject@{{ .Version }}` only makes sense as a separate file, since
 /// using it as an alias would mean every release overwrites the previous
 /// version's record.
+/// Homebrew's cask token: lowercase, with spaces as dashes.
+///
+/// The token names the file (`Casks/<token>.rb`) and opens the cask body, so
+/// it must match what `brew` derives from the same name — an unnormalised
+/// filename ships a cask `brew` cannot resolve by token.
+pub(crate) fn cask_name_for(name: &str) -> String {
+    name.replace(' ', "-").to_lowercase()
+}
+
 pub(super) fn split_alternative_names(
     rendered: &[String],
     cask_name: &str,
@@ -484,11 +493,15 @@ pub(super) fn split_alternative_names(
     let mut versioned: Vec<String> = Vec::new();
     for entry in rendered {
         let trimmed = entry.trim();
-        if trimmed.is_empty() || trimmed == cask_name {
+        // A versioned entry becomes its own token and `.rb` filename, so it is
+        // normalised like the primary token; an alias only ever renders as a
+        // human-readable `name "..."` stanza and keeps the raw spelling.
+        let token = cask_name_for(trimmed);
+        if trimmed.is_empty() || token == cask_name {
             continue;
         }
         if trimmed.contains('@') {
-            versioned.push(trimmed.to_string());
+            versioned.push(token);
         } else {
             aliases.push(trimmed.to_string());
         }
