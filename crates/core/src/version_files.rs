@@ -89,54 +89,70 @@ pub fn anchor_regex(path: &str, anchor: &str, version: &str) -> Result<Regex> {
         .map_err(|e| anyhow::anyhow!("version_files anchor for {path} is not a valid regex: {e}"))
 }
 
-/// Replace word-boundary occurrences of `old` with `new` in `content`,
-/// covering both the bare and `v`-prefixed forms, and return the rewritten
-/// content plus the number of replacements made.
-///
-/// The `v`-prefixed form is handled first so a `v`-prefixed occurrence is
-/// rewritten to the `v`-prefixed new version in one pass; the `\b` anchor on
-/// the bare matcher then sits between the `v` and the digit, so the bare pass
-/// cannot re-touch an already-rewritten `v`-prefixed occurrence.
-fn rewrite_content(content: &str, old: &str, new: &str) -> Result<(String, usize)> {
-    let (bare_re, prefixed_re) = version_regexes(old)?;
-
-    let prefixed_hits = prefixed_re.find_iter(content).count();
-    let prefixed_replaced = prefixed_re
-        .replace_all(content, format!("v{new}").as_str())
-        .into_owned();
-
-    let bare_hits = bare_re.find_iter(&prefixed_replaced).count();
-    let bare_replaced = bare_re.replace_all(&prefixed_replaced, new).into_owned();
-
-    Ok((bare_replaced, prefixed_hits + bare_hits))
+/// The word-boundary matcher for one version, covering the bare (`0.1.0`) and
+/// `v`-prefixed (`v0.1.0`) spellings in a single pass so each occurrence is
+/// located once and its `v` (when present) is part of the match.
+fn occurrence_regex(version: &str) -> Result<Regex> {
+    let escaped = regex::escape(version);
+    Regex::new(&format!(r"\bv?{escaped}\b"))
+        .with_context(|| format!("failed to build version matcher for {version:?}"))
 }
 
-/// Rewrite `old` → `new` inside every region `re` selects, splicing the
-/// rewritten regions back into `content`. Returns the new content, the total
-/// replacement count, and the number of regions the anchor matched.
+/// One planned byte-range replacement in the ORIGINAL file content.
+struct Edit {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// Claim every unclaimed occurrence of `old` inside `window` — a slice of the
+/// original content starting at byte `offset` — and record its replacement.
 ///
-/// The in-region rewrite is [`rewrite_content`], so an anchored entry and a
-/// bare one apply the same word-boundary matcher.
-fn rewrite_anchored(
-    content: &str,
-    re: &Regex,
-    old: &str,
+/// Claiming makes two entries on one file non-overlapping by construction: an
+/// occurrence already spoken for by an earlier entry is skipped rather than
+/// rewritten twice. Returns how many occurrences this entry claimed.
+fn claim_occurrences(
+    window: &str,
+    offset: usize,
+    occurrence: &Regex,
     new: &str,
-) -> Result<(String, usize, usize)> {
-    let mut out = String::with_capacity(content.len());
-    let mut cursor = 0usize;
-    let mut replacements = 0usize;
-    let mut regions = 0usize;
-    for m in re.find_iter(content) {
-        regions += 1;
-        out.push_str(&content[cursor..m.start()]);
-        let (rewritten, n) = rewrite_content(m.as_str(), old, new)?;
-        out.push_str(&rewritten);
-        replacements += n;
-        cursor = m.end();
+    claimed: &mut Vec<(usize, usize)>,
+    edits: &mut Vec<Edit>,
+) -> usize {
+    let mut count = 0;
+    for m in occurrence.find_iter(window) {
+        let (start, end) = (offset + m.start(), offset + m.end());
+        if claimed.iter().any(|(cs, ce)| start < *ce && *cs < end) {
+            continue;
+        }
+        claimed.push((start, end));
+        edits.push(Edit {
+            start,
+            end,
+            text: if m.as_str().starts_with('v') {
+                format!("v{new}")
+            } else {
+                new.to_string()
+            },
+        });
+        count += 1;
     }
-    out.push_str(&content[cursor..]);
-    Ok((out, replacements, regions))
+    count
+}
+
+/// Splice every edit into `original`. Edits never overlap (claiming guarantees
+/// it), so applying them in ascending order rewrites each byte once.
+fn apply_edits(original: &str, mut edits: Vec<Edit>) -> String {
+    edits.sort_by_key(|e| e.start);
+    let mut out = String::with_capacity(original.len());
+    let mut cursor = 0usize;
+    for edit in edits {
+        out.push_str(&original[cursor..edit.start]);
+        out.push_str(&edit.text);
+        cursor = edit.end;
+    }
+    out.push_str(&original[cursor..]);
+    out
 }
 
 /// Apply every planned rewrite. All files are read and rewritten IN MEMORY
@@ -146,9 +162,13 @@ fn rewrite_anchored(
 /// bare entry means the version was not found — the caller decides how to
 /// warn). When `dry_run` is set, counts are computed but no file is written.
 ///
-/// Rewrites touching the same file are applied longest-`old`-first, so a
-/// shorter `old` that is a word-boundary prefix of a longer one (`0.1.0` inside
-/// `0.1.0-rc1`) cannot consume it.
+/// Every entry on one file selects its occurrences from the ORIGINAL content,
+/// never from a partially rewritten copy, and each occurrence is claimed by the
+/// first entry to select it: anchored entries claim their regions before the
+/// bare sweep, and within each half the longest `old` goes first so a shorter
+/// `old` that is a word-boundary prefix of a longer one (`0.1.0` inside
+/// `0.1.0-rc1`) cannot consume it. A bare entry and an anchored one can
+/// therefore share a file — each rewrites its own bytes, exactly once.
 ///
 /// An entry whose `old` equals its `new` is a no-op reporting zero
 /// replacements; the file is still read, so a stale enrollment pointing at a
@@ -176,26 +196,44 @@ pub fn rewrite_version_in_files(
     for (path, mut indices) in groups {
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read version file {path}"))?;
-        indices.sort_by_key(|idx| std::cmp::Reverse(rewrites[*idx].old.len()));
+        // Anchored entries claim their regions before the bare sweep sees the
+        // file, and within each half the longest `old` goes first — a shorter
+        // `old` that is a word-boundary prefix of a longer one (`0.1.0` inside
+        // `0.1.0-rc1`) would otherwise consume it.
+        indices.sort_by_key(|idx| {
+            (
+                rewrites[*idx].anchor.is_none(),
+                std::cmp::Reverse(rewrites[*idx].old.len()),
+            )
+        });
 
-        let mut current = original.clone();
+        let mut claimed: Vec<(usize, usize)> = Vec::new();
+        let mut edits: Vec<Edit> = Vec::new();
         for idx in indices {
             let rewrite = &rewrites[idx];
             if rewrite.old == rewrite.new {
                 continue;
             }
+            let occurrence = occurrence_regex(&rewrite.old)?;
             match rewrite.anchor.as_deref() {
                 None => {
-                    let (next, replacements) =
-                        rewrite_content(&current, &rewrite.old, &rewrite.new)?;
-                    current = next;
+                    let replacements = claim_occurrences(
+                        &original,
+                        0,
+                        &occurrence,
+                        &rewrite.new,
+                        &mut claimed,
+                        &mut edits,
+                    );
                     counts[idx] = (replacements, None);
                 }
                 Some(anchor) => {
                     let re = anchor_regex(&rewrite.path, anchor, &rewrite.old)?;
-                    let (next, replacements, regions) =
-                        rewrite_anchored(&current, &re, &rewrite.old, &rewrite.new)?;
-                    if regions == 0 {
+                    let regions: Vec<(usize, usize)> = re
+                        .find_iter(&original)
+                        .map(|m| (m.start(), m.end()))
+                        .collect();
+                    if regions.is_empty() {
                         bail!(
                             "version_files: crate '{}' enrolled {} with match {:?} but it matched \
                              nothing (expected version {}); fix the anchor or remove the enrollment",
@@ -205,13 +243,23 @@ pub fn rewrite_version_in_files(
                             rewrite.old,
                         );
                     }
-                    current = next;
-                    counts[idx] = (replacements, Some(regions));
+                    let mut replacements = 0;
+                    for (start, end) in &regions {
+                        replacements += claim_occurrences(
+                            &original[*start..*end],
+                            *start,
+                            &occurrence,
+                            &rewrite.new,
+                            &mut claimed,
+                            &mut edits,
+                        );
+                    }
+                    counts[idx] = (replacements, Some(regions.len()));
                 }
             }
         }
-        if current != original {
-            pending.push((path, current));
+        if !edits.is_empty() {
+            pending.push((path, apply_edits(&original, edits)));
         }
     }
 
@@ -527,6 +575,52 @@ mod tests {
         let out = rewrite_version_in_files(&[bare(&f, "0.7.0", "0.8.0")], false).unwrap();
         assert_eq!(out[0].replacements, 0);
         assert_eq!(out[0].matched_regions, None);
+    }
+
+    /// A bare entry and an anchored entry on one file under the same bump: the
+    /// anchored entry claims its region, the bare sweep takes the rest, and no
+    /// byte is rewritten twice. Selecting against a partially rewritten copy
+    /// would make the anchor "match nothing" after the bare pass consumed it.
+    #[test]
+    fn bare_and_anchored_on_one_file_each_rewrite_once() {
+        let dir = TempDir::new().unwrap();
+        let path = write(&dir, "chart.yaml", "pin: v1.2.3\nother: 1.2.3\n");
+        let outcomes = rewrite_version_in_files(
+            &[
+                bare(&path, "1.2.3", "1.2.4"),
+                anchored(&path, r"pin: v{version}", "1.2.3", "1.2.4"),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "pin: v1.2.4\nother: 1.2.4\n"
+        );
+        assert_eq!(outcomes[0].replacements, 1, "bare: {outcomes:?}");
+        assert_eq!(outcomes[1].replacements, 1, "anchored: {outcomes:?}");
+        assert_eq!(outcomes[1].matched_regions, Some(1));
+    }
+
+    /// The enrollment order must not decide the outcome: an anchored entry
+    /// listed after a bare one still claims its own region first.
+    #[test]
+    fn bare_listed_first_still_leaves_the_anchor_its_region() {
+        let dir = TempDir::new().unwrap();
+        let path = write(&dir, "chart.yaml", "pin: v0.9.0\nother: 0.9.0\n");
+        let outcomes = rewrite_version_in_files(
+            &[
+                bare(&path, "0.9.0", "0.10.0"),
+                anchored(&path, r"pin: v{version}", "0.9.0", "0.10.0"),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "pin: v0.10.0\nother: 0.10.0\n"
+        );
+        assert_eq!(outcomes[1].replacements, 1, "anchor starved: {outcomes:?}");
     }
 
     #[test]

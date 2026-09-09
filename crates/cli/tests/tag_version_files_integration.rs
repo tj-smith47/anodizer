@@ -72,10 +72,16 @@ fn show_head(dir: &Path, rel: &str) -> String {
 // Shared per-crate fixtures
 // ---------------------------------------------------------------------------
 
-/// A two-crate per-crate workspace whose crates BOTH enroll the bare path
-/// `shared.md`, each tagged at its own `(name, version)` and bumped by one
-/// `feat:` commit touching both crate directories.
-fn shared_file_fixture(root: &Path, crates: &[(&str, &str)], shared: &str) {
+/// A two-crate per-crate workspace whose crates all enroll `shared.md`, each
+/// tagged at its own `(name, version)` and bumped by one `feat:` commit
+/// touching every crate directory. `enroll` is the raw YAML item lines under
+/// each crate's `version_files:`, indexed alongside `crates`.
+fn shared_file_fixture_enrolled(
+    root: &Path,
+    crates: &[(&str, &str)],
+    shared: &str,
+    enroll: &[&str],
+) {
     let members: Vec<String> = crates
         .iter()
         .map(|(name, _)| format!("\"crates/{name}\""))
@@ -89,7 +95,7 @@ fn shared_file_fixture(root: &Path, crates: &[(&str, &str)], shared: &str) {
     )
     .unwrap();
     let mut yaml = String::from("project_name: shared\ncrates:\n");
-    for (name, version) in crates {
+    for (i, (name, version)) in crates.iter().enumerate() {
         fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
         fs::write(
             root.join(format!("crates/{name}/Cargo.toml")),
@@ -97,8 +103,9 @@ fn shared_file_fixture(root: &Path, crates: &[(&str, &str)], shared: &str) {
         )
         .unwrap();
         fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+        let items = enroll[i];
         yaml.push_str(&format!(
-            "  - name: {name}\n    path: crates/{name}\n    tag_template: \"{name}-v{{{{ .Version }}}}\"\n    version_sync:\n      enabled: true\n    version_files:\n      - shared.md\n"
+            "  - name: {name}\n    path: crates/{name}\n    tag_template: \"{name}-v{{{{ .Version }}}}\"\n    version_sync:\n      enabled: true\n    version_files:\n{items}"
         ));
     }
     fs::write(root.join("shared.md"), shared).unwrap();
@@ -117,6 +124,12 @@ fn shared_file_fixture(root: &Path, crates: &[(&str, &str)], shared: &str) {
         .unwrap();
     }
     git_add_commit(root, "feat: both updated");
+}
+
+/// [`shared_file_fixture_enrolled`] with every crate enrolling the bare path.
+fn shared_file_fixture(root: &Path, crates: &[(&str, &str)], shared: &str) {
+    let enroll = vec!["      - shared.md\n"; crates.len()];
+    shared_file_fixture_enrolled(root, crates, shared, &enroll);
 }
 
 /// A two-crate per-crate workspace (`operator`, `csi`) BOTH at `version`, with
@@ -1115,13 +1128,9 @@ fn no_crates_block_rewrites_top_level_version_files() {
     assert_eq!(show_head(root, "chart.yaml"), chart);
 }
 
-/// A prerelease target still matches its own old version, so a bare entry and
-/// an anchored entry on one file would rewrite the same bytes twice. The guard
-/// runs in single-crate mode, not only per-crate.
-#[test]
-fn single_crate_bare_plus_anchored_prerelease_bails() {
-    let tmp = TempDir::new().unwrap();
-    let root = tmp.path();
+/// A no-`crates:` repo at `1.2.3` enrolling one `chart.yaml` twice — once bare,
+/// once anchored on its `pin:` line — with one `fix:` commit after `v1.2.3`.
+fn bare_and_anchored_single_crate_fixture(root: &Path) {
     fs::write(
         root.join("Cargo.toml"),
         "[package]\nname = \"app\"\nversion = \"1.2.3\"\nedition = \"2024\"\n",
@@ -1140,6 +1149,41 @@ fn single_crate_bare_plus_anchored_prerelease_bails() {
     run_git(root, &["tag", "v1.2.3"]);
     fs::write(root.join("src/main.rs"), "fn main() {}\n// touched\n").unwrap();
     git_add_commit(root, "fix: a bug");
+}
+
+/// Single-crate, one file enrolled bare AND anchored under one ordinary bump:
+/// the anchored entry claims its `pin:` line, the bare sweep takes the rest,
+/// and neither byte is rewritten twice.
+#[test]
+fn single_crate_bare_and_anchored_share_one_file() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    bare_and_anchored_single_crate_fixture(root);
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    let expected = "pin: v1.2.4\nother: 1.2.4\n";
+    assert_eq!(read(root, "chart.yaml"), expected);
+    assert_eq!(show_head(root, "chart.yaml"), expected);
+}
+
+/// A prerelease target still matches its own old version, so a bare entry and
+/// an anchored entry on one file would rewrite the same bytes twice. The guard
+/// runs in single-crate mode, not only per-crate.
+#[test]
+fn single_crate_bare_plus_anchored_prerelease_bails() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    bare_and_anchored_single_crate_fixture(root);
 
     let out = anodizer()
         .current_dir(root)
@@ -1211,4 +1255,39 @@ fn lockstep_bare_plus_anchored_prerelease_bails() {
         "chain refusal missing: {combined}"
     );
     assert_eq!(read(root, "chart.yaml"), "pin: v2.0.0\nother: 2.0.0\n");
+}
+
+/// Per-crate, two crates on the same bump, one enrolling the shared file bare
+/// and one with an anchor. The guard passes (same pair, no chain), so the apply
+/// must too: selecting the anchor against a partially rewritten copy made the
+/// bare sweep consume the anchored region and the tag failed with "matched
+/// nothing".
+#[test]
+fn per_crate_bare_and_anchored_share_one_file() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    shared_file_fixture_enrolled(
+        root,
+        &[("core", "0.9.0"), ("cli", "0.9.0")],
+        "pin: v0.9.0\nother: 0.9.0\n",
+        &[
+            "      - shared.md\n",
+            "      - path: shared.md\n        match: 'pin: v{version}'\n",
+        ],
+    );
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    let expected = "pin: v0.10.0\nother: 0.10.0\n";
+    assert_eq!(read(root, "shared.md"), expected);
+    assert_eq!(show_head(root, "shared.md"), expected);
 }
