@@ -55,7 +55,11 @@ pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
 ///   yields one legitimate `X.sha256.sig` and CANNOT recurse — see below.
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
-/// - `"binary"`        → only `ArtifactKind::Binary`
+/// - `"binary"`        → `ArtifactKind::Binary` and
+///   `ArtifactKind::UniversalBinary`, so a lipo-merged macOS universal binary
+///   is signed under the default filter. `ids` still discriminates, and a
+///   universal binary is selected by its own `universal_binaries.id`, not by
+///   the source build IDs it was merged from
 /// - `"package"`       → only `ArtifactKind::LinuxPackage`
 /// - `"installer"`     → only `ArtifactKind::Installer`
 /// - `"diskimage"`     → only `ArtifactKind::DiskImage`
@@ -91,7 +95,10 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
         ),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
-        "binary" => Ok(kind == ArtifactKind::Binary),
+        "binary" => Ok(matches!(
+            kind,
+            ArtifactKind::Binary | ArtifactKind::UniversalBinary
+        )),
         "package" => Ok(kind == ArtifactKind::LinuxPackage),
         "installer" => Ok(kind == ArtifactKind::Installer),
         "diskimage" => Ok(kind == ArtifactKind::DiskImage),

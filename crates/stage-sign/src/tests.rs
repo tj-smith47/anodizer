@@ -670,6 +670,13 @@ fn test_filter_artifacts_binary() {
 }
 
 #[test]
+fn binary_filter_selects_universal_binary() {
+    assert!(should_sign(ArtifactKind::UniversalBinary, "binary").unwrap());
+    assert!(should_sign(ArtifactKind::Binary, "binary").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "binary").unwrap());
+}
+
+#[test]
 fn test_filter_artifacts_package() {
     assert!(should_sign(ArtifactKind::LinuxPackage, "package").unwrap());
     assert!(!should_sign(ArtifactKind::Binary, "package").unwrap());
