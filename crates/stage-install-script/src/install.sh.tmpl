@@ -145,7 +145,11 @@ CHECKSUMS="@CHECKSUMS@"
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 
+# FORMAT is baked into each arm by the engine alongside the asset name, so the
+# extraction step never has to re-derive a format from the filename — a
+# `binary`-format asset carries no extension at all.
 ARCHIVE=""
+FORMAT=""
 case "${OS}-${ARCH}" in
 @ASSET_CASES@
 	*) die "no prebuilt binary for ${OS}-${ARCH} (supported: @SUPPORTED_PLATFORMS@)" ;;
@@ -184,13 +188,35 @@ if [ "$VERIFY_CHECKSUM" = "true" ]; then
 fi
 
 info "extracting $ARCHIVE"
-case "$ARCHIVE" in
-	*.tar.gz | *.tgz) tar -xzf "$tmp/$ARCHIVE" -C "$tmp" ;;
-	*.zip)
+case "$FORMAT" in
+	tar.gz | tgz) tar -xzf "$tmp/$ARCHIVE" -C "$tmp" ;;
+	tar.xz | txz)
+		have xz || die "need xz to extract $ARCHIVE"
+		tar -xJf "$tmp/$ARCHIVE" -C "$tmp"
+		;;
+	tar.zst | tzst)
+		# --use-compress-program, not --zstd: the latter is GNU-tar only.
+		have zstd || die "need zstd to extract $ARCHIVE"
+		tar --use-compress-program=zstd -xf "$tmp/$ARCHIVE" -C "$tmp"
+		;;
+	tar) tar -xf "$tmp/$ARCHIVE" -C "$tmp" ;;
+	zip)
 		have unzip || die "need unzip to extract $ARCHIVE"
 		unzip -q "$tmp/$ARCHIVE" -d "$tmp"
 		;;
-	*) die "unknown archive format: $ARCHIVE" ;;
+	gz)
+		# A single-file format holds the executable itself, so it is renamed to
+		# the binary the loop below looks for. The generator refuses these
+		# formats unless exactly one binary is installed, so $BINARIES is one word.
+		have gunzip || die "need gunzip to extract $ARCHIVE"
+		gunzip -c "$tmp/$ARCHIVE" > "$tmp/$BINARIES"
+		;;
+	xz)
+		have xz || die "need xz to extract $ARCHIVE"
+		xz -dc "$tmp/$ARCHIVE" > "$tmp/$BINARIES"
+		;;
+	binary) cp "$tmp/$ARCHIVE" "$tmp/$BINARIES" ;;
+	*) die "unknown archive format: $FORMAT ($ARCHIVE)" ;;
 esac
 
 for BINARY in $BINARIES; do

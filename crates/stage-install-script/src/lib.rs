@@ -155,6 +155,13 @@ impl Stage for InstallScriptStage {
             let verify_checksum = cfg.verify_checksum.unwrap_or(true);
             let name = cfg.name.clone().unwrap_or_else(|| project_name.clone());
 
+            reject_single_file_format_with_several_binaries(
+                &derived.cases.formats,
+                &binaries,
+                crate_cfg.as_ref().map(|c| c.name.as_str()).unwrap_or(""),
+                id,
+            )?;
+
             let script = render_script(&ScriptParams {
                 repo: &repo,
                 base_url: &base_url,
@@ -200,6 +207,43 @@ impl Stage for InstallScriptStage {
 
         Ok(())
     }
+}
+
+/// Refuse a release whose installer would ship a single-file archive format
+/// (`gz` / `xz` / `binary`) while the script installs more than one binary.
+///
+/// Those formats produce ONE file, which the script renames to the binary it
+/// holds; with several binaries there is no defensible name to give it. The
+/// refusal happens while the script is being generated — at
+/// `anodizer build`/`release` time, where the operator can still fix the config
+/// — never as a runtime `die` on a user's machine after a download.
+fn reject_single_file_format_with_several_binaries(
+    formats: &std::collections::BTreeSet<String>,
+    binaries: &[String],
+    crate_name: &str,
+    id: &str,
+) -> Result<()> {
+    if binaries.len() < 2 {
+        return Ok(());
+    }
+    let offending: Vec<&str> = anodizer_core::installer::SINGLE_FILE_ARCHIVE_FORMATS
+        .iter()
+        .copied()
+        .filter(|f| formats.contains(*f))
+        .collect();
+    if offending.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "install-script: config '{id}' installs {} binaries ({}) but crate '{crate_name}' \
+         releases archive format(s) {} — those formats ship a single file, so the installer \
+         has no way to tell which binary it holds. Give the crate a container format \
+         (tar.gz, tar.xz, tar.zst, tar, zip) for the targets the installer serves, or set \
+         `install_scripts[].binaries:` to the one binary the single-file asset carries.",
+        binaries.len(),
+        binaries.join(", "),
+        offending.join(", "),
+    )
 }
 
 /// Build-time environment requirements. The install-script stage only writes a

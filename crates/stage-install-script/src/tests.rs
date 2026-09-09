@@ -26,21 +26,28 @@ const FIXTURE_TARGETS: &[&str] = &[
 /// derives everything from this configured intent — it never reads produced
 /// `Archive` artifacts — so the fixture registers none.
 fn install_ctx(dist: &Path, cfg: InstallScriptConfig) -> Context {
-    install_ctx_with(dist, cfg, "v{{ Version }}", None)
+    install_ctx_with(dist, cfg, "v{{ Version }}", None, None)
 }
 
-/// [`install_ctx`] with an overridable crate `tag_template` and archive
-/// `name_template`.
+/// [`install_ctx`] with an overridable crate `tag_template`, archive
+/// `name_template` and archive `formats`.
 fn install_ctx_with(
     dist: &Path,
     cfg: InstallScriptConfig,
     tag_template: &str,
     name_template: Option<&str>,
+    formats: Option<&[&str]>,
 ) -> Context {
     let primary = ArchiveConfig {
         id: Some("myapp".to_string()),
         name_template: name_template.map(str::to_string),
-        formats: Some(vec!["tar.gz".to_string()]),
+        formats: Some(
+            formats
+                .unwrap_or(&["tar.gz"])
+                .iter()
+                .map(|f| f.to_string())
+                .collect(),
+        ),
         format_overrides: Some(vec![FormatOverride {
             os: "windows".to_string(),
             formats: Some(vec!["zip".to_string()]),
@@ -217,6 +224,7 @@ fn non_v_tag_prefix_is_derived_from_crate_tag_template() {
         },
         "release-{{ Version }}",
         None,
+        None,
     );
     InstallScriptStage.run(&mut ctx).expect("stage run");
     let script = std::fs::read_to_string(tmp.path().join("install.sh")).unwrap();
@@ -233,7 +241,7 @@ fn non_v_tag_prefix_is_derived_from_crate_tag_template() {
 #[test]
 fn bare_version_tag_template_yields_empty_prefix() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "{{ Version }}", None);
+    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "{{ Version }}", None, None);
     InstallScriptStage.run(&mut ctx).expect("stage run");
     let script = std::fs::read_to_string(tmp.path().join("install.sh")).unwrap();
     // A bare-version tag template strips to an empty prefix, so the script
@@ -250,7 +258,13 @@ fn bare_version_tag_template_yields_empty_prefix() {
 #[test]
 fn version_infix_tag_template_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "{{ Version }}-stable", None);
+    let mut ctx = install_ctx_with(
+        tmp.path(),
+        default_cfg(),
+        "{{ Version }}-stable",
+        None,
+        None,
+    );
     let err = InstallScriptStage.run(&mut ctx).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
@@ -265,7 +279,7 @@ fn version_infix_tag_template_is_rejected() {
 #[test]
 fn a_rolling_nightly_tag_name_does_not_reach_the_installer() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None);
+    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None, None);
     ctx.options.nightly = true;
     ctx.config.nightly = Some(anodizer_core::config::NightlyConfig {
         tag_name: Some("edge".to_string()),
@@ -695,6 +709,214 @@ fn path_hint_fires_for_a_writable_install_dir_off_path() {
 }
 
 // ---------------------------------------------------------------------------
+// Archive formats
+// ---------------------------------------------------------------------------
+
+/// Every format `crates/stage-archive` can write must have an extraction arm:
+/// the archive stage's format vocabulary and the installer's are one
+/// population, and a project configuring any of them ships an installer that
+/// has to honour it.
+///
+/// The list is literal because `anodizer-stage-install-script` does not depend
+/// on `anodizer-stage-archive`; a ninth family added there will NOT fail this
+/// test automatically.
+#[test]
+fn extraction_case_covers_every_archive_stage_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = run_and_read(tmp.path(), default_cfg(), "install.sh");
+    for arm in [
+        "\ttar.gz | tgz)",
+        "\ttar.xz | txz)",
+        "\ttar.zst | tzst)",
+        "\ttar)",
+        "\tzip)",
+        "\tgz)",
+        "\txz)",
+        "\tbinary)",
+    ] {
+        assert!(
+            script.contains(arm),
+            "the extraction case must carry an arm for {arm:?}:\n{script}"
+        );
+    }
+}
+
+/// A `tar.xz` release installs end to end: the engine bakes `FORMAT="tar.xz"`
+/// into the asset arm and the script picks the matching extraction arm.
+#[cfg(unix)]
+#[test]
+fn tar_xz_asset_extracts_end_to_end() {
+    if !which("xz") {
+        return;
+    }
+    single_format_install_roundtrip("tar.xz", |release, asset, binaries| {
+        build_release_archive(release, asset, binaries, &["-cJf"]);
+    });
+}
+
+/// A single-file `gz` asset holds the executable itself; the script
+/// decompresses it under the binary's own name.
+#[cfg(unix)]
+#[test]
+fn gz_asset_installs_the_single_file_it_holds() {
+    if !which("gzip") {
+        return;
+    }
+    single_format_install_roundtrip("gz", |release, asset, _binaries| {
+        write_single_file_asset(release, asset, "gzip");
+    });
+}
+
+/// The `xz` sibling of the `gz` case.
+#[cfg(unix)]
+#[test]
+fn xz_asset_installs_the_single_file_it_holds() {
+    if !which("xz") {
+        return;
+    }
+    single_format_install_roundtrip("xz", |release, asset, _binaries| {
+        write_single_file_asset(release, asset, "xz");
+    });
+}
+
+/// `format: binary` uploads the executable with no container and no extension
+/// at all — the asset name is the rendered stem, so the script copies it into
+/// place rather than trying to unpack it.
+#[cfg(unix)]
+#[test]
+fn binary_asset_installs_the_executable_it_names() {
+    single_format_install_roundtrip("binary", |release, asset, _binaries| {
+        std::fs::write(release.join(asset), "#!/bin/sh\necho fake-myapp\n").unwrap();
+    });
+}
+
+/// A single-file format cannot say which of several binaries its one file
+/// holds, so the GENERATOR refuses it while the operator can still fix the
+/// config — never a `die` on a user's machine after a download.
+#[test]
+fn single_file_format_with_several_binaries_bails_at_render_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = InstallScriptConfig {
+        repo: Some("acme/tool".to_string()),
+        binaries: Some(vec!["myapp".to_string(), "myapp-helper".to_string()]),
+        ..Default::default()
+    };
+    let mut ctx = install_ctx_with(tmp.path(), cfg, "v{{ Version }}", None, Some(&["gz"]));
+    let err = InstallScriptStage
+        .run(&mut ctx)
+        .expect_err("a single-file format with several binaries must be refused")
+        .to_string();
+    for needle in ["myapp-helper", "gz", "myapp"] {
+        assert!(
+            err.contains(needle),
+            "the refusal must name the binaries, the format and the crate; got {err}"
+        );
+    }
+}
+
+/// Render an installer for a project releasing exactly `format`, publish one
+/// fixture asset built by `make_asset`, and assert the binary installs.
+#[cfg(unix)]
+fn single_format_install_roundtrip(format: &str, make_asset: impl Fn(&Path, &str, &[&str])) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let mut ctx = install_ctx_with(
+        &dist,
+        default_cfg(),
+        "v{{ Version }}",
+        None,
+        Some(&[format]),
+    );
+    InstallScriptStage.run(&mut ctx).expect("stage run");
+    let script = dist.join("install.sh");
+    let text = std::fs::read_to_string(&script).unwrap();
+    assert!(
+        text.contains(&format!("FORMAT=\"{format}\"")),
+        "the engine must bake the resolved format into the asset arm:\n{text}"
+    );
+
+    // The asset name is whatever the engine baked for linux-amd64 — the same
+    // value a real release uploads.
+    let asset = linux_amd64_asset(&text);
+    let release = tmp.path().join("release");
+    std::fs::create_dir_all(&release).unwrap();
+    make_asset(&release, &asset, &["myapp"]);
+
+    let sha = sha256_of(&release.join(&asset));
+    std::fs::write(
+        release.join("myapp_1.2.3_checksums.txt"),
+        format!("{sha}  {asset}\n"),
+    )
+    .unwrap();
+
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
+    assert_installed(&dest, "myapp", "fake-myapp");
+}
+
+/// Read the `linux-amd64` arm's baked `ARCHIVE=` value out of a rendered script.
+#[cfg(unix)]
+fn linux_amd64_asset(script: &str) -> String {
+    let arm = script
+        .split("linux-amd64)")
+        .nth(1)
+        .expect("a linux-amd64 arm");
+    let line = arm
+        .lines()
+        .find(|l| l.trim_start().starts_with("ARCHIVE="))
+        .expect("an ARCHIVE assignment");
+    line.trim()
+        .trim_start_matches("ARCHIVE=")
+        .trim_matches('"')
+        .replace("${version}", "1.2.3")
+}
+
+/// Build an archive named `asset` under `release` holding each named binary,
+/// using the given `tar` flags.
+#[cfg(unix)]
+fn build_release_archive(release: &Path, asset: &str, binaries: &[&str], tar_flags: &[&str]) {
+    use std::process::Command;
+    let payload = release.join("payload");
+    std::fs::create_dir_all(&payload).unwrap();
+    for b in binaries {
+        std::fs::write(payload.join(b), "#!/bin/sh\necho fake-myapp\n").unwrap();
+    }
+    let mut cmd = Command::new("tar");
+    cmd.args(tar_flags)
+        .arg(release.join(asset))
+        .arg("-C")
+        .arg(&payload);
+    for b in binaries {
+        cmd.arg(b);
+    }
+    assert!(
+        cmd.status().expect("spawn tar").success(),
+        "failed to build fixture archive"
+    );
+}
+
+/// Compress a one-line executable to `release/asset` with `tool -c`.
+#[cfg(unix)]
+fn write_single_file_asset(release: &Path, asset: &str, tool: &str) {
+    use std::process::{Command, Stdio};
+    let out = std::fs::File::create(release.join(asset)).unwrap();
+    let mut child = Command::new(tool)
+        .arg("-c")
+        .stdin(Stdio::piped())
+        .stdout(out)
+        .spawn()
+        .expect("spawn compressor");
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"#!/bin/sh\necho fake-myapp\n")
+        .unwrap();
+    assert!(child.wait().expect("compressor").success());
+}
+
+// ---------------------------------------------------------------------------
 // Script argument surface
 // ---------------------------------------------------------------------------
 
@@ -926,7 +1148,7 @@ fn which(tool: &str) -> bool {
 #[test]
 fn empty_release_tag_bails_with_the_shared_message() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None);
+    let mut ctx = install_ctx_with(tmp.path(), default_cfg(), "v{{ Version }}", None, None);
     ctx.config.crates[0].release = Some(anodizer_core::config::ReleaseConfig {
         tag: Some(String::new()),
         ..Default::default()

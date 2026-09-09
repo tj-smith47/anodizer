@@ -144,12 +144,30 @@ myapp-install: error: unknown argument: --bogus (try --help)
    checksums file (or an `<asset>.sha256` sidecar) into a `mktemp -d` directory,
    then verifies the sha256 with `sha256sum` or `shasum -a 256`, aborting on
    mismatch.
-4. Extracts the archive, then installs every binary in `binaries` with
-   `install -m 0755` into the install directory — trying `sudo` when the
-   directory is not writable, then falling back to `$HOME/.local/bin`.
-   Whichever directory the binary lands in, the script warns when it is not on
-   `$PATH`.
-5. Cleans up the temp directory on exit via a `trap`.
+4. Extracts the asset. Every format the archive stage can assign is handled,
+   dispatched on the format the engine baked into the matching arm rather than
+   re-derived from the filename:
+
+   | Format | Extracted with |
+   |---|---|
+   | `tar.gz`, `tgz` | `tar -xzf` |
+   | `tar.xz`, `txz` | `tar -xJf` (needs `xz`) |
+   | `tar.zst`, `tzst` | `tar --use-compress-program=zstd -xf` (needs `zstd`) |
+   | `tar` | `tar -xf` |
+   | `zip` | `unzip -q` (needs `unzip`) |
+   | `gz` | `gunzip -c` onto the binary name |
+   | `xz` | `xz -dc` onto the binary name |
+   | `binary` | copied as-is — the asset *is* the executable |
+
+   An unknown format aborts with `unknown archive format: <format> (<asset>)`,
+   and a missing decompressor aborts with `need <tool> to extract <asset>`
+   instead of leaving a half-installed directory.
+
+5. Installs every binary in `binaries` with `install -m 0755` into the install
+   directory — trying `sudo` when the directory is not writable, then falling
+   back to `$HOME/.local/bin`. Whichever directory the binary lands in, the
+   script warns when it is not on `$PATH`.
+6. Cleans up the temp directory on exit via a `trap`.
 
 ## GitHub Enterprise
 
@@ -170,12 +188,19 @@ API at `<base_url>/api/v3` for any non-`github.com` host.
 - **Deterministic**: no timestamps, no `$RANDOM`, no read of produced
   artifacts; the asset arms are engine-derived in a stable order, so the emitted
   script is byte-identical across runs and determinism shards.
-- **Archive formats**: `.tar.gz`/`.tgz` and `.zip` archives are extracted; the
-  asset arm for each target carries whatever format the archive stage assigns
-  (honoring `format_overrides`, e.g. `zip` on Windows).
+- **Archive formats**: every format the archive stage assigns is extracted (the
+  table in step 4), honoring `format_overrides` — e.g. `zip` on Windows. The
+  format travels with the asset name in the generated arm, so a per-target
+  override never strands a platform on the wrong extractor.
+- **Single-file formats need a single binary**: `gz`, `xz` and `binary` assets
+  hold one executable and carry no directory entries, so there is no name to
+  extract by. Configuring one of them alongside two or more `binaries` is
+  refused at render time rather than emitting an installer that would misname
+  the result.
 - **`curl` or `wget`**: the script uses whichever is present; one is required on
-  the target host, along with `tar`/`unzip` and `sha256sum`/`shasum` (unless
-  `verify_checksum: false`).
+  the target host, along with `sha256sum`/`shasum` (unless
+  `verify_checksum: false`) and whichever decompressor step 4 lists for the
+  formats you ship.
 
 ## Republish / update behavior
 

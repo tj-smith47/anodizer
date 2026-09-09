@@ -260,6 +260,19 @@ pub fn render_archive_asset_name_with_variant(
     } else {
         render_archive_stem(ctx, name_template, target)?
     };
+    // `format: binary` publishes the executable itself, so the archive stage
+    // writes the rendered stem (plus the Windows `.exe` suffix) with no format
+    // extension. Appending `.binary` here would derive an asset name no
+    // release ever uploads — the 404 class this module exists to prevent.
+    if format == "binary" {
+        return Ok(
+            if crate::target::is_windows(target) && !stem.ends_with(".exe") {
+                format!("{stem}.exe")
+            } else {
+                stem
+            },
+        );
+    }
     Ok(format!("{stem}.{format}"))
 }
 

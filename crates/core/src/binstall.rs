@@ -388,6 +388,17 @@ pub fn crate_archive_asset_names(
         .unwrap_or_else(|| default_archive_name_template(ctx));
     let global_default_format = global_default_archive_format(ctx);
 
+    // `format: binary` names each asset after the BINARY it holds rather than
+    // the project, so its default template differs — the same rule the archive
+    // stage applies (an explicit `name_template:` still wins). `{{ .Binary }}`
+    // is bound from the crate's own build plan for the duration.
+    let binary_name_template = archive
+        .name_template
+        .clone()
+        .unwrap_or_else(|| crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string());
+    let primary_binary = crate::build_plan::planned_builds(crate_cfg)
+        .and_then(|builds| builds.iter().find_map(|b| b.binary.clone()));
+
     let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
     for target in &targets {
         let format = archive_format_for_target(&archive, target, &global_default_format);
@@ -397,13 +408,34 @@ pub fn crate_archive_asset_names(
         // baseline (the binstall/installer 404 class).
         let amd64_variant =
             crate::build_env::config_time_amd64_variant(crate_cfg, target, default_targets, ctx)?;
-        let asset_name = render_archive_asset_name_with_variant(
-            ctx,
-            &name_template,
-            target,
-            &format,
-            amd64_variant.as_deref(),
-        )?;
+        let asset_name = if format == "binary" {
+            let prior = ctx.template_vars().get("Binary").cloned();
+            if let Some(bin) = primary_binary.as_deref() {
+                ctx.template_vars_mut().set("Binary", bin);
+            }
+            let rendered = render_archive_asset_name_with_variant(
+                ctx,
+                &binary_name_template,
+                target,
+                &format,
+                amd64_variant.as_deref(),
+            );
+            match prior {
+                Some(v) => ctx.template_vars_mut().set("Binary", &v),
+                None => {
+                    ctx.template_vars_mut().unset("Binary");
+                }
+            }
+            rendered?
+        } else {
+            render_archive_asset_name_with_variant(
+                ctx,
+                &name_template,
+                target,
+                &format,
+                amd64_variant.as_deref(),
+            )?
+        };
         map.insert(target.clone(), ArchiveAssetName { format, asset_name });
     }
     Ok(Some(map))

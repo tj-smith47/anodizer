@@ -100,6 +100,10 @@ pub struct InstallerCases {
     /// prebuilt binaries that DO exist instead of a bare "unsupported
     /// platform".
     pub supported_platforms: String,
+    /// The distinct archive formats the emitted arms select, so a generator
+    /// can refuse a combination the script cannot honour (a single-file
+    /// format alongside several binaries) before writing the script.
+    pub formats: BTreeSet<String>,
 }
 
 impl InstallerCases {
@@ -212,6 +216,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         detect_os_cases: String::new(),
         detect_arch_cases: String::new(),
         supported_platforms: String::new(),
+        formats: BTreeSet::new(),
     };
     let Some(crate_cfg) = installer_crate(&ctx.config) else {
         return Ok(empty());
@@ -248,7 +253,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // (`all`) assets carry the worst rank: they only fill amd64/arm64 keys no
     // real arch-specific build claimed, since no `uname -m` can ever produce
     // "all".
-    let mut arms: BTreeMap<String, (u8, String)> = BTreeMap::new();
+    let mut arms: BTreeMap<String, (u8, String, String)> = BTreeMap::new();
     let mut released_os: BTreeSet<String> = BTreeSet::new();
     let mut released_arch: BTreeSet<String> = BTreeSet::new();
     for (target, asset) in &assets {
@@ -263,6 +268,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
             format!("{os}-{arch}"),
             installer_arm_rank(target),
             &asset.asset_name,
+            &asset.format,
         );
     }
     for (target, asset) in &assets {
@@ -278,6 +284,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
                 format!("{os}-{cpu}"),
                 RANK_UNIVERSAL,
                 &asset.asset_name,
+                &asset.format,
             );
         }
     }
@@ -319,15 +326,25 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         .map(String::as_str)
         .collect();
 
+    // Each arm bakes the archive FORMAT the engine resolved for that target
+    // alongside the asset name. The script therefore never re-derives a format
+    // by sniffing the filename extension — a `binary`-format asset carries the
+    // executable's own name and no extension at all.
     let lines: Vec<String> = arms
         .iter()
-        .map(|(key, (_, asset))| format!("    {key})\n        ARCHIVE=\"{asset}\"\n        ;;"))
+        .map(|(key, (_, asset, format))| {
+            format!(
+                "    {key})\n        ARCHIVE=\"{asset}\"\n        FORMAT=\"{format}\"\n        ;;"
+            )
+        })
         .collect();
+    let formats: BTreeSet<String> = arms.values().map(|(_, _, format)| format.clone()).collect();
     Ok(InstallerCases {
         asset_cases: lines.join("\n"),
         detect_os_cases: render_uname_cases(UNAME_OS_CASES, &released_os),
         detect_arch_cases: render_uname_cases(UNAME_ARCH_CASES, &released_arch),
         supported_platforms: supported.join(" "),
+        formats,
     })
 }
 
@@ -341,6 +358,14 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// The archive formats that produce a single file rather than a container.
+///
+/// A `curl | sh` installer can only give that file one name, so the generated
+/// script renames it to the binary it holds — well-defined only when the
+/// install script carries exactly one binary. The generator refuses the
+/// combination rather than emitting a script that guesses.
+pub const SINGLE_FILE_ARCHIVE_FORMATS: &[&str] = &["gz", "xz", "binary"];
 
 /// Rank the `all` universal asset when it fans out onto an `amd64`/`arm64`
 /// key: strictly worse than any real arch-specific build ([`installer_arm_rank`]
@@ -370,13 +395,19 @@ fn installer_arm_rank(target: &str) -> u8 {
 /// (which silently dropped a libc variant by iteration order) with a
 /// deterministic, order-independent choice; an equal-rank collision keeps the
 /// incumbent.
-fn record_arm(arms: &mut BTreeMap<String, (u8, String)>, key: String, rank: u8, asset: &str) {
+fn record_arm(
+    arms: &mut BTreeMap<String, (u8, String, String)>,
+    key: String,
+    rank: u8,
+    asset: &str,
+    format: &str,
+) {
     match arms.entry(key) {
         std::collections::btree_map::Entry::Vacant(slot) => {
-            slot.insert((rank, asset.to_string()));
+            slot.insert((rank, asset.to_string(), format.to_string()));
         }
         std::collections::btree_map::Entry::Occupied(mut slot) if rank < slot.get().0 => {
-            slot.insert((rank, asset.to_string()));
+            slot.insert((rank, asset.to_string(), format.to_string()));
         }
         std::collections::btree_map::Entry::Occupied(_) => {}
     }
@@ -493,6 +524,7 @@ mod tests {
             detect_os_cases: "b".to_string(),
             detect_arch_cases: "c".to_string(),
             supported_platforms: "d".to_string(),
+            formats: BTreeSet::new(),
         };
         let mut vars = crate::template::TemplateVars::new();
         cases.bind(&mut vars);
@@ -844,6 +876,49 @@ mod tests {
             arms.get("linux-amd64").map(String::as_str),
             Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
             "the static musl build must win the shared linux-amd64 arm, not be dropped"
+        );
+    }
+
+    /// `format: binary` uploads the executable itself, so the installer arm
+    /// must name the binary (plus `.exe` on Windows) — never `<stem>.binary`,
+    /// a filename no release ever produces. The default template for that
+    /// format is keyed on `{{ .Binary }}`, the same rule the archive stage
+    /// applies.
+    #[test]
+    fn binary_format_arm_names_the_executable_not_a_dot_binary_file() {
+        let mut ctx = anodize_ctx(None);
+        {
+            let ArchivesConfig::Configs(configs) = &mut ctx.config.crates[0].archives else {
+                unreachable!("the fixture configures explicit archives");
+            };
+            configs.truncate(1);
+            configs[0].formats = Some(vec!["binary".to_string()]);
+            configs[0].format_overrides = None;
+        }
+        // A `ProjectName` distinct from the binary name is what separates the
+        // two default templates: the wrong one renders the project's stem.
+        ctx.template_vars_mut()
+            .set("ProjectName", "anodizer-project");
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ]);
+
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+        assert_eq!(
+            arms.get("linux-amd64").map(String::as_str),
+            Some("anodizer_0.13.0_linux_amd64"),
+            "a binary-format asset carries no format extension: {arms:?}"
+        );
+        assert_eq!(
+            arms.get("windows-amd64").map(String::as_str),
+            Some("anodizer_0.13.0_windows_amd64.exe"),
+            "a Windows binary-format asset carries the .exe the archive stage writes"
+        );
+        assert!(
+            cases.formats.contains("binary"),
+            "the resolved format must reach the generator so it can gate on it"
         );
     }
 
