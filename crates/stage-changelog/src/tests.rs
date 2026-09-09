@@ -169,6 +169,87 @@ fn test_apply_filters() {
     assert_eq!(filtered[0].kind, "feat");
 }
 
+/// This repository's own `.anodizer.yaml` exclude list is the only thing that
+/// keeps a test-only commit out of its release notes, and nothing else pins it.
+/// A `test:` TYPE is dropped by an explicit pattern, but a `test`/`tests` SCOPE
+/// on another type (`fix(test):`, `refactor(tests):`) is test-only just the
+/// same and would otherwise render under Bug Fixes, which groups
+/// `^(fix|refactor)`. Drive the real filter engine over the real file so an
+/// edit to that list has to face this vector.
+#[test]
+fn workspace_exclude_filters_drop_test_scoped_subjects() {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".anodizer.yaml");
+    let value = anodizer_core::config::load_raw_config_value(&config)
+        .expect("read the workspace .anodizer.yaml");
+    let exclude: Vec<String> = value["changelog"]["filters"]["exclude"]
+        .as_sequence()
+        .expect("changelog.filters.exclude is a list")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("every exclude pattern is a string")
+                .to_string()
+        })
+        .collect();
+
+    let commits = vec![
+        ci(
+            "fix(test): route every stub writer",
+            "fix",
+            "route",
+            "scoped-fix",
+        ),
+        ci(
+            "refactor(tests): share a helper",
+            "refactor",
+            "share",
+            "scoped-refactor",
+        ),
+        ci(
+            "test(changelog): guard the shape",
+            "test",
+            "guard",
+            "typed-test",
+        ),
+        ci(
+            "chore(audit): true marker reasons",
+            "chore",
+            "reasons",
+            "typed-chore",
+        ),
+        ci(
+            "refactor(core): drop an Arc",
+            "refactor",
+            "drop",
+            "kept-refactor",
+        ),
+        ci(
+            "fix(audit): catch a mode spelling",
+            "fix",
+            "catch",
+            "kept-fix",
+        ),
+        ci(
+            "feat(test-helpers): expose a stub writer",
+            "feat",
+            "expose",
+            "kept-feat",
+        ),
+    ];
+    let kept: Vec<String> = apply_filters(&commits, &exclude, &test_logger())
+        .unwrap()
+        .into_iter()
+        .map(|c| c.hash)
+        .collect();
+    assert_eq!(
+        kept,
+        ["kept-refactor", "kept-fix", "kept-feat"],
+        "only the consumer-visible subjects survive the workspace exclude list"
+    );
+}
+
 #[test]
 fn test_render_changelog() {
     let grouped = vec![

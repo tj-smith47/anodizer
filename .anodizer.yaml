@@ -953,6 +953,11 @@ changelog:
       - "^style(\\(.*\\))?!?:"
       - "^build(\\(.*\\))?!?:"
       - "^test(\\(.*\\))?!?:"
+      # The SCOPE, not the type, is what says a change is test-only: a
+      # `fix(test):` / `refactor(test):` subject touches nothing a consumer
+      # runs, and the type-anchored patterns above would still let it render
+      # under Bug Fixes.
+      - "^[a-z]+\\((test|tests)\\)!?:"
       - "^revert(\\(.*\\))?!?:"
       - "^Merge "
       - "Merge pull request"
