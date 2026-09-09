@@ -250,7 +250,9 @@ pub(crate) struct RepoLevelBump<'a> {
 /// Refuses a manifest that declares no version rather than inventing a
 /// `[package]` table: a repo whose root manifest carries no version has none
 /// for `check version-files` to compare against either, so the enrollment is
-/// the thing to fix. Absent a previous tag there is no old version to rewrite
+/// the thing to fix. A manifest that is missing, one that cannot be read or
+/// parsed, and one that simply declares no version are three different repair
+/// jobs, so each gets its own message. Absent a previous tag there is no old version to rewrite
 /// the enrolled files from, and only the manifest moves.
 pub(crate) fn bump_repo_level(
     root: &Path,
@@ -263,15 +265,33 @@ pub(crate) fn bump_repo_level(
         format!("{}/Cargo.toml", bump.manifest_dir)
     };
     let manifest_dir = root.join(bump.manifest_dir).to_string_lossy().into_owned();
-    if anodizer_stage_build::version_sync::read_cargo_version_opt(&manifest_dir)
-        .unwrap_or(None)
-        .is_none()
-    {
+    let manifest_abs = root.join(bump.manifest_dir).join("Cargo.toml");
+    if !manifest_abs.is_file() {
         bail!(
-            "version_files: the repo-level bump must write {} into a manifest, but {} declares              no [package].version and the workspace declares no [workspace.package].version;              give the manifest a version, declare the crate under `crates:`, or drop the              version_files enrollment",
+            "version_files: the repo-level bump must write {} into {}, but that manifest does \
+             not exist; create it, declare the crate under `crates:`, or drop the version_files \
+             enrollment",
             bump.new_version,
             manifest_rel,
         );
+    }
+    match anodizer_stage_build::version_sync::read_cargo_version_opt(&manifest_dir) {
+        Err(e) => bail!(
+            "version_files: the repo-level bump must write {} into {}, but that manifest cannot \
+             be read: {e:#}; fix the manifest, declare the crate under `crates:`, or drop the \
+             version_files enrollment",
+            bump.new_version,
+            manifest_rel,
+        ),
+        Ok(None) => bail!(
+            "version_files: the repo-level bump must write {} into a manifest, but {} declares \
+             no [package].version and the workspace declares no [workspace.package].version; \
+             give the manifest a version, declare the crate under `crates:`, or drop the \
+             version_files enrollment",
+            bump.new_version,
+            manifest_rel,
+        ),
+        Ok(Some(_)) => {}
     }
 
     anodizer_stage_build::version_sync::sync_version(

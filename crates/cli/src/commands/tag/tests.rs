@@ -2596,6 +2596,84 @@ fn top_level_version_files_cover_a_single_declared_crate() {
     );
 }
 
+/// The three ways the repo-level bump can find no version to write, each with
+/// its own repair job and its own message — and each rendered on ONE line: a
+/// `bail!` literal that carries its source indentation ships runs of spaces to
+/// the terminal.
+#[test]
+fn repo_level_bump_refuses_each_unusable_manifest_on_one_line() {
+    let log = StageLogger::new("tag", Verbosity::Normal);
+    // The unparseable case embeds toml_edit's own multi-line diagnostic, so only
+    // the halves this file writes are checked for space runs there.
+    let cases: Vec<(&str, Option<&str>, String, &str, bool)> = vec![
+        (
+            "missing",
+            None,
+            "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
+             manifest does not exist; create it, declare the crate under `crates:`, or drop \
+             the version_files enrollment"
+                .to_string(),
+            "drop the version_files enrollment",
+            true,
+        ),
+        (
+            "unparseable",
+            Some("[package\nname = \"app\"\n"),
+            "version_files: the repo-level bump must write 1.2.4 into Cargo.toml, but that \
+             manifest cannot be read:"
+                .to_string(),
+            "; fix the manifest, declare the crate under `crates:`, or drop the version_files \
+             enrollment",
+            false,
+        ),
+        (
+            "versionless",
+            Some("[workspace]\nmembers = [\"crates/app\"]\n"),
+            "version_files: the repo-level bump must write 1.2.4 into a manifest, but \
+             Cargo.toml declares no [package].version and the workspace declares no \
+             [workspace.package].version; give the manifest a version, declare the crate \
+             under `crates:`, or drop the version_files enrollment"
+                .to_string(),
+            "drop the version_files enrollment",
+            true,
+        ),
+    ];
+
+    for (shape, manifest, expected, suffix, strict) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        if let Some(body) = manifest {
+            std::fs::write(tmp.path().join("Cargo.toml"), body).unwrap();
+        }
+        let err = bump_repo_level(
+            tmp.path(),
+            &RepoLevelBump {
+                manifest_dir: ".",
+                files: &[],
+                old_tag: "v1.2.3",
+                new_version: "1.2.4",
+                project_name: "app",
+                dry_run: true,
+                skip_ci_suffix: "",
+            },
+            &log,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.starts_with(&expected),
+            "{shape}: expected {expected:?}, got {err:?}"
+        );
+        assert!(
+            err.ends_with(suffix),
+            "{shape}: expected the repair sentence {suffix:?}, got {err:?}"
+        );
+        assert!(
+            !strict || !err.contains("  "),
+            "{shape}: the message carries a run of literal spaces: {err:?}"
+        );
+    }
+}
+
 /// The repo-level bump writes the manifest `check version-files` reads: the
 /// repo root's when no crate is declared, the single declared crate's when one
 /// is and it opted into `version_sync`.
