@@ -8,6 +8,7 @@ use super::tags::{
 };
 use crate::redact::redact_url_credentials;
 use crate::test_helpers::CwdGuard;
+use crate::test_helpers::env::EnvGuard;
 
 #[test]
 fn test_parse_semver() {
@@ -1309,11 +1310,7 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
     init_repo_with_tags(dir, &[]);
 
     let secret = "ghp_addpathintestSentinel_123456789";
-    let prev = std::env::var("GITHUB_TOKEN").ok();
-    // SAFETY: serialized via `#[serial]`.
-    unsafe {
-        std::env::set_var("GITHUB_TOKEN", secret); // env-ok: serialised by #[serial(token_env)]; restored before returning
-    }
+    let _token = EnvGuard::set("GITHUB_TOKEN", secret);
 
     // Engineer stderr that mentions the token: we pre-write a file
     // named with the token, then `git add <nonexistent>` to trigger a
@@ -1326,15 +1323,6 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
     let rel = nonexistent.strip_prefix(dir).unwrap();
     let err = add_path_in(dir, rel).expect_err("git add must fail on a non-existent path");
     let msg = format!("{err:#}");
-
-    // Restore prior env before assertions.
-    unsafe {
-        if let Some(prev) = prev {
-            std::env::set_var("GITHUB_TOKEN", prev); // env-ok: serialised by #[serial(token_env)]; restored before returning
-        } else {
-            std::env::remove_var("GITHUB_TOKEN"); // env-ok: serialised by #[serial(token_env)]; restored before returning
-        }
-    }
 
     assert!(
         !msg.contains(secret),
@@ -1360,10 +1348,7 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
     init_repo_with_tags(dir, &[]);
 
     let secret = "ghp_commitintestSentinel_987654321";
-    let prev = std::env::var("GITHUB_TOKEN").ok();
-    unsafe {
-        std::env::set_var("GITHUB_TOKEN", secret); // env-ok: serialised by #[serial(token_env)]; restored before returning
-    }
+    let _token = EnvGuard::set("GITHUB_TOKEN", secret);
 
     // With nothing staged, `git commit -m <msg>` exits 1 and prints
     // "nothing to commit" to stderr. The message itself contains the
@@ -1373,14 +1358,6 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
     let err = commit_in(dir, &msg_with_secret, false)
         .expect_err("commit must fail when nothing is staged");
     let msg = format!("{err:#}");
-
-    unsafe {
-        if let Some(prev) = prev {
-            std::env::set_var("GITHUB_TOKEN", prev); // env-ok: serialised by #[serial(token_env)]; restored before returning
-        } else {
-            std::env::remove_var("GITHUB_TOKEN"); // env-ok: serialised by #[serial(token_env)]; restored before returning
-        }
-    }
 
     assert!(
         !msg.contains(secret),

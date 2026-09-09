@@ -134,6 +134,7 @@ fn test_isolation_audit_reports_test_code_only() {
 
     let (inline_line, inline_text) = at(LIB_RS, "INLINE_ONLY");
     let (sibling_line, sibling_text) = at(TESTS_RS, "SIBLING_FILE");
+    let (hand_line, hand_text) = at(TESTS_RS, "SIBLING_JUSTIFIED");
     let (named_line, named_text) = at(NAMED_TESTS_RS, "NAMED_SIBLING_FILE");
     let (file_line, file_text) = at(INTEGRATION_RS, "INTEGRATION_FILE");
     assert_eq!(
@@ -141,12 +142,40 @@ fn test_isolation_audit_reports_test_code_only() {
         vec![
             format!("crates/demo/src/lib.rs:{inline_line}: [env] {inline_text}"),
             format!("crates/demo/src/named_tests.rs:{named_line}: [env] {named_text}"),
+            format!("crates/demo/src/tests.rs:{hand_line}: [env-guard] {hand_text}"),
             format!("crates/demo/src/tests.rs:{sibling_line}: [env] {sibling_text}"),
             format!("crates/demo/tests/spawn.rs:{file_line}: [env] {file_text}"),
         ],
         "{out}"
     );
     assert_eq!(code, 1, "{out}");
+}
+
+/// A marker justifies the RACE; it does not justify a restore written out by
+/// hand, which a failing assertion between the two halves skips outright,
+/// leaking the override into the next test in the process. So a marked
+/// mutation is reported `[env-guard]` unless its function names `EnvGuard` —
+/// the fixture's `sibling_env_guard`, whose raw call IS the guard's own body.
+/// The distinction is what makes the class rule enforceable: it flags the
+/// hand-paired shape without flagging the guard that replaces it.
+#[test]
+fn test_isolation_audit_demands_a_guard_behind_every_marked_env_mutation() {
+    let dir = fixture_tree();
+    let (_, out) = run_audit("audit-test-isolation.sh", dir.path());
+
+    let (hand_line, _) = at(TESTS_RS, "SIBLING_JUSTIFIED");
+    let (guarded_line, _) = at(TESTS_RS, "SIBLING_GUARDED");
+    let reported: Vec<String> = hits(&out)
+        .into_iter()
+        .filter(|h| h.contains("[env-guard]"))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![format!(
+            "crates/demo/src/tests.rs:{hand_line}: [env-guard] unsafe {{ std::env::set_var(\"SIBLING_JUSTIFIED\", \"1\") }}; // env-ok: serialised by serial(sibling_env)"
+        )],
+        "only the hand-restored call is reported; line {guarded_line} binds a guard.\n{out}"
+    );
 }
 
 #[test]

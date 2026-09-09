@@ -466,6 +466,7 @@ pub(crate) fn commit_and_push_with_opts(
 mod tests {
     use super::*;
     use anodizer_core::log::Verbosity;
+    use anodizer_core::test_helpers::env::EnvGuard;
     use serial_test::serial;
     use std::process::Command as Cmd;
 
@@ -717,40 +718,6 @@ mod tests {
         );
     }
 
-    /// Restores (or clears) a process env var on drop so a test that
-    /// overrides an ambient `GIT_AUTHOR_*` value cannot leak it to siblings.
-    struct EnvVarGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: every caller test carries `#[serial(git_env)]`, so no
-            // other git-identity test reads or writes the environment
-            // concurrently; the guard restores the prior value on drop.
-            // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            // SAFETY: see `EnvVarGuard::set` — serialized, single-threaded
-            // access for the lifetime of the guard.
-            unsafe {
-                match &self.prev {
-                    // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
-                    Some(v) => std::env::set_var(self.key, v),
-                    // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
-
     /// Regression: a configured `commit_author` must win over an ambient
     /// `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` exported in the process env.
     /// Before the fix the identity was applied via `-c user.name=` /
@@ -770,10 +737,10 @@ mod tests {
         init_local_with_remote(&local_dir, &remote_dir);
 
         // Ambient env that would hijack a `-c user.name=` override.
-        let _name = EnvVarGuard::set("GIT_AUTHOR_NAME", "Ambient Runner");
-        let _email = EnvVarGuard::set("GIT_AUTHOR_EMAIL", "runner@ci.invalid");
-        let _cname = EnvVarGuard::set("GIT_COMMITTER_NAME", "Ambient Runner");
-        let _cemail = EnvVarGuard::set("GIT_COMMITTER_EMAIL", "runner@ci.invalid");
+        let _name = EnvGuard::set("GIT_AUTHOR_NAME", "Ambient Runner");
+        let _email = EnvGuard::set("GIT_AUTHOR_EMAIL", "runner@ci.invalid");
+        let _cname = EnvGuard::set("GIT_COMMITTER_NAME", "Ambient Runner");
+        let _cemail = EnvGuard::set("GIT_COMMITTER_EMAIL", "runner@ci.invalid");
 
         std::fs::write(local_dir.join("data.txt"), "hello").unwrap();
         let opts = CommitOptions {
@@ -832,10 +799,10 @@ mod tests {
         init_bare_remote(&remote_dir);
         init_local_with_remote(&local_dir, &remote_dir);
 
-        let _name = EnvVarGuard::set("GIT_AUTHOR_NAME", "anodizer[bot]");
-        let _email = EnvVarGuard::set("GIT_AUTHOR_EMAIL", "bot@users.noreply.github.com");
-        let _cname = EnvVarGuard::set("GIT_COMMITTER_NAME", "anodizer[bot]");
-        let _cemail = EnvVarGuard::set("GIT_COMMITTER_EMAIL", "bot@users.noreply.github.com");
+        let _name = EnvGuard::set("GIT_AUTHOR_NAME", "anodizer[bot]");
+        let _email = EnvGuard::set("GIT_AUTHOR_EMAIL", "bot@users.noreply.github.com");
+        let _cname = EnvGuard::set("GIT_COMMITTER_NAME", "anodizer[bot]");
+        let _cemail = EnvGuard::set("GIT_COMMITTER_EMAIL", "bot@users.noreply.github.com");
 
         std::fs::write(local_dir.join("data.txt"), "hello").unwrap();
         let opts = CommitOptions {

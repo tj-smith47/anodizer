@@ -122,13 +122,14 @@ impl FakeToolDir {
             entries.extend(std::env::split_paths(p));
         }
         let joined = std::env::join_paths(entries).expect("fake_tool: join PATH");
-        // env-ok: PATH is resolved by spawned children via execvp(3), not
-        // through any injectable EnvSource, so binary-stub tests must mutate the
-        // real process PATH; env_mutex (held for the guard's life) + the
-        // documented `#[serial]` caller requirement serialise it.
-        // SAFETY: serialised by the env mutex held in `lock` for the guard's life.
-        unsafe { std::env::set_var("PATH", &joined) };
-        PathGuard { prior, _lock: lock }
+        // PATH is resolved by spawned children via execvp(3), not through any
+        // injectable EnvSource, so binary-stub tests must mutate the real
+        // process PATH; env_mutex (held for the guard's life) + the documented
+        // `#[serial]` caller requirement serialise it.
+        PathGuard {
+            _path: super::env::EnvGuard::set("PATH", &joined),
+            _lock: lock,
+        }
     }
 
     /// Every recorded invocation of `name`, outer `Vec` per call, inner `Vec`
@@ -315,21 +316,12 @@ impl ToolSpec<'_> {
 
 /// Restores `PATH` and releases the env mutex when dropped. Returned by
 /// [`FakeToolDir::activate`].
+///
+/// Field order is the drop order: the `PATH` override is restored while the
+/// env mutex is still held.
 pub struct PathGuard {
-    prior: Option<std::ffi::OsString>,
+    _path: super::env::EnvGuard,
     _lock: std::sync::MutexGuard<'static, ()>,
-}
-
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        // SAFETY: still serialised by `_lock`, dropped after this.
-        unsafe {
-            match &self.prior {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-    }
 }
 
 #[cfg(unix)]

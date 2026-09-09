@@ -406,14 +406,10 @@ mod allow_http_regression {
         endpoint: &str,
         disable_ssl: Option<bool>,
     ) -> object_store::Result<object_store::PutResult> {
-        unsafe {
-            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
-            std::env::set_var("AWS_SKIP_SIGNATURE", "true");
-            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
-            std::env::remove_var("AWS_ENDPOINT");
-            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
-            std::env::remove_var("AWS_ENDPOINT_URL");
-        }
+        let _skip_signature =
+            anodizer_core::test_helpers::env::EnvGuard::set("AWS_SKIP_SIGNATURE", "true");
+        let _endpoint = anodizer_core::test_helpers::env::EnvGuard::remove("AWS_ENDPOINT");
+        let _endpoint_url = anodizer_core::test_helpers::env::EnvGuard::remove("AWS_ENDPOINT_URL");
         let config = BlobConfig {
             provider: "s3".into(),
             bucket: "b".into(),
@@ -432,14 +428,9 @@ mod allow_http_regression {
         };
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let store = build_s3_store(&config, "b", &ctx, &retry).expect("store builds");
-        let res = store
+        store
             .put(&object_store::path::Path::from("k"), b"x".to_vec().into())
-            .await;
-        unsafe {
-            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
-            std::env::remove_var("AWS_SKIP_SIGNATURE");
-        }
-        res
+            .await
     }
 
     /// The bug this pins: `AmazonS3Builder::with_allow_http` writes into

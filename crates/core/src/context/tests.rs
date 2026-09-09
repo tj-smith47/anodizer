@@ -2,7 +2,7 @@ use super::skip::NON_PUBLISHER_RELEASE_SKIPS;
 use super::*;
 use crate::config::Config;
 use crate::git::{GitInfo, SemVer};
-use crate::test_helpers::env::env_mutex;
+use crate::test_helpers::env::{EnvGuard, env_mutex};
 use std::collections::BTreeSet;
 
 /// A `StageLogger` built via `Context::logger` before a secret is minted
@@ -39,18 +39,12 @@ fn stage_logger_redacts_secret_minted_after_construction() {
 fn env_for_redact_honors_injected_env_source_not_real_process_env() {
     let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
     let key = "ANODIZER_T3_ENV_REDACT_FIXTURE_TOKEN";
-    // SAFETY: serialised by env_mutex; cleaned up before guard drop.
-    // env-ok: contract test for env_for_redact source routing; unique key.
-    unsafe { std::env::set_var(key, "should-not-leak") };
+    let _env = EnvGuard::set(key, "should-not-leak");
 
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.set_env_source(crate::MapEnvSource::new());
     let log = ctx.logger("test");
     let redacted = log.redact("value=should-not-leak");
-
-    // SAFETY: serialised by env_mutex.
-    // env-ok: contract test for env_for_redact source routing; unique key.
-    unsafe { std::env::remove_var(key) };
 
     assert_eq!(
         redacted, "value=should-not-leak",

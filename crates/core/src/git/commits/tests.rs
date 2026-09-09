@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_helpers::env::EnvGuard;
 use std::path::Path;
 use std::process::Command;
 
@@ -1551,30 +1552,15 @@ fn resolve_rollback_identity_inherits_when_repo_has_identity() {
 
     // Clear any inherited GIT_AUTHOR_*/COMMITTER_* env so the resolver
     // falls through to reading the repo config (which IS configured).
-    struct EnvGuard(Vec<(&'static str, Option<String>)>);
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (k, v) in &self.0 {
-                match v {
-                    // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-                    Some(val) => unsafe { std::env::set_var(k, val) },
-                    // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-                    None => unsafe { std::env::remove_var(k) },
-                }
-            }
-        }
-    }
-    let keys = [
+    let _identity: Vec<EnvGuard> = [
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
         "GIT_COMMITTER_NAME",
         "GIT_COMMITTER_EMAIL",
-    ];
-    let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
-    for k in keys {
-        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-        unsafe { std::env::remove_var(k) };
-    }
+    ]
+    .into_iter()
+    .map(EnvGuard::remove)
+    .collect();
 
     // Repo has user.name + user.email -> inherit (empty identity).
     let id = resolve_rollback_identity(dir);
@@ -1592,30 +1578,15 @@ fn resolve_rollback_identity_synthesizes_when_no_identity_anywhere() {
     // init WITHOUT configuring user.name / user.email.
     g(dir, &["init", "-b", "master"]);
 
-    struct EnvGuard(Vec<(&'static str, Option<String>)>);
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (k, v) in &self.0 {
-                match v {
-                    // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-                    Some(val) => unsafe { std::env::set_var(k, val) },
-                    // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-                    None => unsafe { std::env::remove_var(k) },
-                }
-            }
-        }
-    }
-    let keys = [
+    let _identity: Vec<EnvGuard> = [
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
         "GIT_COMMITTER_NAME",
         "GIT_COMMITTER_EMAIL",
-    ];
-    let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
-    for k in keys {
-        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
-        unsafe { std::env::remove_var(k) };
-    }
+    ]
+    .into_iter()
+    .map(EnvGuard::remove)
+    .collect();
 
     // Best-effort: global git config may still supply an identity on the
     // host. Only assert the synthetic path when the repo truly has none.

@@ -6,6 +6,7 @@ use anodizer_core::config::{
     StringOrBool, UniversalBinaryConfig,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
+use anodizer_core::test_helpers::env::EnvGuard;
 use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
 // Inspected only by unix-gated tests here; the gate must match or the import
 // reads as unused on a Windows build.
@@ -3972,24 +3973,13 @@ esac
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
-    // env_mutex (the shared PATH coordinator); paired set/restore below.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string()); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
+    let _path = EnvGuard::set("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+    let _counter = EnvGuard::set("NPM_PUBLISH_COUNTER", counter.display().to_string());
 
     let p = NpmPublisher::new();
     let evidence = p
         .run(&mut ctx)
         .expect("run must NOT bubble Err — evidence must survive");
-
-    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
-    // env_mutex (the shared PATH coordinator); paired with the set above.
-    unsafe {
-        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-        std::env::remove_var("NPM_PUBLISH_COUNTER"); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
 
     // The first package published successfully and MUST be recorded for
     // rollback even though a later publish failed.
@@ -4087,24 +4077,13 @@ esac
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
-    // env_mutex (the shared PATH coordinator); paired set/restore below.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string()); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
+    let _path = EnvGuard::set("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+    let _counter = EnvGuard::set("NPM_PUBLISH_COUNTER", counter.display().to_string());
 
     let p = NpmPublisher::new();
     let evidence = p
         .run(&mut ctx)
         .expect("run records Failed, never bubbles Err");
-
-    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
-    // env_mutex (the shared PATH coordinator); paired with the set above.
-    unsafe {
-        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-        std::env::remove_var("NPM_PUBLISH_COUNTER"); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
 
     // NOTHING published: the counter file was never created because the staging
     // pass aborted on the missing binary before any `npm publish` ran.
@@ -5136,18 +5115,10 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
-    // env_mutex; paired restore below.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
+    let _path = EnvGuard::set("PATH", format!("{}:{}", bin_dir.display(), orig_path));
 
     let res = NpmPublisher::new().rollback(&mut ctx, &npm_evidence(vec![npm_target("NPM_TOKEN")]));
 
-    // SAFETY: paired with the set above.
-    unsafe {
-        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
     res.expect("rollback is best-effort and returns Ok");
 
     let msgs = capture.all_messages();
@@ -5211,10 +5182,7 @@ exit 0
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
+    let _path = EnvGuard::set("PATH", format!("{}:{}", bin_dir.display(), orig_path));
 
     let selector = PromoteSelector::Version("1.2.3".to_string());
     let outcome = NpmPromoter::default().promote(&PromoteRequest {
@@ -5224,11 +5192,6 @@ exit 0
         dry_run: false,
         ctx: &ctx,
     });
-
-    // SAFETY: paired with the set above.
-    unsafe {
-        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
 
     let outcome = outcome.expect("postinstall version promote must succeed");
     assert_eq!(outcome.status, PromoteStatus::Promoted);
@@ -5302,10 +5265,7 @@ exit 0
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by `#[serial(npm_counter)]` + env_mutex; paired restore below.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path)); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
+    let _path = EnvGuard::set("PATH", format!("{}:{}", bin_dir.display(), orig_path));
 
     let selector = PromoteSelector::Newest;
     let outcome = NpmPromoter::default().promote(&PromoteRequest {
@@ -5315,11 +5275,6 @@ exit 0
         dry_run: false,
         ctx: &ctx,
     });
-
-    // SAFETY: paired with the set above.
-    unsafe {
-        std::env::set_var("PATH", orig_path); // env-ok: serialised by #[serial(npm_counter)] under env_mutex; restored before returning
-    }
 
     let outcome = outcome.expect("optional-deps newest promote must succeed");
     assert_eq!(outcome.status, PromoteStatus::Promoted);

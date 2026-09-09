@@ -228,6 +228,7 @@ fn push_after_revert(
 mod tests {
     use super::*;
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::env::EnvGuard;
 
     /// Single-attempt ladder: these tests drive local bare remotes whose
     /// failures are deterministic, so a retry would only add wall-clock.
@@ -370,54 +371,6 @@ mod tests {
             msg.contains("dirty working tree"),
             "expected dirty-tree error, got: {msg}"
         );
-    }
-
-    /// Sets or removes a process env var for the guard's lifetime, restoring
-    /// the prior value (or absence) on drop. Every caller carries
-    /// `#[serial(git_env)]`, shared with `commit.rs`'s identical group, so no
-    /// other git-identity test reads or writes the environment concurrently.
-    enum EnvGuard {
-        Set {
-            key: &'static str,
-            prev: Option<String>,
-        },
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: serialized via `#[serial(git_env)]`; restored on drop.
-            // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
-            unsafe { std::env::set_var(key, value) };
-            Self::Set { key, prev }
-        }
-
-        /// Removes `key` from the process env for the guard's lifetime, so
-        /// no ambient identity can mask the "no ambient identity" bug this
-        /// proves fixed.
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: serialized via `#[serial(git_env)]`; restored on drop.
-            // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
-            unsafe { std::env::remove_var(key) };
-            Self::Set { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            let Self::Set { key, prev } = self;
-            // SAFETY: see `EnvGuard::set`/`remove` — serialized, restored
-            // immediately on drop.
-            unsafe {
-                match prev {
-                    // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
-                    Some(v) => std::env::set_var(key, v),
-                    // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
     }
 
     /// Regression for the runner failure mode: on a host with no ambient git

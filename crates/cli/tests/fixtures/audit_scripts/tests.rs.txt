@@ -9,8 +9,15 @@ fn sibling_file_is_test_context() {
 
 #[test]
 #[serial_test::serial(sibling_env)]
-fn a_justified_call_is_not_reported() {
+fn a_hand_restored_call_is_reported() {
     unsafe { std::env::set_var("SIBLING_JUSTIFIED", "1") }; // env-ok: serialised by serial(sibling_env)
+}
+
+// The permitted shape: the raw mutation is the guard's OWN body, so the
+// restore is bound to a drop instead of written out by hand.
+fn sibling_env_guard(key: &'static str) -> EnvGuard {
+    unsafe { std::env::set_var(key, "SIBLING_GUARDED") }; // env-ok: restored when the guard drops
+    EnvGuard(key)
 }
 
 #[test]

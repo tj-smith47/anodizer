@@ -464,22 +464,11 @@ mod tests {
         max_delay: std::time::Duration::from_millis(0),
     };
 
-    struct EnvGuard;
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-            unsafe { std::env::remove_var("ANODIZE_OPENCOLLECTIVE_API_BASE") };
-        }
-    }
-    fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
-        unsafe {
-            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-            std::env::set_var(
-                "ANODIZE_OPENCOLLECTIVE_API_BASE",
-                format!("http://{addr}/graphql/v2"),
-            )
-        };
-        EnvGuard
+    fn set_base(addr: std::net::SocketAddr) -> anodizer_core::test_helpers::env::EnvGuard {
+        anodizer_core::test_helpers::env::EnvGuard::set(
+            "ANODIZE_OPENCOLLECTIVE_API_BASE",
+            format!("http://{addr}/graphql/v2"),
+        )
     }
     fn http_response(status_line: &str, body: &str) -> &'static str {
         let resp = format!(

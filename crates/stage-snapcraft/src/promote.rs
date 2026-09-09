@@ -939,26 +939,11 @@ Rev    Uploaded              Arches  Version  Channels
         }
     }
 
-    /// RAII guard that clears `SNAPCRAFT_STORE_CREDENTIALS` for the duration of
-    /// a preflight test that must exercise the `snapcraft whoami` probe (which
-    /// only runs when the credential env var is absent), restoring the prior
-    /// value on drop.
-    struct CredsCleared(Option<std::ffi::OsString>);
-    impl CredsCleared {
-        fn new() -> Self {
-            let prev = std::env::var_os("SNAPCRAFT_STORE_CREDENTIALS");
-            // env-ok: serialised by #[serial(path_env)] on every caller test
-            unsafe { std::env::remove_var("SNAPCRAFT_STORE_CREDENTIALS") };
-            Self(prev)
-        }
-    }
-    impl Drop for CredsCleared {
-        fn drop(&mut self) {
-            if let Some(v) = self.0.take() {
-                // env-ok: serialised by #[serial(path_env)] on every caller test
-                unsafe { std::env::set_var("SNAPCRAFT_STORE_CREDENTIALS", v) };
-            }
-        }
+    /// Clears `SNAPCRAFT_STORE_CREDENTIALS` for the guard's lifetime so a
+    /// preflight test exercises the `snapcraft whoami` probe, which only runs
+    /// when the credential env var is absent.
+    fn creds_cleared() -> anodizer_core::test_helpers::env::EnvGuard {
+        anodizer_core::test_helpers::env::EnvGuard::remove("SNAPCRAFT_STORE_CREDENTIALS")
     }
 
     // A missing Snap Store session must surface an actionable message
@@ -979,7 +964,7 @@ Rev    Uploaded              Arches  Version  Channels
             )
             .install();
         let _path = tools.activate();
-        let _creds = CredsCleared::new();
+        let _creds = creds_cleared();
         let err = preflight().expect_err("no store session must bail actionably");
         assert!(
             format!("{err:#}").contains("no Snap Store session"),
@@ -1004,7 +989,7 @@ Rev    Uploaded              Arches  Version  Channels
             )
             .install();
         let _path = tools.activate();
-        let _creds = CredsCleared::new();
+        let _creds = creds_cleared();
         preflight().expect("a live whoami session ⇒ preflight ok");
     }
 

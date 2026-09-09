@@ -5407,9 +5407,9 @@ mod authenticode {
 
         // The child inherits the REAL parent env, not ctx's injected source, so
         // the var must exist in the real env for the strip to be observable.
-        unsafe { std::env::set_var(PW_ENV, "child-must-not-see-this") }; // env-ok: serialised by #[serial(authenticode_pw_env)]; removed before returning
+        let _password =
+            anodizer_core::test_helpers::env::EnvGuard::set(PW_ENV, "child-must-not-see-this");
         let result = SignStage.run(&mut ctx);
-        unsafe { std::env::remove_var(PW_ENV) }; // env-ok: serialised by #[serial(authenticode_pw_env)]
 
         result.expect("signing succeeds (password supplied via argv)");
         let child_env = std::fs::read_to_string(&env_dump).expect("read child env dump");

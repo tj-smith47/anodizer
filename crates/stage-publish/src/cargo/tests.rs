@@ -2103,9 +2103,10 @@ fn main() {
     // `..._unrelated_failure_windows` test races the set/remove pair
     // without serialization. The `#[serial(stub_counter)]` annotation on
     // the test guarantees no other stub_counter test runs concurrently.
-    // SAFETY: serialised by `#[serial(stub_counter)]`; pair set / remove.
-    // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
-    unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
+    let _counter = anodizer_core::test_helpers::env::EnvGuard::set(
+        "STUB_COUNTER",
+        counter.display().to_string(),
+    );
     let result = run_cargo_publish_with_retry(
         &cmd,
         "stub publish",
@@ -2114,9 +2115,6 @@ fn main() {
         None,
     )
     .expect("retry harness must succeed after propagation lag");
-    // SAFETY: serialised by `#[serial(stub_counter)]`; pair with set.
-    // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
-    unsafe { std::env::remove_var("STUB_COUNTER") };
     assert!(result.status.success(), "final attempt must succeed");
 
     let n: u32 = std::fs::read_to_string(&counter)
@@ -2176,9 +2174,10 @@ fn main() {
     // Serialized by `#[serial(stub_counter)]` — see the sibling
     // `..._recovers_from_propagation_lag_windows` test for the
     // race this guards against.
-    // SAFETY: serialised by `#[serial(stub_counter)]`; pair set / remove.
-    // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
-    unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
+    let _counter = anodizer_core::test_helpers::env::EnvGuard::set(
+        "STUB_COUNTER",
+        counter.display().to_string(),
+    );
     let err = run_cargo_publish_with_retry(
         &cmd,
         "stub publish",
@@ -2187,9 +2186,6 @@ fn main() {
         None,
     )
     .expect_err("non-propagation failure must surface");
-    // SAFETY: serialised by `#[serial(stub_counter)]`; pair with set.
-    // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
-    unsafe { std::env::remove_var("STUB_COUNTER") };
     let chain = format!("{err:#}");
     assert!(
         chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),

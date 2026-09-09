@@ -249,27 +249,13 @@ mod tests {
     };
 
     /// Point BOTH reddit seams (token + oauth host) at one mock; the two POSTs
-    /// distinguish themselves by path. Removes the vars on drop.
-    struct EnvGuard;
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-                std::env::remove_var("ANODIZE_REDDIT_TOKEN_BASE");
-                // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-                std::env::remove_var("ANODIZE_REDDIT_OAUTH_BASE");
-            }
-        }
-    }
-    fn set_bases(addr: std::net::SocketAddr) -> EnvGuard {
+    /// distinguish themselves by path. Both are restored when the guards drop.
+    fn set_bases(addr: std::net::SocketAddr) -> [anodizer_core::test_helpers::env::EnvGuard; 2] {
         let base = format!("http://{addr}");
-        unsafe {
-            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-            std::env::set_var("ANODIZE_REDDIT_TOKEN_BASE", &base);
-            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
-            std::env::set_var("ANODIZE_REDDIT_OAUTH_BASE", &base);
-        }
-        EnvGuard
+        [
+            anodizer_core::test_helpers::env::EnvGuard::set("ANODIZE_REDDIT_TOKEN_BASE", &base),
+            anodizer_core::test_helpers::env::EnvGuard::set("ANODIZE_REDDIT_OAUTH_BASE", &base),
+        ]
     }
     fn http_response(status_line: &str, body: &str) -> &'static str {
         let resp = format!(

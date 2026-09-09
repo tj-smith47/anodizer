@@ -107,6 +107,16 @@ mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(
 # enclosing-scope inference (brace/`fn` counting corrupts on `fn`/`{` inside
 # string literals, e.g. an embedded stub-program source) — the explicit marker
 # is the contract.
+#
+# A marker justifies the RACE, not the RESTORE. A hand-paired
+# `set_var(…) … remove_var(…)` leaks its override into the next test in the
+# process whenever the body between the two halves panics, which is exactly
+# what a failing assertion does. So a test-region env mutation must also sit
+# in a function that names `EnvGuard` — `anodizer_core::test_helpers::env`'s
+# RAII override, restored on drop, unwinding included. The FUNCTION is the
+# unit because the guard is bound once at the top (`let _g =
+# EnvGuard::set(…)`) while the mutation it replaces sat anywhere below it;
+# hits are therefore buffered until the function ends.
 # The #[cfg(unix)]-gated cwd-swap test helpers in
 # crates/cli/src/commands/helpers.rs. WHY a named allow-list rather than
 # discovering "any fn matching with_*_cwd": a third helper joining this club
@@ -177,13 +187,28 @@ all_helper_alt="${helper_alt}|${portable_alt}"
 violations=""
 if [[ ${#FILES[@]} -gt 0 ]]; then
     run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+        function flush_fn(   i) {
+            if (!fn_guarded)
+                for (i = 1; i <= pending_n; i++) print pending[i]
+            pending_n = 0
+            fn_guarded = 0
+        }
+
         FNR == 1 {
+            flush_fn()
             whole_file_is_test = is_test_file(FILENAME)
             prev_envok = 0; this_envok = 0; prev_cwdok = 0; this_cwdok = 0
+            reset_lex()
         }
 
         {
             line = $0
+            # The mutation is matched against CODE with string and comment
+            # content elided: a `std::env::set_var(` inside a Rust string
+            # literal — a fixture, an expected-output assertion — is text, not
+            # a mutation. The markers are read off the RAW line, since
+            # `strip_code` elides the very comment that carries them.
+            code = strip_code(line)
             in_test = (whole_file_is_test || in_test_region)
             prev_envok = this_envok
             this_envok = (line ~ /\/\/[[:space:]]*env-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
@@ -191,17 +216,31 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
             this_cwdok = (line ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
         }
 
-        /std::env::(set_var|remove_var)\(/ {
+        code ~ /^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?fn[[:space:]]+[A-Za-z0-9_]+/ {
+            flush_fn()
+        }
+
+        code ~ /EnvGuard/ { fn_guarded = 1 }
+
+        code ~ /std::env::(set_var|remove_var)\(/ {
             if (!in_test) next                  # production startup code
-            if (this_envok || prev_envok) next  # justified at the call site
+            if (this_envok || prev_envok) {
+                # Justified against the RACE. The RESTORE still has to survive
+                # a failing assertion, and only the guard makes it.
+                pending[++pending_n] = sprintf("%s:%d: [env-guard] %s", \
+                    FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+                next
+            }
             printf("%s:%d: [env] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
         }
 
-        /std::env::set_current_dir\(/ {
+        code ~ /std::env::set_current_dir\(/ {
             if (!in_test) next                  # production / library code
             if (this_cwdok || prev_cwdok) next  # justified at the call site
             printf("%s:%d: [cwd] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
         }
+
+        END { flush_fn() }
 AWK
 fi
 
@@ -344,6 +383,15 @@ if [[ -n "$violations" ]]; then
     echo "#[serial_test::serial(<grp>)] grouped by shared resource (path_env /"
     echo "git_env / <var>_env), then add  // env-ok: serialised by #[serial(<grp>)]"
     echo "at the call site."
+    echo
+    echo "Each [env-guard] call is justified against the RACE but restores by"
+    echo "hand: nothing puts the variable back when the body between the set and"
+    echo "the restore panics, and the override leaks into the next test in the"
+    echo "process."
+    echo "[env-guard] Fix: bind anodizer_core::test_helpers::env::EnvGuard —"
+    echo "  let _g = EnvGuard::set(\"VAR\", value);   (or EnvGuard::remove(\"VAR\"))"
+    echo "— and DELETE both the raw mutation and its hand-written restore. The"
+    echo "guard restores on drop, unwinding included."
     echo
     echo "[cwd] Fix (preferred): use the RAII"
     echo "anodizer_core::test_helpers::CwdGuard (swap on new, panic-safe restore"

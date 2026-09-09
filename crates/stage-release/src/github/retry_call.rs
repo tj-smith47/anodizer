@@ -495,11 +495,10 @@ mod tests {
         // (`retry_octocrab_call` → `secondary_rl_delay`), which does not thread
         // an `EnvSource`; the `serial(secondary_rl_env)` attribute serializes
         // this mutation against any other test touching the same var.
-        // SAFETY: test-only env mutation; unique key, serialized window.
-        unsafe {
-            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
-            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
-        }
+        let _delay = anodizer_core::test_helpers::env::EnvGuard::set(
+            "ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS",
+            "1",
+        );
 
         let t0 = Instant::now();
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
@@ -508,11 +507,6 @@ mod tests {
             })
             .await;
         let elapsed = t0.elapsed();
-
-        unsafe {
-            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
 
         assert!(
             result.is_ok(),
@@ -557,11 +551,10 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };
-        // SAFETY: test-only env mutation; unique key, serialized window.
-        unsafe {
-            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
-            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
-        }
+        let _delay = anodizer_core::test_helpers::env::EnvGuard::set(
+            "ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS",
+            "1",
+        );
         let deadline = Instant::now() + Duration::from_millis(100);
         let t0 = Instant::now();
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
@@ -570,11 +563,6 @@ mod tests {
             })
             .await;
         let elapsed = t0.elapsed();
-        // SAFETY: test-only env mutation; unique key, serialized window.
-        unsafe {
-            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
         assert!(result.is_err(), "spent budget must surface Err");
         assert_eq!(
             calls.load(Ordering::SeqCst),
