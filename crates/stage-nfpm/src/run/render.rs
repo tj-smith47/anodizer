@@ -204,8 +204,8 @@ pub(crate) fn render_and_generate_nfpm_yaml(
     ctx: &mut Context,
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     crate_name: &str,
-    linux_binaries: &[Artifact],
     target: Option<&str>,
+    amd64_variant: Option<&str>,
     binary_paths: &[String],
     lib_paths: &NfpmLibraryPaths,
     os: &str,
@@ -227,7 +227,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     pin_nfpm_script_mtimes(&mut rendered_cfg, nfpm_cfg, dist, crate_name, dry_run)?;
 
-    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, target);
+    fill_deb_arch_variant(&mut rendered_cfg, arch, amd64_variant);
 
     setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, arch, dist, dry_run)?;
 

@@ -1,23 +1,43 @@
 use super::*;
 
-/// Fill `deb.arch_variant` from the per-target artifact's `amd64_variant`
-/// (GOAMD64 microarch) metadata when the user has not set it explicitly, so an
-/// amd64 deb is tagged with the microarchitecture it was built for.
+/// The Debian architecture variant a build stamps, or `None` when it stamps
+/// none.
+///
+/// `v1` is the baseline x86-64 microarchitecture level and Debian's
+/// architecture vocabulary has no `amd64v1`, so an ordinary build must carry
+/// no variant at all — only the optimized levels (`v2`/`v3`/`v4`) name one.
+/// Nothing but amd64 has a microarchitecture level to name.
+pub(crate) fn deb_arch_variant(arch: &str, amd64_variant: Option<&str>) -> Option<String> {
+    match amd64_variant {
+        Some(v) if arch == "amd64" && !v.is_empty() && v != "v1" => Some(v.to_string()),
+        _ => None,
+    }
+}
+
+/// Fill `deb.arch_variant` from the microarchitecture of the build being
+/// packaged when the user has not set it explicitly, so an optimized amd64 deb
+/// is tagged with the level it was compiled for.
+///
+/// The variant arrives from the platform group, which is keyed on it: looking
+/// it up by target triple instead would hand every variant of one triple the
+/// first one's answer. A package that needs the field materializes a `deb`
+/// block, since the stamp describes the build, not the user's deb options.
 pub(crate) fn fill_deb_arch_variant(
     rendered_cfg: &mut anodizer_core::config::NfpmConfig,
-    linux_binaries: &[Artifact],
-    target: Option<&str>,
+    arch: &str,
+    amd64_variant: Option<&str>,
 ) {
-    if let Some(ref mut deb) = rendered_cfg.deb
-        && deb.arch_variant.is_none()
-        && let Some(t) = target
+    if rendered_cfg
+        .deb
+        .as_ref()
+        .is_some_and(|d| d.arch_variant.is_some())
     {
-        let variant = linux_binaries
-            .iter()
-            .find(|b| b.target.as_deref() == Some(t))
-            .and_then(|b| b.metadata.get("amd64_variant").cloned());
-        deb.arch_variant = variant;
+        return;
     }
+    let Some(variant) = deb_arch_variant(arch, amd64_variant) else {
+        return;
+    };
+    rendered_cfg.deb.get_or_insert_default().arch_variant = Some(variant);
 }
 
 /// Resolve the package name following this precedence:
@@ -440,7 +460,6 @@ pub fn nfpm_yaml_configs_for_crate(
                     crate_name,
                     &render_target,
                     amd64_variant.as_deref(),
-                    &linux_binaries,
                     binary_paths,
                     lib_paths,
                 )?;
@@ -465,14 +484,12 @@ pub fn nfpm_yaml_configs_for_crate(
 /// lists (`conflicts`/`provides`/…) resolve their `{{ .Libc }}` etc. exactly
 /// as the live build does — the offline render emits what the build feeds nfpm.
 ///
-/// `linux_binaries` is threaded so the deb `arch_variant` the live build
-/// auto-derives from a target's `amd64_variant` metadata
-/// (`fill_deb_arch_variant`) is present in the validated YAML too, keeping the
-/// validated config byte-identical to the shipped one.
-///
 /// `amd64_variant` seeds the `Amd64` template var on the cloned vars, mirroring
 /// the live build, so a config field referencing `{{ .Amd64 }}` renders the
-/// same per-variant value offline as it ships.
+/// same per-variant value offline as it ships; it also carries the deb
+/// `arch_variant` the live build stamps (`fill_deb_arch_variant`) into the
+/// validated YAML, keeping the validated config byte-identical to the shipped
+/// one.
 #[allow(clippy::too_many_arguments)]
 fn render_offline_nfpm_yaml(
     ctx: &Context,
@@ -480,7 +497,6 @@ fn render_offline_nfpm_yaml(
     crate_name: &str,
     render_target: &crate::generate::NfpmRenderTarget<'_>,
     amd64_variant: Option<&str>,
-    linux_binaries: &[Artifact],
     binary_paths: &[String],
     lib_paths: &NfpmLibraryPaths,
 ) -> Result<String> {
@@ -503,7 +519,7 @@ fn render_offline_nfpm_yaml(
 
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
     default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());
-    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, render_target.target);
+    fill_deb_arch_variant(&mut rendered_cfg, render_target.arch, amd64_variant);
 
     generate_nfpm_yaml_with_env(
         &rendered_cfg,
