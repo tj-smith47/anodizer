@@ -916,12 +916,27 @@ fn audit_scripts() -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Words that only prefix another command, so the command word is the next
-/// one along.
+/// Words that only prefix another command, so the command word is the next one
+/// along. Matched on the BASENAME, the same half of the word the awk names are
+/// matched on, so `/usr/bin/env awk` peels exactly as `env awk` does.
 const COMMAND_WRAPPERS: &[&str] = &["command", "exec", "env", "xargs", "nice", "time", "sudo"];
+
+/// Reserved words that introduce a command rather than being one.
+const RESERVED_WORDS: &[&str] = &[
+    "if", "then", "elif", "else", "while", "until", "do", "{", "}", "!",
+];
+
+/// Builtins that answer whether a program EXISTS. The word after one is the
+/// name being asked about, not a program being run.
+const PROBES: &[&str] = &["type", "hash", "which"];
 
 /// Every basename that runs an awk program.
 const AWK_NAMES: &[&str] = &["awk", "gawk", "mawk", "nawk"];
+
+/// The last `/`-separated component of `word`.
+fn basename(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
 
 /// Whether `word` is a `VAR=value` assignment, which precedes a command
 /// rather than being one.
@@ -936,37 +951,71 @@ fn is_assignment(word: &str) -> bool {
     }
 }
 
+/// Whether `word` is a redirection (`2>/dev/null`, `&>`, `>>`, `<<<`) and, if
+/// so, whether its target is attached to it. A redirection precedes the
+/// command word exactly as an option does; a detached target is the word after.
+fn redirection(word: &str) -> Option<bool> {
+    let rest = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest.strip_prefix('&').unwrap_or(rest);
+    let target = rest.trim_start_matches(['<', '>', '&']);
+    (target.len() < rest.len()).then_some(!target.is_empty())
+}
+
 /// The command word `segment` starts, as `(word, basename)`. A leading `\`,
-/// `VAR=value` assignments, option words and their numeric arguments,
-/// grouping braces and the wrappers above are peeled off first, so
+/// `VAR=value` assignments, redirections, option words and their numeric
+/// arguments, reserved words and the wrappers above are peeled off first, so
 /// `exec /usr/bin/gawk -f x` answers `("/usr/bin/gawk", "gawk")` and
-/// `${AWK} -f x` answers itself twice. `None` when the segment starts no
-/// command.
+/// `${AWK} -f x` answers itself twice. `None` when the segment runs nothing —
+/// it starts no command, or it only asks whether a program exists.
 fn command_word(segment: &str) -> Option<(&str, &str)> {
-    for word in segment.split_whitespace() {
-        let word = word.trim_start_matches('\\');
-        if word.is_empty()
-            || word == "{"
-            || word == "}"
-            || word == "!"
-            || word.starts_with('-')
-            || word.chars().all(|c| c.is_ascii_digit())
-            || is_assignment(word)
-            || COMMAND_WRAPPERS.contains(&word)
-        {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        let word = words[i].trim_start_matches('\\');
+        let base = basename(word);
+        if base == "command" && matches!(words.get(i + 1), Some(&"-v" | &"-V")) {
+            return None;
+        }
+        if PROBES.contains(&base) {
+            return None;
+        }
+        if let Some(target_attached) = redirection(word) {
+            i += if target_attached { 1 } else { 2 };
             continue;
         }
-        return Some((word, word.rsplit('/').next().unwrap_or(word)));
+        if word.is_empty()
+            || word.starts_with('-')
+            || word.chars().all(|c| c.is_ascii_digit())
+            || RESERVED_WORDS.contains(&word)
+            || is_assignment(word)
+            || COMMAND_WRAPPERS.contains(&base)
+        {
+            i += 1;
+            continue;
+        }
+        return Some((word, base));
     }
     None
+}
+
+/// One command position: where it starts, its text, and the two facts about
+/// what preceded it that the classifier needs.
+struct Segment {
+    line: usize,
+    text: String,
+    /// Inside a `$(…)`, `<(…)` or `>(…)`. A collection run from there feeds a
+    /// verdict without the shared collector's status handling.
+    substituted: bool,
+    /// Reached through `||`, so a `true` here swallows the failure before it.
+    after_or: bool,
 }
 
 /// Why the command `segment` starts may not stand in an `audit-*.sh`, or
 /// `None`. `eval` and a command word that is a variable expansion are refused
 /// outright: an audit script has no business with either, and both put a
 /// program the pin cannot read into command position.
-fn forbidden_word(segment: &str) -> Option<String> {
-    let (word, base) = command_word(segment)?;
+fn forbidden_word(segment: &Segment) -> Option<String> {
+    let (word, base) = command_word(&segment.text)?;
     if word.starts_with('$') && word.len() > 1 {
         return Some(format!("a variable in command position (`{word}`)"));
     }
@@ -976,26 +1025,57 @@ fn forbidden_word(segment: &str) -> Option<String> {
     if AWK_NAMES.contains(&base) {
         return Some(format!("awk invoked directly (`{word}`)"));
     }
+    if segment.after_or && base == "true" {
+        return Some("a swallowed failure (`|| true`)".to_string());
+    }
+    if segment.substituted && base == "grep" {
+        return Some(format!("a collection outside collect_files (`{word}`)"));
+    }
     None
 }
 
 /// The first reason any command in `body` may not stand in an `audit-*.sh`.
 fn forbidden_command(body: &str) -> Option<String> {
-    command_segments(body)
-        .into_iter()
-        .find_map(|(_, segment)| forbidden_word(&segment))
+    command_segments(body).iter().find_map(forbidden_word)
 }
 
-/// Every command position in `body`, as `(line number, segment)`. A command
-/// starts at a line, or after an unquoted `|`, `;`, `&`, backtick or `$(`, so
-/// `x="$(gawk …)"`, `… | mawk …` and `exec awk …` all start one. What is NOT
-/// a command never reaches the classifier: a heredoc body (an awk program is
-/// full of `$0`), a multi-line single-quoted argument (the perl program in
-/// `audit-doc-source-links.sh`), a comment, `((…))` arithmetic, and the
-/// interior of a `[[ … ]]` test, whose `||` joins conditions rather than
-/// commands. A `\`-continued line carries its command word forward instead of
-/// starting a new one.
-fn command_segments(body: &str) -> Vec<(usize, String)> {
+/// Accumulates one command position at a time.
+#[derive(Default)]
+struct SegmentSink {
+    segments: Vec<Segment>,
+    current: String,
+    /// Any of the segment being accumulated was the interior of a `[[ … ]]`
+    /// test, which is not a command list.
+    test_expr: bool,
+    after_or: bool,
+}
+
+impl SegmentSink {
+    /// Close the segment at `line` and open the next one.
+    fn take(&mut self, line: usize, substituted: bool, next_after_or: bool) {
+        let text = std::mem::take(&mut self.current);
+        if !self.test_expr {
+            self.segments.push(Segment {
+                line,
+                text,
+                substituted,
+                after_or: self.after_or,
+            });
+        }
+        self.test_expr = false;
+        self.after_or = next_after_or;
+    }
+}
+
+/// Every command position in `body`. A command starts at a line, or after an
+/// unquoted `|`, `;`, `&`, backtick, `$(`, `<(`, `>(` or a subshell's `(`, so
+/// `x="$(gawk …)"`, `… | mawk …`, `mapfile -t f < <(awk …)` and `exec awk …`
+/// all start one. What is NOT a command never reaches the classifier: a
+/// heredoc body (an awk program is full of `$0`), a comment, `((…))`
+/// arithmetic, and the interior of a `[[ … ]]` test, whose `||` joins
+/// conditions rather than commands. A `\`-continued line carries its command
+/// word forward instead of starting a new one.
+fn command_segments(body: &str) -> Vec<Segment> {
     #[derive(PartialEq)]
     enum Quote {
         Bare,
@@ -1003,13 +1083,13 @@ fn command_segments(body: &str) -> Vec<(usize, String)> {
         Double,
     }
 
-    let mut segments = Vec::new();
+    let mut sink = SegmentSink::default();
     let mut stack = vec![Quote::Bare];
+    // Aligned with `stack`: whether each open context is a substitution.
+    let mut substituted = vec![false];
     let mut heredoc: Option<String> = None;
-    let mut current = String::new();
     let mut continued;
     let mut in_test_expr = false;
-    let mut test_expr_segment = false;
 
     for (index, line) in body.lines().enumerate() {
         if let Some(delimiter) = &heredoc {
@@ -1023,66 +1103,83 @@ fn command_segments(body: &str) -> Vec<(usize, String)> {
         let mut i = 0;
         while i < chars.len() {
             let c = chars[i];
+            let inside = substituted.iter().any(|&s| s);
             if stack.last() == Some(&Quote::Single) {
+                // A quoted word still contributes its characters: `'awk' -f x`
+                // runs awk exactly as `awk -f x` does.
                 if c == '\'' {
                     stack.pop();
+                    substituted.pop();
+                } else {
+                    sink.current.push(c);
                 }
                 i += 1;
                 continue;
             }
-            test_expr_segment |= in_test_expr;
+            sink.test_expr |= in_test_expr;
             let double = stack.last() == Some(&Quote::Double);
             if c == '\\' {
                 match chars.get(i + 1) {
-                    Some(&escaped) => current.push(escaped),
+                    Some(&escaped) => sink.current.push(escaped),
                     None => continued = true,
                 }
                 i += 2;
             } else if c == '"' {
                 if double {
                     stack.pop();
+                    substituted.pop();
                 } else {
                     stack.push(Quote::Double);
+                    substituted.push(false);
                 }
                 i += 1;
             } else if c == '$' && chars.get(i + 1) == Some(&'(') {
                 // Command substitution opens a command position even inside a
                 // double-quoted word.
                 stack.push(Quote::Bare);
-                take_segment(
-                    &mut segments,
-                    index + 1,
-                    &mut current,
-                    &mut test_expr_segment,
-                );
+                substituted.push(true);
+                sink.take(index + 1, inside, false);
+                i += 2;
+            } else if !double && matches!(c, '<' | '>') && chars.get(i + 1) == Some(&'(') {
+                stack.push(Quote::Bare);
+                substituted.push(true);
+                sink.take(index + 1, inside, false);
                 i += 2;
             } else if double {
-                current.push(c);
+                sink.current.push(c);
                 i += 1;
             } else if c == '\'' {
                 stack.push(Quote::Single);
+                substituted.push(false);
                 i += 1;
             } else if c == '#' && (i == 0 || chars[i - 1].is_whitespace()) {
                 break;
             } else if c == '(' && chars.get(i + 1) == Some(&'(') {
                 i = arithmetic_end(&chars, i);
-                current.clear();
-            } else if (c == ')' && stack.len() > 1) || matches!(c, '|' | ';' | '&' | '`') {
-                if c == ')' {
-                    stack.pop();
-                }
-                take_segment(
-                    &mut segments,
-                    index + 1,
-                    &mut current,
-                    &mut test_expr_segment,
-                );
+                sink.current.clear();
+            } else if c == '(' && sink.current.trim().is_empty() {
+                // A subshell, not the `(` of `arr+=(…)` or a `case` pattern:
+                // only at a command position is the parenthesis itself one.
+                stack.push(Quote::Bare);
+                substituted.push(false);
+                sink.take(index + 1, inside, false);
+                i += 1;
+            } else if c == ')' && stack.len() > 1 {
+                stack.pop();
+                substituted.pop();
+                sink.take(index + 1, inside, false);
+                i += 1;
+            } else if matches!(c, '|' | '&') && chars.get(i + 1) == Some(&c) {
+                sink.take(index + 1, inside, c == '|');
+                i += 2;
+            } else if matches!(c, '|' | ';' | '&' | '`') {
+                sink.take(index + 1, inside, false);
                 i += 1;
             } else {
-                current.push(c);
-                if c == '[' && current.ends_with("[[") {
+                sink.current.push(c);
+                if c == '[' && sink.current.ends_with("[[") {
                     in_test_expr = true;
-                } else if c == ']' && current.ends_with("]]") {
+                } else if c == ']' && sink.current.ends_with("]]") {
                     in_test_expr = false;
                 }
                 i += 1;
@@ -1091,32 +1188,13 @@ fn command_segments(body: &str) -> Vec<(usize, String)> {
         // A newline ends a command only outside quotes and outside a `\`
         // continuation; otherwise the next line is more of the same command.
         if !continued && stack.len() == 1 && stack[0] == Quote::Bare {
-            take_segment(
-                &mut segments,
-                index + 1,
-                &mut current,
-                &mut test_expr_segment,
-            );
+            let inside = substituted.iter().any(|&s| s);
+            sink.take(index + 1, inside, false);
             in_test_expr = false;
         }
         heredoc = heredoc_delimiter(line).map(str::to_string);
     }
-    segments
-}
-
-/// Close the segment `current` holds at `line`, unless any of it was the
-/// interior of a `[[ … ]]` test.
-fn take_segment(
-    segments: &mut Vec<(usize, String)>,
-    line: usize,
-    current: &mut String,
-    test_expr_segment: &mut bool,
-) {
-    let segment = std::mem::take(current);
-    if !*test_expr_segment {
-        segments.push((line, segment));
-    }
-    *test_expr_segment = false;
+    sink.segments
 }
 
 /// The index just past the `))` closing the `((` at `open`, or the end of the
@@ -1179,17 +1257,12 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
     for script in audit_scripts() {
         let name = script.file_name().expect("file name").to_string_lossy();
         let body = std::fs::read_to_string(&script).expect("script body");
-        for (line_no, segment) in command_segments(&body) {
+        for segment in command_segments(&body) {
             if let Some(why) = forbidden_word(&segment) {
-                forbidden.push(format!("{name}:{line_no}: {why}: {}", segment.trim()));
-            }
-        }
-        for (index, line) in body.lines().enumerate() {
-            if line.contains("|| true") {
                 forbidden.push(format!(
-                    "{name}:{}: a swallowed failure (`|| true`): {}",
-                    index + 1,
-                    line.trim()
+                    "{name}:{}: {why}: {}",
+                    segment.line,
+                    segment.text.trim()
                 ));
             }
         }
@@ -1238,6 +1311,19 @@ fn the_runner_pin_recognises_every_awk_spelling() {
         "$AWK -f prog.awk file",
         "${AWK} -f prog.awk file",
         "eval \"$program\"",
+        "/usr/bin/env awk -f prog.awk file",
+        "/usr/bin/env -S awk -f prog.awk file",
+        "mapfile -t FILES < <(awk -f prog.awk file)",
+        "readarray -t FILES < <(gawk -f prog.awk file)",
+        "2>/dev/null awk -f prog.awk file",
+        "2> /dev/null awk -f prog.awk file",
+        "( awk -f prog.awk file )",
+        "if [ -f x ]; then awk -f prog.awk x; fi",
+        "for f in *; do awk -f prog.awk \"$f\"; done",
+        "'awk' -f prog.awk file",
+        "mapfile -t FILES < <(grep -rl x crates)",
+        "files=\"$(grep -rl x crates)\"",
+        "hits=\"$(sed -n 1p file)\" || true",
     ] {
         assert!(
             forbidden_command(line).is_some(),
@@ -1252,6 +1338,13 @@ fn the_runner_pin_recognises_every_awk_spelling() {
         "grep -qE -- \"task: ${target}\" <<< \"$combined\"",
         "LIB_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)/lib\"",
         "done <<< \"$mod_decls\"",
+        "command -v awk > /dev/null 2>&1",
+        "type gawk",
+        "hash mawk 2>/dev/null",
+        "which nawk",
+        "# a swallowed failure looks like `|| true` — never write one",
+        "arr+=(\"$f\")",
+        "case \"$x\" in awk) ;; esac",
     ] {
         assert!(
             forbidden_command(line).is_none(),
