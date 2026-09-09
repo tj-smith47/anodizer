@@ -18,6 +18,7 @@ use crate::group::{
     CommitInfo, GroupedCommits, apply_filters, apply_include_filters, extract_co_authors,
     group_commits, parse_commit_message, render_changelog, sort_commits,
 };
+use crate::render::wrap_with_header_footer;
 use crate::run::write_changelog_dist;
 
 #[test]
@@ -2558,6 +2559,24 @@ fn test_header_footer_template_rendering() {
 
     assert_eq!(rendered_header, "# myapp v2.0.0 Release Notes");
     assert_eq!(rendered_footer, "---\nGenerated for myapp");
+}
+
+#[test]
+fn blank_changelog_footer_reaches_the_release_stage_as_unset() {
+    // `changelog.footer: ""` renders to nothing, so the stage-outputs slot
+    // stays empty rather than carrying an empty string. That is what lets the
+    // release body fall back to its default attribution line instead of
+    // reading the blank value as a deliberate opt-out.
+    let mut ctx = TestContextBuilder::new().build();
+
+    let md = wrap_with_header_footer(&mut ctx, &test_logger(), "## Changelog\n", None, Some(""))
+        .unwrap();
+
+    assert_eq!(md, "## Changelog\n");
+    assert!(
+        ctx.stage_outputs.changelog_footer.is_none(),
+        "a blank footer must not be stashed as Some(\"\")"
+    );
 }
 
 #[test]

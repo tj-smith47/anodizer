@@ -405,6 +405,33 @@ fn base_release_opts() -> ReleaseOpts {
     }
 }
 
+#[test]
+fn an_empty_release_footer_file_suppresses_the_attribution() {
+    // `--release-footer <empty file>` is the documented opt-out from the
+    // default attribution line. The empty file must land as an explicit empty
+    // string: dropping it to `None` would read as "unset" downstream and
+    // restore the very footer the operator asked to remove.
+    let dir = tempfile::tempdir().unwrap();
+    let footer = dir.path().join("footer.md");
+    std::fs::write(&footer, "").unwrap();
+
+    let mut config = Config::default();
+    let mut opts = base_release_opts();
+    opts.release_footer = Some(footer);
+
+    apply_release_meta_overrides(&mut config, &opts).unwrap();
+
+    let resolved = config
+        .release
+        .as_ref()
+        .and_then(|r| r.footer.as_ref())
+        .expect("the flag must write a release footer");
+    assert!(
+        matches!(resolved, anodizer_core::config::ContentSource::Inline(s) if s.is_empty()),
+        "expected an explicit empty inline footer, got {resolved:?}"
+    );
+}
+
 fn host_targets_opts() -> ReleaseOpts {
     ReleaseOpts {
         host_targets: true,

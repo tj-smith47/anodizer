@@ -705,16 +705,39 @@ fn per_crate_family_tags_bound_the_compare_range() {
 
 #[test]
 fn lockstep_body_carries_exactly_one_link() {
+    // A lockstep workspace composes ONE release body over the whole crate
+    // universe. The derived link belongs to the release tag, not to a crate,
+    // so a body assembled over two crates still carries a single link line —
+    // deriving it per crate would stack one per universe entry.
     let ctx = TestContextBuilder::new()
         .tag("v0.25.2")
         .previous_tag(Some("v0.25.1"))
+        .crates(vec![
+            CrateConfig {
+                name: "anodizer-core".to_string(),
+                path: "crates/core".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "anodizer".to_string(),
+                path: "crates/cli".to_string(),
+                tag_template: Some("v{{ Version }}".to_string()),
+                release: Some(anodizer_release_cfg()),
+                ..Default::default()
+            },
+        ])
         .build();
     let cfg = anodizer_release_cfg();
-    let aggregate = "### anodizer-core\n\n* a change\n\n### anodizer-cli\n\n* another change";
+    let aggregate = "### anodizer-core\n\n* a change\n\n### anodizer\n\n* another change";
 
     let body = compose_full_release_body(&ctx, &cfg, "anodizer", aggregate).unwrap();
 
-    assert_eq!(body.matches("**Full Changelog**:").count(), 1);
+    assert_eq!(
+        body.matches("**Full Changelog**:").count(),
+        1,
+        "one release, one link — never one per crate in the universe"
+    );
 }
 
 #[test]
