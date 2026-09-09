@@ -596,7 +596,7 @@ fn installs_binary_end_to_end_offline() {
     )
     .unwrap();
 
-    let dest = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
 }
 
@@ -630,7 +630,7 @@ fn installs_all_binaries_end_to_end() {
     )
     .unwrap();
 
-    let dest = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
     assert_installed(&dest, "myapp-helper", "fake-myapp");
 }
@@ -659,8 +659,39 @@ fn verify_checksum_false_installs_without_checksums_file() {
     // Deliberately publish NO checksums file / sidecar.
     build_release_tarball(&release, asset, &["myapp"]);
 
-    let dest = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
+}
+
+/// The install dir the harness uses is a temp dir, so it is never on `$PATH`.
+/// It is also writable, which is the branch that used to install in silence:
+/// the hint lived inside the `$HOME/.local/bin` fallback only.
+#[cfg(unix)]
+#[test]
+fn path_hint_fires_for_a_writable_install_dir_off_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    run_and_read(&dist, default_cfg(), "install.sh");
+    let script = dist.join("install.sh");
+
+    let release = tmp.path().join("release");
+    std::fs::create_dir_all(&release).unwrap();
+    let asset = "myapp_1.2.3_linux_amd64.tar.gz";
+    build_release_tarball(&release, asset, &["myapp"]);
+    let sha = sha256_of(&release.join(asset));
+    std::fs::write(
+        release.join("myapp_1.2.3_checksums.txt"),
+        format!("{sha}  {asset}\n"),
+    )
+    .unwrap();
+
+    let (dest, stderr) = run_installer(&script, tmp.path(), &release, &[]);
+    assert_installed(&dest, "myapp", "fake-myapp");
+    assert!(
+        stderr.contains("is not in your PATH"),
+        "a writable install dir off PATH must still warn; got:\n{stderr}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -752,14 +783,15 @@ fn build_release_tarball(release: &Path, asset: &str, binaries: &[&str]) {
 }
 
 /// Run `install.sh` with `curl`/`uname` PATH stubs that serve `$FAKE_RELEASE`
-/// by basename and pin the host to Linux/x86_64. Returns the install dir.
+/// by basename and pin the host to Linux/x86_64. Returns the install dir and
+/// the script's own stderr (where every `info` line lands).
 #[cfg(unix)]
 fn run_installer(
     script: &Path,
     tmp: &Path,
     release: &Path,
     extra_env: &[(&str, &str)],
-) -> std::path::PathBuf {
+) -> (std::path::PathBuf, String) {
     use std::process::Command;
 
     let stub_dir = tmp.join("bin");
@@ -808,7 +840,7 @@ if [ -n "$dest" ]; then cp "$file" "$dest"; else cat "$file"; fi
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    dest
+    (dest, String::from_utf8_lossy(&output.stderr).to_string())
 }
 
 /// Assert `name` was installed under `dest` and carries the expected body.

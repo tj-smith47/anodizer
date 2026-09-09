@@ -144,10 +144,11 @@ myapp-install: error: unknown argument: --bogus (try --help)
    checksums file (or an `<asset>.sha256` sidecar) into a `mktemp -d` directory,
    then verifies the sha256 with `sha256sum` or `shasum -a 256`, aborting on
    mismatch.
-4. Extracts (`tar -xzf` for `.tar.gz`, `unzip` for `.zip`), then installs every
-   binary in `binaries` with `install -m 0755` into the install directory —
-   trying `sudo` when the directory is not writable, then falling back to
-   `$HOME/.local/bin` with a PATH warning.
+4. Extracts the archive, then installs every binary in `binaries` with
+   `install -m 0755` into the install directory — trying `sudo` when the
+   directory is not writable, then falling back to `$HOME/.local/bin`.
+   Whichever directory the binary lands in, the script warns when it is not on
+   `$PATH`.
 5. Cleans up the temp directory on exit via a `trap`.
 
 ## GitHub Enterprise

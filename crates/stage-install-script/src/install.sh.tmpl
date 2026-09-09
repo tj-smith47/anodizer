@@ -103,12 +103,15 @@ install_binary() {
 		info "no write access to $INSTALL_DIR and no sudo; installing to $dir"
 		mkdir -p "$dir"
 		install -m 0755 "$_src" "$dir/$_name"
-		case ":$PATH:" in
-			*":$dir:"*) ;;
-			*) info "note: $dir is not in your PATH; add it to run $_name" ;;
-		esac
 	fi
 	info "installed $_name $version to $dir/$_name"
+	# Checked against the directory actually written to, not $INSTALL_DIR: a
+	# writable INSTALL_DIR="$HOME/bin" is just as likely to be off PATH as the
+	# fallback is.
+	case ":$PATH:" in
+		*":$dir:"*) ;;
+		*) info "note: $dir is not in your PATH; add it to run $_name" ;;
+	esac
 }
 
 # The GitHub REST API base: github.com is served from api.github.com; a
