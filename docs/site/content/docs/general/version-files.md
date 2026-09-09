@@ -40,12 +40,12 @@ overrides the shared list; a crate that lists none inherits it.
 
 When [`anodizer tag`](@/docs/advanced/auto-tagging.md) bumps the version, it
 rewrites each enrolled file's version string from the old release version to the
-new one **in the same commit that bumps `Cargo.toml` / `Cargo.lock`**, so the
-files are tagged together and never drift from the tag. The enrolled files
-follow the manifest write: when `version_sync` is off for the only declared
-crate, the bump commit writes neither the manifest nor the enrolled files, and
-`check version-files` reports them stale until you sync them. Pass `--changelog`
-and that bump commit also
+new one **in the same commit that bumps `Cargo.toml` / `Cargo.lock`**. The
+enrolled files follow the manifest write, so they never drift from the manifest:
+whenever the bump commit writes `Cargo.toml`, it writes them too, and when it
+does not — `version_sync` off for the only declared crate — it leaves both alone
+and `check version-files` reports them stale until you sync them. Pass
+`--changelog` and that bump commit also
 [refreshes `CHANGELOG.md`](@/docs/advanced/auto-tagging.md#refreshing-changelog-md-changelog)
 (opt-in; requires a `changelog:` block) — both ride the same commit.
 
