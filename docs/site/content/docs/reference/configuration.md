@@ -602,7 +602,7 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 | `homepage` | string | — | Optional URL to the server's homepage, documentation, or project website. Serialized as `websiteUrl` in the registry payload. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate. |
 | `name` | string | — | Server name in reverse-DNS format (e.g. `io.github.user/weather`). Must contain exactly one forward slash separating namespace from server name. An empty / unset value skips the publisher entirely. |
-| `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb). |
+| `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci). |
 | `registry` | string | — | Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset. |
 | `repository` | McpRepository | `{"url":"","source":"","id":"","subfolder":""}` | Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |

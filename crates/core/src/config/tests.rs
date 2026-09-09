@@ -11157,3 +11157,52 @@ crates:
         hits[0]
     );
 }
+
+/// GoReleaser removed `mcpb`: it cannot build `.mcpb` files, the registry
+/// needs a SHA-256 only a local file can supply, and the registry has been
+/// rejecting the type. A config naming it fails at load, listing what is
+/// valid.
+#[test]
+fn mcp_registry_type_mcpb_is_rejected() {
+    let yaml = r#"
+project_name: test
+crates: []
+mcp:
+  name: io.example/server
+  packages:
+    - registry_type: mcpb
+      identifier: https://example.com/server.mcpb
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml).expect_err("mcpb must be rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("unknown variant `mcpb`"), "got: {msg}");
+    for valid in ["`oci`", "`npm`", "`pypi`", "`nuget`"] {
+        assert!(msg.contains(valid), "message must list {valid}: {msg}");
+    }
+}
+
+/// The four registry types the MCP registry accepts still parse.
+#[test]
+fn mcp_registry_types_still_accepted() {
+    for (wire, want) in [
+        ("oci", super::McpRegistryType::Oci),
+        ("npm", super::McpRegistryType::Npm),
+        ("pypi", super::McpRegistryType::Pypi),
+        ("nuget", super::McpRegistryType::Nuget),
+    ] {
+        let yaml = format!(
+            r#"
+project_name: test
+crates: []
+mcp:
+  name: io.example/server
+  packages:
+    - registry_type: {wire}
+      identifier: pkg
+"#
+        );
+        let config: Config =
+            serde_yaml_ng::from_str(&yaml).unwrap_or_else(|e| panic!("{wire}: {e}"));
+        assert_eq!(config.mcp.packages[0].registry_type, want);
+    }
+}

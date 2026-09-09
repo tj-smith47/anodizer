@@ -5,7 +5,7 @@ weight = 12
 template = "docs.html"
 +++
 
-Anodizer publishes a [Model Context Protocol](https://modelcontextprotocol.io/) server manifest to the public registry at [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io), letting MCP-capable clients discover and install your server. The manifest describes how to fetch the server (OCI image, npm tarball, PyPI wheel, NuGet package, or `.mcpb` bundle) and which transport(s) it speaks. Configured under a top-level `mcp:` key, mirroring GoReleaser's `mcp_registries` pipe.
+Anodizer publishes a [Model Context Protocol](https://modelcontextprotocol.io/) server manifest to the public registry at [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io), letting MCP-capable clients discover and install your server. The manifest describes how to fetch the server (OCI image, npm tarball, PyPI wheel, or NuGet package) and which transport(s) it speaks. Configured under a top-level `mcp:` key, mirroring GoReleaser's `mcp_registries` pipe.
 
 ## Classification
 
@@ -114,7 +114,7 @@ mcp:
     id: ""                           # optional; source-specific repo ID (left blank — no blocking API call)
     subfolder: ""                    # optional; monorepo subfolder
   packages:                          # required; one or more distribution packages
-    - registry_type: oci             # oci | npm | pypi | nuget | mcpb
+    - registry_type: oci             # oci | npm | pypi | nuget
       identifier: ghcr.io/myorg/myapp  # package coordinate (template)
       transport:
         type: stdio                  # stdio | streamable-http | sse
@@ -245,7 +245,7 @@ Each entry describes one downloadable form of the server. List all the ones you 
 
 ```yaml
 packages:
-  - registry_type: oci            # oci | npm | pypi | nuget | mcpb
+  - registry_type: oci            # oci | npm | pypi | nuget
     identifier: ghcr.io/myorg/myapp
     transport:
       type: stdio                 # stdio | streamable-http | sse
@@ -253,8 +253,8 @@ packages:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `registry_type` | string | One of `oci`, `npm`, `pypi`, `nuget`, `mcpb` |
-| `identifier` | string | Package coordinate. Supports templates. For OCI: `ghcr.io/owner/img`. For npm: `@scope/name`. For PyPI: distribution name. For NuGet: package ID. For mcpb: download URL |
+| `registry_type` | string | One of `oci`, `npm`, `pypi`, `nuget` |
+| `identifier` | string | Package coordinate. Supports templates. For OCI: `ghcr.io/owner/img`. For npm: `@scope/name`. For PyPI: distribution name. For NuGet: package ID |
 | `transport.type` | string | `stdio`, `streamable-http`, or `sse` |
 
 When `registry_type: oci`, the published manifest carries an empty `version` field on the package entry (the registry resolves the image tag itself). Other registry types receive the release version verbatim. This mirrors GoReleaser's `mcp_registries` behavior.

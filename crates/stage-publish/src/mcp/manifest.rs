@@ -77,11 +77,10 @@ pub struct Repository {
 /// not surfaced because the registry does not consume them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Package {
-    /// Package registry type (`oci` / `npm` / `pypi` / `nuget` / `mcpb`).
+    /// Package registry type (`oci` / `npm` / `pypi` / `nuget`).
     #[serde(rename = "registryType")]
     pub registry_type: String,
-    /// Package identifier (name for npm/pypi/nuget, image ref for oci,
-    /// download URL for mcpb).
+    /// Package identifier (name for npm/pypi/nuget, image ref for oci).
     pub identifier: String,
     /// Package version. **Set to `""` when `registry_type == "oci"`** —
     /// the OCI image reference already pins the version (e.g.
@@ -251,7 +250,7 @@ mod tests {
 
     #[test]
     fn package_version_present_when_non_empty() {
-        // Non-OCI registry types (npm/pypi/nuget/mcpb) require the
+        // Non-OCI registry types (npm/pypi/nuget) require the
         // version field — confirm serde still emits it when populated.
         let pkg = Package {
             registry_type: "npm".to_string(),

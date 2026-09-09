@@ -40,7 +40,7 @@ pub struct McpConfig {
     pub homepage: Option<String>,
 
     /// Distribution packages — one entry per package registry (npm, pypi,
-    /// nuget, oci, mcpb).
+    /// nuget, oci).
     pub packages: Vec<McpPackage>,
 
     /// Top-level transports list. Intentional config-portability
@@ -191,12 +191,12 @@ impl McpAuthMethod {
 #[serde(default, deny_unknown_fields)]
 pub struct McpPackage {
     /// Registry type indicating how to download packages
-    /// (e.g. `oci`, `npm`, `pypi`, `nuget`, `mcpb`).
+    /// (e.g. `oci`, `npm`, `pypi`, `nuget`).
     pub registry_type: McpRegistryType,
 
     /// Package identifier. For npm/pypi/nuget: the package name; for OCI:
-    /// the full image reference (e.g. `ghcr.io/owner/repo:v1.0.0`); for
-    /// mcpb: the download URL. Templated.
+    /// the full image reference (e.g. `ghcr.io/owner/repo:v1.0.0`).
+    /// Templated.
     pub identifier: String,
 
     /// Transport protocol configuration for this package.
@@ -222,9 +222,6 @@ pub enum McpRegistryType {
     /// NuGet registry (registry_type = "nuget").
     #[serde(rename = "nuget")]
     Nuget,
-    /// MCPB direct-download (registry_type = "mcpb").
-    #[serde(rename = "mcpb")]
-    Mcpb,
 }
 
 impl McpRegistryType {
@@ -235,7 +232,6 @@ impl McpRegistryType {
             Self::Npm => "npm",
             Self::Pypi => "pypi",
             Self::Nuget => "nuget",
-            Self::Mcpb => "mcpb",
         }
     }
 }

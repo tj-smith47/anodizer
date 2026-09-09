@@ -9297,7 +9297,7 @@
           ]
         },
         "packages": {
-          "description": "Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb).",
+          "description": "Distribution packages — one entry per package registry (npm, pypi, nuget, oci).",
           "default": [],
           "type": "array",
           "items": {
@@ -9395,12 +9395,12 @@
       "type": "object",
       "properties": {
         "identifier": {
-          "description": "Package identifier. For npm/pypi/nuget: the package name; for OCI: the full image reference (e.g. `ghcr.io/owner/repo:v1.0.0`); for mcpb: the download URL. Templated.",
+          "description": "Package identifier. For npm/pypi/nuget: the package name; for OCI: the full image reference (e.g. `ghcr.io/owner/repo:v1.0.0`). Templated.",
           "default": "",
           "type": "string"
         },
         "registry_type": {
-          "description": "Registry type indicating how to download packages (e.g. `oci`, `npm`, `pypi`, `nuget`, `mcpb`).",
+          "description": "Registry type indicating how to download packages (e.g. `oci`, `npm`, `pypi`, `nuget`).",
           "default": "npm",
           "allOf": [
             {
@@ -9444,11 +9444,6 @@
           "description": "NuGet registry (registry_type = \"nuget\").",
           "type": "string",
           "const": "nuget"
-        },
-        {
-          "description": "MCPB direct-download (registry_type = \"mcpb\").",
-          "type": "string",
-          "const": "mcpb"
         }
       ]
     },
