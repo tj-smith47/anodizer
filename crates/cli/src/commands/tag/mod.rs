@@ -204,6 +204,35 @@ fn warn_cargo_lock_stale(log: &StageLogger, cause: &str) {
     ));
 }
 
+/// Refresh `Cargo.lock` after a version writeback and report whether the repo
+/// has one to stage.
+///
+/// The gate is `<root>/Cargo.lock` exists: a repo that commits no lockfile has
+/// nothing to go stale, and `cargo update --workspace` there would CREATE a
+/// lockfile the release never asked for and the bump commit would then carry.
+/// Every bump path uses that one gate — three of them used to run the refresh
+/// unconditionally and warn about a lockfile that does not exist.
+///
+/// Failure is warn-and-continue by design: a missing or broken `cargo` on PATH
+/// must not block tagging, and [`warn_cargo_lock_stale`] names the consequence.
+pub(crate) fn refresh_cargo_lock(root: &Path, log: &StageLogger) -> bool {
+    if !root.join("Cargo.lock").is_file() {
+        return false;
+    }
+    match anodizer_core::cargo_lock::cargo_update_workspace(Some(root)) {
+        Ok(true) => {}
+        Ok(false) => warn_cargo_lock_stale(
+            log,
+            "`cargo update --workspace` exited non-zero after version sync",
+        ),
+        Err(e) => warn_cargo_lock_stale(
+            log,
+            &format!("could not spawn `cargo update --workspace` ({e})"),
+        ),
+    }
+    true
+}
+
 /// `[skip ci]` suffix appended to a bump-commit subject, or empty when
 /// `skip_ci_on_bump` is off (the default). Returned with a leading space so
 /// callers can append it directly after the subject body.

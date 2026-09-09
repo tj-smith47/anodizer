@@ -880,22 +880,13 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             // Without this, the tagged commit has Cargo.toml at the new version
             // but Cargo.lock at the old version, causing `cargo test` (from
             // before hooks) to update Cargo.lock and dirty the tree.
-            match anodizer_core::cargo_lock::cargo_update_workspace(Some(
-                workspace_root_path.as_path(),
-            )) {
-                Ok(true) => {}
-                Ok(false) => warn_cargo_lock_stale(
-                    &log,
-                    "`cargo update --workspace` exited non-zero after version sync",
-                ),
-                Err(e) => warn_cargo_lock_stale(
-                    &log,
-                    &format!("could not spawn `cargo update --workspace` ({e})"),
-                ),
-            }
+            let has_lockfile = refresh_cargo_lock(workspace_root_path.as_path(), &log);
 
             let cargo_toml = format!("{}/Cargo.toml", path);
-            let mut files_to_stage: Vec<&str> = vec![&cargo_toml, "Cargo.lock"];
+            let mut files_to_stage: Vec<&str> = vec![&cargo_toml];
+            if has_lockfile {
+                files_to_stage.push("Cargo.lock");
+            }
             for f in &dep_modified {
                 files_to_stage.push(f);
             }

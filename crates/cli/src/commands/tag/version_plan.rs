@@ -314,23 +314,10 @@ pub(crate) fn bump_repo_level(
 
     // A bumped Cargo.toml beside a stale Cargo.lock dirties the tree the moment
     // anything cargo-shaped runs against the tagged commit.
-    let lockfile = root.join("Cargo.lock");
-    if lockfile.is_file() {
-        match anodizer_core::cargo_lock::cargo_update_workspace(Some(root)) {
-            Ok(true) => {}
-            Ok(false) => warn_cargo_lock_stale(
-                log,
-                "`cargo update --workspace` exited non-zero after version sync",
-            ),
-            Err(e) => warn_cargo_lock_stale(
-                log,
-                &format!("could not spawn `cargo update --workspace` ({e})"),
-            ),
-        }
-    }
+    let has_lockfile = super::refresh_cargo_lock(root, log);
 
     let mut staged: Vec<&str> = vec![&manifest_rel];
-    if lockfile.is_file() {
+    if has_lockfile {
         staged.push("Cargo.lock");
     }
     for f in &changed {

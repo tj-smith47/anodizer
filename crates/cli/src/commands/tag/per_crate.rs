@@ -432,17 +432,7 @@ pub(crate) fn run_per_crate_tag(
         }
 
         // Update Cargo.lock to match bumped manifests.
-        match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root.as_path())) {
-            Ok(true) => {}
-            Ok(false) => warn_cargo_lock_stale(
-                log,
-                "`cargo update --workspace` exited non-zero after version sync",
-            ),
-            Err(e) => warn_cargo_lock_stale(
-                log,
-                &format!("could not spawn `cargo update --workspace` ({e})"),
-            ),
-        }
+        let has_lockfile = super::refresh_cargo_lock(workspace_root.as_path(), log);
 
         // Stage all bumped Cargo.toml files + intra-workspace dep rewrites +
         // Cargo.lock. Convert absolute intra-ws paths to repo-relative so
@@ -481,7 +471,9 @@ pub(crate) fn run_per_crate_tag(
             }
         }
 
-        files_to_stage.push("Cargo.lock".to_string());
+        if has_lockfile {
+            files_to_stage.push("Cargo.lock".to_string());
+        }
         let staged_refs: Vec<&str> = files_to_stage.iter().map(|s| s.as_str()).collect();
 
         // Build per-crate version arrows for the commit subject so each

@@ -2630,6 +2630,49 @@ fn top_level_version_files_cover_a_single_declared_crate() {
     );
 }
 
+/// The one gate every bump path now shares: a repo that commits a `Cargo.lock`
+/// gets it refreshed and staged, a repo that commits none is left alone — the
+/// refresh must never CREATE a lockfile the release never asked for.
+#[test]
+fn refresh_cargo_lock_runs_only_where_a_lockfile_is_committed() {
+    let log = StageLogger::new("tag", Verbosity::Normal);
+
+    let bare = tempfile::tempdir().unwrap();
+    std::fs::write(
+        bare.path().join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(bare.path().join("src")).unwrap();
+    std::fs::write(bare.path().join("src/lib.rs"), "").unwrap();
+    assert!(
+        !refresh_cargo_lock(bare.path(), &log),
+        "a repo with no lockfile has none to stage"
+    );
+    assert!(
+        !bare.path().join("Cargo.lock").is_file(),
+        "the refresh created a lockfile the repo does not commit"
+    );
+
+    let locked = tempfile::tempdir().unwrap();
+    std::fs::write(
+        locked.path().join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(locked.path().join("src")).unwrap();
+    std::fs::write(locked.path().join("src/lib.rs"), "").unwrap();
+    std::fs::write(
+        locked.path().join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.0.1\"\n",
+    )
+    .unwrap();
+    assert!(
+        refresh_cargo_lock(locked.path(), &log),
+        "a committed lockfile must be refreshed and staged"
+    );
+}
+
 /// The three ways the repo-level bump can find no version to write, each with
 /// its own repair job and its own message — and each rendered on ONE line: a
 /// `bail!` literal that carries its source indentation ships runs of spaces to

@@ -153,17 +153,7 @@ pub(crate) fn apply_workspace_bump(
 
     apply_plan(workspace_root, &rows, false, log)?;
 
-    match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root)) {
-        Ok(true) => {}
-        Ok(false) => warn_cargo_lock_stale(
-            log,
-            "`cargo update --workspace` exited non-zero after version sync",
-        ),
-        Err(e) => warn_cargo_lock_stale(
-            log,
-            &format!("could not spawn `cargo update --workspace` ({e})"),
-        ),
-    }
+    let has_lockfile = super::refresh_cargo_lock(workspace_root, log);
 
     let mut staged: Vec<PathBuf> = Vec::new();
     let root_manifest = workspace_root.join("Cargo.toml");
@@ -173,9 +163,8 @@ pub(crate) fn apply_workspace_bump(
             staged.push(m.manifest_path.clone());
         }
     }
-    let lockfile = workspace_root.join("Cargo.lock");
-    if lockfile.is_file() {
-        staged.push(lockfile);
+    if has_lockfile {
+        staged.push(workspace_root.join("Cargo.lock"));
     }
 
     let mut staged_rel: Vec<String> = staged
