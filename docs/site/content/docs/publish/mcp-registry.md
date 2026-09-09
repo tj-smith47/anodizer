@@ -249,6 +249,14 @@ packages:
     identifier: ghcr.io/myorg/myapp
     transport:
       type: stdio                 # stdio | streamable-http | sse
+  - registry_type: npm
+    identifier: "@myorg/myapp-mcp"
+    transport:
+      type: streamable-http
+      url: "https://mcp.myorg.dev/{{ .Version }}"
+      headers:
+        - name: Authorization
+          value: "Bearer {{ .Env.MCP_TOKEN }}"
 ```
 
 | Field | Type | Description |
@@ -256,6 +264,8 @@ packages:
 | `registry_type` | string | One of `oci`, `npm`, `pypi`, `nuget` |
 | `identifier` | string | Package coordinate. Supports templates. For OCI: `ghcr.io/owner/img`. For npm: `@scope/name`. For PyPI: distribution name. For NuGet: package ID |
 | `transport.type` | string | `stdio`, `streamable-http`, or `sse` |
+| `transport.url` | string | Endpoint for `streamable-http` / `sse`. Required by the registry for those types, forbidden for `stdio` (leave unset). Supports templates |
+| `transport.headers[]` | `{name, value}[]` | HTTP headers sent by remote transports. `name` is literal; `value` supports templates (e.g. `"Bearer {{ .Env.MCP_TOKEN }}"`). Omitted for `stdio` |
 
 When `registry_type: oci`, the published manifest carries an empty `version` field on the package entry (the registry resolves the image tag itself). Other registry types receive the release version verbatim. This mirrors GoReleaser's `mcp_registries` behavior.
 

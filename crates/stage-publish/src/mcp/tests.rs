@@ -1138,6 +1138,47 @@ fn render_strings_renders_header_values_but_not_names() {
     );
 }
 
+/// A remote transport's endpoint is templated, so a URL pinned to the release
+/// version resolves before it reaches the registry — and a stdio package,
+/// which the registry forbids a URL on, still publishes none.
+#[test]
+fn render_strings_renders_transport_url() {
+    let ctx = mcp_ctx(|mcp| {
+        mcp.packages[0].transport = McpTransport {
+            kind: McpTransportType::StreamableHttp,
+            url: "https://mcp.example/{{ .Version }}".to_string(),
+            headers: Vec::new(),
+        };
+        mcp.packages.push(McpPackage {
+            registry_type: McpRegistryType::Npm,
+            identifier: "@test/server".to_string(),
+            transport: McpTransport {
+                kind: McpTransportType::Stdio,
+                ..McpTransport::default()
+            },
+        });
+    });
+
+    let mut mcp = ctx.config.mcp.clone();
+    super::render_strings(&ctx, &mut mcp).expect("render_strings succeeds");
+    assert_eq!(
+        mcp.packages[0].transport.url, "https://mcp.example/1.0.0",
+        "the endpoint must be rendered, not shipped as a template"
+    );
+
+    let json = super::build_server_json(&mcp, "1.0.0");
+    let wire = serde_json::to_value(&json).expect("serialises");
+    assert_eq!(
+        wire["packages"][0]["transport"]["url"],
+        serde_json::json!("https://mcp.example/1.0.0")
+    );
+    assert!(
+        wire["packages"][1]["transport"].get("url").is_none(),
+        "a stdio package carries no url: {}",
+        wire["packages"][1]["transport"]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Preflight requirements
 // ---------------------------------------------------------------------------
