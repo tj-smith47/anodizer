@@ -1,0 +1,8 @@
+// A sibling `<name>_tests.rs` is declared `#[cfg(test)] mod <name>_tests;` by
+// its parent exactly like `tests.rs`, and is test code in its entirety.
+use super::*;
+
+#[test]
+fn named_sibling_file_is_test_context() {
+    unsafe { std::env::set_var("NAMED_SIBLING_FILE", "1") };
+}

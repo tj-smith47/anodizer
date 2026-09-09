@@ -713,17 +713,18 @@ fn run_krew_rollback_over(
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
-    // env-ok: held under the crate env_mutex (above); paired restore below.
     unsafe {
+        // env-ok: held under the crate env_mutex (above); paired restore below.
         std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
     }
 
     let res = KrewPublisher::new().rollback(&mut ctx, &evidence);
 
-    // env-ok: paired restore of the base set above, still under env_mutex.
     unsafe {
         match prev {
+            // env-ok: paired restore of the base set above, still under env_mutex.
             Some(v) => std::env::set_var("ANODIZER_GITHUB_API_BASE", v),
+            // env-ok: paired restore of the base set above, still under env_mutex.
             None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
         }
     }

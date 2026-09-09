@@ -22,13 +22,14 @@
 # `mod tests;` or a gated `use` — to its terminating `;`.
 #
 # `is_test_file` answers the orthogonal question the region scan cannot: a
-# sibling `tests.rs` or a `crates/*/tests/**` integration file is test code in
-# its entirety and carries no `#[cfg(test)]` of its own. Both alternatives
+# sibling `tests.rs` or `<name>_tests.rs` (declared `#[cfg(test)] mod …;` by
+# its parent) or a `crates/*/tests/**` integration file is test code in its
+# entirety and carries no `#[cfg(test)]` of its own. Both alternatives
 # accept a path that begins at `crates/` as well as an absolute one: a scanner
 # feeds awk whatever its own `grep -rl crates/...` printed, which is relative.
 
 function is_test_file(f) {
-    return (f ~ /(^|\/)tests\.rs$/) || (f ~ /(^|\/)crates\/[^/]+\/tests\//)
+    return (f ~ /(^|\/)([a-z0-9_]*_)?tests\.rs$/) || (f ~ /(^|\/)crates\/[^/]+\/tests\//)
 }
 
 FNR == 1 {

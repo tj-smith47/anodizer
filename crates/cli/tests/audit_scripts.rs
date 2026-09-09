@@ -14,8 +14,14 @@
 //!   so the reads inside it are not;
 //! * a process-global mutation or a `git` spawn inside such a module is test
 //!   code and is reported, while the same call after the module is not;
-//! * a `crates/*/tests/**` integration file and a sibling `tests.rs` (no
-//!   `#[cfg(test)]` of their own) are test code in their entirety.
+//! * a `crates/*/tests/**` integration file and a sibling `tests.rs` or
+//!   `<name>_tests.rs` (no `#[cfg(test)]` of their own) are test code in
+//!   their entirety.
+//!
+//! Treating those siblings as test code by NAME is sound only while every
+//! such file really is declared under `#[cfg(test)]` by its parent module;
+//! `every_named_test_file_is_declared_cfg_test` walks the real tree for that
+//! premise.
 #![cfg(unix)]
 
 use std::path::Path;
@@ -28,6 +34,7 @@ const ATTR_GAP_RS: &str = include_str!("fixtures/audit_scripts/attr_gap.rs.txt")
 const REGISTRY_RS: &str = include_str!("fixtures/audit_scripts/registry.rs.txt");
 const INTEGRATION_RS: &str = include_str!("fixtures/audit_scripts/integration.rs.txt");
 const TESTS_RS: &str = include_str!("fixtures/audit_scripts/tests.rs.txt");
+const NAMED_TESTS_RS: &str = include_str!("fixtures/audit_scripts/named_tests.rs.txt");
 
 /// The fixture sources are `.txt` so the workspace's own audits, which scan
 /// `*.rs`, never read them as real source.
@@ -38,6 +45,7 @@ fn fixture_tree() -> TempDir {
         ("crates/demo/src/attr_gap.rs", ATTR_GAP_RS),
         ("crates/demo/tests/spawn.rs", INTEGRATION_RS),
         ("crates/demo/src/tests.rs", TESTS_RS),
+        ("crates/demo/src/named_tests.rs", NAMED_TESTS_RS),
         ("crates/core/src/artifact/registry.rs", REGISTRY_RS),
     ] {
         let path = dir.path().join(rel);
@@ -122,11 +130,13 @@ fn test_isolation_audit_reports_test_code_only() {
 
     let (inline_line, inline_text) = at(LIB_RS, "INLINE_ONLY");
     let (sibling_line, sibling_text) = at(TESTS_RS, "SIBLING_FILE");
+    let (named_line, named_text) = at(NAMED_TESTS_RS, "NAMED_SIBLING_FILE");
     let (file_line, file_text) = at(INTEGRATION_RS, "INTEGRATION_FILE");
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{inline_line}: [env] {inline_text}"),
+            format!("crates/demo/src/named_tests.rs:{named_line}: [env] {named_text}"),
             format!("crates/demo/src/tests.rs:{sibling_line}: [env] {sibling_text}"),
             format!("crates/demo/tests/spawn.rs:{file_line}: [env] {file_text}"),
         ],
@@ -151,4 +161,111 @@ fn spawn_retry_audit_reports_test_context_only() {
         "{out}"
     );
     assert_eq!(code, 1, "{out}");
+}
+
+/// The premise behind `is_test_file`'s name match: every `tests.rs` and
+/// `<name>_tests.rs` under `crates/*/src` is declared `mod <stem>;` under a
+/// test-only `cfg` by its parent module (`mod.rs`/`lib.rs`/`main.rs` beside
+/// it, or the 2018-layout `<dir>.rs`), with the attribute on the item's line
+/// or in the contiguous run of attribute and comment lines directly above it.
+/// A file that matches the name but is compiled into production would be
+/// skipped by the production-only scanners and reported by the test-only
+/// ones — both wrong.
+#[test]
+fn every_named_test_file_is_declared_cfg_test() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut undeclared = Vec::new();
+    let mut seen = 0usize;
+    for src in std::fs::read_dir(&crates)
+        .expect("crates dir")
+        .map(|e| e.expect("crate entry").path().join("src"))
+        .filter(|src| src.is_dir())
+    {
+        for file in named_test_files(&src) {
+            seen += 1;
+            if !declared_cfg_test(&file) {
+                undeclared.push(file);
+            }
+        }
+    }
+    assert!(
+        seen > 0,
+        "no name-matched test file under {}",
+        crates.display()
+    );
+    assert!(
+        undeclared.is_empty(),
+        "name-matched test files not declared `#[cfg(test)] mod …;` by their parent: {undeclared:?}"
+    );
+}
+
+/// Every `tests.rs` / `<name>_tests.rs` under `dir`, recursively — the same
+/// name test `lib/test-regions.awk`'s `is_test_file` applies.
+fn named_test_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("read dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            found.extend(named_test_files(&path));
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "tests.rs" || name.ends_with("_tests.rs") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// True when the parent module declares `mod <stem>;` gated by `cfg(test)`
+/// (or an `all(test, …)` conjunction), on the item line or in the
+/// attribute/comment run above it.
+fn declared_cfg_test(file: &Path) -> bool {
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let dir = file.parent().expect("parent dir");
+    let sibling = dir
+        .file_name()
+        .map(|name| dir.with_file_name(format!("{}.rs", name.to_string_lossy())));
+    let Some(parent) = ["mod.rs", "lib.rs", "main.rs"]
+        .iter()
+        .map(|name| dir.join(name))
+        .chain(sibling)
+        .find(|candidate| candidate.is_file())
+    else {
+        return false;
+    };
+    let text = std::fs::read_to_string(&parent).expect("read parent module");
+    let lines: Vec<&str> = text.lines().collect();
+    let is_item = |line: &str| {
+        let code = line.split("//").next().unwrap_or("").trim();
+        let code = code
+            .strip_prefix("pub")
+            .map(str::trim_start)
+            .unwrap_or(code);
+        let code = code
+            .strip_prefix('(')
+            .and_then(|rest| rest.split_once(')'))
+            .map(|(_, rest)| rest.trim_start())
+            .unwrap_or(code);
+        code.strip_prefix("mod ")
+            .map(|rest| rest.trim() == format!("{stem};"))
+            .unwrap_or(false)
+    };
+    let gated = |line: &str| line.contains("cfg(test)") || line.contains("cfg(all(test");
+    lines.iter().enumerate().any(|(index, line)| {
+        if !is_item(line) {
+            return false;
+        }
+        if gated(line) {
+            return true;
+        }
+        lines[..index]
+            .iter()
+            .rev()
+            .take_while(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[") || t.starts_with("//")
+            })
+            .any(|l| gated(l))
+    })
 }
