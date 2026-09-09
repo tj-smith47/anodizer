@@ -227,9 +227,9 @@ The rules:
 
 | Rule | Detail |
 |---|---|
-| `{version}` | Stands for the version being rewritten (the crate's current version), regex-escaped before matching — so its `.` separators are literal. Only the literal 8-character token is substituted, so regex quantifiers like `\d{2}` are untouched. |
+| `{version}` | Stands for the OLD version — the one the file currently carries — regex-escaped before matching, so its `.` separators are literal. Only the literal 9-character token `{version}` is substituted, so regex quantifiers like `\d{2}` are untouched. The anchor is never re-rendered with the new version: it exists to FIND the region, and the replacement happens inside it. |
 | Required | `match` must contain `{version}` at least once. An anchor without it cannot be verified and is refused. |
-| The rewrite | Inside a match, the replacement is the SAME word-boundary literal replace the bare form uses — bare and `v`-prefixed spellings both. `match` selects the region; it never supplies the new text. |
+| The rewrite | Inside a match, the replacement is the SAME word-boundary literal replace the bare form uses — bare and `v`-prefixed spellings both. `match` selects the region; it never supplies the new text, and the surrounding text the anchor matched is left byte-for-byte alone. |
 | Every match | All regions the anchor selects are rewritten, not just the first. |
 | Zero matches | An **error** that fails the tag before any file is written (unlike a bare entry's warning). An anchor states a precise intent, so a silent no-op is a defect, not a nuisance. |
 | Two anchors | Two anchors on one file must select disjoint regions; anodizer does not check that they do. |
@@ -270,9 +270,14 @@ anything is written, identically in `--dry-run` and a real run:
   enrollment its own `match` anchor.
 
 A **bare** entry sweeps the whole file, so it overlaps every anchored region in
-it: pairing a bare enrollment with an anchored one on the same file is refused
-the same way (`whole-file entry overlaps match …`). Once a file is shared, every
-enrollment of it should carry an anchor.
+it. That pairing is judged by the same two hazards, and the message names the
+overlap (`whole-file entry overlaps match …`) — a bare entry bumping `0.7.0 →
+0.8.0` beside an anchored one bumping `0.7.0 → 0.7.1` is refused, and so is a
+chain between them. A bare and an anchored entry on the SAME `old → new` bump
+are legal and both apply: each occurrence is rewritten exactly once, because
+every anchored entry claims its regions in the original file before the bare
+sweep sees what is left. Anchoring every enrollment of a shared file still
+documents the intent best.
 
 ## A note on matching
 
