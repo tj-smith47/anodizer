@@ -288,9 +288,8 @@ pub(crate) fn bump_repo_level(
         ),
         Ok(None) => bail!(
             "version_files: the repo-level bump must write {} into a manifest, but {} declares \
-             no [package].version and the workspace declares no [workspace.package].version; \
-             give the manifest a version, declare the crate under `crates:`, or drop the \
-             version_files enrollment",
+             no [package].version; give the manifest a version, declare the crate under \
+             `crates:`, or drop the version_files enrollment",
             bump.new_version,
             manifest_rel,
         ),

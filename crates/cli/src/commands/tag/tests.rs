@@ -2714,9 +2714,8 @@ fn repo_level_bump_refuses_each_unusable_manifest_on_one_line() {
             Some("[workspace]\nmembers = [\"crates/app\"]\n"),
             Expect::Exact(
                 "version_files: the repo-level bump must write 1.2.4 into a manifest, but \
-                 Cargo.toml declares no [package].version and the workspace declares no \
-                 [workspace.package].version; give the manifest a version, declare the crate \
-                 under `crates:`, or drop the version_files enrollment",
+                 Cargo.toml declares no [package].version; give the manifest a version, \
+                 declare the crate under `crates:`, or drop the version_files enrollment",
             ),
         ),
     ];
