@@ -5,8 +5,8 @@ use super::*;
 /// `ctx.artifacts` to Linux archives matching `aur.ids` + the
 /// hardcoded `amd64_variant`/`arm_variant=7` rules, validates that at
 /// least one archive matched and that every match carries a non-empty
-/// sha256, then dedupes by PKGBUILD architecture (`x86_64`, `aarch64`,
-/// `i686`, `armv7h`) keeping the first match per arch.
+/// sha256, and rejects two archives that resolve to the same PKGBUILD
+/// architecture (`x86_64`, `aarch64`, `i686`, `armv7h`).
 pub(crate) fn aur_build_sources(
     ctx: &Context,
     aur_cfg: &anodizer_core::config::AurConfig,
@@ -70,9 +70,10 @@ pub(crate) fn aur_build_sources(
     }
 
     let url_template = aur_cfg.url_template.as_deref();
-    // Deduplicate by architecture — AUR -bin packages expect one source per
-    // architecture. When multiple artifacts share the same arch (e.g.
-    // multiple linux-amd64 archives), keep only the first match.
+    // An AUR -bin PKGBUILD names exactly one source per architecture, so two
+    // archives on one arch have no representable answer. Picking one silently
+    // publishes whichever the artifact order happened to put first, which is
+    // how a `.zip` can ship where the `.tar.gz` was meant.
     let mut seen_arches = std::collections::HashSet::new();
     let mut sources: Vec<(String, String, String)> = Vec::new();
     for a in &linux_artifacts {
@@ -96,29 +97,36 @@ pub(crate) fn aur_build_sources(
                 a.os,
             )
         })?;
-        if seen_arches.insert(pkgbuild_arch.to_string()) {
-            let download_url = if let Some(tmpl) = url_template {
-                // Extract the archive filename from the artifact URL (or
-                // path fallback) so {{ .ArtifactName }} resolves to the
-                // actual archive filename, not the crate name (which has
-                // no extension and would leave ArtifactName unset).
-                let artifact_filename = std::path::Path::new(&a.url)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
-                util::render_url_template_with_ctx_and_artifact(
-                    ctx,
-                    tmpl,
-                    crate_name,
-                    artifact_filename.as_deref(),
-                    version,
-                    pkgbuild_arch,
-                    "linux",
-                )
-            } else {
-                a.url.clone()
-            };
-            sources.push((pkgbuild_arch.to_string(), download_url, a.sha256.clone()));
+        if !seen_arches.insert(pkgbuild_arch.to_string()) {
+            anyhow::bail!(
+                "aur: one aur can handle only one archive of each architecture \
+                 — crate '{}' has more than one linux archive for '{}'. Narrow \
+                 `publish.aur.ids` to one archive per architecture.",
+                crate_name,
+                pkgbuild_arch,
+            );
         }
+        let download_url = if let Some(tmpl) = url_template {
+            // Extract the archive filename from the artifact URL (or
+            // path fallback) so {{ .ArtifactName }} resolves to the
+            // actual archive filename, not the crate name (which has
+            // no extension and would leave ArtifactName unset).
+            let artifact_filename = std::path::Path::new(&a.url)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
+            util::render_url_template_with_ctx_and_artifact(
+                ctx,
+                tmpl,
+                crate_name,
+                artifact_filename.as_deref(),
+                version,
+                pkgbuild_arch,
+                "linux",
+            )
+        } else {
+            a.url.clone()
+        };
+        sources.push((pkgbuild_arch.to_string(), download_url, a.sha256.clone()));
     }
 
     Ok(sources)

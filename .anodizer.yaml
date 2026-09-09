@@ -521,6 +521,10 @@ crates:
         required: true
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         name: anodizer-bin
+        # A PKGBUILD names one source per architecture, and the `extra`
+        # archive entry produces a second linux/amd64 tarball. Pin the AUR
+        # sources to the primary (unnamed, hence `default`) archive.
+        ids: [default]
         # Rendered as the PKGBUILD `# Maintainer:` header line(s).
         maintainers:
           - "TJ Smith <tj@jarvispro.io>"

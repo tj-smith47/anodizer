@@ -257,31 +257,107 @@ fn test_generate_pkgbuild_custom_install_template() {
     assert!(!pkgbuild.contains("\"$srcdir/mytool\" \"$pkgdir/usr/bin/mytool\""));
 }
 
+/// Two archives that map to the same pacman architecture have no
+/// representable PKGBUILD: `source_x86_64=` names exactly one tarball.
 #[test]
-fn test_generate_pkgbuild_duplicate_arch_sources() {
-    // Regression test: when sources have duplicate architectures, the
-    // PKGBUILD should only contain one source per arch.
-    let sources = vec![
+fn two_archives_on_the_same_arch_error() {
+    let ctx = aur_ctx_with_archives(&[
         (
-            "x86_64".to_string(),
-            "https://example.com/first-amd64.tar.gz".to_string(),
-            "hash1".to_string(),
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "hash1",
         ),
         (
-            "x86_64".to_string(),
-            "https://example.com/second-amd64.tar.gz".to_string(),
-            "hash2".to_string(),
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.zip",
+            "hash2",
         ),
-    ];
-    // Simulate the deduplication that publish_to_aur does before
-    // calling generate_pkgbuild (finding #1).
-    let mut seen = std::collections::HashSet::new();
-    let deduped: Vec<_> = sources
-        .into_iter()
-        .filter(|(arch, _, _)| seen.insert(arch.clone()))
-        .collect();
-    assert_eq!(deduped.len(), 1);
-    assert_eq!(deduped[0].1, "https://example.com/first-amd64.tar.gz");
+    ]);
+    let err = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+        .expect_err("two archives on one arch must fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("one aur can handle only one archive of each architecture"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("x86_64"),
+        "the message must name the arch: {msg}"
+    );
+}
+
+/// One archive per architecture is the supported shape and still renders
+/// both sources.
+#[test]
+fn distinct_arches_still_build_sources() {
+    let ctx = aur_ctx_with_archives(&[
+        (
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "hash1",
+        ),
+        (
+            "aarch64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-arm64.tar.gz",
+            "hash2",
+        ),
+    ]);
+    let rendered = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+        .expect("distinct arches render")
+        .expect("not skipped");
+    assert!(
+        rendered.pkgbuild.contains("source_x86_64="),
+        "{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered.pkgbuild.contains("source_aarch64="),
+        "{}",
+        rendered.pkgbuild
+    );
+}
+
+/// Build a single-crate AUR context carrying one linux archive per
+/// `(target, url, sha256)` entry.
+fn aur_ctx_with_archives(entries: &[(&str, &str, &str)]) -> Context {
+    let aur = AurConfig {
+        git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+        homepage: Some("https://example.com".to_string()),
+        license: Some("MIT".to_string()),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            aur: Some(aur),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    for (target, url, sha) in entries {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("url".to_string(), (*url).to_string());
+        metadata.insert("sha256".to_string(), (*sha).to_string());
+        let name = std::path::Path::new(url)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            name,
+            target: Some((*target).to_string()),
+            crate_name: "mytool".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+    ctx
 }
 
 // -----------------------------------------------------------------------
