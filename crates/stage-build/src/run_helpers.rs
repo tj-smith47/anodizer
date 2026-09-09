@@ -176,6 +176,13 @@ fn apply_source_mutations_with_resolver(
     // a tagless repo (the state a rollback/re-cut leaves behind) must not trip
     // the tag guard below in either mode.
     let skip_mutations = ctx.is_snapshot() || ctx.is_nightly();
+    // Messages name the manifest relative to the project root, so they read the
+    // same as the config that declared the crate.
+    let project_root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
     let mode = if ctx.is_snapshot() {
         "snapshot"
     } else {
@@ -234,7 +241,13 @@ fn apply_source_mutations_with_resolver(
                         .cloned()
                         .unwrap_or_default();
                     if !version.is_empty() {
-                        version_sync::sync_version(&crate_cfg.path, &version, dry_run, log)?;
+                        version_sync::sync_version(
+                            &project_root,
+                            &crate_cfg.path,
+                            &version,
+                            dry_run,
+                            log,
+                        )?;
                     }
                 }
             }

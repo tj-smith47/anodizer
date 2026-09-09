@@ -387,9 +387,9 @@ pub(crate) fn run_per_crate_tag(
         // discovered workspace root so the manifest IO matches the git working
         // dir even when `tag` runs from a subdirectory.
         for (path, new_version) in &all_version_updates {
-            let abs_crate_dir = workspace_root.join(path).to_string_lossy().into_owned();
             anodizer_stage_build::version_sync::sync_version(
-                &abs_crate_dir,
+                &workspace_root,
+                path,
                 new_version,
                 false,
                 log,

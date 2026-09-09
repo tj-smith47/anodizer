@@ -778,6 +778,17 @@ fn unmatched_anchor_names_the_repo_relative_path() {
         !message.contains(&root.to_string_lossy().into_owned()),
         "error leaked the resolved absolute path: {message}"
     );
+    // Not just this line: NOTHING the bump printed may name the absolute tree —
+    // the version_sync manifest lines sit directly above these and used to.
+    let leaked: Vec<&str> = stderr
+        .lines()
+        .chain(std::str::from_utf8(&out.stdout).unwrap_or_default().lines())
+        .filter(|l| l.contains(&root.to_string_lossy().into_owned()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "absolute paths leaked into the run: {leaked:?}"
+    );
 }
 
 /// A lockstep workspace's top-level anchored entry rewrites inside its anchor

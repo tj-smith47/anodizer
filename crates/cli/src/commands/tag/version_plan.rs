@@ -275,7 +275,8 @@ pub(crate) fn bump_repo_level(
     }
 
     anodizer_stage_build::version_sync::sync_version(
-        &manifest_dir,
+        root,
+        bump.manifest_dir,
         bump.new_version,
         bump.dry_run,
         log,

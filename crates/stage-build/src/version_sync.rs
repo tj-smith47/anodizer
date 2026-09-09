@@ -3,23 +3,32 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 
 use anodizer_core::log::StageLogger;
+use anodizer_core::path_util::display_under_root;
 
 /// Synchronize the `[package].version` field in a crate's Cargo.toml to the
 /// given version string.  Skips writing if the version already matches.
 /// In dry-run mode, logs what would happen without modifying the file.
+///
+/// `crate_path` is the crate directory as the config spells it (repo-root
+/// relative; `.` for the root crate) and `root` is the repo it is resolved
+/// against — the manifest IO uses the joined path, every message prints the
+/// repo-relative one, so a bump run from a subdirectory or a CI scratch
+/// checkout reports the same paths the user's config carries.
 pub fn sync_version(
+    root: &Path,
     crate_path: &str,
     version: &str,
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<()> {
-    let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
+    let cargo_toml_path = root.join(crate_path).join("Cargo.toml");
+    let shown = display_under_root(root, &cargo_toml_path);
     let content = std::fs::read_to_string(&cargo_toml_path)
-        .with_context(|| format!("failed to read {}", cargo_toml_path.display()))?;
+        .with_context(|| format!("failed to read {shown}"))?;
 
     let mut doc = content
         .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("failed to parse {}", cargo_toml_path.display()))?;
+        .with_context(|| format!("failed to parse {shown}"))?;
 
     // Read current version
     let current_version = doc
@@ -30,16 +39,18 @@ pub fn sync_version(
         .to_string();
 
     if current_version == version {
-        log.verbose(&format!("{} already at version {}", crate_path, version));
+        log.verbose(&format!(
+            "{} already at version {}",
+            display_under_root(root, &root.join(crate_path)),
+            version
+        ));
         return Ok(());
     }
 
     if dry_run {
         log.status(&format!(
             "(dry-run) would sync version in {} from {} to {}",
-            cargo_toml_path.display(),
-            current_version,
-            version
+            shown, current_version, version
         ));
         return Ok(());
     }
@@ -48,13 +59,11 @@ pub fn sync_version(
     doc["package"]["version"] = toml_edit::value(version);
 
     std::fs::write(&cargo_toml_path, doc.to_string())
-        .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
+        .with_context(|| format!("failed to write {shown}"))?;
 
     log.status(&format!(
         "updated {} from {} to {}",
-        cargo_toml_path.display(),
-        current_version,
-        version
+        shown, current_version, version
     ));
 
     Ok(())
@@ -99,6 +108,7 @@ pub fn read_cargo_version_opt(crate_path: &str) -> Result<Option<String>> {
 /// sibling workspace on its own release cadence. The starting `root` itself is
 /// always descended (its own `[workspace]` is the boundary we're scoping to).
 fn find_cargo_tomls(
+    repo_root: &Path,
     dir: &Path,
     root_toml: &Path,
     out: &mut Vec<std::path::PathBuf>,
@@ -113,7 +123,7 @@ fn find_cargo_tomls(
             // lockstep). Surface it like the manifest-read path below.
             log.warn(&format!(
                 "version sync: skipping unreadable directory {}: {e}",
-                dir.display()
+                display_under_root(repo_root, dir)
             ));
             return;
         }
@@ -130,7 +140,7 @@ fn find_cargo_tomls(
             if dir_is_workspace_root(&path) {
                 continue;
             }
-            find_cargo_tomls(&path, root_toml, out, log);
+            find_cargo_tomls(repo_root, &path, root_toml, out, log);
         } else if path.file_name().map(|n| n == "Cargo.toml").unwrap_or(false) && path != root_toml
         {
             out.push(path);
@@ -212,6 +222,7 @@ pub fn sync_workspace_deps(
     // any nested independent workspace boundary.
     let mut cargo_tomls = Vec::new();
     find_cargo_tomls(
+        repo_root,
         &scope_root,
         &scope_root.join("Cargo.toml"),
         &mut cargo_tomls,
@@ -226,7 +237,7 @@ pub fn sync_workspace_deps(
                 // crate; skipping it silently would ship a stale version pin.
                 log.warn(&format!(
                     "version sync: skipping unreadable manifest {}: {e}",
-                    path.display()
+                    display_under_root(repo_root, path)
                 ));
                 continue;
             }
@@ -236,7 +247,7 @@ pub fn sync_workspace_deps(
             Err(e) => {
                 log.warn(&format!(
                     "version sync: skipping unparseable manifest {}: {e}",
-                    path.display()
+                    display_under_root(repo_root, path)
                 ));
                 continue;
             }
@@ -272,12 +283,17 @@ pub fn sync_workspace_deps(
                 log.status(&format!(
                     "(dry-run) would sync {} dep version in {}",
                     crate_name,
-                    path.display()
+                    display_under_root(repo_root, path)
                 ));
             } else {
-                std::fs::write(path, doc.to_string())
-                    .with_context(|| format!("failed to write {}", path.display()))?;
-                log.status(&format!("updated {} dep in {}", crate_name, path.display()));
+                std::fs::write(path, doc.to_string()).with_context(|| {
+                    format!("failed to write {}", display_under_root(repo_root, path))
+                })?;
+                log.status(&format!(
+                    "updated {} dep in {}",
+                    crate_name,
+                    display_under_root(repo_root, path)
+                ));
             }
             modified.push(path_str);
         }
@@ -309,7 +325,7 @@ edition = "2024"
         )
         .unwrap();
 
-        sync_version(tmp.path().to_str().unwrap(), "1.2.3", false, &test_logger()).unwrap();
+        sync_version(tmp.path(), ".", "1.2.3", false, &test_logger()).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -327,7 +343,7 @@ edition = "2024"
 "#;
         std::fs::write(&cargo_toml, original).unwrap();
 
-        sync_version(tmp.path().to_str().unwrap(), "1.2.3", false, &test_logger()).unwrap();
+        sync_version(tmp.path(), ".", "1.2.3", false, &test_logger()).unwrap();
 
         // File should be unchanged
         let content = std::fs::read_to_string(&cargo_toml).unwrap();
@@ -345,11 +361,115 @@ edition = "2024"
 "#;
         std::fs::write(&cargo_toml, original).unwrap();
 
-        sync_version(tmp.path().to_str().unwrap(), "2.0.0", true, &test_logger()).unwrap();
+        sync_version(tmp.path(), ".", "2.0.0", true, &test_logger()).unwrap();
 
         // File should be unchanged in dry-run mode
         let content = std::fs::read_to_string(&cargo_toml).unwrap();
         assert_eq!(content, original);
+    }
+
+    /// Every message `sync_version` prints names the manifest the way the config
+    /// spells it, whatever absolute tree the run happens to sit in: an absolute
+    /// path leaks a CI scratch directory into the line directly above the
+    /// repo-relative `version_files` lines.
+    #[test]
+    fn sync_version_messages_are_repo_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("crates/app")).unwrap();
+        std::fs::write(
+            root.join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let shapes: Vec<(bool, &str, &str)> = vec![
+            (
+                true,
+                "0.2.0",
+                "(dry-run) would sync version in crates/app/Cargo.toml from 0.1.0 to 0.2.0",
+            ),
+            (
+                false,
+                "0.2.0",
+                "updated crates/app/Cargo.toml from 0.1.0 to 0.2.0",
+            ),
+            (false, "0.2.0", "crates/app already at version 0.2.0"),
+        ];
+        for (dry_run, version, expected) in shapes {
+            let (log, capture) =
+                StageLogger::with_capture("build", anodizer_core::log::Verbosity::Verbose);
+            sync_version(root, "crates/app", version, dry_run, &log).unwrap();
+            let messages: Vec<String> =
+                capture.all_messages().into_iter().map(|(_, m)| m).collect();
+            assert!(
+                messages.iter().any(|m| m == expected),
+                "expected {expected:?}, got {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains(&root.display().to_string())),
+                "an absolute path leaked: {messages:?}"
+            );
+        }
+    }
+
+    /// The dep-propagation half of the family prints repo-relative manifests
+    /// too — it already knew the repo root, and printed the absolute path anyway.
+    #[test]
+    fn sync_workspace_deps_messages_are_repo_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"core\", \"app\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app/Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n             [dependencies]\ncore = { path = \"../core\", version = \"0.1.0\" }\n",
+        )
+        .unwrap();
+
+        for (dry_run, expected) in [
+            (
+                true,
+                "(dry-run) would sync core dep version in app/Cargo.toml",
+            ),
+            (false, "updated core dep in app/Cargo.toml"),
+        ] {
+            let (log, capture) =
+                StageLogger::with_capture("build", anodizer_core::log::Verbosity::Verbose);
+            sync_workspace_deps(
+                root.to_str().unwrap(),
+                root.join("core").to_str().unwrap(),
+                "core",
+                "0.2.0",
+                dry_run,
+                &log,
+            )
+            .unwrap();
+            let messages: Vec<String> =
+                capture.all_messages().into_iter().map(|(_, m)| m).collect();
+            assert!(
+                messages.iter().any(|m| m == expected),
+                "expected {expected:?}, got {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains(&root.display().to_string())),
+                "an absolute path leaked: {messages:?}"
+            );
+        }
     }
 
     #[test]
@@ -379,7 +499,7 @@ edition = "2024"
     #[test]
     fn test_sync_version_missing_cargo_toml_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = sync_version(tmp.path().to_str().unwrap(), "1.0.0", false, &test_logger());
+        let result = sync_version(tmp.path(), ".", "1.0.0", false, &test_logger());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(

@@ -886,3 +886,45 @@ crates:
         run.stderr
     );
 }
+
+/// A workspace with no `[workspace.package].version` cannot resolve what the
+/// enrolled files should carry. The finding says so — naming the workspace
+/// repo-relative, like every other path the guard prints, instead of the
+/// absolute directory the process happened to resolve.
+#[test]
+fn lockstep_without_a_workspace_version_names_the_repo_relative_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    );
+    write(
+        root,
+        "crates/app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion.workspace = true\nedition = \"2024\"\n",
+    );
+    write(root, "crates/app/src/lib.rs", "");
+    write(root, "Chart.yaml", "appVersion: v0.1.0\n");
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\nversion_files:\n  - Chart.yaml\n",
+    );
+
+    let run = run_check(root);
+    let combined = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        !run.success,
+        "the unresolvable version must fail: {combined}"
+    );
+    assert!(
+        combined.contains("lockstep workspace at . has no [workspace.package].version"),
+        "finding must name the workspace repo-relative: {combined}"
+    );
+    assert!(
+        !combined.contains(&root.to_string_lossy().into_owned()),
+        "finding leaked the absolute workspace path: {combined}"
+    );
+}

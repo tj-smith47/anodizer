@@ -3,7 +3,7 @@
 
 use crate::EnvSource;
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve the current user's home directory from the environment.
 ///
@@ -18,6 +18,32 @@ fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
     env.var("USERPROFILE")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
+}
+
+/// Render `path` for a user-facing message, relative to the repo root it lives
+/// under.
+///
+/// Every path anodizer prints for a repo-committed file is the spelling the
+/// user wrote (or would write) in their config, never the absolute path the
+/// process happened to resolve — an absolute path leaks a runner's scratch
+/// directory into logs a human reads and diffs. `root` is stripped when `path`
+/// is under it; a path outside the root has no relative spelling, so it is
+/// printed as-is. The repo root itself renders as `.`.
+pub fn display_under_root(root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    // A `.` component survives `join` (`<root>/./Cargo.toml`), and a config
+    // declaring the root crate as `.` is the common case — drop it so the
+    // manifest prints as `Cargo.toml`, the spelling a reader would search for.
+    let cleaned: PathBuf = relative
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    let rendered = cleaned.display().to_string();
+    if rendered.is_empty() {
+        ".".to_string()
+    } else {
+        rendered
+    }
 }
 
 /// A guaranteed-to-exist working directory for cwd-agnostic subprocess probes.
@@ -85,6 +111,27 @@ mod tests {
     // Home-directory resolution is driven through an injected `MapEnvSource`
     // so these tests never touch the process environment and run race-free in
     // parallel with the rest of the crate's suite.
+
+    /// The three spellings a message can face: a nested path under the root, the
+    /// root's own manifest reached through a `.` crate dir, and a path that is
+    /// not under the root at all (nothing to strip, so it prints in full).
+    #[test]
+    fn display_under_root_strips_the_root_and_the_dot() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            display_under_root(root, &root.join("crates/app").join("Cargo.toml")),
+            PathBuf::from("crates/app/Cargo.toml").display().to_string()
+        );
+        assert_eq!(
+            display_under_root(root, &root.join(".").join("Cargo.toml")),
+            "Cargo.toml"
+        );
+        assert_eq!(display_under_root(root, &root.join(".")), ".");
+        assert_eq!(
+            display_under_root(root, Path::new("/elsewhere/Cargo.toml")),
+            PathBuf::from("/elsewhere/Cargo.toml").display().to_string()
+        );
+    }
 
     #[test]
     fn expands_leading_tilde_slash() {

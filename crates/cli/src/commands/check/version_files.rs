@@ -174,7 +174,7 @@ fn unit_reference_version(
             .with_context(|| {
                 format!(
                     "lockstep workspace at {} has no [workspace.package].version",
-                    unit_dir.display()
+                    anodizer_core::path_util::display_under_root(repo_root, &unit_dir)
                 )
             });
     }

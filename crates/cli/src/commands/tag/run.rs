@@ -756,7 +756,8 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             .to_string_lossy()
             .into_owned();
         anodizer_stage_build::version_sync::sync_version(
-            &abs_crate_dir,
+            &workspace_root_path,
+            path,
             &new_version,
             opts.dry_run,
             &log,
