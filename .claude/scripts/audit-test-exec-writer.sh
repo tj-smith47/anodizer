@@ -12,7 +12,8 @@
 # which has no business retrying `ETXTBSY`.
 #
 # The fix the codebase standardises on: write every test executable through
-#   anodizer_core::test_helpers::fake_tool::write_executable_script(&path, script)
+#   anodizer_core::test_helpers::fake_tool::write_executable_script(
+#       &path, script)
 # which inserts a probe guard under the script's shebang and execs it once
 # under a marker env var before returning. A successful probe proves the
 # inode carries no writer, so the caller's real spawn cannot see `ETXTBSY`.
@@ -26,13 +27,17 @@
 # a `tar::Header` field that never becomes a file, or a fixture file a
 # tree-walk only stats.
 #
-# Both spellings of the mode count, because the two are interchangeable at a
-# call site and only one of them was visible to the first version of this
-# audit:
-#   std::fs::set_permissions(p, Permissions::from_mode(0o755))
-#   let mut perms = metadata(p)?.permissions(); perms.set_mode(0o755);
+# Every spelling of the mode counts: they are interchangeable at a call site,
+# and each one an earlier version of this audit could not see was a writer it
+# waved through. The three `std::os::unix::fs` traits that set a mode:
+#   PermissionsExt  std::fs::set_permissions(p, Permissions::from_mode(0o755))
+#   PermissionsExt  let mut perms = metadata(p)?.permissions();
+#                   perms.set_mode(0o755);
+#   OpenOptionsExt  OpenOptions::new().mode(0o755).create(true).open(p)
+#   DirBuilderExt   DirBuilder::new().mode(0o700).create(p)
 # `0o[1357]` is any mode whose OWNER bits carry the execute bit, so 0o755,
-# 0o700 and 0o500 all match.
+# 0o700 and 0o500 all match. EXEC_MODE_RE below is the one list: the
+# file-discovery grep, the report rule and the marker-disarm rule all read it.
 #
 # TEST context is lib/test-regions.awk's: a whole test file (a sibling
 # `tests.rs` or `<name>_tests.rs`, anything under `crates/*/tests/`) or an
@@ -41,10 +46,18 @@
 # OUT OF SCOPE: they write artifacts nothing in the same process then execs.
 set -euo pipefail
 
-ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-cd "$ROOT"
+# bash >= 4.4: `mapfile` arrived in 4.0, and 4.4 is where `set -u` stopped
+# treating an empty array's `"${arr[@]}"` as an unset expansion. Stating the
+# floor is what lets every array below be expanded plainly instead of half of
+# them carrying a `${arr[@]+…}` guard the other half forgot.
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
+    echo "audit-test-exec-writer: needs bash >= 4.4, found $BASH_VERSION." >&2
+    exit 2
+}
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+cd "$ROOT"
 
 # Files carrying a writer that is IN the class but not yet routed. Listed by
 # path with the reason, printed on every run so the set stays visible, and
@@ -52,9 +65,13 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 # ratchet: a NEW hand-rolled writer anywhere else fails the audit.
 UNROUTED=()
 
+# Exported so the awk program reads it from ENVIRON: passing it with -v would
+# put the regex through awk's string-escape pass, which eats the backslashes.
+export EXEC_MODE_RE='(Permissions::from_mode|set_mode|\.mode)\(0o[1357]'
+
 # The helper's own home is exempt — it IS the helper.
 mapfile -t FILES < <(
-    grep -rlP '(Permissions::from_mode|set_mode)\(0o[1357]' crates/ --include='*.rs' 2>/dev/null \
+    grep -rlP "$EXEC_MODE_RE" crates/ --include='*.rs' 2>/dev/null \
         | grep -v '/target/' \
         | grep -v 'crates/core/src/test_helpers/' \
         || true
@@ -64,19 +81,19 @@ mapfile -t FILES < <(
 KEPT=()
 for f in "${FILES[@]}"; do
     skip=""
-    for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
+    for entry in "${UNROUTED[@]}"; do
         [[ "$f" == "${entry%%|*}" ]] && skip=1 && break
     done
     [[ -n "$skip" ]] || KEPT+=("$f")
 done
-for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
+for entry in "${UNROUTED[@]}"; do
     path="${entry%%|*}"
     if [[ ! -f "$path" ]]; then
         echo "audit-test-exec-writer: listed file $path no longer exists — drop or repoint its entry." >&2
         exit 1
     fi
 done
-FILES=(${KEPT[@]+"${KEPT[@]}"})
+FILES=("${KEPT[@]}")
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "audit-test-exec-writer: no executable-mode call sites found."
@@ -85,6 +102,8 @@ fi
 
 report() {
     awk -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "$@" <<'AWK'
+        BEGIN { exec_mode_re = ENVIRON["EXEC_MODE_RE"] }
+
         FNR == 1 { whole_file_is_test = is_test_file(FILENAME); marker_armed = 0 }
 
         {
@@ -97,7 +116,7 @@ report() {
             if (line ~ /\/\/[[:space:]]*exec-writer-ok:[[:space:]]*[^[:space:]]/) marker_armed = 1
         }
 
-        /(Permissions::from_mode|set_mode)\(0o[1357]/ {
+        $0 ~ exec_mode_re {
             if (in_test && !is_comment && !marker_armed) {
                 printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
                 bad = 1
@@ -106,14 +125,22 @@ report() {
 
         {
             if (marker_armed && !is_comment && line !~ /^[[:space:]]*$/ \
-                && line !~ /(Permissions::from_mode|set_mode)\(0o[1357]/) marker_armed = 0
+                && line !~ exec_mode_re) marker_armed = 0
         }
 
         END { exit bad ? 2 : 0 }
 AWK
 }
 
-violations="$(report "${FILES[@]}" || true)"
+# `|| true` here would swallow a scanner that never ran — a missing awk
+# library, a bad regex — as a clean scan, so only the two exits the scanner
+# defines are accepted.
+scan_status=0
+violations="$(report "${FILES[@]}")" || scan_status=$?
+if ((scan_status != 0 && scan_status != 2)); then
+    echo "audit-test-exec-writer: scanner exited $scan_status; the scan did not run." >&2
+    exit 1
+fi
 
 if [[ -n "$violations" ]]; then
     echo "HAND-ROLLED EXECUTABLE WRITE IN TESTS — ETXTBSY flake under --test-threads."
@@ -138,7 +165,7 @@ fi
 echo "audit-test-exec-writer: all ${#FILES[@]} executable-mode files route test writes through write_executable_script (or mark // exec-writer-ok:)."
 if [[ ${#UNROUTED[@]} -gt 0 ]]; then
     echo "audit-test-exec-writer: ${#UNROUTED[@]} listed writer(s) still hand-rolled:"
-    for entry in ${UNROUTED[@]+"${UNROUTED[@]}"}; do
+    for entry in "${UNROUTED[@]}"; do
         echo "  ${entry%%|*} — ${entry#*|}"
     done
 fi

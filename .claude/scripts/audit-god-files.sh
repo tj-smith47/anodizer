@@ -18,7 +18,9 @@
 #
 #   1. Cargo test/bench targets — everything under `crates/*/tests/` and
 #      `crates/*/benches/` is compiled only for `cargo test`/`cargo bench`.
-#   2. A file carrying the whole-file inner attribute `#![cfg(test)]`.
+#   2. A file carrying a test-only whole-file inner attribute — `#![cfg(test)]`
+#      or any other predicate that cannot hold outside `cargo test`, decided by
+#      the same rule as the outer attributes below.
 #   3. A file reachable from a `#[cfg(test)] mod NAME;` declaration, plus
 #      everything THAT file declares in turn (transitively). This is what makes
 #      the check name-agnostic: `tests.rs`, `orchestrator_tests.rs` and
@@ -50,6 +52,13 @@
 # `mod tests { … }` costs its whole brace-delimited body — and scanning resumes
 # afterwards.
 set -euo pipefail
+
+# bash >= 4.4: `mapfile` arrived in 4.0, and 4.4 is where `set -u` stopped
+# treating an empty array's `"${arr[@]}"` as an unset expansion.
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
+    echo "audit-god-files: needs bash >= 4.4, found $BASH_VERSION." >&2
+    exit 2
+}
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -156,6 +165,13 @@ collect_mod_decls() {
 AWK
 }
 
+# Files whose whole body is gated to test builds by an inner `#![cfg(...)]`.
+inner_cfg_test_files() {
+    awk -f "$LIB_DIR/rust-lex.awk" -f - "$@" <<'AWK'
+        is_test_only_inner_cfg($0) { print FILENAME; nextfile }
+AWK
+}
+
 declare -A IS_TEST_FILE=()
 declare -A GATED_DECLS=()
 declare -A ALL_DECLS=()
@@ -167,11 +183,14 @@ while IFS=$'\t' read -r file gated name; do
     [[ "$gated" == "1" ]] && GATED_DECLS["$file"]+="$name "
 done < <(collect_mod_decls "${ALL_RS[@]}")
 
-# One grep for the whole-file inner attribute instead of one per file.
+# The whole-file inner attribute, through the shared lexer rather than a
+# literal-string grep: `#![cfg(all(test, unix))]` gates the file just as
+# `#![cfg(test)]` does, and a second spelling of the predicate rule drifts.
+# One awk pass over the whole tree, `nextfile` on the first hit.
 declare -A INNER_CFG_TEST=()
 while IFS= read -r f; do
     [[ -n "$f" ]] && INNER_CFG_TEST["$f"]=1
-done < <(grep -rlE '^[[:space:]]*#!\[cfg\(test\)\]' -- "${ALL_RS[@]}" 2>/dev/null || true)
+done < <(inner_cfg_test_files "${ALL_RS[@]}")
 
 for f in "${ALL_RS[@]}"; do
     case "$f" in
@@ -287,7 +306,7 @@ declare -A PIN_REASON=()
 declare -A PIN_LIST=()
 for listname in GOD_FILE_EXEMPT GOD_FILE_DEBT; do
     declare -n _list="$listname"
-    for e in ${_list[@]+"${_list[@]}"}; do
+    for e in "${_list[@]}"; do
         _path="${e%%:*}"
         _rest="${e#*:}"
         PIN_CEILING["$_path"]="${_rest%%:*}"

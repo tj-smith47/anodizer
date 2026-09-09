@@ -68,22 +68,36 @@ function count_char(s, ch,   i, n, t) {
     return t
 }
 
-# Whether l is an attribute whose cfg(...) predicate can hold ONLY under
-# `cargo test`: bare `test`, or an `all(...)` one of whose top-level terms is
-# itself test-only. An `any(...)` is satisfiable by its other terms and a
-# `not(...)` inverts the gate, so neither ever gates test code. The Rust twin
-# is crates/core/src/test_helpers/test_sources.rs `is_test_only_cfg`, and
+# Whether l is an OUTER attribute (`#[cfg(...)]`, gating the item below it)
+# whose predicate can hold ONLY under `cargo test`: bare `test`, or an
+# `all(...)` one of whose top-level terms is itself test-only. An `any(...)` is
+# satisfiable by its other terms and a `not(...)` inverts the gate, so neither
+# ever gates test code. The Rust twin is
+# crates/core/src/test_helpers/test_sources.rs `is_test_only_cfg`, and
 # crates/cli/tests/audit_scripts.rs drives both over one vector.
-function is_test_only_cfg(l,   start, i, n, depth, c) {
-    if (l !~ /^[[:space:]]*#\[cfg\(/) return 0
-    start = index(l, "#[cfg(") + 6
-    depth = 1; n = length(l)
+function is_test_only_cfg(l) { return cfg_attr_is_test_only(l, "#[cfg(") }
+
+# Whether l is an INNER attribute (`#![cfg(...)]`, gating the whole enclosing
+# file) that is test-only by the same predicate rules. Kept apart from
+# is_test_only_cfg because the two answer different questions: an inner
+# attribute bounds no item, so a region scanner must not treat it as the head
+# of one.
+function is_test_only_inner_cfg(l) { return cfg_attr_is_test_only(l, "#![cfg(") }
+
+# Shared body of the two above: tok is the attribute opening that must start
+# the line (leading whitespace aside), and the predicate it delimits decides.
+function cfg_attr_is_test_only(l, tok,   s, start, i, n, depth, c) {
+    s = l
+    sub(/^[[:space:]]+/, "", s)
+    if (substr(s, 1, length(tok)) != tok) return 0
+    start = length(tok) + 1
+    depth = 1; n = length(s)
     for (i = start; i <= n; i++) {
-        c = substr(l, i, 1)
+        c = substr(s, i, 1)
         if (c == "(") depth++
         else if (c == ")") {
             depth--
-            if (depth == 0) return pred_is_test_only(substr(l, start, i - start))
+            if (depth == 0) return pred_is_test_only(substr(s, start, i - start))
         }
     }
     return 0

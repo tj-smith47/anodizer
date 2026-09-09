@@ -23,3 +23,8 @@ fn a_marked_mode_is_not_reported() {
     // exec-writer-ok: 0o700 on a directory, which is never exec'd.
     std::fs::set_permissions("gnupghome", std::fs::Permissions::from_mode(0o700)).unwrap();
 }
+
+#[test]
+fn an_open_options_exec_write_is_reported() {
+    let _ = std::fs::OpenOptions::new().mode(0o755).write(true).open("opts-stub");
+}

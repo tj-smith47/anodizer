@@ -21,6 +21,13 @@
 # delete `#[serial]` rather than invent a key for it.
 set -euo pipefail
 
+# bash >= 4.4: `mapfile` arrived in 4.0, and 4.4 is where `set -u` stopped
+# treating an empty array's `"${arr[@]}"` as an unset expansion.
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
+    echo "audit-serial-groups: needs bash >= 4.4, found $BASH_VERSION." >&2
+    exit 2
+}
+
 MODE="scan"
 if [[ "${1:-}" == "--groups" ]]; then
     MODE="groups"
@@ -72,7 +79,7 @@ done <<<"$all_unkeyed"
 stale=""
 for p in "${SERIAL_PENDING[@]}"; do
     found=""
-    for h in ${pending_hit[@]+"${pending_hit[@]}"}; do
+    for h in "${pending_hit[@]}"; do
         [[ "$h" == "$p" ]] && found=1 && break
     done
     [[ -n "$found" ]] || stale+="  $p"$'\n'

@@ -167,24 +167,28 @@ fn spawn_retry_audit_reports_test_context_only() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// `audit-test-exec-writer.sh` has to see BOTH spellings of an executable
-/// mode — the `Permissions::from_mode(0o755)` argument and the
-/// `perms.set_mode(0o755)` mutation — because a call site picks either one
-/// freely and only the first was matched when the audit was written. It must
-/// also stay off production chmods (a stage staging a real binary into a
-/// package tree) and off a mode carrying an `// exec-writer-ok:` marker.
+/// `audit-test-exec-writer.sh` has to see EVERY spelling of an executable
+/// mode — `PermissionsExt`'s `Permissions::from_mode(0o755)` argument and
+/// `perms.set_mode(0o755)` mutation, and the `.mode(0o755)` builder call of
+/// `OpenOptionsExt`/`DirBuilderExt` — because a call site picks any of them
+/// freely and each one the audit could not see was a writer it waved through.
+/// It must also stay off production chmods (a stage staging a real binary into
+/// a package tree, a production `DirBuilder` mode) and off a mode carrying an
+/// `// exec-writer-ok:` marker.
 #[test]
-fn exec_writer_audit_reports_both_mode_spellings_in_test_context_only() {
+fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     let dir = fixture_tree();
     let (code, out) = run_audit("audit-test-exec-writer.sh", dir.path());
 
     let (set_mode_line, set_mode_text) = at(LIB_RS, "perms.set_mode");
     let (from_mode_line, from_mode_text) = at(TESTS_RS, r#""sibling-stub""#);
+    let (builder_line, builder_text) = at(TESTS_RS, r#""opts-stub""#);
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{set_mode_line}: {set_mode_text}"),
             format!("crates/demo/src/tests.rs:{from_mode_line}: {from_mode_text}"),
+            format!("crates/demo/src/tests.rs:{builder_line}: {builder_text}"),
         ],
         "{out}"
     );

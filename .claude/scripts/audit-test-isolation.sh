@@ -78,10 +78,9 @@
 # below.
 set -euo pipefail
 
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
-
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
 mapfile -t FILES < <(grep -rlP 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src crates/*/tests --include='*.rs' 2>/dev/null || true)
 
@@ -334,14 +333,30 @@ report_cwd_helper_pairing() {
 
 violations=""
 if [[ ${#FILES[@]} -gt 0 ]]; then
-    violations="$(report "${FILES[@]}" || true)"
+        # `|| true` here would swallow a scanner that never ran — a missing awk
+    # library, a bad regex — as a clean scan, so only the two exits the scanner
+    # defines are accepted.
+    scan_status=0
+    violations="$(report "${FILES[@]}")" || scan_status=$?
+    if ((scan_status != 0 && scan_status != 2)); then
+        echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
+        exit 1
+    fi
 fi
 
 mapfile -t HELPER_FILES < <(grep -rlE "(${all_helper_alt})\\(" crates/*/src --include='*.rs' 2>/dev/null || true)
 
 helper_violations=""
 if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
-    helper_violations="$(report_cwd_helper_pairing "$helper_alt" "$portable_alt" "${HELPER_FILES[@]}" || true)"
+        # `|| true` here would swallow a scanner that never ran — a missing awk
+    # library, a bad regex — as a clean scan, so only the two exits the scanner
+    # defines are accepted.
+    scan_status=0
+    helper_violations="$(report_cwd_helper_pairing "$helper_alt" "$portable_alt" "${HELPER_FILES[@]}")" || scan_status=$?
+    if ((scan_status != 0 && scan_status != 3)); then
+        echo "audit-test-isolation: scanner exited $scan_status; the scan did not run." >&2
+        exit 1
+    fi
 fi
 
 # awk exits non-zero on a finding; re-derive pass/fail from emptiness so

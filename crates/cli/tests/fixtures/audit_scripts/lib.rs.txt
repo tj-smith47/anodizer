@@ -34,4 +34,5 @@ pub fn production_globals() {
     unsafe { std::env::set_var("PRODUCTION_ONLY", "1") };
     let _ = Command::new("git").arg("rev-parse").output();
     let _ = std::fs::set_permissions("staged", std::fs::Permissions::from_mode(0o755));
+    let _ = std::fs::DirBuilder::new().mode(0o700).create("staged-dir");
 }

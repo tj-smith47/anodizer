@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Guard: every TEST-context `git`/`node` spawn routes through the spawn-retry helper.
+# Guard: every TEST-context `git`/`node` spawn routes through the spawn-retry
+# helper.
 #
 # Contract: Windows GitHub runners intermittently fail to *create* a child
 # process under heavy parallel nextest load — the loader aborts before the
@@ -10,12 +11,14 @@
 # spawn `git init` / `node --check` directly and unretried therefore flake.
 #
 # The fix the codebase standardises on: route every test-fixture spawn through
-#   anodizer_core::test_helpers::output_with_spawn_retry(|| { ...Command... }, "git")
+#   anodizer_core::test_helpers::output_with_spawn_retry(
+#       || { ...Command... }, "git")
 # which retries up to 5× on a transient spawn-init failure (and only those, so
 # it masks no genuine error). See crates/core/src/test_helpers/mod.rs.
 #
-# This audit fails (exit 1) when a `Command::new("git")` / `Command::new("node")`
-# (incl. the `std::process::`-qualified form) appears in TEST context WITHOUT
+# This audit fails (exit 1) when a `Command::new("git")` /
+# `Command::new("node")` (incl. the `std::process::`-qualified form) appears in
+# TEST context WITHOUT
 # either:
 #   - sitting inside an `output_with_spawn_retry(...)` closure body, OR
 #   - carrying an inline  // spawn-retry-ok: <why>  marker (on the call's line
@@ -30,10 +33,16 @@
 # helper.
 set -euo pipefail
 
-ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-cd "$ROOT"
+# bash >= 4.4: `mapfile` arrived in 4.0, and 4.4 is where `set -u` stopped
+# treating an empty array's `"${arr[@]}"` as an unset expansion.
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
+    echo "audit-test-spawn-retry: needs bash >= 4.4, found $BASH_VERSION." >&2
+    exit 2
+}
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+cd "$ROOT"
 
 # Candidate files: any source under crates/ that spawns git or node. The awk
 # pass then decides per-file whether each call site is in test context.
@@ -115,7 +124,15 @@ report() {
 AWK
 }
 
-violations="$(report "${FILES[@]}" || true)"
+# `|| true` here would swallow a scanner that never ran — a missing awk
+# library, a bad regex — as a clean scan, so only the two exits the scanner
+# defines are accepted.
+scan_status=0
+violations="$(report "${FILES[@]}")" || scan_status=$?
+if ((scan_status != 0 && scan_status != 2)); then
+    echo "audit-test-spawn-retry: scanner exited $scan_status; the scan did not run." >&2
+    exit 1
+fi
 
 # awk exits 2 on a finding; re-derive pass/fail from emptiness so `set -e` does
 # not abort on the expected non-zero status.
