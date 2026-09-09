@@ -7,6 +7,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
+mod docker_render;
 mod expected;
 mod helpers;
 mod keyload;
@@ -23,7 +24,8 @@ pub use verify_assets::{
     verify_signature_assets,
 };
 
-use helpers::{default_sign_cmd, prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
+use docker_render::{RenderedImageSign, render_image_signs, set_image_template_vars};
+use helpers::{default_sign_cmd, prepare_stdin_from, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
 
 // Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,
@@ -306,31 +308,6 @@ impl Stage for SignStage {
     }
 }
 
-/// Seed the docker-image template variables from one image's build metadata
-/// and return that image's digest — empty when the build stage captured none.
-///
-/// `Digest` / `ArtifactID` are PascalCase because a Go-style `{{ .Digest }}`
-/// reference is preprocessed to `{{ Digest }}` and Tera is case-sensitive; the
-/// `digest` / `artifactID` spellings serve templates written against Tera
-/// directly. All four are set on every image, even to empty, so no value
-/// leaks from the previously rendered one.
-fn set_image_template_vars<'a>(
-    ctx: &mut anodizer_core::context::Context,
-    metadata: &'a std::collections::HashMap<String, String>,
-) -> &'a str {
-    let digest = metadata.get("digest").map(|s| s.as_str()).unwrap_or("");
-    let artifact_id = metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-    ctx.template_vars_mut().set("Digest", digest);
-    ctx.template_vars_mut().set("digest", digest);
-    ctx.template_vars_mut().set("ArtifactID", artifact_id);
-    ctx.template_vars_mut().set("artifactID", artifact_id);
-    digest
-}
-
-/// One image's fully rendered sign invocation: the digest-pinned reference,
-/// the argv the spawn uses, and the child `env:` overlay.
-type RenderedImageSign = (String, Vec<String>, Vec<(String, String)>);
-
 /// Pipeline stage for signing Docker images via `docker_signs` config.
 /// Must run after `DockerStage` so Docker image artifacts are present.
 pub struct DockerSignStage;
@@ -377,7 +354,7 @@ impl Stage for DockerSignStage {
                 }
             }
 
-            'configs: for docker_sign_cfg in &docker_signs {
+            for docker_sign_cfg in &docker_signs {
                 let sign_id = docker_sign_cfg.resolved_id();
 
                 // Evaluate the `if` conditional template for docker signs.
@@ -451,10 +428,7 @@ impl Stage for DockerSignStage {
                 };
 
                 let pre_ids = docker_artifacts.len();
-                let image_paths: Vec<(
-                    std::path::PathBuf,
-                    std::collections::HashMap<String, String>,
-                )> = docker_artifacts
+                let image_paths: Vec<docker_render::ImageEntry> = docker_artifacts
                     .into_iter()
                     .filter(|a| {
                         crate::helpers::sign_ids_match(&a.metadata, docker_sign_cfg.ids.as_ref())
@@ -475,17 +449,18 @@ impl Stage for DockerSignStage {
                     ));
                 }
 
-                // A config that matched no image renders no per-image argv,
-                // so the harness skip inside the pre-pass below never sees
-                // it; classify it once from the config-level render so the
-                // skip is still recorded.
-                if image_paths.is_empty()
-                    && crate::process::is_keyless_cosign_under_harness(
-                        &cmd,
-                        &crate::process::render_args_without_artifact(&args, ctx),
-                        ctx,
-                    )
-                {
+                // Every image's argv and env, rendered before anything is
+                // spawned; `None` is the harness skip for keyless cosign.
+                let Some(per_image) = render_image_signs(
+                    ctx,
+                    &log,
+                    docker_sign_cfg,
+                    sign_id,
+                    &cmd,
+                    &args,
+                    &image_paths,
+                )?
+                else {
                     let reason = crate::process::KEYLESS_COSIGN_HARNESS_SKIP.to_string();
                     log.verbose(&format!(
                         "skipped docker-sign config '{}' — {}",
@@ -493,104 +468,7 @@ impl Stage for DockerSignStage {
                     ));
                     ctx.remember_skip("docker-sign", sign_id, &reason);
                     continue;
-                }
-
-                // Rendered up front, once per image, for two consumers: the
-                // spawn below reuses each argv and env verbatim, and every
-                // decision about the signer — the harness skip, the
-                // verification mode, the host TUF lock — is taken on these
-                // rendered values, never on the config's template strings.
-                // A `--key` can arrive through a template, and a `TUF_ROOT`
-                // that depends on the image (`{{ .Digest }}`,
-                // `{{ .ArtifactID }}`) names a store that must be known —
-                // and locked — before the first signature is made. A dry
-                // run spawns nothing and renders no env, matching the loop,
-                // which prints the argv and moves on.
-                let mut per_image: Vec<RenderedImageSign> = Vec::with_capacity(image_paths.len());
-                for (image_path, metadata) in &image_paths {
-                    let image_str = image_path.to_string_lossy();
-                    let digest_val = set_image_template_vars(ctx, metadata);
-
-                    // Sign the digest-pinned reference (`<repo>:<tag>@<digest>`),
-                    // never the bare tag: a tag can move between build and sign,
-                    // so a tag-signature may certify a different image than the
-                    // one anodize built (cosign warns and is removing tag
-                    // signing). The build stage recorded this image's digest in
-                    // metadata; pinning to it certifies exactly that image. When
-                    // no digest was captured the reference stays unpinned and we
-                    // warn rather than silently sign by tag.
-                    if digest_val.is_empty() {
-                        log.warn(&format!(
-                            "docker-sign [{}]: no digest recorded for image '{}' — \
-                             signing by tag, which can certify a moved image. Ensure \
-                             the docker build stage captured the image digest.",
-                            sign_id, image_str
-                        ));
-                    }
-                    let signed_ref =
-                        crate::helpers::pin_image_ref_to_digest(image_str.as_ref(), digest_val);
-
-                    // For Docker images the "signature" concept is embedded;
-                    // use a placeholder `.sig` path to satisfy the template
-                    // if the user has {{ .Signature }} in their args.
-                    let signature_str = format!("{}.sig", signed_ref);
-
-                    let resolved = resolve_sign_args(&args, &signed_ref, &signature_str, None);
-
-                    // Propagate template render errors instead of silently
-                    // falling back to the unrendered template string —
-                    // passing a literal `{{ Artifact }}` to `cosign sign`
-                    // would sign the wrong reference (or fail opaquely).
-                    // Sibling `binary-sign` / `sign` path (process.rs) uses
-                    // the same `?`-propagation shape.
-                    let argv: Vec<String> = resolved
-                        .iter()
-                        .map(|arg| {
-                            ctx.render_template(arg).with_context(|| {
-                                format!("docker-sign [{}]: render arg '{}'", sign_id, arg)
-                            })
-                        })
-                        // `{{ .Artifact }}` already resolves to the pinned ref;
-                        // an args template that ALSO appends `@{{ .Digest }}`
-                        // (e.g. the historical default) would otherwise yield a
-                        // doubled `@sha256:..@sha256:..`. Collapse it so exactly
-                        // one digest pin survives regardless of args shape.
-                        .map(|arg| arg.map(|a| crate::helpers::collapse_doubled_digest(&a)))
-                        .collect::<Result<Vec<_>>>()?;
-                    let argv = crate::process::harden_cosign_args_for_harness(&cmd, argv, ctx);
-
-                    // Keyless cosign cannot run inside the determinism harness
-                    // (no ambient OIDC; the ephemeral `COSIGN_KEY` env crashes
-                    // a `--key`-less invocation). Mirror the `signs` /
-                    // `binary_signs` skip so the discriminator (cmd==cosign +
-                    // no `--key` in the rendered argv) is uniform across every
-                    // sign family; one keyless image skips the whole config. A
-                    // `--key`-bearing config still runs.
-                    if crate::process::is_keyless_cosign_under_harness(&cmd, &argv, ctx) {
-                        let reason = crate::process::KEYLESS_COSIGN_HARNESS_SKIP.to_string();
-                        log.verbose(&format!(
-                            "skipped docker-sign config '{}' — {}",
-                            sign_id, reason
-                        ));
-                        ctx.remember_skip("docker-sign", sign_id, &reason);
-                        continue 'configs;
-                    }
-
-                    let env = if ctx.is_dry_run() {
-                        Vec::new()
-                    } else {
-                        let mut env = anodizer_core::config::render_env_entries(
-                            docker_sign_cfg.env.as_deref().unwrap_or(&[]),
-                            |v| ctx.render_template(v),
-                        )
-                        .with_context(|| "docker-sign: render env entries")?;
-                        // docker image signing is cosign — suppress the sigstore
-                        // consent prompt so it never blocks/banners in CI.
-                        crate::process::ensure_cosign_consent_env(&cmd, &mut env);
-                        env
-                    };
-                    per_image.push((signed_ref, argv, env));
-                }
+                };
 
                 // Resolve post-sign verification once per config, from the
                 // argv the first image will actually spawn: the flags that
@@ -607,7 +485,7 @@ impl Stage for DockerSignStage {
                 // rendered env so `env://VAR` refs resolve the same way.
                 let classified_args: &[String] = per_image
                     .first()
-                    .map(|(_, argv, _)| argv.as_slice())
+                    .map(|image| image.argv.as_slice())
                     .unwrap_or(&args);
                 let docker_verify_mode = crate::verify::resolve_config_verify_mode(
                     docker_sign_cfg.verify.as_ref(),
@@ -632,7 +510,7 @@ impl Stage for DockerSignStage {
                     match (&docker_verify_mode, per_image.first()) {
                         (
                             crate::verify::ConfigVerifyMode::CosignKeyed { key_ref, .. },
-                            Some((_, _, env)),
+                            Some(image),
                         ) if !ctx.is_dry_run() => {
                             let tmp = tempfile::Builder::new()
                                 .prefix("anodizer-verify-")
@@ -644,7 +522,7 @@ impl Stage for DockerSignStage {
                             crate::verify::derive_cosign_public_key(
                                 &cmd,
                                 key_ref,
-                                Some(env),
+                                Some(&image.env),
                                 tmp.path(),
                             )?;
                             Some(tmp)
@@ -667,16 +545,19 @@ impl Stage for DockerSignStage {
                 let _tuf_locks = (!ctx.is_dry_run()
                     && per_image
                         .iter()
-                        .any(|(_, argv, _)| crate::process::is_keyless_cosign(&cmd, argv)))
+                        .any(|image| crate::process::is_keyless_cosign(&cmd, &image.argv)))
                 .then(|| {
                     let envs: Vec<&[(String, String)]> =
-                        per_image.iter().map(|(_, _, env)| env.as_slice()).collect();
+                        per_image.iter().map(|image| image.env.as_slice()).collect();
                     crate::tuf_cache::keyless_cosign_host_locks(&envs, ctx.env_source(), &log)
                 });
 
-                for ((image_path, metadata), (signed_ref, fully_resolved, docker_rendered_env)) in
-                    image_paths.iter().zip(&per_image)
-                {
+                for ((image_path, metadata), image) in image_paths.iter().zip(&per_image) {
+                    let RenderedImageSign {
+                        signed_ref,
+                        argv: fully_resolved,
+                        env: docker_rendered_env,
+                    } = image;
                     let image_str = image_path.to_string_lossy();
 
                     // Re-seeded per image for the `output:` template below:
