@@ -2562,6 +2562,104 @@ fn keyless_docker_config_matching_no_image_still_records_the_harness_skip() {
     );
 }
 
+/// A config that matched no artifact is classified from the same
+/// config-level render its harness skip is classified from, never from the
+/// raw template argv: a `--key` arriving through `{{ .Env.X }}` makes it
+/// keyed, so it never reports the keyless "nothing to verify against" skip.
+/// A bare keyless sibling in the same run still does.
+#[test]
+fn empty_match_sign_config_is_classified_from_the_rendered_arguments() {
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(vec![
+            keyless_checksum_sign(
+                "keyed-env",
+                vec![
+                    "sign-blob",
+                    "{{ .Env.COSIGN_KEY_FLAG }}",
+                    "--yes",
+                    "{{ Artifact }}",
+                ],
+            ),
+            keyless_checksum_sign("bare-keyless", vec!["sign-blob", "--yes", "{{ Artifact }}"]),
+        ])
+        .build();
+    ctx.template_vars_mut()
+        .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    SignStage
+        .run(&mut ctx)
+        .expect("a config matching nothing signs nothing and succeeds");
+
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.contains("config 'bare-keyless': skipping signature verification")),
+        "a bare keyless empty-match config has nothing to verify against: {logged:?}"
+    );
+    assert!(
+        !logged
+            .iter()
+            .any(|m| m.contains("config 'keyed-env': skipping signature verification")),
+        "a `--key` supplied through a template classifies the config keyed: {logged:?}"
+    );
+}
+
+/// The `docker_signs` sibling of the empty-match classification: the same
+/// config-level render decides the verification mode when no image matched.
+#[test]
+fn empty_match_docker_config_is_classified_from_the_rendered_arguments() {
+    use anodizer_core::config::DockerSignConfig;
+
+    let docker_sign = |id: &str, args: Vec<&str>| DockerSignConfig {
+        verify: None,
+        cmd: Some("cosign".to_string()),
+        args: Some(args.into_iter().map(str::to_string).collect()),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        id: Some(id.to_string()),
+        env: None,
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    };
+
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.config.docker_signs = Some(vec![
+        docker_sign(
+            "keyed-env",
+            vec!["sign", "{{ .Env.COSIGN_KEY_FLAG }}", "{{ .Artifact }}"],
+        ),
+        docker_sign("bare-keyless", vec!["sign", "{{ .Artifact }}"]),
+    ]);
+    ctx.template_vars_mut()
+        .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    DockerSignStage
+        .run(&mut ctx)
+        .expect("a config matching no image signs nothing and succeeds");
+
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.contains("config 'bare-keyless': skipping signature verification")),
+        "a bare keyless empty-match docker config has nothing to verify against: {logged:?}"
+    );
+    assert!(
+        !logged
+            .iter()
+            .any(|m| m.contains("config 'keyed-env': skipping signature verification")),
+        "a `--key` supplied through a template classifies the config keyed: {logged:?}"
+    );
+}
+
 /// A cosign config WITH an explicit `--key` (e.g. `--key=env://COSIGN_KEY`)
 /// signs with the harness's ephemeral key, so it must still RUN under the
 /// harness — not be swept up by the keyless skip.

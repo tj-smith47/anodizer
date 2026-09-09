@@ -591,13 +591,18 @@ pub(crate) fn process_sign_configs(
         // for every job of one config — templates only vary the artifact
         // paths — and a `--key` supplied through a template is visible only
         // in the rendered form. With no job (dry run, no matching artifact)
-        // nothing is spawned and the template argv merely feeds the skip
-        // line. Resolving once keeps the skip logged a single time and the
-        // keyed public key derived a single time.
-        let classified_args: &[String] = sign_jobs
-            .first()
-            .map(|j| j.args.as_slice())
-            .unwrap_or(&args);
+        // nothing is spawned, and the config-level render — the same one the
+        // harness skip is classified from — stands in, so one config is
+        // never classified two ways. Resolving once keeps the skip logged a
+        // single time and the keyed public key derived a single time.
+        let config_level_args: Vec<String>;
+        let classified_args: &[String] = match sign_jobs.first() {
+            Some(job) => &job.args,
+            None => {
+                config_level_args = render_args_without_artifact(&args, ctx);
+                &config_level_args
+            }
+        };
         let verify_mode = crate::verify::resolve_config_verify_mode(
             sign_cfg.verify.as_ref(),
             &cmd,

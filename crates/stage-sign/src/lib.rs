@@ -475,18 +475,25 @@ impl Stage for DockerSignStage {
                 // classify a signer (`--key`, `--tlog-upload`) render
                 // identically for every image of one config, and a `--key`
                 // supplied through a template is visible only in the
-                // rendered form. With no image nothing is spawned and the
-                // template argv merely feeds the skip line. Docker
+                // rendered form. With no image nothing is spawned, and the
+                // config-level render — the same one the harness skip is
+                // classified from — stands in, so one config is never
+                // classified two ways. Docker
                 // signatures are registry-attached, so verification is
                 // `cosign verify` against the registry the sign just pushed
                 // to — the network path is already proven reachable at that
                 // point. Keyed configs derive the public key once here, the
                 // same way the detached path does, under the first image's
                 // rendered env so `env://VAR` refs resolve the same way.
-                let classified_args: &[String] = per_image
-                    .first()
-                    .map(|image| image.argv.as_slice())
-                    .unwrap_or(&args);
+                let config_level_args: Vec<String>;
+                let classified_args: &[String] = match per_image.first() {
+                    Some(image) => &image.argv,
+                    None => {
+                        config_level_args =
+                            crate::process::render_args_without_artifact(&args, ctx);
+                        &config_level_args
+                    }
+                };
                 let docker_verify_mode = crate::verify::resolve_config_verify_mode(
                     docker_sign_cfg.verify.as_ref(),
                     &cmd,
