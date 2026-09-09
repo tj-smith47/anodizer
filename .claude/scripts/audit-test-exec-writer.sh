@@ -46,16 +46,8 @@
 # OUT OF SCOPE: they write artifacts nothing in the same process then execs.
 set -euo pipefail
 
-# bash >= 4.4: `mapfile` arrived in 4.0, and 4.4 is where `set -u` stopped
-# treating an empty array's `"${arr[@]}"` as an unset expansion. Stating the
-# floor is what lets every array below be expanded plainly instead of half of
-# them carrying a `${arr[@]+…}` guard the other half forgot.
-((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
-    echo "audit-test-exec-writer: needs bash >= 4.4, found $BASH_VERSION." >&2
-    exit 2
-}
-
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+source "$LIB_DIR/require-bash.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 

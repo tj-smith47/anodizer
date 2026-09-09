@@ -196,6 +196,56 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     assert_eq!(code, 1, "{out}");
 }
 
+/// `mapfile` and a plainly expanded `"${arr[@]}"` under `set -u` both need
+/// bash >= 4.4, and the assertion of that floor belongs in exactly one place:
+/// four of the eight scripts using them stated it inline and the other four
+/// assumed it, so half the population would have failed silently on a 4.3
+/// host. Every script that needs the floor sources the one shared line, and
+/// no script restates it.
+#[test]
+fn every_array_using_audit_script_sources_the_bash_floor() {
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts");
+    let mut needing = 0usize;
+    let mut missing = Vec::new();
+    let mut restated = Vec::new();
+    for entry in std::fs::read_dir(&scripts).expect("scripts dir") {
+        let path = entry.expect("script entry").path();
+        let name = path
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        if !name.starts_with("audit-") || !name.ends_with(".sh") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("script body");
+        if body.contains("BASH_VERSINFO") {
+            restated.push(name.clone());
+        }
+        if !(body.contains("mapfile ") || body.contains("[@]}\"")) {
+            continue;
+        }
+        needing += 1;
+        if !body.contains("source \"$LIB_DIR/require-bash.sh\"") {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "scripts using mapfile or a plain array expansion must source lib/require-bash.sh: {missing:?}"
+    );
+    assert!(
+        restated.is_empty(),
+        "the bash floor is asserted once, in lib/require-bash.sh; these restate it: {restated:?}"
+    );
+    assert!(
+        needing >= 10,
+        "expected every array-using scanner to be walked, found {needing}"
+    );
+}
+
 /// A scanner that could not run must never read as a clean scan. Every audit
 /// script that loads an awk library from `.claude/scripts/lib` is driven from
 /// a copy whose sibling `lib/` is empty, so awk dies loading its source: the
@@ -205,7 +255,15 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
 fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = TempDir::new().expect("temp dir");
-    std::fs::create_dir(dir.path().join("lib")).expect("empty lib dir");
+    let lib = dir.path().join("lib");
+    std::fs::create_dir(&lib).expect("lib dir");
+    // Only the awk sources are withheld: the shared bash floor still has to
+    // load, or the scripts would die before ever reaching a scanner.
+    std::fs::copy(
+        repo.join(".claude/scripts/lib/require-bash.sh"),
+        lib.join("require-bash.sh"),
+    )
+    .expect("copy the bash floor");
 
     let mut checked = 0usize;
     for entry in std::fs::read_dir(repo.join(".claude/scripts")).expect("scripts dir") {
@@ -218,9 +276,11 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
         if !name.starts_with("audit-") || !name.ends_with(".sh") {
             continue;
         }
+        // `-f "$LIB_DIR/…"` is an awk source load; `source "$LIB_DIR/…"` is
+        // the bash floor, which every script takes and no scanner depends on.
         if !std::fs::read_to_string(&src)
             .expect("script body")
-            .contains("$LIB_DIR/")
+            .contains("-f \"$LIB_DIR/")
         {
             continue;
         }
