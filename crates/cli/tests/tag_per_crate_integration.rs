@@ -621,6 +621,120 @@ core = { path = "../core", version = "0.0.2" }
     );
 }
 
+/// Two independent Cargo workspaces in one repo: each is swept on its own root,
+/// and a floor naming a crate that belongs to the other workspace is left
+/// alone — the sweep never crosses a Cargo-workspace boundary.
+#[test]
+fn per_crate_bump_heals_each_workspace_scope_without_crossing() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/a1", "crates/a2"]
+exclude = ["sub"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("sub")).unwrap();
+    fs::write(
+        root.join("sub/Cargo.toml"),
+        r#"[workspace]
+members = ["crates/b1", "crates/b2"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+    for (path, name, ver) in [
+        ("crates/a1", "a1", "0.1.0"),
+        ("crates/a2", "a2", "0.9.0"),
+        ("sub/crates/b1", "b1", "0.1.0"),
+        ("sub/crates/b2", "b2", "0.8.0"),
+    ] {
+        fs::create_dir_all(root.join(path).join("src")).unwrap();
+        fs::write(root.join(path).join("src/lib.rs"), "").unwrap();
+        fs::write(
+            root.join(path).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+    }
+    // a1 floors its own workspace's a2 (stale) and, across the boundary, b2.
+    fs::write(
+        root.join("crates/a1/Cargo.toml"),
+        r#"[package]
+name = "a1"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+a2 = { path = "../a2", version = "0.1.0" }
+b2 = { path = "../../sub/crates/b2", version = "0.1.0" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("sub/crates/b1/Cargo.toml"),
+        r#"[package]
+name = "b1"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+b2 = { path = "../b2", version = "0.1.0" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: scopes
+crates:
+  - name: a1
+    path: crates/a1
+    tag_template: "a1-v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: b1
+    path: sub/crates/b1
+    tag_template: "b1-v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "a1-v0.1.0"]);
+    run_git(root, &["tag", "b1-v0.1.0"]);
+    fs::write(root.join("crates/a1/src/lib.rs"), "// touched\n").unwrap();
+    fs::write(root.join("sub/crates/b1/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: both crates change");
+
+    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Each scope heals its own stale floor.
+    assert_eq!(
+        read_dep_version(root, "crates/a1/Cargo.toml", "a2"),
+        "0.9.0"
+    );
+    assert_eq!(
+        read_dep_version(root, "sub/crates/b1/Cargo.toml", "b2"),
+        "0.8.0"
+    );
+    // b2 is no member of a1's workspace, so a1's floor on it is not the sweep's
+    // to raise even though the path resolves.
+    assert_eq!(
+        read_dep_version(root, "crates/a1/Cargo.toml", "b2"),
+        "0.1.0"
+    );
+}
+
 /// A workspace member that pins a sibling via `{ path = "...", version = "X" }`
 /// must have THAT version pin rewritten when the sibling is lockstep-bumped
 /// during a per-crate tag run. Without this, `cargo publish -p <sibling>`

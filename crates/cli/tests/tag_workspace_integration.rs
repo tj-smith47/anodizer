@@ -987,6 +987,44 @@ util = { path = "../util", version = "0.1.0" }
     fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: app change");
 
+    // The preview names the same floor and leaves the tree untouched — the one
+    // shape where `sync_workspace_deps` previews its own edits alongside.
+    let before = fs::read_to_string(root.join("crates/app/Cargo.toml")).unwrap();
+    let preview = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "app", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        preview.status.success(),
+        "tag --dry-run failed: {}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&preview.stderr)
+            .contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
+        "dry-run must preview the heal: {}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("crates/app/Cargo.toml")).unwrap(),
+        before,
+        "--dry-run must not edit manifests"
+    );
+    let status = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root).args(["status", "--porcelain"]);
+            cmd
+        },
+        "git",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim(),
+        "",
+        "--dry-run must leave the tree clean"
+    );
+
     let out = anodizer()
         .current_dir(root)
         .args(["tag", "--crate", "app"])

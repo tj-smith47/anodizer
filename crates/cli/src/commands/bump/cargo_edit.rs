@@ -1225,6 +1225,34 @@ mod tests {
     }
 
     #[test]
+    fn heal_dep_floors_leaves_an_inline_dependencies_table_untouched() {
+        let dir = tmpdir();
+        // `dependencies = { … }` is an inline value, not a table: the dep-spec
+        // propagation skips it and so must the sweep.
+        let c_manifest = format!(
+            "dependencies = {{ b = {{ path = \"../b\", version = \"0.1.0\" }} }}\n\n{}",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
+        assert!(healed.is_empty(), "{healed:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
+    }
+
+    #[test]
     fn heal_dep_floors_is_idempotent() {
         let dir = tmpdir();
         write_workspace(
@@ -1282,15 +1310,57 @@ mod tests {
             &ws_root(&["b", "c"]),
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
+        let (log, capture) = StageLogger::with_capture("tag", anodizer_core::log::Verbosity::Quiet);
         assert!(
             heal_dep_floors(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
-                &quiet_log()
+                &log
             )
             .unwrap()
             .is_empty()
+        );
+        assert_eq!(
+            capture.warn_messages(),
+            vec![
+                "multi-comparator version requirement b = \">=0.6, <0.8\" in crates/c/Cargo.toml; dep floor left unchanged"
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_warns_on_unparseable_requirement() {
+        let dir = tmpdir();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"not-a-version\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let (log, capture) = StageLogger::with_capture("tag", anodizer_core::log::Verbosity::Quiet);
+        assert!(
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &log
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            capture.warn_messages(),
+            vec![
+                "unparseable version requirement b = \"not-a-version\" in crates/c/Cargo.toml; dep floor left unchanged"
+            ]
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
