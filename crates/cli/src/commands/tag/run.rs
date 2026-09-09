@@ -746,7 +746,6 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
-        // Cross-crate dep updates scan from the discovered workspace root.
         let workspace_root = workspace_root_path.to_string_lossy().to_string();
         let (crate_name, dep_modified) = sync_single_crate_manifests(
             &workspace_root_path,

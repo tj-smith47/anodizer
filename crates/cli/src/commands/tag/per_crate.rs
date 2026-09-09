@@ -455,7 +455,12 @@ pub(crate) fn run_per_crate_tag(
                     false,
                     log,
                 )?;
-                intra_ws_modified.extend(modified);
+                for path in modified {
+                    intra_ws_modified.push(anodizer_core::path_util::display_under_root(
+                        &workspace_root,
+                        Path::new(&path),
+                    ));
+                }
             }
         }
 
@@ -463,8 +468,16 @@ pub(crate) fn run_per_crate_tag(
         // group released this run — so a bump commit stranded off the default
         // branch cannot leave the next publish resolving an old sibling.
         for scope in &heal_scopes {
-            for healed in heal_dep_floors(scope, &versions_map, false, log)? {
-                intra_ws_modified.push(healed.to_string_lossy().into_owned());
+            for healed in heal_dep_floors(
+                scope,
+                Propagated::TopLevelSections(&versions_map),
+                false,
+                log,
+            )? {
+                intra_ws_modified.push(anodizer_core::path_util::display_under_root(
+                    &workspace_root,
+                    &healed,
+                ));
             }
         }
 
@@ -472,19 +485,14 @@ pub(crate) fn run_per_crate_tag(
         let has_lockfile = super::refresh_cargo_lock(workspace_root.as_path(), log);
 
         // Stage all bumped Cargo.toml files + intra-workspace dep rewrites +
-        // Cargo.lock. Convert absolute intra-ws paths to repo-relative so
-        // `git add` recognizes them.
+        // Cargo.lock.
         let mut files_to_stage: Vec<String> = all_version_updates
             .iter()
             .map(|(path, _)| format!("{}/Cargo.toml", path))
             .collect();
-        for abs in &intra_ws_modified {
-            let rel = Path::new(abs)
-                .strip_prefix(&workspace_root)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| abs.clone());
-            if !files_to_stage.contains(&rel) {
-                files_to_stage.push(rel);
+        for rel in &intra_ws_modified {
+            if !files_to_stage.contains(rel) {
+                files_to_stage.push(rel.clone());
             }
         }
         // Rewrite enrolled version_files using each crate's group old→new.
@@ -587,12 +595,16 @@ pub(crate) fn run_per_crate_tag(
         // without touching disk.
         rewrite_and_stage_version_files(&workspace_root, &vf_plan, true, log)?;
         render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
-        // Resolve every member from its manifest: a floor on a crate this run
-        // bumps is rewritten by `sync_workspace_deps` on the real path, so
-        // reporting it here would announce an edit the real run attributes
-        // elsewhere.
+        // Preview exactly the heals the real run will make: every crate this
+        // run releases resolves to its new version, and the top-level floors
+        // `sync_workspace_deps` owns are left to it in both modes.
         for scope in &heal_scopes {
-            heal_dep_floors(scope, &std::collections::BTreeMap::new(), true, log)?;
+            heal_dep_floors(
+                scope,
+                Propagated::TopLevelSections(&versions_map),
+                true,
+                log,
+            )?;
         }
         // Dry-run previews the pre hooks too, matching the single/lockstep
         // closure (which invokes run_hooks in dry mode).

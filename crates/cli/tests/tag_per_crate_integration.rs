@@ -456,18 +456,29 @@ fn per_crate_dry_run_emits_output_but_no_tags_no_commits() {
 }
 
 fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
+    read_dep_version_in(root, manifest_rel, &["dependencies"], dep_name)
+}
+
+/// The declared version of `dep_name` in the dependency table `table_path`
+/// names (`["dependencies"]`, `["workspace", "dependencies"]`, …).
+fn read_dep_version_in(
+    root: &Path,
+    manifest_rel: &str,
+    table_path: &[&str],
+    dep_name: &str,
+) -> String {
     let text = fs::read_to_string(root.join(manifest_rel)).unwrap();
     let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
-    doc.get("dependencies")
-        .and_then(|d| d.get(dep_name))
+    let mut item = doc.as_item();
+    for key in table_path {
+        item = item
+            .get(key)
+            .unwrap_or_else(|| panic!("{manifest_rel}: [{}] not found", table_path.join(".")));
+    }
+    item.get(dep_name)
         .and_then(|d| d.get("version"))
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| {
-            panic!(
-                "{}: [dependencies].{}.version not found",
-                manifest_rel, dep_name
-            )
-        })
+        .unwrap_or_else(|| panic!("{manifest_rel}: {dep_name}.version not found"))
         .to_string()
 }
 
@@ -485,6 +496,9 @@ fn per_crate_bump_heals_floor_on_crate_outside_this_run() {
         r#"[workspace]
 members = ["crates/core", "crates/cli", "crates/util"]
 resolver = "2"
+
+[workspace.dependencies]
+core = { path = "crates/core", version = "0.0.4" }
 "#,
     )
     .unwrap();
@@ -504,6 +518,7 @@ edition = "2024"
 
 [dependencies]
 util = { path = "../util", version = "0.1.0" }
+core = { path = "../core", version = "0.0.2" }
 "#,
     )
     .unwrap();
@@ -518,6 +533,7 @@ util = { path = "../util", version = "0.1.0" }
 
     // The dry run names the floor it would raise and writes nothing.
     let before = fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap();
+    let root_before = fs::read_to_string(root.join("Cargo.toml")).unwrap();
     let preview = anodizer()
         .current_dir(root)
         .args(["tag", "--dry-run"])
@@ -528,16 +544,32 @@ util = { path = "../util", version = "0.1.0" }
         "tag --dry-run failed: {}",
         String::from_utf8_lossy(&preview.stderr)
     );
+    let preview_err = String::from_utf8_lossy(&preview.stderr);
     assert!(
-        String::from_utf8_lossy(&preview.stderr)
-            .contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
-        "dry-run must preview the heal: {}",
-        String::from_utf8_lossy(&preview.stderr)
+        preview_err.contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
+        "dry-run must preview the heal: {preview_err}"
+    );
+    // `sync_workspace_deps` reaches the top-level sections, so cli's stale
+    // `core` floor is that leg's — the preview must not claim it.
+    assert!(
+        !preview_err.contains("would heal dep floor core 0.0.2"),
+        "a floor the same-run propagation owns must not be previewed as a heal: {preview_err}"
+    );
+    // …but it never reaches `[workspace.dependencies]`, so that floor on the
+    // same bumped crate IS the sweep's, in both modes.
+    assert!(
+        preview_err.contains("(dry-run) would heal dep floor core 0.0.4 → 0.2.0 in Cargo.toml"),
+        "dry-run must preview the root floor heal: {preview_err}"
     );
     assert_eq!(
         fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap(),
         before,
         "--dry-run must not edit manifests"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("Cargo.toml")).unwrap(),
+        root_before,
+        "--dry-run must not edit the root manifest"
     );
 
     let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
@@ -552,6 +584,40 @@ util = { path = "../util", version = "0.1.0" }
     assert_eq!(
         read_dep_version(root, "crates/cli/Cargo.toml", "util"),
         "0.5.0"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The same two lines the preview promised, and only those.
+    assert!(
+        stderr.contains("healed dep floor core 0.0.4 → 0.2.0 in Cargo.toml"),
+        "the root floor must heal: {stderr}"
+    );
+    assert!(
+        !stderr.contains("heal dep floor core 0.0.2"),
+        "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
+    );
+    assert_eq!(
+        read_dep_version(root, "crates/cli/Cargo.toml", "core"),
+        "0.2.0"
+    );
+    assert_eq!(
+        read_dep_version_in(root, "Cargo.toml", &["workspace", "dependencies"], "core"),
+        "0.2.0"
+    );
+
+    let show = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["show", "--stat", "--name-only", "--format=", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
+    let files = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        files.lines().any(|l| l == "Cargo.toml"),
+        "the healed root manifest must be inside the bump commit: {files}"
     );
 }
 

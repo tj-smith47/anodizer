@@ -262,7 +262,7 @@ pub fn apply_plan(
         for m in member_index.values() {
             rewrite_member_dependencies(&m.manifest_path, &bumped, log)?;
         }
-        heal_dep_floors(workspace_root, &bumped, false, log)?;
+        heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), false, log)?;
     }
 
     Ok(())
@@ -432,6 +432,38 @@ fn rewrite_dep_entry(tbl: &mut toml_edit::Table, dep_name: &str, new_ver: &str) 
     }
 }
 
+/// The dependency entries the propagation leg that runs before the sweep has
+/// already rewritten, so the sweep neither re-reports them nor previews an edit
+/// another leg owns.
+///
+/// The two variants name the two propagation legs by the tables they cover:
+/// [`apply_plan`]'s own rewrite reaches every table the sweep walks, while
+/// `version_sync::sync_workspace_deps` reaches only the three top-level
+/// sections, leaving `[target.<cfg>]` and `[workspace.dependencies]` entries to
+/// the sweep.
+pub(crate) enum Propagated<'a> {
+    /// Crate name → this run's version, propagated into every dep table.
+    EveryTable(&'a BTreeMap<String, String>),
+    /// Crate name → this run's version, propagated into `[dependencies]`,
+    /// `[dev-dependencies]` and `[build-dependencies]` only.
+    TopLevelSections(&'a BTreeMap<String, String>),
+}
+
+impl Propagated<'_> {
+    /// The versions this run is writing, overlaying what the manifests hold.
+    fn versions(&self) -> &BTreeMap<String, String> {
+        match self {
+            Propagated::EveryTable(v) | Propagated::TopLevelSections(v) => v,
+        }
+    }
+
+    /// Whether the leg reaches the `[target.<cfg>]` and
+    /// `[workspace.dependencies]` tables as well as the top-level sections.
+    fn reaches_every_table(&self) -> bool {
+        matches!(self, Propagated::EveryTable(_))
+    }
+}
+
 /// The version a workspace member carries: its own literal `[package].version`,
 /// or the root `[workspace.package].version` when it inherits.
 pub(crate) fn member_version(m: &MemberInfo, ws: &WorkspaceInfo) -> Option<String> {
@@ -523,6 +555,7 @@ fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
 struct HealScope<'a> {
     resolved: &'a BTreeMap<String, semver::Version>,
     dirs: &'a BTreeMap<String, PathBuf>,
+    propagated: &'a BTreeMap<String, String>,
     manifest_dir: PathBuf,
     manifest_rel: String,
     dry_run: bool,
@@ -530,11 +563,22 @@ struct HealScope<'a> {
 
 /// Raise every stale internal floor in one dependency table. Returns whether
 /// anything was rewritten.
-fn heal_dep_table(tbl: &mut toml_edit::Table, scope: &HealScope<'_>, log: &StageLogger) -> bool {
+fn heal_dep_table(
+    tbl: &mut toml_edit::Table,
+    scope: &HealScope<'_>,
+    propagated_here: bool,
+    log: &StageLogger,
+) -> bool {
     // Decide against the immutable table first: `rewrite_dep_entry` needs the
     // table mutably, and the decision needs to read every entry.
     let mut writes: Vec<(String, String, String, String)> = Vec::new();
     for (key, item) in tbl.iter() {
+        // The propagation leg rewrites by TOML key, so an entry it owns in a
+        // table it covers is left to it: the two modes then report the same
+        // heals, and on the real path the floor is already satisfied anyway.
+        if propagated_here && scope.propagated.contains_key(key) {
+            continue;
+        }
         let dep_name = item.get("package").and_then(|p| p.as_str()).unwrap_or(key);
         let (Some(want), Some(dir)) = (scope.resolved.get(dep_name), scope.dirs.get(dep_name))
         else {
@@ -617,17 +661,23 @@ fn heal_dep_table(tbl: &mut toml_edit::Table, scope: &HealScope<'_>, log: &Stage
 /// was bumped in this run. A prior bump commit that never reached the default
 /// branch therefore heals on the next bump instead of poisoning its publish.
 ///
-/// `pending` maps crate name → the version this run is bumping it to; a member
-/// absent from it resolves its version from its own manifest (or the root
+/// [`Propagated`] carries this run's crate name → version map and names the
+/// tables the preceding propagation leg already rewrote; a member absent from
+/// the map resolves its version from its own manifest (or the root
 /// `[workspace.package].version` when it inherits). Floors already at or above
 /// the resolved version are left byte-for-byte untouched, as are floors whose
 /// requirement is not a single lower-bounded comparator.
+///
+/// The tables walked are `[dependencies]`, `[dev-dependencies]`,
+/// `[build-dependencies]`, the same three under any `[target.<cfg>]`, and the
+/// root `[workspace.dependencies]`. A `dependencies = { … }` written as an
+/// inline table is left untouched, as it is by the dep-spec propagation.
 ///
 /// Returns the absolute paths of the manifests that changed, for staging into
 /// the bump commit. Writes nothing when `dry_run` is set.
 pub(crate) fn heal_dep_floors(
     scope_root: &Path,
-    pending: &BTreeMap<String, String>,
+    propagated: Propagated<'_>,
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Vec<PathBuf>> {
@@ -636,6 +686,7 @@ pub(crate) fn heal_dep_floors(
     };
     let mut resolved: BTreeMap<String, semver::Version> = BTreeMap::new();
     let mut dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let pending = propagated.versions();
     for m in &ws.members {
         let Some(Ok(version)) = pending
             .get(&m.name)
@@ -675,6 +726,7 @@ pub(crate) fn heal_dep_floors(
         let scope = HealScope {
             resolved: &resolved,
             dirs: &dirs,
+            propagated: pending,
             manifest_dir: manifest
                 .parent()
                 .map(Path::to_path_buf)
@@ -687,10 +739,11 @@ pub(crate) fn heal_dep_floors(
             dry_run,
         };
 
+        let every = propagated.reaches_every_table();
         let mut changed = false;
         for section in DEP_SECTIONS {
             if let Some(tbl) = doc.get_mut(section).and_then(|i| i.as_table_mut()) {
-                changed |= heal_dep_table(tbl, &scope, log);
+                changed |= heal_dep_table(tbl, &scope, true, log);
             }
         }
         if let Some(target) = doc.get_mut("target").and_then(|i| i.as_table_mut()) {
@@ -700,7 +753,7 @@ pub(crate) fn heal_dep_floors(
                 };
                 for section in DEP_SECTIONS {
                     if let Some(tbl) = tt.get_mut(section).and_then(|i| i.as_table_mut()) {
-                        changed |= heal_dep_table(tbl, &scope, log);
+                        changed |= heal_dep_table(tbl, &scope, every, log);
                     }
                 }
             }
@@ -711,7 +764,7 @@ pub(crate) fn heal_dep_floors(
             .and_then(|w| w.get_mut("dependencies"))
             .and_then(|d| d.as_table_mut())
         {
-            changed |= heal_dep_table(tbl, &scope, log);
+            changed |= heal_dep_table(tbl, &scope, every, log);
         }
 
         if !changed {
@@ -826,7 +879,13 @@ mod tests {
                 ),
             ],
         );
-        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         assert_eq!(healed, vec![dir.path().join("crates/c/Cargo.toml")]);
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(c.contains("version = \"0.7.0\""), "{c}");
@@ -844,7 +903,13 @@ mod tests {
             &ws_root(&["b", "c"]),
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
-        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         assert!(healed.is_empty(), "{healed:?}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
@@ -869,7 +934,13 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(c.contains("version = \"^0.7.0\""), "{c}");
         assert!(c.contains("version = \"0.7\""), "{c}");
@@ -892,7 +963,13 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(c.contains("version = \"=0.7.0\""), "{c}");
     }
@@ -913,7 +990,13 @@ mod tests {
             &root,
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
-        let healed = heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         assert_eq!(healed.len(), 2, "{healed:?}");
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert_eq!(
@@ -935,9 +1018,14 @@ mod tests {
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
         assert!(
-            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
-                .unwrap()
-                .is_empty()
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log()
+            )
+            .unwrap()
+            .is_empty()
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
@@ -961,9 +1049,14 @@ mod tests {
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
         assert!(
-            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
-                .unwrap()
-                .is_empty()
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log()
+            )
+            .unwrap()
+            .is_empty()
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
@@ -992,7 +1085,13 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(c.contains("version = \"0.9.0\""), "{c}");
     }
@@ -1014,7 +1113,13 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log()).unwrap();
+        heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&no_pending()),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
         let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(c.contains("alias = { package = \"b\""), "{c}");
         assert!(c.contains("version = \"0.7.0\""), "{c}");
@@ -1024,7 +1129,7 @@ mod tests {
     fn heal_dep_floors_pending_overrides_disk_under_dry_run() {
         let dir = tmpdir();
         let c_manifest = format!(
-            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n",
+            "{}\n[target.'cfg(unix)'.dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n",
             pkg("c", "0.1.0")
         );
         write_workspace(
@@ -1035,12 +1140,71 @@ mod tests {
         let pending: BTreeMap<String, String> = [("b".to_string(), "0.8.0".to_string())]
             .into_iter()
             .collect();
-        let healed = heal_dep_floors(dir.path(), &pending, true, &quiet_log()).unwrap();
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::TopLevelSections(&pending),
+            true,
+            &quiet_log(),
+        )
+        .unwrap();
         assert_eq!(healed, vec![dir.path().join("crates/c/Cargo.toml")]);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
             c_manifest,
             "dry-run must write nothing"
+        );
+    }
+
+    #[test]
+    fn heal_dep_floors_leaves_a_propagated_entry_to_its_own_leg() {
+        let dir = tmpdir();
+        let c_manifest = format!(
+            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.5.0\" }}\n\n[target.'cfg(unix)'.dependencies]\nb = {{ path = \"../b\", version = \"0.5.0\" }}\n",
+            pkg("c", "0.1.0")
+        );
+        write_workspace(
+            dir.path(),
+            &ws_root(&["b", "c"]),
+            &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
+        );
+        let pending: BTreeMap<String, String> = [("b".to_string(), "0.8.0".to_string())]
+            .into_iter()
+            .collect();
+        // `sync_workspace_deps` reaches only the top-level sections, so the
+        // `[target.…]` floor is the sweep's and the `[dependencies]` one is not.
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::TopLevelSections(&pending),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
+        assert_eq!(healed, vec![dir.path().join("crates/c/Cargo.toml")]);
+        let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+        assert!(
+            c.contains("[dependencies]\nb = { path = \"../b\", version = \"0.5.0\" }"),
+            "{c}"
+        );
+        assert!(
+            c.contains(
+                "[target.'cfg(unix)'.dependencies]\nb = { path = \"../b\", version = \"0.8.0\" }"
+            ),
+            "{c}"
+        );
+
+        // `apply_plan` reaches every table, so it owns both entries.
+        std::fs::write(dir.path().join("crates/c/Cargo.toml"), &c_manifest).unwrap();
+        let healed = heal_dep_floors(
+            dir.path(),
+            Propagated::EveryTable(&pending),
+            false,
+            &quiet_log(),
+        )
+        .unwrap();
+        assert!(healed.is_empty(), "{healed:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
+            c_manifest
         );
     }
 
@@ -1062,17 +1226,27 @@ mod tests {
             ],
         );
         assert_eq!(
-            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
-                .unwrap()
-                .len(),
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log()
+            )
+            .unwrap()
+            .len(),
             1
         );
         let after_first = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(after_first.contains("version = \"0.7\""), "{after_first}");
         assert!(
-            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
-                .unwrap()
-                .is_empty()
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log()
+            )
+            .unwrap()
+            .is_empty()
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),
@@ -1093,9 +1267,14 @@ mod tests {
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
         assert!(
-            heal_dep_floors(dir.path(), &no_pending(), false, &quiet_log())
-                .unwrap()
-                .is_empty()
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log()
+            )
+            .unwrap()
+            .is_empty()
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap(),

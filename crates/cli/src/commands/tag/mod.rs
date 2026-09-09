@@ -5,6 +5,7 @@ mod crate_info;
 mod per_crate;
 mod repo_shape;
 mod run;
+mod single_crate;
 mod version_plan;
 mod workspace_bump;
 
@@ -13,6 +14,7 @@ pub(crate) use crate_info::*;
 pub(crate) use per_crate::*;
 pub(crate) use repo_shape::*;
 pub use run::run;
+pub(crate) use single_crate::*;
 pub(crate) use version_plan::*;
 pub(crate) use workspace_bump::*;
 
@@ -29,7 +31,7 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 
 use crate::commands::bump::cargo_edit::{
-    WorkspaceInfo, apply_plan, heal_dep_floors, load_workspace, member_version,
+    Propagated, WorkspaceInfo, apply_plan, heal_dep_floors, load_workspace, member_version,
 };
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
 use crate::commands::changelog_sync::{

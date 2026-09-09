@@ -743,18 +743,34 @@ fn version_override_invalid_errors() {
 
 /// Read a member manifest's `[dependencies].<dep>.version`.
 fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
+    read_dep_version_in(root, manifest_rel, &["dependencies"], dep_name)
+}
+
+/// The declared version of `dep_name` in the dependency table `table_path`
+/// names (`["dependencies"]`, `["workspace", "dependencies"]`, …).
+fn read_dep_version_in(
+    root: &Path,
+    manifest_rel: &str,
+    table_path: &[&str],
+    dep_name: &str,
+) -> String {
     let text = fs::read_to_string(root.join(manifest_rel)).unwrap();
     let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
-    let dep = doc
-        .get("dependencies")
-        .and_then(|d| d.get(dep_name))
-        .unwrap_or_else(|| panic!("{manifest_rel}: [dependencies].{dep_name} not found"));
+    let mut item = doc.as_item();
+    for key in table_path {
+        item = item
+            .get(key)
+            .unwrap_or_else(|| panic!("{manifest_rel}: [{}] not found", table_path.join(".")));
+    }
+    let dep = item
+        .get(dep_name)
+        .unwrap_or_else(|| panic!("{manifest_rel}: {dep_name} not found"));
     if let Some(s) = dep.as_str() {
         return s.to_string();
     }
     dep.get("version")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("{manifest_rel}: [dependencies].{dep_name}.version not found"))
+        .unwrap_or_else(|| panic!("{manifest_rel}: {dep_name}.version not found"))
         .to_string()
 }
 
@@ -772,7 +788,7 @@ resolver = "2"
 version = "0.1.0"
 
 [workspace.dependencies]
-a = { path = "crates/a", version = "0.1.0" }
+a = { path = "crates/a", version = "0.0.3" }
 "#,
     )
     .unwrap();
@@ -846,6 +862,17 @@ fn lockstep_bump_heals_stale_floor_on_skipped_member() {
         !stderr.contains("healed dep floor a "),
         "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
     );
+    // Stale against `a`'s new version, yet the dep-spec propagation reaches
+    // `[workspace.dependencies]` too, so it is raised there and not by the sweep.
+    assert_eq!(
+        read_dep_version_in(
+            tmp.path(),
+            "Cargo.toml",
+            &["workspace", "dependencies"],
+            "a"
+        ),
+        "0.2.0"
+    );
 
     let show = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
@@ -881,6 +908,7 @@ fn lockstep_dry_run_previews_heal_and_writes_nothing() {
     git_add_commit(tmp.path(), "feat: a shiny thing");
 
     let before = fs::read_to_string(tmp.path().join("crates/b/Cargo.toml")).unwrap();
+    let root_before = fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
     let out = anodizer()
         .current_dir(tmp.path())
         .args(["tag", "--dry-run"])
@@ -902,6 +930,11 @@ fn lockstep_dry_run_previews_heal_and_writes_nothing() {
     assert!(
         !stderr.contains("would heal dep floor a "),
         "a floor the same-run propagation owns must not be previewed as a heal: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap(),
+        root_before,
+        "--dry-run must not edit the root manifest"
     );
     assert_eq!(
         fs::read_to_string(tmp.path().join("crates/b/Cargo.toml")).unwrap(),

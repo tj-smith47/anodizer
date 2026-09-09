@@ -144,17 +144,15 @@ pub(crate) fn apply_workspace_bump(
             true,
             log,
         )?;
-        // Resolve every member from its manifest, so the preview reports only
-        // the floors the sweep itself owns. A floor on a crate this run bumps
-        // is rewritten by `apply_plan`'s propagation on the real path, and
-        // claiming it here would announce an edit the real run attributes
-        // elsewhere.
-        heal_dep_floors(
-            workspace_root,
-            &std::collections::BTreeMap::new(),
-            true,
-            log,
-        )?;
+        // Preview exactly the heals the real run will make: every member
+        // resolves to the version this bump writes, and the floors
+        // `apply_plan`'s propagation owns are left to it in both modes.
+        let bumped: std::collections::BTreeMap<String, String> = rows
+            .iter()
+            .filter(|r| r.level != BumpLevel::Skip)
+            .map(|r| (r.crate_name.clone(), r.next.clone()))
+            .collect();
+        heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), true, log)?;
         return Ok(false);
     }
 
