@@ -694,63 +694,356 @@ fn audit_scripts() -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Whether `line` starts a command whose program is `awk`. A command starts at
-/// the line, or after one of the shell's command separators, so
-/// `x="$(awk …)"`, `… | awk …` and a bare `awk …` all count while the word
-/// inside a comment or a `.awk` path does not.
-fn invokes_awk(line: &str) -> bool {
-    if line.trim_start().starts_with('#') {
-        return false;
+/// Words that only prefix another command, so the command word is the next
+/// one along.
+const COMMAND_WRAPPERS: &[&str] = &["command", "exec", "env", "xargs", "nice", "time", "sudo"];
+
+/// Every basename that runs an awk program.
+const AWK_NAMES: &[&str] = &["awk", "gawk", "mawk", "nawk"];
+
+/// Whether `word` is a `VAR=value` assignment, which precedes a command
+/// rather than being one.
+fn is_assignment(word: &str) -> bool {
+    match word.find('=') {
+        None | Some(0) => false,
+        Some(split) => {
+            let name = &word[..split];
+            name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
     }
-    line.split(['|', ';', '&', '(', ')', '`', '{', '}'])
-        .map(str::trim_start)
-        .any(|cmd| {
-            cmd.strip_prefix("awk")
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-        })
 }
 
-/// A scanner that could not run must not read as a clean scan, and the thing
-/// that decides so is `lib/scan.sh`'s `run_scanner`: it captures awk's stdout,
-/// leaves awk's stderr visible and exits 2 on any non-zero awk status. A bare
+/// The command word `segment` starts, as `(word, basename)`. A leading `\`,
+/// `VAR=value` assignments, option words and their numeric arguments,
+/// grouping braces and the wrappers above are peeled off first, so
+/// `exec /usr/bin/gawk -f x` answers `("/usr/bin/gawk", "gawk")` and
+/// `${AWK} -f x` answers itself twice. `None` when the segment starts no
+/// command.
+fn command_word(segment: &str) -> Option<(&str, &str)> {
+    for word in segment.split_whitespace() {
+        let word = word.trim_start_matches('\\');
+        if word.is_empty()
+            || word == "{"
+            || word == "}"
+            || word == "!"
+            || word.starts_with('-')
+            || word.chars().all(|c| c.is_ascii_digit())
+            || is_assignment(word)
+            || COMMAND_WRAPPERS.contains(&word)
+        {
+            continue;
+        }
+        return Some((word, word.rsplit('/').next().unwrap_or(word)));
+    }
+    None
+}
+
+/// Why the command `segment` starts may not stand in an `audit-*.sh`, or
+/// `None`. `eval` and a command word that is a variable expansion are refused
+/// outright: an audit script has no business with either, and both put a
+/// program the pin cannot read into command position.
+fn forbidden_word(segment: &str) -> Option<String> {
+    let (word, base) = command_word(segment)?;
+    if word.starts_with('$') && word.len() > 1 {
+        return Some(format!("a variable in command position (`{word}`)"));
+    }
+    if base == "eval" {
+        return Some("eval".to_string());
+    }
+    if AWK_NAMES.contains(&base) {
+        return Some(format!("awk invoked directly (`{word}`)"));
+    }
+    None
+}
+
+/// The first reason any command in `body` may not stand in an `audit-*.sh`.
+fn forbidden_command(body: &str) -> Option<String> {
+    command_segments(body)
+        .into_iter()
+        .find_map(|(_, segment)| forbidden_word(&segment))
+}
+
+/// Every command position in `body`, as `(line number, segment)`. A command
+/// starts at a line, or after an unquoted `|`, `;`, `&`, backtick or `$(`, so
+/// `x="$(gawk …)"`, `… | mawk …` and `exec awk …` all start one. What is NOT
+/// a command never reaches the classifier: a heredoc body (an awk program is
+/// full of `$0`), a multi-line single-quoted argument (the perl program in
+/// `audit-doc-source-links.sh`), a comment, `((…))` arithmetic, and the
+/// interior of a `[[ … ]]` test, whose `||` joins conditions rather than
+/// commands. A `\`-continued line carries its command word forward instead of
+/// starting a new one.
+fn command_segments(body: &str) -> Vec<(usize, String)> {
+    #[derive(PartialEq)]
+    enum Quote {
+        Bare,
+        Single,
+        Double,
+    }
+
+    let mut segments = Vec::new();
+    let mut stack = vec![Quote::Bare];
+    let mut heredoc: Option<String> = None;
+    let mut current = String::new();
+    let mut continued;
+    let mut in_test_expr = false;
+    let mut test_expr_segment = false;
+
+    for (index, line) in body.lines().enumerate() {
+        if let Some(delimiter) = &heredoc {
+            if line.trim() == delimiter.as_str() {
+                heredoc = None;
+            }
+            continue;
+        }
+        continued = false;
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if stack.last() == Some(&Quote::Single) {
+                if c == '\'' {
+                    stack.pop();
+                }
+                i += 1;
+                continue;
+            }
+            test_expr_segment |= in_test_expr;
+            let double = stack.last() == Some(&Quote::Double);
+            if c == '\\' {
+                match chars.get(i + 1) {
+                    Some(&escaped) => current.push(escaped),
+                    None => continued = true,
+                }
+                i += 2;
+            } else if c == '"' {
+                if double {
+                    stack.pop();
+                } else {
+                    stack.push(Quote::Double);
+                }
+                i += 1;
+            } else if c == '$' && chars.get(i + 1) == Some(&'(') {
+                // Command substitution opens a command position even inside a
+                // double-quoted word.
+                stack.push(Quote::Bare);
+                take_segment(
+                    &mut segments,
+                    index + 1,
+                    &mut current,
+                    &mut test_expr_segment,
+                );
+                i += 2;
+            } else if double {
+                current.push(c);
+                i += 1;
+            } else if c == '\'' {
+                stack.push(Quote::Single);
+                i += 1;
+            } else if c == '#' && (i == 0 || chars[i - 1].is_whitespace()) {
+                break;
+            } else if c == '(' && chars.get(i + 1) == Some(&'(') {
+                i = arithmetic_end(&chars, i);
+                current.clear();
+            } else if (c == ')' && stack.len() > 1) || matches!(c, '|' | ';' | '&' | '`') {
+                if c == ')' {
+                    stack.pop();
+                }
+                take_segment(
+                    &mut segments,
+                    index + 1,
+                    &mut current,
+                    &mut test_expr_segment,
+                );
+                i += 1;
+            } else {
+                current.push(c);
+                if c == '[' && current.ends_with("[[") {
+                    in_test_expr = true;
+                } else if c == ']' && current.ends_with("]]") {
+                    in_test_expr = false;
+                }
+                i += 1;
+            }
+        }
+        // A newline ends a command only outside quotes and outside a `\`
+        // continuation; otherwise the next line is more of the same command.
+        if !continued && stack.len() == 1 && stack[0] == Quote::Bare {
+            take_segment(
+                &mut segments,
+                index + 1,
+                &mut current,
+                &mut test_expr_segment,
+            );
+            in_test_expr = false;
+        }
+        heredoc = heredoc_delimiter(line).map(str::to_string);
+    }
+    segments
+}
+
+/// Close the segment `current` holds at `line`, unless any of it was the
+/// interior of a `[[ … ]]` test.
+fn take_segment(
+    segments: &mut Vec<(usize, String)>,
+    line: usize,
+    current: &mut String,
+    test_expr_segment: &mut bool,
+) {
+    let segment = std::mem::take(current);
+    if !*test_expr_segment {
+        segments.push((line, segment));
+    }
+    *test_expr_segment = false;
+}
+
+/// The index just past the `))` closing the `((` at `open`, or the end of the
+/// line when it does not close there.
+fn arithmetic_end(chars: &[char], open: usize) -> usize {
+    let mut i = open + 2;
+    while i + 1 < chars.len() {
+        if chars[i] == ')' && chars[i + 1] == ')' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// The delimiter of the heredoc `line` opens, if it opens one. `<<<` is a
+/// here-string, not a heredoc, and carries no delimiter.
+fn heredoc_delimiter(line: &str) -> Option<&str> {
+    let mut rest = line;
+    while let Some(start) = rest.find("<<") {
+        let after = &rest[start + 2..];
+        if let Some(here_string) = after.strip_prefix('<') {
+            rest = here_string;
+            continue;
+        }
+        let after = after.strip_prefix('-').unwrap_or(after).trim_start();
+        let (quote, word) = match after.chars().next() {
+            Some(q @ ('\'' | '"')) => (Some(q), &after[1..]),
+            _ => (None, after),
+        };
+        let end = match quote {
+            Some(q) => word.find(q),
+            None => Some(
+                word.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(word.len()),
+            ),
+        };
+        match end {
+            Some(0) | None => rest = after,
+            Some(end) => return Some(&word[..end]),
+        }
+    }
+    None
+}
+
+/// A scan that could not run must not read as a clean scan, and two shared
+/// helpers decide that: `lib/scan.sh`'s `run_scanner` captures awk's stdout,
+/// leaves awk's stderr visible and exits 2 on any non-zero awk status, and its
+/// `collect_files` does the same for the grep that feeds it. A bare
 /// `var="$(awk …)"` under `set -e` instead exits 1 — the repo's
-/// "violations found" code — with an empty findings block, so a syntax error
-/// in the program reads as a passing audit. Textual rather than behavioural so
-/// a script added tomorrow with the old shape is caught before it ever runs.
+/// "violations found" code — with an empty findings block, and a
+/// `grep … 2>/dev/null || true` collection hands the scanner an empty file
+/// list, so a grep that never ran reads as a clean tree. Textual rather than
+/// behavioural so a script added tomorrow with either shape is caught before
+/// it ever runs.
 #[test]
 fn every_awk_invocation_goes_through_the_shared_runner() {
-    let mut bare = Vec::new();
+    let mut forbidden = Vec::new();
     let mut scanners = 0usize;
     for script in audit_scripts() {
         let name = script.file_name().expect("file name").to_string_lossy();
         let body = std::fs::read_to_string(&script).expect("script body");
-        for (index, line) in body.lines().enumerate() {
-            if invokes_awk(line) {
-                bare.push(format!("{name}:{}: {}", index + 1, line.trim()));
+        for (line_no, segment) in command_segments(&body) {
+            if let Some(why) = forbidden_word(&segment) {
+                forbidden.push(format!("{name}:{line_no}: {why}: {}", segment.trim()));
             }
         }
-        if body.contains("run_scanner ") {
+        for (index, line) in body.lines().enumerate() {
+            if line.contains("|| true") {
+                forbidden.push(format!(
+                    "{name}:{}: a swallowed failure (`|| true`): {}",
+                    index + 1,
+                    line.trim()
+                ));
+            }
+        }
+        if body.contains("run_scanner ") || body.contains("collect_files ") {
             scanners += 1;
             assert!(
                 body.contains("source \"$LIB_DIR/scan.sh\""),
-                "{name} calls run_scanner without sourcing lib/scan.sh"
+                "{name} calls run_scanner/collect_files without sourcing lib/scan.sh"
             );
         }
     }
     assert!(
-        bare.is_empty(),
-        "every awk program runs through lib/scan.sh's run_scanner; these invoke awk directly: {bare:#?}"
+        forbidden.is_empty(),
+        "every awk program runs through lib/scan.sh's run_scanner and every collection through \
+         collect_files; these do not: {forbidden:#?}"
     );
     assert!(
-        scanners >= 8,
-        "expected every awk-running scanner to be walked, found {scanners}"
+        scanners >= 13,
+        "expected every scanning script to be walked, found {scanners}"
     );
 }
 
+/// The spellings the runner pin has to recognise. Each ran awk while the pin
+/// matched only the literal first word `awk`, so each is pinned by name here
+/// rather than left to a reading of `command_word`. The allowed column is the
+/// other half of the same rule: an `awk` in prose, a `.awk` path handed to
+/// `run_scanner`, and a `grep`/`sed` command line stay legal.
+#[test]
+fn the_runner_pin_recognises_every_awk_spelling() {
+    for line in [
+        "awk -f prog.awk file",
+        "gawk -f prog.awk file",
+        "mawk -f prog.awk file",
+        "nawk -f prog.awk file",
+        "command awk -f prog.awk file",
+        "exec awk -f prog.awk file",
+        "env awk -f prog.awk file",
+        "env LC_ALL=C awk -f prog.awk file",
+        "xargs awk -f prog.awk",
+        "nice -n 5 awk -f prog.awk file",
+        "/usr/bin/awk -f prog.awk file",
+        "\\awk -f prog.awk file",
+        "violations=\"$(awk -f prog.awk file)\"",
+        "printf '%s' \"$x\" | awk -f prog.awk",
+        "hits=$(cat file | /usr/local/bin/gawk '{ print }')",
+        "$AWK -f prog.awk file",
+        "${AWK} -f prog.awk file",
+        "eval \"$program\"",
+    ] {
+        assert!(
+            forbidden_command(line).is_some(),
+            "the runner pin must reject: {line}"
+        );
+    }
+
+    for line in [
+        "# awk is named in this comment",
+        "run_scanner violations -f \"$LIB_DIR/rust-lex.awk\" -f - \"${FILES[@]}\"",
+        "collect_files FILES -rlE 'x' crates --include='*.rs'",
+        "grep -qE -- \"task: ${target}\" <<< \"$combined\"",
+        "LIB_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)/lib\"",
+        "done <<< \"$mod_decls\"",
+    ] {
+        assert!(
+            forbidden_command(line).is_none(),
+            "the runner pin must accept {line}, got {:?}",
+            forbidden_command(line)
+        );
+    }
+}
+
 /// The companion to `a_scanner_that_cannot_load_its_awk_library_fails_loudly`
-/// for a scanner whose program is INLINE: it loads no `lib/*.awk`, so an empty
-/// library directory proves nothing about it. Break the program itself instead
-/// — the same failure a bad dynamic regex or a mistyped function produces.
+/// for the other half of a scanner: its own program text. The library
+/// directory is copied whole here, so the libraries load and the ONLY breakage
+/// is the inline program — the same failure a bad dynamic regex or a mistyped
+/// function produces.
 #[test]
 fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
