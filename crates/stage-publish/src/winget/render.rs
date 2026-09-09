@@ -275,8 +275,12 @@ pub(crate) fn resolve_winget_identity(
     }
 
     let (repo_owner, repo_name) =
-        crate::util::resolve_repo_owner_name(winget_cfg.repository.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
+        crate::util::resolve_repo_owner_name(winget_cfg.repository.as_ref()).ok_or_else(|| {
+            anodizer_core::pipe_skip::entry_skip(format!(
+                "winget: no repository config for '{}'",
+                crate_name
+            ))
+        })?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
     let name = util::render_or_warn(ctx, log, "winget.name", name_raw)?;
@@ -290,7 +294,8 @@ pub(crate) fn resolve_winget_identity(
         .unwrap_or(&auto_pkg_id)
         .to_string();
 
-    validate_package_identifier(&package_id)?;
+    validate_package_identifier(&package_id)
+        .map_err(|e| anodizer_core::pipe_skip::entry_skip(e.to_string()))?;
 
     Ok(Some(WingetIdentity {
         repo_owner,

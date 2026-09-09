@@ -560,7 +560,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             // BEFORE the publish path runs (inside the same scope) so a
             // mid-publish failure still leaves the operator a manual PR-close
             // pointer whose recorded branch matches the one actually pushed.
-            let target = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
@@ -594,7 +594,11 @@ impl anodizer_core::Publisher for WingetPublisher {
                     publish_to_winget(ctx, crate_name, &log)?;
                     Ok(target)
                 },
-            )?;
+            );
+            let target = crate::publisher_helpers::absorb_entry_skip(
+                ctx, &log, "winget", crate_name, scoped,
+            )?
+            .flatten();
             if let Some(t) = target {
                 targets.push(t);
             }

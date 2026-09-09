@@ -84,9 +84,50 @@ impl SkipMemento {
     }
 }
 
+/// A per-entry misconfiguration that disqualifies only the entry it was
+/// raised for.
+///
+/// A publisher that walks a list — one entry per crate, per cask, per upload
+/// target — raises this instead of a plain error when one entry cannot
+/// proceed but its siblings still can. The loop that owns the list records
+/// the reason in a [`SkipMemento`] and moves on; every other error still
+/// aborts the publisher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrySkip(pub String);
+
+impl std::fmt::Display for EntrySkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EntrySkip {}
+
+/// Build an error that marks the current entry as skipped rather than failed.
+pub fn entry_skip(reason: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(EntrySkip(reason.into()))
+}
+
+/// The skip reason when `err` was raised by [`entry_skip`], including through
+/// `anyhow` context layers; `None` for any other error.
+pub fn entry_skip_reason(err: &anyhow::Error) -> Option<&str> {
+    err.downcast_ref::<EntrySkip>().map(|s| s.0.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_skip_survives_context_layers() {
+        let err = entry_skip("repository.name is not set").context("nix: publish 'mycrate'");
+        assert_eq!(entry_skip_reason(&err), Some("repository.name is not set"));
+        assert_eq!(
+            entry_skip_reason(&anyhow::anyhow!("boom")),
+            None,
+            "a plain error is not a skip"
+        );
+    }
 
     #[test]
     fn records_and_drains() {

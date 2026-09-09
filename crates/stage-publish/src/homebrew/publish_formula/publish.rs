@@ -571,8 +571,18 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         return Ok(false);
     }
 
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name))?;
+    let Some((repo_owner, repo_name)) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "homebrew",
+        crate_name,
+        crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref()).ok_or_else(|| {
+            anodizer_core::pipe_skip::entry_skip(crate::homebrew::MISSING_REPOSITORY_REASON)
+        }),
+    )?
+    else {
+        return Ok(false);
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(

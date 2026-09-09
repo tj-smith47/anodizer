@@ -10,7 +10,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::parallel::run_parallel_chunks;
 use anodizer_core::retry::RetryPolicy;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 
 use crate::artifactory::{UploadAuth, UploadHeaders, UploadOutcome, render_artifact_url};
 
@@ -93,29 +93,28 @@ pub(crate) fn resolve_http_credentials(
 
     if !ctx.is_dry_run() {
         match (username.is_empty(), password.is_empty()) {
-            (false, true) => bail!(
-                "{}: '{}' has username set but no password \
-                 (set 'password:' in config or {} in env)",
-                spec.publisher,
-                spec.entry_name,
-                password_env
-            ),
-            (true, false) => bail!(
-                "{}: '{}' has password set but no username \
-                 (set 'username:' in config or {} in env)",
-                spec.publisher,
-                spec.entry_name,
-                username_env
-            ),
-            (true, true) if !spec.anonymous_ok => bail!(
-                "{}: '{}' resolved with no credentials \
-                 (set username/password in config or {} / {} in env; \
-                 anonymous upload is refused)",
-                spec.publisher,
-                spec.entry_name,
-                username_env,
-                password_env
-            ),
+            (false, true) => {
+                return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                    "{}: '{}' has username set but no password \
+                     (set 'password:' in config or {} in env)",
+                    spec.publisher, spec.entry_name, password_env
+                )));
+            }
+            (true, false) => {
+                return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                    "{}: '{}' has password set but no username \
+                     (set 'username:' in config or {} in env)",
+                    spec.publisher, spec.entry_name, username_env
+                )));
+            }
+            (true, true) if !spec.anonymous_ok => {
+                return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                    "{}: '{}' resolved with no credentials \
+                     (set username/password in config or {} / {} in env; \
+                     anonymous upload is refused)",
+                    spec.publisher, spec.entry_name, username_env, password_env
+                )));
+            }
             _ => {}
         }
     }
@@ -266,12 +265,11 @@ pub(crate) fn validate_mtls_pair(
     key: Option<&str>,
 ) -> Result<()> {
     if cert.is_some() != key.is_some() {
-        bail!(
+        return Err(anodizer_core::pipe_skip::entry_skip(format!(
             "{}: '{}' has only one of client_x509_cert / client_x509_key set \
              (set both to enable mTLS, or leave both empty)",
-            publisher,
-            entry_name
-        );
+            publisher, entry_name
+        )));
     }
     Ok(())
 }

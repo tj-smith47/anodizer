@@ -12,11 +12,11 @@ pub(crate) fn resolve_winget_publisher_name<'a>(
         Some(p) if !p.is_empty() => Ok(p),
         _ => {
             if repo_owner.is_empty() {
-                anyhow::bail!(
+                return Err(anodizer_core::pipe_skip::entry_skip(format!(
                     "winget: publisher is required but not configured for '{}', \
                      and repo owner is also empty. Set `publish.winget.publisher` in your config.",
                     crate_name
-                );
+                )));
             }
             log.warn(&format!(
                 "winget publisher not explicitly set for '{}'; falling back to repo owner '{}'",
@@ -59,12 +59,12 @@ pub(crate) fn resolve_winget_short_description(
         .or(winget_cfg.description.as_deref())
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .ok_or_else(|| {
-            anyhow::anyhow!(
+            anodizer_core::pipe_skip::entry_skip(format!(
                 "winget: short_description is required but not configured for \
                  '{crate_name}'. Set `publish.winget.short_description`, or a \
                  fallback via `publish.winget.description` or top-level \
                  `metadata.description`."
-            )
+            ))
         })?;
     Ok(short_desc_raw.replace('\t', "  "))
 }
@@ -80,11 +80,11 @@ pub(crate) fn resolve_winget_license<'a>(
         .as_deref()
         .or_else(|| ctx.config.meta_license_for(crate_name))
         .ok_or_else(|| {
-            anyhow::anyhow!(
+            anodizer_core::pipe_skip::entry_skip(format!(
                 "winget: license is required but not configured for '{}'. \
              Set `publish.winget.license` in your config.",
                 crate_name
-            )
+            ))
         })
 }
 

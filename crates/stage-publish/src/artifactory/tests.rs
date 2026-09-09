@@ -76,7 +76,7 @@ fn test_artifactory_mode_validation_error_message() {
 }
 
 #[test]
-fn test_artifactory_requires_target() {
+fn test_artifactory_missing_target_skips_the_entry() {
     let mut config = Config::default();
     config.artifactories = Some(vec![ArtifactoryConfig {
         name: Some("prod".to_string()),
@@ -85,16 +85,26 @@ fn test_artifactory_requires_target() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+    publish_to_artifactory(&ctx, &log).expect("a nameless target must skip, not fail");
+    assert_eq!(
+        ctx.skip_memento
+            .snapshot()
+            .iter()
+            .map(|e| (e.stage.as_str(), e.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("artifactory", "prod")]
+    );
     assert!(
-        err.to_string().contains("missing required 'target'"),
-        "unexpected error: {}",
-        err
+        ctx.skip_memento.snapshot()[0]
+            .reason
+            .contains("missing required 'target'"),
+        "unexpected reason: {}",
+        ctx.skip_memento.snapshot()[0].reason
     );
 }
 
 #[test]
-fn test_artifactory_requires_target_nonempty() {
+fn test_artifactory_empty_target_skips_the_entry() {
     let mut config = Config::default();
     config.artifactories = Some(vec![ArtifactoryConfig {
         name: Some("prod".to_string()),
@@ -103,7 +113,8 @@ fn test_artifactory_requires_target_nonempty() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    assert!(publish_to_artifactory(&ctx, &log).is_err());
+    publish_to_artifactory(&ctx, &log).expect("an empty target must skip, not fail");
+    assert_eq!(ctx.skip_memento.len(), 1);
 }
 
 #[test]
@@ -200,7 +211,7 @@ fn test_artifactory_dry_run_with_client_cert() {
 }
 
 #[test]
-fn test_artifactory_invalid_mode_errors() {
+fn test_artifactory_invalid_mode_skips_the_entry() {
     let mut config = Config::default();
     config.artifactories = Some(vec![ArtifactoryConfig {
         name: Some("prod".to_string()),
@@ -210,11 +221,13 @@ fn test_artifactory_invalid_mode_errors() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+    publish_to_artifactory(&ctx, &log).expect("an invalid mode must skip, not fail");
     assert!(
-        err.to_string().contains("invalid upload mode"),
-        "unexpected error: {}",
-        err
+        ctx.skip_memento.snapshot()[0]
+            .reason
+            .contains("invalid upload mode"),
+        "unexpected reason: {}",
+        ctx.skip_memento.snapshot()[0].reason
     );
 }
 
@@ -272,7 +285,7 @@ fn test_artifactory_multiple_entries() {
 }
 
 #[test]
-fn test_artifactory_requires_name() {
+fn test_artifactory_missing_name_skips_the_entry() {
     let mut config = Config::default();
     config.artifactories = Some(vec![ArtifactoryConfig {
         name: None,
@@ -281,16 +294,26 @@ fn test_artifactory_requires_name() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip, not fail");
+    assert_eq!(
+        ctx.skip_memento
+            .snapshot()
+            .iter()
+            .map(|e| (e.stage.as_str(), e.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("artifactory", "<unnamed>")]
+    );
     assert!(
-        err.to_string().contains("missing required 'name'"),
-        "unexpected error: {}",
-        err
+        ctx.skip_memento.snapshot()[0]
+            .reason
+            .contains("missing required 'name'"),
+        "unexpected reason: {}",
+        ctx.skip_memento.snapshot()[0].reason
     );
 }
 
 #[test]
-fn test_artifactory_requires_name_nonempty() {
+fn test_artifactory_empty_name_skips_the_entry() {
     let mut config = Config::default();
     config.artifactories = Some(vec![ArtifactoryConfig {
         name: Some(String::new()),
@@ -299,11 +322,21 @@ fn test_artifactory_requires_name_nonempty() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip, not fail");
+    assert_eq!(
+        ctx.skip_memento
+            .snapshot()
+            .iter()
+            .map(|e| (e.stage.as_str(), e.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("artifactory", "<unnamed>")]
+    );
     assert!(
-        err.to_string().contains("missing required 'name'"),
-        "unexpected error: {}",
-        err
+        ctx.skip_memento.snapshot()[0]
+            .reason
+            .contains("missing required 'name'"),
+        "unexpected reason: {}",
+        ctx.skip_memento.snapshot()[0].reason
     );
 }
 

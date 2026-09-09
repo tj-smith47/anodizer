@@ -45,6 +45,12 @@ pub use publish_top::publish_top_level_homebrew_casks;
 pub(crate) use publish_top::render_top_level_homebrew_casks;
 pub(crate) use publisher::is_homebrew_per_crate_configured;
 
+/// Why a formula or cask entry is disqualified when `repository:` names no
+/// `owner`/`name` pair: the tap has nowhere to land, but every sibling entry
+/// still can publish, so the entry is skipped rather than failing the
+/// publisher.
+pub(crate) const MISSING_REPOSITORY_REASON: &str = "repository.name is not set";
+
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 

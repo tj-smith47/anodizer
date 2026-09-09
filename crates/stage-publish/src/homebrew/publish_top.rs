@@ -570,13 +570,18 @@ pub fn publish_top_level_homebrew_casks(
 
         // Repository is required for top-level cask.
         let repo_cfg = cask_cfg.repository.as_ref();
-        let (repo_owner, repo_name) =
+        let Some((repo_owner, repo_name)) = crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
+            "homebrew-cask",
+            cask_name,
             crate::util::resolve_repo_owner_name(repo_cfg).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: no repository config for cask '{}'",
-                    cask_name
-                )
-            })?;
+                anodizer_core::pipe_skip::entry_skip(super::MISSING_REPOSITORY_REASON)
+            }),
+        )?
+        else {
+            continue;
+        };
 
         // Directory defaults to "Casks". A warning is emitted
         // when the resolved value is not "Casks" since a non-default cask

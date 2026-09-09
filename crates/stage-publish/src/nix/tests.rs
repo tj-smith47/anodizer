@@ -790,17 +790,21 @@ fn test_publish_to_nix_skip_upload_true_returns_false() {
 
 /// No `repository:` (and no top-level fallback) => error citing crate name.
 #[test]
-fn test_publish_to_nix_missing_repository_errors() {
+fn test_publish_to_nix_missing_repository_skips() {
     use anodizer_core::config::NixConfig;
     let cfg = NixConfig {
         repository: None,
         ..Default::default()
     };
     let mut ctx = nix_ctx(cfg, false);
-    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("no repository"), "unexpected: {msg}");
-    assert!(msg.contains("mytool"), "{msg}");
+    let pushed = publish_to_nix(&mut ctx, "mytool", &nix_log())
+        .expect("an overlay-less entry must skip, not fail");
+    assert!(!pushed);
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage, "nix");
+    assert_eq!(events[0].label, "mytool");
+    assert_eq!(events[0].reason, "repository.name is not set");
 }
 
 /// Dry-run bypasses git work AND returns Ok(false) — push didn't happen.

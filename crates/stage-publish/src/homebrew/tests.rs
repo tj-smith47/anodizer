@@ -1915,16 +1915,20 @@ fn publish_to_homebrew_skip_upload_true_returns_false() {
 
 /// publish_to_homebrew: missing repository => actionable error citing crate.
 #[test]
-fn publish_to_homebrew_missing_repository_errors() {
+fn publish_to_homebrew_missing_repository_skips() {
     let cfg = HomebrewConfig {
         repository: None,
         ..Default::default()
     };
     let mut ctx = hb_ctx(cfg, false);
-    let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("no repository config"), "{msg}");
-    assert!(msg.contains("mytool"));
+    let pushed = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log())
+        .expect("a tap-less entry must skip, not fail");
+    assert!(!pushed);
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage, "homebrew");
+    assert_eq!(events[0].label, "mytool");
+    assert_eq!(events[0].reason, "repository.name is not set");
 }
 
 /// publish_to_homebrew: dry-run returns Ok(false) (no push).
@@ -2051,17 +2055,20 @@ fn publish_cask_cask_skip_upload_returns_ok() {
 
 /// publish_cask: missing repository => error citing crate name.
 #[test]
-fn publish_cask_missing_repository_errors() {
+fn publish_cask_missing_repository_skips() {
     let cfg = HomebrewConfig {
         repository: None,
         cask: Some(HomebrewCaskConfig::default()),
         ..Default::default()
     };
     let mut ctx = hb_ctx(cfg, false);
-    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("no repository config"), "{msg}");
-    assert!(msg.contains("mytool"));
+    super::publish_cask(&mut ctx, "mytool", &quiet_log())
+        .expect("a tap-less cask must skip, not fail");
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage, "homebrew-cask");
+    assert_eq!(events[0].label, "mytool");
+    assert_eq!(events[0].reason, "repository.name is not set");
 }
 
 /// publish_cask: dry-run short-circuits to Ok(()).
@@ -2114,7 +2121,7 @@ fn publish_top_level_homebrew_casks_empty_vec_returns_false() {
 /// publish_top_level_homebrew_casks: missing repository on an entry => error
 /// citing the cask name (operators need to know which entry is mis-configured).
 #[test]
-fn publish_top_level_homebrew_casks_missing_repository_errors() {
+fn publish_top_level_homebrew_casks_missing_repository_skips() {
     let config = Config {
         homebrew_casks: Some(vec![HomebrewCaskConfig {
             name: Some("mycask".to_string()),
@@ -2124,10 +2131,68 @@ fn publish_top_level_homebrew_casks_missing_repository_errors() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, ContextOptions::default());
-    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("no repository config"), "{msg}");
-    assert!(msg.contains("mycask"));
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("a tap-less entry must skip, not fail");
+    assert!(!got.pushed_any);
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage, "homebrew-cask");
+    assert_eq!(events[0].label, "mycask");
+    assert_eq!(events[0].reason, "repository.name is not set");
+}
+
+/// publish_top_level_homebrew_casks: a tap-less entry disqualifies itself
+/// only — the entry after it still reaches its publish path.
+#[test]
+fn publish_top_level_casks_skip_does_not_stop_later_entries() {
+    let config = Config {
+        homebrew_casks: Some(vec![
+            HomebrewCaskConfig {
+                name: Some("broken".to_string()),
+                repository: None,
+                ..Default::default()
+            },
+            HomebrewCaskConfig {
+                name: Some("healthy".to_string()),
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("homebrew-cask-tap".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &log)
+        .expect("a tap-less entry must not fail the publisher");
+    assert_eq!(got.total, 2);
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "broken");
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("would update Homebrew cask 'myorg/homebrew-cask-tap'"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
 }
 
 /// publish_top_level_homebrew_casks: dry-run returns Ok(false) for every
@@ -3303,12 +3368,10 @@ fn publish_top_level_homebrew_casks_no_sha256_errors_with_cask_name() {
 }
 
 /// publish_top_level_homebrew_casks: a list with a `skip_upload:true` entry
-/// followed by a missing-repository entry continues past the first and
-/// surfaces the second entry's bail — proves the loop iterates past
-/// `continue` and that `?` propagation cites the failing entry, not the
-/// first-by-index.
+/// followed by a missing-repository entry continues past both and records the
+/// second entry's skip against its own cask name, not the first-by-index.
 #[test]
-fn publish_top_level_homebrew_casks_skip_then_error_propagates_second_failure() {
+fn publish_top_level_homebrew_casks_skip_then_missing_repository_records_both() {
     let config = Config {
         homebrew_casks: Some(vec![
             HomebrewCaskConfig {
@@ -3330,20 +3393,17 @@ fn publish_top_level_homebrew_casks_skip_then_error_propagates_second_failure() 
         ..Default::default()
     };
     let mut ctx = Context::new(config, ContextOptions::default());
-    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("no repository config"),
-        "second entry's bail must propagate; got: {msg}"
-    );
-    assert!(
-        msg.contains("broken-cask"),
-        "bail must cite the second cask, not the first; got: {msg}"
-    );
-    assert!(
-        !msg.contains("skipped-cask"),
-        "first (skipped) entry must not appear in error; got: {msg}"
-    );
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("a tap-less second entry must skip, not fail the run");
+    assert!(!got.pushed_any);
+    let repo_skips: Vec<_> = ctx
+        .skip_memento
+        .snapshot()
+        .into_iter()
+        .filter(|e| e.reason == "repository.name is not set")
+        .collect();
+    assert_eq!(repo_skips.len(), 1, "{:?}", ctx.skip_memento.snapshot());
+    assert_eq!(repo_skips[0].label, "broken-cask");
 }
 
 // ===========================================================================

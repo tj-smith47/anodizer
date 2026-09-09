@@ -317,11 +317,11 @@ pub(crate) fn collect_winget_installers(
         }
 
         if binary_count > 0 && zip_count > 0 {
-            anyhow::bail!(
+            return Err(anodizer_core::pipe_skip::entry_skip(format!(
                 "winget: found archives with multiple formats (.exe and .zip) for '{}'; \
                  use either portable binaries or zip archives, not both",
                 crate_name
-            );
+            )));
         }
     }
 
@@ -331,10 +331,10 @@ pub(crate) fn collect_winget_installers(
     }
     for (arch, count) in &arch_counts {
         if *count > 1 {
-            anyhow::bail!(
+            return Err(anodizer_core::pipe_skip::entry_skip(format!(
                 "winget: found multiple archives for the same platform ({arch}) for '{}'",
                 crate_name
-            );
+            )));
         }
     }
 

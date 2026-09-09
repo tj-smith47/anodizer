@@ -39,7 +39,16 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let RepoCoords {
         repo_owner,
         repo_name,
-    } = resolve_repo_coords(ctx, nix_cfg, crate_name, log)?;
+    } = match crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "nix",
+        crate_name,
+        resolve_repo_coords(ctx, nix_cfg, log),
+    )? {
+        Some(coords) => coords,
+        None => return Ok(false),
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -341,17 +350,21 @@ pub(super) fn check_skip_guards(
     Ok(false)
 }
 
+/// Why a nix entry is disqualified when `repository:` names no `owner`/`name`
+/// pair: the overlay has nowhere to land, but every sibling crate still can
+/// publish, so the entry is skipped rather than failing the publisher.
+pub(super) const MISSING_REPOSITORY_REASON: &str = "repository.name is not set";
+
 /// Resolves `(owner, name)` from the repository config and renders both
 /// halves through the template engine.
 pub(super) fn resolve_repo_coords(
     ctx: &Context,
     nix_cfg: &NixConfig,
-    crate_name: &str,
     log: &StageLogger,
 ) -> Result<RepoCoords> {
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
+            .ok_or_else(|| anodizer_core::pipe_skip::entry_skip(MISSING_REPOSITORY_REASON))?;
     let repo_owner = util::render_or_warn(ctx, log, "nix.repository.owner", &repo_owner_raw)?;
     let repo_name = util::render_or_warn(ctx, log, "nix.repository.name", &repo_name_raw)?;
     Ok(RepoCoords {

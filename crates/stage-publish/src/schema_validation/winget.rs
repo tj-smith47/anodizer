@@ -94,7 +94,7 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
             // Render + validate under THIS crate's own version so the manifest's
             // `PackageVersion` is the version a real release would stamp, not the
             // first crate's (workspace per-crate independent-version mode).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+            let scoped = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
                 let mut out = Vec::new();
                 // `None` means the publisher would skip this crate
                 // (skip_upload / falsy `if`) — nothing to validate.
@@ -110,7 +110,30 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
                     )?);
                 }
                 Ok(out)
-            })?;
+            });
+            // A per-entry misconfiguration (no repository, missing publisher /
+            // license / short_description, an invalid identifier, colliding
+            // archives) disqualifies this crate's manifest, not the release: the
+            // live publisher records the same skip, so the validation pass must
+            // not turn it into a hard stop ahead of every other publisher.
+            let crate_findings = match scoped {
+                Ok(out) => out,
+                Err(err) => match anodizer_core::pipe_skip::entry_skip_reason(&err) {
+                    Some(reason) => {
+                        log.verbose(&format!(
+                            "skipped winget schema validation for crate '{}' — {}",
+                            crate_name, reason
+                        ));
+                        ctx.emission_skips.remember(
+                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                            &format!("{crate_name} winget"),
+                            reason,
+                        );
+                        continue;
+                    }
+                    None => return Err(err),
+                },
+            };
             findings.extend(crate_findings);
         }
 
@@ -517,6 +540,50 @@ mod tests {
         assert!(
             !beta_yaml.contains("PackageVersion: 2.0.0"),
             "beta must NOT carry the first crate's version; got:\n{beta_yaml}"
+        );
+    }
+
+    /// A per-entry winget misconfiguration (here: no `license`) disqualifies
+    /// that crate's manifests, not the release. The live publisher records the
+    /// same skip, so the validation pass must not abort ahead of every other
+    /// publisher, and the crate after the misconfigured one must still be
+    /// validated.
+    #[test]
+    fn misconfigured_crate_is_skipped_and_the_next_one_still_validates() {
+        let mut broken = every_option_winget_cfg();
+        broken.license = None;
+        broken.name = Some("Broken".to_string());
+        broken.package_identifier = Some("AcmeCo.Broken".to_string());
+        let mut healthy = every_option_winget_cfg();
+        healthy.name = Some("Healthy".to_string());
+        healthy.package_identifier = Some("AcmeCo.Healthy".to_string());
+
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![
+                winget_crate("broken", "v{{ .Version }}", broken),
+                winget_crate("healthy", "v{{ .Version }}", healthy),
+            ])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "broken", "broken.exe");
+        add_windows_zip(&mut ctx, "healthy", "healthy.exe");
+
+        let findings = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("a per-entry misconfiguration must not fail the validation pass");
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let skips = ctx.emission_skips.snapshot();
+        assert_eq!(skips.len(), 1, "{skips:?}");
+        assert_eq!(skips[0].label, "broken winget");
+        assert!(
+            skips[0].reason.contains("license is required"),
+            "unexpected reason: {}",
+            skips[0].reason
         );
     }
 

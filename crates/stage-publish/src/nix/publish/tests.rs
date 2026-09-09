@@ -1120,7 +1120,7 @@ fn resolve_repo_coords_renders_owner_and_name_templates() {
         }),
         ..Default::default()
     };
-    let coords = resolve_repo_coords(&ctx, &cfg, "mytool", &quiet_log()).expect("coords");
+    let coords = resolve_repo_coords(&ctx, &cfg, &quiet_log()).expect("coords");
     assert_eq!(
         coords.repo_owner, "acme-demo",
         "owner template must render {{ ProjectName }} -> demo"
@@ -1129,14 +1129,16 @@ fn resolve_repo_coords_renders_owner_and_name_templates() {
 }
 
 #[test]
-fn resolve_repo_coords_missing_repository_bails() {
+fn resolve_repo_coords_missing_repository_is_an_entry_skip() {
     let ctx = meta_ctx();
     let cfg = NixConfig::default();
-    let err = resolve_repo_coords(&ctx, &cfg, "mytool", &quiet_log())
-        .expect_err("absent repository config must bail");
-    let msg = format!("{err}");
-    assert!(msg.contains("no repository config"), "{msg}");
-    assert!(msg.contains("mytool"), "{msg}");
+    let err = resolve_repo_coords(&ctx, &cfg, &quiet_log())
+        .expect_err("absent repository config must not resolve coords");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some("repository.name is not set"),
+        "{err}"
+    );
 }
 
 // -----------------------------------------------------------------

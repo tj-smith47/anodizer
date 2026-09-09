@@ -12,11 +12,10 @@ use super::*;
 pub fn validate_upload_mode_for(publisher: &str, mode: &str) -> Result<()> {
     match mode.to_ascii_lowercase().as_str() {
         "archive" | "binary" => Ok(()),
-        _ => bail!(
+        _ => Err(anodizer_core::pipe_skip::entry_skip(format!(
             "{}: invalid upload mode '{}' (expected 'archive' or 'binary')",
-            publisher,
-            mode
-        ),
+            publisher, mode
+        ))),
     }
 }
 
@@ -720,23 +719,52 @@ pub fn publish_to_artifactory(
             continue;
         }
 
-        // Name is required.
+        // Name is required. A misconfigured entry disqualifies itself only —
+        // the entries after it still upload.
         let name = match entry.name {
             Some(ref n) if !n.is_empty() => n.as_str(),
-            _ => bail!("artifactory: entry is missing required 'name' field"),
+            _ => {
+                crate::publisher_helpers::record_entry_skip(
+                    ctx,
+                    log,
+                    "artifactory",
+                    "<unnamed>",
+                    "artifactory: entry is missing required 'name' field",
+                );
+                continue;
+            }
         };
 
         // Validate mode (default: "archive").
         let mode = entry.mode.as_deref().unwrap_or("archive");
-        validate_upload_mode(mode)?;
+        if crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
+            "artifactory",
+            name,
+            validate_upload_mode(mode),
+        )?
+        .is_none()
+        {
+            continue;
+        }
 
         // Target URL is required.
         let target_template = match entry.target {
             Some(ref t) if !t.is_empty() => t.as_str(),
-            _ => bail!(
-                "artifactory: entry '{}' is missing required 'target' URL",
-                name
-            ),
+            _ => {
+                crate::publisher_helpers::record_entry_skip(
+                    ctx,
+                    log,
+                    "artifactory",
+                    name,
+                    &format!(
+                        "artifactory: entry '{}' is missing required 'target' URL",
+                        name
+                    ),
+                );
+                continue;
+            }
         };
 
         // HTTP method (default: PUT).

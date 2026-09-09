@@ -12,7 +12,7 @@
 use anodizer_core::config::UploadConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 
 use crate::artifactory::{
@@ -90,20 +90,49 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
         }
 
         // Name is required (it keys the credential env cascade and dry-run
-        // diagnostics).
+        // diagnostics). A misconfigured entry disqualifies itself only — the
+        // entries after it still upload.
         let name = match entry.name {
             Some(ref n) if !n.is_empty() => n.as_str(),
-            _ => bail!("uploads: entry is missing required 'name' field"),
+            _ => {
+                crate::publisher_helpers::record_entry_skip(
+                    ctx,
+                    log,
+                    "uploads",
+                    "<unnamed>",
+                    "uploads: entry is missing required 'name' field",
+                );
+                continue;
+            }
         };
 
         // Validate mode (default: "archive").
         let mode = entry.mode.as_deref().unwrap_or("archive");
-        validate_upload_mode_for("uploads", mode)?;
+        if crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
+            "uploads",
+            name,
+            validate_upload_mode_for("uploads", mode),
+        )?
+        .is_none()
+        {
+            continue;
+        }
 
         // Target URL is required.
         let target_template = match entry.target {
             ref t if !t.is_empty() => t.as_str(),
-            _ => bail!("uploads: entry '{}' is missing required 'target' URL", name),
+            _ => {
+                crate::publisher_helpers::record_entry_skip(
+                    ctx,
+                    log,
+                    "uploads",
+                    name,
+                    &format!("uploads: entry '{}' is missing required 'target' URL", name),
+                );
+                continue;
+            }
         };
 
         // HTTP method (default: PUT).
@@ -944,8 +973,45 @@ mod tests {
         );
     }
 
+    /// A nameless first entry disqualifies itself only: the named entry after
+    /// it still reaches its upload path.
     #[test]
-    fn requires_name() {
+    fn a_skipped_entry_does_not_stop_the_next_one() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![
+            UploadConfig {
+                name: None,
+                target: "https://uploads.example.com/".to_string(),
+                ..Default::default()
+            },
+            UploadConfig {
+                name: Some("named".to_string()),
+                target: "https://uploads.example.com/named/".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let ctx = dry_run_ctx(config);
+        let (log, capture) =
+            StageLogger::with_capture("uploads", anodizer_core::log::Verbosity::Normal);
+        publish_uploads(&ctx, &log).expect("a nameless entry must not fail the publisher");
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].label, "<unnamed>");
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("would upload artifacts to 'named'"),
+            "the entry after the skipped one must still run; got: {logged}"
+        );
+    }
+
+    #[test]
+    fn missing_name_skips_the_entry() {
         let mut config = Config::default();
         config.uploads = Some(vec![UploadConfig {
             name: None,
@@ -954,15 +1020,20 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        let err = publish_uploads(&ctx, &log).unwrap_err();
+        publish_uploads(&ctx, &log).expect("a nameless entry must skip, not fail");
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].stage, "uploads");
+        assert_eq!(events[0].label, "<unnamed>");
         assert!(
-            err.to_string().contains("missing required 'name'"),
-            "unexpected error: {err}"
+            events[0].reason.contains("missing required 'name'"),
+            "unexpected reason: {}",
+            events[0].reason
         );
     }
 
     #[test]
-    fn requires_target() {
+    fn missing_target_skips_the_entry() {
         let mut config = Config::default();
         config.uploads = Some(vec![UploadConfig {
             name: Some("mirror".to_string()),
@@ -971,15 +1042,19 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        let err = publish_uploads(&ctx, &log).unwrap_err();
+        publish_uploads(&ctx, &log).expect("a target-less entry must skip, not fail");
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].label, "mirror");
         assert!(
-            err.to_string().contains("missing required 'target'"),
-            "unexpected error: {err}"
+            events[0].reason.contains("missing required 'target'"),
+            "unexpected reason: {}",
+            events[0].reason
         );
     }
 
     #[test]
-    fn invalid_mode_errors_with_uploads_label() {
+    fn invalid_mode_skips_the_entry_with_the_uploads_label() {
         let mut config = Config::default();
         config.uploads = Some(vec![UploadConfig {
             name: Some("mirror".to_string()),
@@ -989,11 +1064,15 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        let err = publish_uploads(&ctx, &log).unwrap_err();
-        let msg = err.to_string();
+        publish_uploads(&ctx, &log).expect("an invalid mode must skip, not fail");
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1);
         assert!(
-            msg.contains("uploads: invalid upload mode 'bogus'"),
-            "{msg}"
+            events[0]
+                .reason
+                .contains("uploads: invalid upload mode 'bogus'"),
+            "{}",
+            events[0].reason
         );
     }
 
@@ -2137,35 +2216,45 @@ mod dryrun_and_pure_tests {
     }
 
     #[test]
-    fn bails_on_missing_name() {
+    fn empty_name_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.name = Some(String::new()));
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        let err = publish_uploads(&ctx, &log).expect_err("empty name must bail");
+        publish_uploads(&ctx, &log).expect("an empty name must skip, not fail");
         assert!(
-            format!("{err:#}").contains("missing required 'name'"),
-            "{err:#}"
+            ctx.skip_memento.snapshot()[0]
+                .reason
+                .contains("missing required 'name'"),
+            "{}",
+            ctx.skip_memento.snapshot()[0].reason
         );
     }
 
     #[test]
-    fn bails_on_missing_target() {
+    fn empty_target_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.target = String::new());
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        let err = publish_uploads(&ctx, &log).expect_err("empty target must bail");
+        publish_uploads(&ctx, &log).expect("an empty target must skip, not fail");
         assert!(
-            format!("{err:#}").contains("missing required 'target'"),
-            "{err:#}"
+            ctx.skip_memento.snapshot()[0]
+                .reason
+                .contains("missing required 'target'"),
+            "{}",
+            ctx.skip_memento.snapshot()[0].reason
         );
     }
 
     #[test]
-    fn bails_on_invalid_mode() {
+    fn invalid_mode_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.mode = Some("nonsense".to_string()));
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        let err = publish_uploads(&ctx, &log).expect_err("invalid mode must bail");
+        publish_uploads(&ctx, &log).expect("an invalid mode must skip, not fail");
         assert!(
-            format!("{err:#}").to_lowercase().contains("mode"),
-            "{err:#}"
+            ctx.skip_memento.snapshot()[0]
+                .reason
+                .to_lowercase()
+                .contains("mode"),
+            "{}",
+            ctx.skip_memento.snapshot()[0].reason
         );
     }
 

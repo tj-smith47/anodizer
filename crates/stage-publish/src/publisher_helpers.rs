@@ -105,6 +105,48 @@ pub(crate) fn no_config_block_message(publisher: &str, crate_name: &str) -> Stri
     format!("skipped {publisher} for crate '{crate_name}' — no {publisher} config block")
 }
 
+/// Turn a per-entry skip into a recorded skip, leaving every other error
+/// alone.
+///
+/// `Err` carrying an [`anodizer_core::pipe_skip::EntrySkip`] means the entry
+/// is disqualified but its siblings are not: the reason lands in the run's
+/// intentional-skip summary and the caller receives `Ok(None)` so it can move
+/// to the next entry. Any other error is returned unchanged.
+pub(crate) fn absorb_entry_skip<T>(
+    ctx: &anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+    publisher: &str,
+    label: &str,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) => match anodizer_core::pipe_skip::entry_skip_reason(&err) {
+            Some(reason) => {
+                record_entry_skip(ctx, log, publisher, label, reason);
+                Ok(None)
+            }
+            None => Err(err),
+        },
+    }
+}
+
+/// Record one disqualified entry in the run's intentional-skip summary and
+/// log the operator-facing line for it.
+pub(crate) fn record_entry_skip(
+    ctx: &anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+    publisher: &str,
+    label: &str,
+    reason: &str,
+) {
+    log.skip_line(
+        ctx.options.show_skipped,
+        &format!("skipped {publisher} for '{label}' — {reason}"),
+    );
+    ctx.remember_skip(publisher, label, reason);
+}
+
 /// Resolve the effective list of crates a per-crate publisher should
 /// iterate over.
 ///

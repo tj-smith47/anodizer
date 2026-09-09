@@ -499,6 +499,50 @@ mod publisher_tests {
         }
     }
 
+    /// An overlay-less entry disqualifies itself only: the crate after it in
+    /// the same run still reaches its publish path.
+    #[test]
+    fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
+        let mut broken = nix_crate("alpha");
+        broken
+            .publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![broken, nix_crate("beta")])
+            .dry_run(true)
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+
+        NixPublisher::new()
+            .run(&mut ctx)
+            .expect("an overlay-less entry must not fail the publisher");
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].stage, "nix");
+        assert_eq!(events[0].label, "alpha");
+        assert_eq!(events[0].reason, "repository.name is not set");
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("would publish Nix expression for 'beta'"),
+            "the entry after the skipped one must still run; got: {logged}"
+        );
+    }
+
     #[test]
     fn nix_publisher_classification() {
         let p = NixPublisher::new();
