@@ -457,7 +457,7 @@ Controls how anodizer discovers and orders tags when determining the current and
 Custom Gitea API/download URLs for self-hosted Gitea installations. Gitea API/download URL overrides.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api` | string | — | Gitea API base URL (e.g. `https://gitea.example.com/api/v1/`). |
+| `api` | string | — | Gitea instance URL (e.g. `https://gitea.example.com`).<br><br>The release backend appends `/api/v1/…` itself; a value that already ends in `/api/v1` is accepted and trimmed back to the instance root. |
 | `download` | string | — | Gitea download URL for release assets. |
 | `skip_tls_verify` | bool | — | When true, skip TLS certificate verification for the custom URLs. |
 

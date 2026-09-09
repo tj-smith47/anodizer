@@ -431,7 +431,10 @@ pub struct GitLabUrlsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GiteaUrlsConfig {
-    /// Gitea API base URL (e.g. `https://gitea.example.com/api/v1/`).
+    /// Gitea instance URL (e.g. `https://gitea.example.com`).
+    ///
+    /// The release backend appends `/api/v1/…` itself; a value that already
+    /// ends in `/api/v1` is accepted and trimmed back to the instance root.
     pub api: Option<String>,
     /// Gitea download URL for release assets.
     pub download: Option<String>,

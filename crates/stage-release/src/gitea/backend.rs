@@ -73,9 +73,15 @@ pub(crate) fn run_gitea_backend(
     };
 
     let gitea_urls = ctx.config.gitea_urls.clone().unwrap_or_default();
-    let api_url = gitea_urls
+    let configured_api = gitea_urls
         .api
-        .unwrap_or_else(|| "https://gitea.com/api/v1".to_string());
+        .unwrap_or_else(|| "https://gitea.com".to_string());
+    let api_url = crate::gitea::url::gitea_instance_url(&configured_api).to_string();
+    // A schemeless value builds a relative request URL, which fails far from
+    // the config that caused it.
+    if api_url.is_empty() || !api_url.contains("://") {
+        bail!("release: invalid gitea_urls.api URL: {:?}", configured_api);
+    }
     let download_url = gitea_urls
         .download
         .unwrap_or_else(|| "https://gitea.com".to_string());

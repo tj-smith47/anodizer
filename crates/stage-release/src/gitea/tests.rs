@@ -1,5 +1,34 @@
 use super::*;
 
+// -- gitea_instance_url -------------------------------------------------
+
+/// Every request builder appends `/api/v1/…`, so a configured value that
+/// already carries it is trimmed back to the instance root — exactly one
+/// trailing slash and exactly one terminal segment pair, so a deployment
+/// subpath survives.
+#[test]
+fn gitea_instance_url_trims_terminal_api_v1() {
+    for (configured, want) in [
+        ("https://gitea.com/forge/api/v1", "https://gitea.com/forge"),
+        ("https://gitea.com/forge/api/v1/", "https://gitea.com/forge"),
+        ("https://gitea.com", "https://gitea.com"),
+        ("https://gitea.com/", "https://gitea.com"),
+        // Only the terminal pair goes; a literal subpath named `/api/v1` stays.
+        (
+            "https://gitea.com/api/v1/api/v1",
+            "https://gitea.com/api/v1",
+        ),
+        // The built-in default, which is already the instance root.
+        ("https://gitea.com", "https://gitea.com"),
+    ] {
+        assert_eq!(
+            gitea_instance_url(configured),
+            want,
+            "instance root for {configured:?}"
+        );
+    }
+}
+
 // -- gitea_release_url --------------------------------------------------
 
 #[test]
@@ -1686,6 +1715,101 @@ fn run_backend_skip_upload_creates_release_only() {
         entries.iter().all(|e| !e.path.contains("/assets")),
         "skip_upload must issue no size probe / upload calls, got: {:?}",
         entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+}
+
+/// A `gitea_urls.api` that already ends in `/api/v1` — the form Gitea's API
+/// docs hand out — reaches the same endpoints: the builders append their own
+/// `/api/v1/…`, so an untrimmed value would request `/api/v1/api/v1/…` and
+/// 404 against a real instance.
+#[test]
+fn run_backend_accepts_an_api_url_carrying_api_v1() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let artifact = dir.path().join("demo.tar.gz");
+    std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/api/v1/repos/o/r/releases",
+            response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+            times: None,
+        },
+    ];
+    let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+    let ctx = build_gitea_ctx(&format!("http://{addr}/api/v1"));
+    let crate_cfg = build_gitea_crate_cfg();
+    let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let log_stage = StageLogger::new("release", Verbosity::Normal);
+    let token = Some("gitea-test".to_string());
+    let env = GiteaBackendEnv {
+        rt: &rt,
+        ctx: &ctx,
+        log: &log_stage,
+        token: &token,
+    };
+    let mut spec = default_gitea_spec();
+    spec.skip_upload = true;
+    let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+    run_gitea_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+        .expect("a documented /api/v1 base must reach the API")
+        .expect("returns Some");
+
+    let entries = log.lock().unwrap();
+    assert!(
+        entries
+            .iter()
+            .all(|e| !e.path.starts_with("/api/v1/api/v1")),
+        "the base must not double: {:?}",
+        entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+}
+
+/// A `gitea_urls.api` with no scheme builds a relative request URL, which
+/// fails far from the config that caused it — so it is refused up front.
+#[test]
+fn run_backend_rejects_a_schemeless_api_url() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let artifact = dir.path().join("demo.tar.gz");
+    std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+    let ctx = build_gitea_ctx("gitea.example.com/api/v1");
+    let crate_cfg = build_gitea_crate_cfg();
+    let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let log_stage = StageLogger::new("release", Verbosity::Normal);
+    let token = Some("gitea-test".to_string());
+    let env = GiteaBackendEnv {
+        rt: &rt,
+        ctx: &ctx,
+        log: &log_stage,
+        token: &token,
+    };
+    let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+    let err = run_gitea_backend(
+        &env,
+        &crate_cfg,
+        release_cfg,
+        &default_gitea_spec(),
+        &artifacts,
+    )
+    .expect_err("a schemeless base must be refused");
+    assert!(
+        err.to_string()
+            .contains("release: invalid gitea_urls.api URL:"),
+        "unexpected error: {err}"
     );
 }
 

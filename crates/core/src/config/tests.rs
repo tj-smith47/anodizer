@@ -6397,15 +6397,12 @@ fn test_gitlab_urls_config_defaults() {
 #[test]
 fn test_gitea_urls_config_all_fields() {
     let yaml = r#"
-api: https://gitea.example.com/api/v1/
+api: https://gitea.example.com
 download: https://gitea.example.com/
 skip_tls_verify: true
 "#;
     let cfg: GiteaUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(
-        cfg.api.as_deref(),
-        Some("https://gitea.example.com/api/v1/")
-    );
+    assert_eq!(cfg.api.as_deref(), Some("https://gitea.example.com"));
     assert_eq!(cfg.download.as_deref(), Some("https://gitea.example.com/"));
     assert_eq!(cfg.skip_tls_verify, Some(true));
 }
@@ -6505,7 +6502,7 @@ fn test_config_gitea_urls_field() {
     let yaml = r#"
 project_name: test
 gitea_urls:
-  api: https://gitea.corp.com/api/v1/
+  api: https://gitea.corp.com
   download: https://gitea.corp.com/
   skip_tls_verify: true
 crates:
@@ -6515,7 +6512,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let urls = config.gitea_urls.as_ref().unwrap();
-    assert_eq!(urls.api.as_deref(), Some("https://gitea.corp.com/api/v1/"));
+    assert_eq!(urls.api.as_deref(), Some("https://gitea.corp.com"));
     assert_eq!(urls.download.as_deref(), Some("https://gitea.corp.com/"));
     assert_eq!(urls.skip_tls_verify, Some(true));
 }
@@ -6557,7 +6554,7 @@ gitlab_urls:
   api: https://gitlab.corp.com/api/v4/
   use_job_token: true
 gitea_urls:
-  api: https://gitea.corp.com/api/v1/
+  api: https://gitea.corp.com
 force_token: github
 crates:
   - name: a
@@ -6579,7 +6576,7 @@ crates:
     );
     assert_eq!(
         config.gitea_urls.as_ref().unwrap().api.as_deref(),
-        Some("https://gitea.corp.com/api/v1/")
+        Some("https://gitea.corp.com")
     );
     assert_eq!(config.force_token, Some(ForceTokenKind::GitHub));
 }

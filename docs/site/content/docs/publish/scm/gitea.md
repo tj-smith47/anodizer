@@ -61,6 +61,11 @@ gitea_urls:
   api: "https://gitea.mycompany.com"
 ```
 
+`api` is the instance URL — anodizer appends `/api/v1/...` itself. A value
+that already ends in `/api/v1` is accepted and trimmed back to the instance
+root, so a deployment subpath (`https://example.com/forge/api/v1`) keeps its
+subpath. A value with no scheme is refused.
+
 ## Full example
 
 ```yaml
