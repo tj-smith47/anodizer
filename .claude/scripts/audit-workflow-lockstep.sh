@@ -145,9 +145,12 @@ else
         done < <(yqr -r '.. | select(tag == "!!map" and has("from-artifact")) | .["from-artifact"]' "$f")
     done
     # resolve-release-target's shell default (the non-empty branch).
-    while IFS= read -r rv; do
+    collect_files RESOLVE_DEFAULTS -oE 'from_artifact="[^"]+"' "$RESOLVE"
+    for rv in "${RESOLVE_DEFAULTS[@]}"; do
+        rv="${rv#from_artifact=\"}"
+        rv="${rv%\"}"
         [[ "$rv" == "$producer" ]] || fail "bootstrap artifact drift: resolve-release-target default '${rv}' != producer '${producer}'."
-    done < <(grep -oE 'from_artifact="[^"]+"' "$RESOLVE" | sed -E 's/from_artifact="([^"]+)"/\1/')
+    done
 fi
 
 # Second half of the bootstrap contract: every literal `artifact-workflow:`

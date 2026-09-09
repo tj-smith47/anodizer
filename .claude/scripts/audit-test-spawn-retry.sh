@@ -41,6 +41,9 @@ cd "$ROOT"
 
 # Candidate files: any source under crates/ that spawns git or node. The awk
 # pass then decides per-file whether each call site is in test context.
+# The retry helper's own home is exempt — it IS the helper. The exemption is
+# a DIRECTORY NAME, not one path: a `test_helpers/` under any crate is exempt,
+# on the reading that anything so named is scaffolding rather than a test.
 collect_files FILES -rlP 'Command::new\("(git|node)"\)' crates/ --include='*.rs' \
     --exclude-dir=target --exclude-dir=test_helpers
 

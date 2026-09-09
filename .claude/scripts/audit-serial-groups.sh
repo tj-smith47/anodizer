@@ -39,10 +39,20 @@ cd "$ROOT"
 # or a string that merely mentions the attribute is not a finding.
 UNKEYED_RE='^[[:space:]]*#\[(serial_test::)?(file_)?serial(\(\))?\][[:space:]]*$'
 
+collect_files KEYED_ATTRS -rhoE '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' \
+    crates/ --include='*.rs'
+
+# Every group key the collected attributes name, one per line. A tree with no
+# keyed attribute yields nothing rather than aborting the pipeline: zero
+# matches is a clean tree, not a failed scan.
+serial_keys() {
+    ((${#KEYED_ATTRS[@]})) || return 0
+    printf '%s\n' "${KEYED_ATTRS[@]}" |
+        sed -E 's/.*serial\(([a-z_, ]+)\)\]/\1/' | tr ',' '\n' | tr -d ' '
+}
+
 if [[ "$MODE" == "groups" ]]; then
-    grep -rhoE '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' crates/ --include='*.rs' |
-        sed -E 's/.*serial\(([a-z_, ]+)\)\]/\1/' | tr ',' '\n' | tr -d ' ' |
-        sort | uniq -c | sort -rn
+    serial_keys | sort | uniq -c | sort -rn
     exit 0
 fi
 
@@ -118,9 +128,8 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-total_keyed="$(grep -rhoE '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' crates/ --include='*.rs' | wc -l | tr -d ' ')"
-n_groups="$(grep -rhoE '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' crates/ --include='*.rs' |
-    sed -E 's/.*serial\(([a-z_, ]+)\)\]/\1/' | tr ',' '\n' | tr -d ' ' | sort -u | wc -l | tr -d ' ')"
+total_keyed=${#KEYED_ATTRS[@]}
+n_groups="$(serial_keys | sort -u | wc -l | tr -d ' ')"
 echo "audit-serial-groups: all $total_keyed #[serial] attributes name a group ($n_groups distinct groups)."
 if [[ ${#SERIAL_PENDING[@]} -gt 0 ]]; then
     echo "audit-serial-groups: ${#SERIAL_PENDING[@]} site(s) still unkeyed and pinned for conversion:"

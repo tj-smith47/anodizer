@@ -282,6 +282,46 @@ fn repo_identity_audit_reads_its_markers_from_the_comment_half() {
 /// -t` with index-only expansion) silently stops covering it. So every
 /// `audit-*.sh` sources `lib/require-bash.sh`, and no script restates the
 /// check inline.
+/// `collect_files` is handed OPTIONAL roots — `crates/*/src crates/*/tests` —
+/// and a glob that matches nothing stays literal. An absent optional root is
+/// not a failed scan: the roots that do exist are still read.
+#[test]
+fn an_absent_optional_scan_root_is_not_a_failed_scan() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("crates/demo/src/tests.rs");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+    std::fs::write(&path, TESTS_RS).expect("fixture file");
+
+    let (code, out) = run_audit("audit-test-isolation.sh", dir.path());
+    assert_ne!(
+        code, 2,
+        "an absent crates/*/tests is not a scan failure: {out}"
+    );
+    assert!(!out.contains("the scan did not run"), "{out}");
+    assert!(
+        !hits(&out).is_empty(),
+        "crates/*/src must still be scanned: {out}"
+    );
+}
+
+/// Zero matches is a clean tree, not a failed scan. The keyed-attribute
+/// collection feeds a `sed | sort | wc` pipeline, and a bare grep at its head
+/// aborts the whole audit under `pipefail` when nothing matches.
+#[test]
+fn a_tree_with_no_serial_attribute_reports_a_clean_scan() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("crates/demo/src/lib.rs");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+    std::fs::write(&path, "pub fn f() -> u8 { 1 }\n").expect("fixture file");
+
+    let (code, out) = run_audit("audit-serial-groups.sh", dir.path());
+    assert_eq!(code, 0, "a tree with no #[serial] scans clean: {out}");
+    assert!(
+        out.contains("all 0 #[serial] attributes name a group (0 distinct groups)"),
+        "{out}"
+    );
+}
+
 #[test]
 fn every_audit_script_sources_the_bash_floor() {
     let mut walked = 0usize;

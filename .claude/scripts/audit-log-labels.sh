@@ -34,6 +34,9 @@ cd "$ROOT"
 # `// Note: …`, which carries no quote.
 LABEL_RE='"(Warning|Error|Note): '
 
+# The log module is the authority, so it is out of scope. The exemption is a
+# DIRECTORY NAME, not one path: a `log/` under any crate is exempt, on the
+# reading that a module named `log` is that crate's own label rendering.
 collect_files LABEL_HITS -rnP "$LABEL_RE" crates/*/src --include='*.rs' \
     --exclude-dir=target --exclude-dir=log
 

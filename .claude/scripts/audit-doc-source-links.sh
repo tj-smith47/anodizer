@@ -72,7 +72,12 @@ while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     if [[ ! -f "$path" ]]; then
         # Report every page that cites it so the fix is one pass, not a hunt.
-        cites=$(grep -rln -- "$path" "$DOCS_DIR" 2>/dev/null | tr '\n' ' ')
+        # This sits inside an already-failed verdict, so a grep that never ran
+        # could only shorten the message — it still goes through the shared
+        # collector, because a silently empty "cited by:" reads as a finding
+        # nobody can act on.
+        collect_files CITING_PAGES -rln -- "$path" "$DOCS_DIR"
+        cites="${CITING_PAGES[*]}"
         broken+="  $path"$'\n'"      cited by: $cites"$'\n'
     fi
 done < <(printf '%s\n' "${CITED_PATHS[@]}" | sort -u)
