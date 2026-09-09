@@ -610,7 +610,7 @@ fn installs_binary_end_to_end_offline() {
     )
     .unwrap();
 
-    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[], &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
 }
 
@@ -644,7 +644,7 @@ fn installs_all_binaries_end_to_end() {
     )
     .unwrap();
 
-    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[], &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
     assert_installed(&dest, "myapp-helper", "fake-myapp");
 }
@@ -673,7 +673,7 @@ fn verify_checksum_false_installs_without_checksums_file() {
     // Deliberately publish NO checksums file / sidecar.
     build_release_tarball(&release, asset, &["myapp"]);
 
-    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[], &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
 }
 
@@ -700,7 +700,7 @@ fn path_hint_fires_for_a_writable_install_dir_off_path() {
     )
     .unwrap();
 
-    let (dest, stderr) = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, stderr) = run_installer(&script, tmp.path(), &release, &[], &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
     assert!(
         stderr.contains("is not in your PATH"),
@@ -814,6 +814,123 @@ fn single_file_format_with_several_binaries_bails_at_render_time() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Libc-aware asset arms
+// ---------------------------------------------------------------------------
+
+/// The gnu/musl pair for one architecture plus a platform that ships neither,
+/// so both the split arms and the unsplit glob are exercised.
+const DUAL_LIBC_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+];
+
+/// [`install_ctx`] for a release that ships both libcs on linux-amd64. The
+/// name template carries the full triple: the default `{os}_{arch}` stem would
+/// name both libc builds identically, which the archive stage refuses before
+/// the installer is ever generated.
+fn dual_libc_ctx(dist: &Path, cfg: InstallScriptConfig) -> Context {
+    let mut ctx = install_ctx_with(
+        dist,
+        cfg,
+        "v{{ Version }}",
+        Some("{{ ProjectName }}_{{ Version }}_{{ Target }}"),
+        None,
+    );
+    ctx.config.defaults.as_mut().unwrap().targets =
+        Some(DUAL_LIBC_TARGETS.iter().map(|s| s.to_string()).collect());
+    ctx
+}
+
+/// A single-libc release must keep the exact script it had before the arms
+/// learned about libc: no probe, no suffix, not one byte of drift. The golden
+/// is the rendered output captured before the split was built.
+#[test]
+fn single_libc_output_byte_identical_to_previous() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = run_and_read(tmp.path(), default_cfg(), "install.sh");
+    assert_eq!(
+        script,
+        include_str!("../tests/golden/install_single_libc.sh"),
+        "a project with one libc per platform must see no change at all"
+    );
+}
+
+/// A dual-libc release emits the probe, keys its arms by libc, and still
+/// parses as POSIX `sh`.
+#[test]
+fn dual_libc_script_probes_the_libc_and_keys_both_arms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let mut ctx = dual_libc_ctx(&dist, default_cfg());
+    InstallScriptStage.run(&mut ctx).expect("stage run");
+    let text = std::fs::read_to_string(dist.join("install.sh")).unwrap();
+
+    assert!(
+        text.contains(r#"case "${OS}-${ARCH}-${LIBC}" in"#),
+        "the case subject must carry the libc segment:\n{text}"
+    );
+    assert!(text.contains("LIBC=gnu"), "probe missing:\n{text}");
+    assert!(
+        text.contains("    linux-amd64-gnu)") && text.contains("    linux-amd64-musl)"),
+        "both libc arms must be present:\n{text}"
+    );
+    assert!(
+        text.contains("    darwin-arm64-*)"),
+        "an unsplit platform must still match the suffixed subject:\n{text}"
+    );
+    assert!(
+        text.contains("Supported platforms: darwin-arm64 linux-amd64-gnu linux-amd64-musl"),
+        "the --help platform list must name each libc:\n{text}"
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-n")
+        .arg(dist.join("install.sh"))
+        .status()
+        .expect("spawn sh -n");
+    assert!(status.success(), "dual-libc install.sh failed `sh -n`");
+}
+
+/// The probe must actually select the asset: a host whose `ldd` reports musl
+/// installs the musl build, and one reporting glibc installs the gnu build.
+/// Both branches run the real script under `sh`.
+#[cfg(unix)]
+#[test]
+fn libc_probe_selects_the_matching_asset_on_each_host() {
+    for (ldd_output, expected) in [
+        ("musl libc (x86_64)\nVersion 1.2.4", "musl"),
+        ("ldd (GNU libc) 2.39", "gnu"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let mut ctx = dual_libc_ctx(&dist, default_cfg());
+        InstallScriptStage.run(&mut ctx).expect("stage run");
+        let script = dist.join("install.sh");
+        let text = std::fs::read_to_string(&script).unwrap();
+
+        // Both assets are published, so only the probe decides which is fetched.
+        let release = tmp.path().join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let mut checksums = String::new();
+        for libc in ["gnu", "musl"] {
+            let asset = arm_asset(&text, &format!("linux-amd64-{libc}"));
+            // The payload names its own libc, so the installed file proves
+            // which asset the probe chose.
+            write_tagged_tarball(&release, &asset, &format!("fake-myapp-{libc}"));
+            let sha = sha256_of(&release.join(&asset));
+            checksums.push_str(&format!("{sha}  {asset}\n"));
+        }
+        std::fs::write(release.join("myapp_1.2.3_checksums.txt"), checksums).unwrap();
+
+        let ldd = format!("#!/bin/sh\nprintf '%s\\n' \"{ldd_output}\"\n");
+        let (dest, _) = run_installer(&script, tmp.path(), &release, &[], &[("ldd", &ldd)]);
+        assert_installed(&dest, "myapp", &format!("fake-myapp-{expected}"));
+    }
+}
+
 /// Render an installer for a project releasing exactly `format`, publish one
 /// fixture asset built by `make_asset`, and assert the binary installs.
 #[cfg(unix)]
@@ -850,17 +967,23 @@ fn single_format_install_roundtrip(format: &str, make_asset: impl Fn(&Path, &str
     )
     .unwrap();
 
-    let (dest, _) = run_installer(&script, tmp.path(), &release, &[]);
+    let (dest, _) = run_installer(&script, tmp.path(), &release, &[], &[]);
     assert_installed(&dest, "myapp", "fake-myapp");
 }
 
 /// Read the `linux-amd64` arm's baked `ARCHIVE=` value out of a rendered script.
 #[cfg(unix)]
 fn linux_amd64_asset(script: &str) -> String {
+    arm_asset(script, "linux-amd64")
+}
+
+/// Read `key`'s baked `ARCHIVE=` value out of a rendered script, with the
+/// install-time `${version}` expansion already resolved.
+fn arm_asset(script: &str, key: &str) -> String {
     let arm = script
-        .split("linux-amd64)")
+        .split(&format!("{key})"))
         .nth(1)
-        .expect("a linux-amd64 arm");
+        .unwrap_or_else(|| panic!("a {key} arm in:\n{script}"));
     let line = arm
         .lines()
         .find(|l| l.trim_start().starts_with("ARCHIVE="))
@@ -983,6 +1106,22 @@ fn unknown_argument_errors_with_a_help_hint() {
 /// Build a gzip tarball named `asset` under `release`, containing each named
 /// binary as a `#!/bin/sh` echo stub.
 #[cfg(unix)]
+fn write_tagged_tarball(release: &Path, asset: &str, marker: &str) {
+    use std::process::Command;
+    let payload = release.join(format!("payload-{marker}"));
+    std::fs::create_dir_all(&payload).unwrap();
+    std::fs::write(payload.join("myapp"), format!("#!/bin/sh\necho {marker}\n")).unwrap();
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(release.join(asset))
+        .arg("-C")
+        .arg(&payload)
+        .arg("myapp")
+        .status()
+        .expect("spawn tar");
+    assert!(status.success(), "failed to build fixture archive");
+}
+
 fn build_release_tarball(release: &Path, asset: &str, binaries: &[&str]) {
     use std::process::Command;
     let payload = release.join("payload");
@@ -1013,6 +1152,7 @@ fn run_installer(
     tmp: &Path,
     release: &Path,
     extra_env: &[(&str, &str)],
+    extra_stubs: &[(&str, &str)],
 ) -> (std::path::PathBuf, String) {
     use std::process::Command;
 
@@ -1040,6 +1180,10 @@ if [ -n "$dest" ]; then cp "$file" "$dest"; else cat "$file"; fi
         "uname",
         "#!/bin/sh\ncase \"$1\" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac\n",
     );
+
+    for (name, body) in extra_stubs {
+        write_stub(&stub_dir, name, body);
+    }
 
     let dest = tmp.join("install-dest");
     std::fs::create_dir_all(&dest).unwrap();

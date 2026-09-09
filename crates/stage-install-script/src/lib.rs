@@ -449,8 +449,9 @@ fn render_script(params: &ScriptParams) -> String {
     //                     on the value expanding, so it must pass through live.
     //   @CHECKSUMS@     — an engine-rendered filename that embeds a live
     //                     `${version}` expansion (resolved at install time).
-    //   @TAG_PREFIX@ / @VERIFY_CHECKSUM@ / @DETECT_*_CASES@ / @ASSET_CASES@ /
-    //   @SUPPORTED_PLATFORMS@ — engine-generated shell code / control values,
+    //   @TAG_PREFIX@ / @VERIFY_CHECKSUM@ / @DETECT_*_CASES@ / @DETECT_LIBC@ /
+    //   @ASSET_CASES@ / @ASSET_CASE_SUBJECT@ / @SUPPORTED_PLATFORMS@ —
+    //                     engine-generated shell code / control values,
     //                     not user free-text.
     let map: &[(&str, &str)] = &[
         ("@REPO@", &repo),
@@ -463,7 +464,9 @@ fn render_script(params: &ScriptParams) -> String {
         ("@TAG_PREFIX@", params.tag_prefix),
         ("@DETECT_OS_CASES@", &params.cases.detect_os_cases),
         ("@DETECT_ARCH_CASES@", &params.cases.detect_arch_cases),
+        ("@ASSET_CASE_SUBJECT@", &params.cases.asset_case_subject),
         ("@ASSET_CASES@", &params.cases.asset_cases),
+        ("@DETECT_LIBC@", &params.cases.detect_libc),
         ("@SUPPORTED_PLATFORMS@", &params.cases.supported_platforms),
         ("@NAME@", &name),
         ("@DESCRIPTION@", &description),

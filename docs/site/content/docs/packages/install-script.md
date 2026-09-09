@@ -20,9 +20,9 @@ There are two ways to ship a `curl | sh` installer:
   metadata. Start here.
 - **A hand-written [`template_files:`](../../general/templatefiles/) entry** —
   the advanced path. You own the whole script and consume the same engine-derived
-  case tables (`InstallerAssetCases`, `InstallerDetectOsCases`,
-  `InstallerDetectArchCases`, `InstallerSupportedPlatforms`) as template
-  variables. Reach for this when you need a bespoke installer shape.
+  case tables (`InstallerAssetCases`, `InstallerAssetCaseSubject`,
+  `InstallerDetectOsCases`, `InstallerDetectArchCases`, `InstallerDetectLibc`,
+  `InstallerSupportedPlatforms`) as template variables. Reach for this when you need a bespoke installer shape.
 
 Both paths derive their per-platform asset table from the same engine SSOT
 (`render_installer_cases`), so neither can bake an asset name that 404s.
@@ -135,7 +135,9 @@ myapp-install: error: unknown argument: --bogus (try --help)
    same `map_target` OS/arch tokens that key the asset arms, so a released
    target can never be stranded behind a hand-written mapping. Linux, macOS, and
    Windows (MSYS/Cygwin/MinGW) hosts are all served when the release targets
-   them.
+   them. When a release ships BOTH a glibc and a musl build of one
+   architecture, the script also probes the host's libc and the arms are keyed
+   `linux-amd64-gnu` / `linux-amd64-musl` — see below.
 2. Resolves the version — from `VERSION=` when set, otherwise the latest
    release's `tag_name` from the REST API (no `jq` dependency). The configured
    tag prefix is stripped to get the bare version and re-applied to build the
@@ -168,6 +170,52 @@ myapp-install: error: unknown argument: --bogus (try --help)
    back to `$HOME/.local/bin`. Whichever directory the binary lands in, the
    script warns when it is not on `$PATH`.
 6. Cleans up the temp directory on exit via a `trap`.
+
+## glibc and musl
+
+`x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` both reduce to
+`linux-amd64`, but a glibc binary cannot run on Alpine. When a release ships
+both, the script probes the host at install time and each libc keeps its own
+arm:
+
+```sh
+LIBC=gnu
+if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+	LIBC=musl
+elif ls /lib/ld-musl-* >/dev/null 2>&1 && ! ls /lib/ld-linux-*.so.* >/dev/null 2>&1; then
+	LIBC=musl
+fi
+
+case "${OS}-${ARCH}-${LIBC}" in
+    darwin-arm64-*)
+        ARCHIVE="myapp_${version}_aarch64-apple-darwin.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+    linux-amd64-gnu)
+        ARCHIVE="myapp_${version}_x86_64-unknown-linux-gnu.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+    linux-amd64-musl)
+        ARCHIVE="myapp_${version}_x86_64-unknown-linux-musl.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+esac
+```
+
+`--help` and the unsupported-platform error list the split keys, so an
+operator sees exactly which libcs are published:
+
+```console
+$ sh install.sh --help
+...
+Supported platforms: darwin-amd64 darwin-arm64 linux-amd64-gnu linux-amd64-musl
+```
+
+Nothing changes for a release that ships one libc per platform: no probe is
+emitted, the `case` subject stays `${OS}-${ARCH}`, and the arms keep their
+plain keys. A musl-only release does not split either — a static musl binary
+runs on glibc hosts too. A host that reveals neither an `ldd` nor a loader
+falls back to `gnu`.
 
 ## GitHub Enterprise
 

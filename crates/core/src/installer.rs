@@ -78,6 +78,8 @@ pub const INSTALLER_TEMPLATE_VARS: &[&str] = &[
     "InstallerDetectOsCases",
     "InstallerDetectArchCases",
     "InstallerSupportedPlatforms",
+    "InstallerDetectLibc",
+    "InstallerAssetCaseSubject",
 ];
 
 /// The engine-generated `case` arm snippets a `curl | sh` installer template
@@ -104,10 +106,18 @@ pub struct InstallerCases {
     /// can refuse a combination the script cannot honour (a single-file
     /// format alongside several binaries) before writing the script.
     pub formats: BTreeSet<String>,
+    /// A POSIX-`sh` block setting `LIBC` to `gnu` or `musl`, emitted only when
+    /// some platform ships both (bind to `InstallerDetectLibc`). Empty
+    /// otherwise, so a single-libc release keeps the script it had.
+    pub detect_libc: String,
+    /// The word the asset `case` matches on — `${OS}-${ARCH}`, or
+    /// `${OS}-${ARCH}-${LIBC}` once any platform splits by libc (bind to
+    /// `InstallerAssetCaseSubject`).
+    pub asset_case_subject: String,
 }
 
 impl InstallerCases {
-    /// Bind the four case tables to their template vars — the keys listed in
+    /// Bind the case tables to their template vars — the keys listed in
     /// [`INSTALLER_TEMPLATE_VARS`] — so the templatefiles stage and any
     /// consumption probe share one binding surface.
     pub fn bind(&self, vars: &mut crate::template::TemplateVars) {
@@ -115,6 +125,8 @@ impl InstallerCases {
         vars.set("InstallerDetectOsCases", &self.detect_os_cases);
         vars.set("InstallerDetectArchCases", &self.detect_arch_cases);
         vars.set("InstallerSupportedPlatforms", &self.supported_platforms);
+        vars.set("InstallerDetectLibc", &self.detect_libc);
+        vars.set("InstallerAssetCaseSubject", &self.asset_case_subject);
     }
 }
 
@@ -217,6 +229,8 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         detect_arch_cases: String::new(),
         supported_platforms: String::new(),
         formats: BTreeSet::new(),
+        detect_libc: String::new(),
+        asset_case_subject: ASSET_CASE_SUBJECT_PLAIN.to_string(),
     };
     let Some(crate_cfg) = installer_crate(&ctx.config) else {
         return Ok(empty());
@@ -242,18 +256,15 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         return Ok(empty());
     };
 
-    // Collapse target triples to the installer's `os-arch` key vocabulary.
-    // Several triples can alias onto one key: two libc/ABI variants of the same
-    // os+arch (`*-linux-gnu` and `*-linux-musl` both key `linux-amd64`), and the
-    // `all` universal fanning into amd64/arm64. The installer detects only OS +
-    // arch — it has no libc probe — so exactly one asset can answer each key.
-    // [`record_arm`] resolves every collision by [`installer_arm_rank`] (lower
-    // wins) rather than first-writer-wins, so the choice is order-independent
-    // and a libc variant is never silently dropped by iteration order. Universal
-    // (`all`) assets carry the worst rank: they only fill amd64/arm64 keys no
-    // real arch-specific build claimed, since no `uname -m` can ever produce
-    // "all".
-    let mut arms: BTreeMap<String, (u8, String, String)> = BTreeMap::new();
+    // Collapse target triples to the installer's `os-arch` key vocabulary,
+    // keeping the libc class alongside it. `*-linux-gnu` and `*-linux-musl`
+    // both reduce to `linux-amd64` but are NOT interchangeable — a glibc binary
+    // cannot run on a musl host — so each keeps its own arm and the script
+    // probes the host's libc to choose. What genuinely aliases is the `all`
+    // universal fanning into amd64/arm64; [`record_arm`] gives it the worst
+    // rank, so it only fills a key no arch-specific build claimed, since no
+    // `uname -m` can ever produce "all".
+    let mut arms: BTreeMap<(String, &'static str), (u8, String, String)> = BTreeMap::new();
     let mut released_os: BTreeSet<String> = BTreeSet::new();
     let mut released_arch: BTreeSet<String> = BTreeSet::new();
     for (target, asset) in &assets {
@@ -265,8 +276,8 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         released_arch.insert(arch.clone());
         record_arm(
             &mut arms,
-            format!("{os}-{arch}"),
-            installer_arm_rank(target),
+            (format!("{os}-{arch}"), libc_class(target)),
+            RANK_ARCH_SPECIFIC,
             &asset.asset_name,
             &asset.format,
         );
@@ -281,7 +292,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
             released_arch.insert(cpu.to_string());
             record_arm(
                 &mut arms,
-                format!("{os}-{cpu}"),
+                (format!("{os}-{cpu}"), libc_class(target)),
                 RANK_UNIVERSAL,
                 &asset.asset_name,
                 &asset.format,
@@ -299,6 +310,33 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         // Keys are `{os}-{arch}` and neither token contains `-`.
         key.split_once('-')
             .is_some_and(|(os, arch)| detectable_os.contains(os) && detectable_arch.contains(arch))
+    };
+
+    // A platform ships two libc classes when both a gnu-ish and a musl triple
+    // reduce to the same `os-arch` key. Only then do the arms need a libc
+    // suffix — and only then does the script need a probe to produce one.
+    let mut per_key: BTreeMap<&str, usize> = BTreeMap::new();
+    for (key, _) in arms.keys() {
+        *per_key.entry(key.as_str()).or_default() += 1;
+    }
+    let any_split = per_key.values().any(|n| *n > 1);
+    // With a suffixed subject every arm must carry a third segment, so the
+    // platforms that did NOT split match any libc the probe can report.
+    let arm_key = |key: &str, libc: &'static str| -> String {
+        match (per_key.get(key).copied().unwrap_or(0) > 1, any_split) {
+            (true, _) => format!("{key}-{libc}"),
+            (false, true) => format!("{key}-*"),
+            (false, false) => key.to_string(),
+        }
+    };
+    // The operator-facing list names the split platforms by libc but leaves
+    // the rest unsuffixed: a `*` glob is arm syntax, not a platform.
+    let listed_key = |key: &str, libc: &'static str| -> String {
+        if per_key.get(key).copied().unwrap_or(0) > 1 {
+            format!("{key}-{libc}")
+        } else {
+            key.to_string()
+        }
     };
 
     let stranded: Vec<&str> = assets
@@ -320,10 +358,10 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         ));
     }
 
-    let supported: Vec<&str> = arms
+    let supported: Vec<String> = arms
         .keys()
-        .filter(|key| key_is_reachable(key))
-        .map(String::as_str)
+        .filter(|(key, _)| key_is_reachable(key))
+        .map(|(key, libc)| listed_key(key, libc))
         .collect();
 
     // Each arm bakes the archive FORMAT the engine resolved for that target
@@ -332,7 +370,8 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // executable's own name and no extension at all.
     let lines: Vec<String> = arms
         .iter()
-        .map(|(key, (_, asset, format))| {
+        .map(|((key, libc), (_, asset, format))| {
+            let key = arm_key(key, libc);
             format!(
                 "    {key})\n        ARCHIVE=\"{asset}\"\n        FORMAT=\"{format}\"\n        ;;"
             )
@@ -345,6 +384,16 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         detect_arch_cases: render_uname_cases(UNAME_ARCH_CASES, &released_arch),
         supported_platforms: supported.join(" "),
         formats,
+        detect_libc: if any_split {
+            DETECT_LIBC_BLOCK.to_string()
+        } else {
+            String::new()
+        },
+        asset_case_subject: if any_split {
+            ASSET_CASE_SUBJECT_LIBC.to_string()
+        } else {
+            ASSET_CASE_SUBJECT_PLAIN.to_string()
+        },
     })
 }
 
@@ -359,6 +408,48 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
         .join("\n")
 }
 
+/// The libc class an installer arm is keyed by, or `""` for a platform that
+/// has none.
+///
+/// Only Linux ships two interchangeable-looking C libraries for one
+/// `os-arch` pair. A `*-musl*` triple (including `musleabihf`) is the static
+/// one; every other Linux triple links glibc. Non-Linux targets collapse to
+/// the empty class so their arms stay unsuffixed.
+fn libc_class(target: &str) -> &'static str {
+    let (os, _) = map_target(target);
+    if os != "linux" {
+        ""
+    } else if target.contains("musl") {
+        "musl"
+    } else {
+        "gnu"
+    }
+}
+
+/// The `case` subject when no platform ships two libcs — the shape every
+/// release had before libc-aware arms existed.
+const ASSET_CASE_SUBJECT_PLAIN: &str = "${OS}-${ARCH}";
+
+/// The `case` subject once some platform ships both libcs: every arm then
+/// carries a third segment, so the detect block below must always set `LIBC`.
+const ASSET_CASE_SUBJECT_LIBC: &str = "${OS}-${ARCH}-${LIBC}";
+
+/// The runtime libc probe, emitted only alongside [`ASSET_CASE_SUBJECT_LIBC`].
+///
+/// `ldd --version` names its implementation on both glibc and musl, and is the
+/// reliable answer where it exists. Where it does not (a minimal container),
+/// the loader that is actually installed answers instead. A host that reveals
+/// neither keeps `gnu`, which is what such a host received before the split.
+const DETECT_LIBC_BLOCK: &str = "\n\
+# This release ships both glibc and musl builds for at least one platform, so\n\
+# the asset arms below are keyed by libc as well as os and arch.\n\
+LIBC=gnu\n\
+if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then\n\
+\tLIBC=musl\n\
+elif ls /lib/ld-musl-* >/dev/null 2>&1 && ! ls /lib/ld-linux-*.so.* >/dev/null 2>&1; then\n\
+\tLIBC=musl\n\
+fi\n";
+
 /// The archive formats that produce a single file rather than a container.
 ///
 /// A `curl | sh` installer can only give that file one name, so the generated
@@ -367,37 +458,24 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
 /// combination rather than emitting a script that guesses.
 pub const SINGLE_FILE_ARCHIVE_FORMATS: &[&str] = &["gz", "xz", "binary"];
 
+/// Rank of an asset built for one concrete architecture — the rank every
+/// release target carries, since libc variants now key separate arms.
+const RANK_ARCH_SPECIFIC: u8 = 1;
+
 /// Rank the `all` universal asset when it fans out onto an `amd64`/`arm64`
-/// key: strictly worse than any real arch-specific build ([`installer_arm_rank`]
-/// tops out at 1), so a universal only fills a key no native build claimed —
-/// the arch-specific-wins precedence a `curl | sh` user relies on.
+/// key: strictly worse than any arch-specific build, so a universal only fills
+/// a key no native build claimed — the arch-specific-wins precedence a
+/// `curl | sh` user relies on.
 const RANK_UNIVERSAL: u8 = 2;
 
-/// Preference rank (lower wins) for the asset that answers an `os-arch`
-/// installer arm when two release targets collapse onto the same key.
-///
-/// The generated installer keys only on OS + arch — it carries no libc probe —
-/// so when a release ships both a gnu and a musl build of one os+arch, exactly
-/// one asset can serve the shared arm. A statically-linked musl binary runs on
-/// BOTH glibc and musl hosts, whereas a glibc binary fails on musl; preferring
-/// musl therefore hands every host a binary that works, and — being a fixed
-/// rule rather than iteration order — makes the choice deterministic instead of
-/// silently dropping whichever libc a map happened to visit second. Every other
-/// ABI (gnu, msvc, darwin, …) shares rank 1; a residual tie holds the incumbent,
-/// which is the lexicographically-smaller target (assets arrive in sorted-target
-/// order), so single-variant output is byte-identical to before.
-fn installer_arm_rank(target: &str) -> u8 {
-    if target.contains("musl") { 0 } else { 1 }
-}
-
 /// Record `asset` under `key`, keeping the lowest-ranked asset when several
-/// release targets collapse onto one `os-arch` key. Replaces first-writer-wins
-/// (which silently dropped a libc variant by iteration order) with a
-/// deterministic, order-independent choice; an equal-rank collision keeps the
-/// incumbent.
+/// release targets collapse onto one arm. The only remaining collision is a
+/// darwin universal asset landing on a key a native build already claimed; an
+/// equal-rank collision holds the incumbent, which is the
+/// lexicographically-smaller target (assets arrive in sorted-target order).
 fn record_arm(
-    arms: &mut BTreeMap<String, (u8, String, String)>,
-    key: String,
+    arms: &mut BTreeMap<(String, &'static str), (u8, String, String)>,
+    key: (String, &'static str),
     rank: u8,
     asset: &str,
     format: &str,
@@ -525,6 +603,8 @@ mod tests {
             detect_arch_cases: "c".to_string(),
             supported_platforms: "d".to_string(),
             formats: BTreeSet::new(),
+            detect_libc: "e".to_string(),
+            asset_case_subject: "f".to_string(),
         };
         let mut vars = crate::template::TemplateVars::new();
         cases.bind(&mut vars);
@@ -851,13 +931,11 @@ mod tests {
     }
 
     /// A release shipping BOTH a gnu and a musl build for the same os+arch
-    /// (two distinct assets, one shared `os-arch` installer key) must not
-    /// silently drop a libc: the generated installer detects only OS + arch, so
-    /// exactly one asset answers the `linux-amd64` arm, and it must be the
-    /// statically-linked musl build (runs on glibc AND musl hosts) — chosen by
-    /// rule, independent of target iteration order.
+    /// gets one arm per libc plus a runtime probe to choose between them.
+    /// Neither asset may be dropped: a glibc binary cannot run on a musl host,
+    /// so collapsing the pair onto one key strands whichever half loses.
     #[test]
-    fn gnu_and_musl_same_arch_prefers_static_musl() {
+    fn dual_libc_targets_split_arms_and_emit_libc_probe() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
         let mut ctx = anodize_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
@@ -867,15 +945,96 @@ mod tests {
         let cases = render_installer_cases(&mut ctx).unwrap();
         let arms = parse_arms(&cases.asset_cases);
 
+        assert_eq!(arms.len(), 2, "each libc keeps its own arm: {arms:?}");
         assert_eq!(
-            arms.len(),
-            1,
-            "both libcs collapse onto the single linux-amd64 key: {arms:?}"
+            arms.get("linux-amd64-gnu").map(String::as_str),
+            Some("anodizer-0.13.0-x86_64-unknown-linux-gnu.tar.gz"),
         );
+        assert_eq!(
+            arms.get("linux-amd64-musl").map(String::as_str),
+            Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
+        );
+        assert_eq!(cases.asset_case_subject, "${OS}-${ARCH}-${LIBC}");
+        assert!(
+            cases.detect_libc.contains("LIBC=musl"),
+            "split arms are unreachable without the probe that sets LIBC: {}",
+            cases.detect_libc
+        );
+    }
+
+    /// A release with one libc per platform keeps the arms and the `case`
+    /// subject it had, and emits no probe — the split is not a tax on projects
+    /// that do not need it.
+    #[test]
+    fn single_libc_does_not_split_or_probe() {
+        let mut ctx = anodize_ctx(None);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+        assert!(
+            arms.contains_key("linux-amd64"),
+            "an unsplit key stays unsuffixed: {arms:?}"
+        );
+        assert_eq!(cases.asset_case_subject, "${OS}-${ARCH}");
+        assert_eq!(cases.detect_libc, "");
+    }
+
+    /// A musl-only release does not split: a static musl binary runs on glibc
+    /// hosts too, so there is nothing to choose between.
+    #[test]
+    fn musl_only_does_not_split() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-musl".to_string(),
+            "aarch64-unknown-linux-musl".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
         assert_eq!(
             arms.get("linux-amd64").map(String::as_str),
             Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
-            "the static musl build must win the shared linux-amd64 arm, not be dropped"
+            "a musl-only release keeps the plain key: {arms:?}"
+        );
+        assert_eq!(cases.detect_libc, "");
+    }
+
+    /// The libc class is read from the whole triple, not a `-gnu`/`-musl`
+    /// suffix: the 32-bit arm pair spells it `gnueabihf` / `musleabihf`.
+    #[test]
+    fn armhf_gnueabihf_musleabihf_split() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "armv7-unknown-linux-gnueabihf".to_string(),
+            "armv7-unknown-linux-musleabihf".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+        assert_eq!(arms.len(), 2, "armhf splits by libc too: {arms:?}");
+        assert!(
+            arms.keys()
+                .all(|k| k.ends_with("-gnu") || k.ends_with("-musl")),
+            "both arms carry a libc suffix: {arms:?}"
+        );
+    }
+
+    /// Once a platform splits, every other arm must still match: the `case`
+    /// subject now carries a third segment, so unsplit keys are emitted as a
+    /// glob that any probed libc satisfies.
+    #[test]
+    fn unsplit_keys_glob_the_libc_segment_once_any_platform_splits() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+        assert!(
+            arms.contains_key("darwin-arm64-*"),
+            "an unsplit platform must still match the suffixed subject: {arms:?}"
         );
     }
 
@@ -922,13 +1081,12 @@ mod tests {
         );
     }
 
-    /// The same libc collision, but with the installer crate reachable only
+    /// The same libc split, but with the installer crate reachable only
     /// through `workspaces[].crates[]` (the per-crate config mode) instead of
-    /// top-level `crates:` — the musl-first resolution must hold there too,
-    /// since the collapse operates on the derived asset map regardless of which
-    /// config mode surfaced the crate.
+    /// top-level `crates:` — the split operates on the derived asset map
+    /// regardless of which config mode surfaced the crate.
     #[test]
-    fn gnu_and_musl_collision_resolves_under_workspaces_config() {
+    fn dual_libc_split_holds_under_workspaces_config() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
         let mut ctx = anodize_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
@@ -945,9 +1103,31 @@ mod tests {
         let cases = render_installer_cases(&mut ctx).unwrap();
         let arms = parse_arms(&cases.asset_cases);
         assert_eq!(
-            arms.get("linux-amd64").map(String::as_str),
+            arms.get("linux-amd64-musl").map(String::as_str),
             Some("anodizer-0.13.0-x86_64-unknown-linux-musl.tar.gz"),
-            "per-crate (workspaces) config must resolve the libc collision musl-first too"
+            "per-crate (workspaces) config must split by libc too: {arms:?}"
+        );
+        assert_eq!(
+            arms.get("linux-amd64-gnu").map(String::as_str),
+            Some("anodizer-0.13.0-x86_64-unknown-linux-gnu.tar.gz"),
+        );
+    }
+
+    /// The operator-facing platform list names each libc a split platform
+    /// ships, so the unsupported-platform error stays accurate.
+    #[test]
+    fn supported_platforms_lists_split_keys() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        assert_eq!(
+            cases.supported_platforms,
+            "darwin-arm64 linux-amd64-gnu linux-amd64-musl"
         );
     }
 

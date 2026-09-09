@@ -2320,6 +2320,41 @@ mod tests {
             .expect("a correct emission must pass in a real release");
     }
 
+    /// A release shipping BOTH libcs of one architecture splits the `curl | sh`
+    /// installer's arms by libc, but binstall derives its `pkg_url` per target
+    /// triple with no `os-arch` collapse at all. The cross-check must therefore
+    /// pass unchanged: each triple's asset is present and resolvable.
+    #[test]
+    fn emission_validator_passes_dual_libc_fixture() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cfg])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "cfgd");
+        ctx.template_vars_mut().set("Name", "cfgd");
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"] {
+            add_archive(
+                &mut ctx,
+                "cfgd",
+                target,
+                &format!("cfgd-1.0.0-{target}.tar.gz"),
+            );
+        }
+        let resolver = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
+        validate_emissions_with_resolver(&mut ctx, &log(), &resolver)
+            .expect("a dual-libc release must still cross-check clean");
+    }
+
     // -- version-dimension fix (snapshot false-positive) --------------------
 
     /// Build a snapshot context whose produced archives carry the synthesized

@@ -86,7 +86,7 @@ Each entry gets its own artifact ID, so you can reference them individually in p
 
 ## Remote installer case tables
 
-Four template variables carry engine-generated POSIX-`sh` snippets for a
+Six template variables carry engine-generated POSIX-`sh` snippets for a
 `curl | sh` installer script, derived from the release's configured targets and
 the archive stage's own asset naming — so the script never hardcodes an asset
 name that 404s, and the detection arms track the same vocabulary that keys the
@@ -94,10 +94,12 @@ asset arms instead of a hand-written `uname` mapping that silently drifts:
 
 | Variable | Contents |
 |----------|----------|
-| `InstallerAssetCases` | `case "${OS}-${ARCH}"` arms mapping each released `os-arch` pair to its exact asset filename (sets `ARCHIVE=`) |
+| `InstallerAssetCases` | Asset arms mapping each released platform to its exact asset filename (sets `ARCHIVE=` and `FORMAT=`) |
+| `InstallerAssetCaseSubject` | The word the asset `case` matches on — `${OS}-${ARCH}`, or `${OS}-${ARCH}-${LIBC}` once a platform ships two libcs |
 | `InstallerDetectOsCases` | `case "$(uname -s)"` arms echoing the OS tokens the asset arms are keyed by |
 | `InstallerDetectArchCases` | `case "$(uname -m)"` arms echoing the arch tokens the asset arms are keyed by |
-| `InstallerSupportedPlatforms` | The reachable `os-arch` keys, space-joined — for error messages that list what IS available |
+| `InstallerDetectLibc` | A block setting `LIBC` to `gnu` or `musl`, emitted only when some platform ships both. Empty otherwise |
+| `InstallerSupportedPlatforms` | The reachable platform keys, space-joined — for error messages that list what IS available |
 
 ```bash
 #!/bin/sh
@@ -116,7 +118,8 @@ detect_arch() {
 }
 
 OS="$(detect_os)"; ARCH="$(detect_arch)"
-case "${OS}-${ARCH}" in
+{{ InstallerDetectLibc }}
+case "{{ InstallerAssetCaseSubject }}" in
 {{ InstallerAssetCases }}
     *) echo "no prebuilt binary for ${OS}/${ARCH}" >&2; exit 1 ;;
 esac
@@ -137,6 +140,46 @@ and each asset arm resolves to the same filename the archive stage uploads
 (e.g. `zip` on Windows). A `darwin-universal` build is fanned out to the
 `darwin-amd64` / `darwin-arm64` keys, with arch-specific assets taking
 precedence.
+
+## glibc and musl on the same architecture
+
+A statically-linked musl binary and a glibc binary of the same architecture
+both reduce to `linux-amd64`, but they are not interchangeable: a glibc binary
+cannot run on Alpine. When a release ships both, the asset arms split by libc
+and `InstallerDetectLibc` renders the probe that chooses between them:
+
+```sh
+LIBC=gnu
+if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+	LIBC=musl
+elif ls /lib/ld-musl-* >/dev/null 2>&1 && ! ls /lib/ld-linux-*.so.* >/dev/null 2>&1; then
+	LIBC=musl
+fi
+```
+
+`InstallerAssetCaseSubject` then renders `${OS}-${ARCH}-${LIBC}`, the split
+platform gets one arm per libc, and every other platform is emitted with a
+trailing glob so it still matches:
+
+```sh
+    darwin-arm64-*)
+        ARCHIVE="myapp_${version}_aarch64-apple-darwin.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+    linux-amd64-gnu)
+        ARCHIVE="myapp_${version}_x86_64-unknown-linux-gnu.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+    linux-amd64-musl)
+        ARCHIVE="myapp_${version}_x86_64-unknown-linux-musl.tar.gz"
+        FORMAT="tar.gz"
+        ;;
+```
+
+A release with one libc per platform pays nothing for this:
+`InstallerDetectLibc` renders empty, `InstallerAssetCaseSubject` renders
+`${OS}-${ARCH}`, and the arms keep their plain keys. A musl-only release does
+not split either — a static musl binary runs on glibc hosts too.
 
 The mips family is deliberately absent from the generated `uname -m` arms:
 `uname -m` reports `mips`/`mips64` for both endiannesses, so the script cannot
@@ -166,5 +209,6 @@ renders as:
         echo "Prebuilt binaries: darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 windows-arm64" >&2
 ```
 
-All four variables render empty when no crate builds a binary named after
-the project with a binstallable archive.
+Every variable renders empty when no crate builds a binary named after the
+project with a binstallable archive — except `InstallerAssetCaseSubject`,
+which always names a usable `case` subject.
