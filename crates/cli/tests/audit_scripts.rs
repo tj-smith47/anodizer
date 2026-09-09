@@ -60,13 +60,23 @@ fn fixture_tree() -> TempDir {
 }
 
 fn run_audit(script: &str, root: &Path) -> (i32, String) {
+    run_audit_with_path(script, root, None)
+}
+
+/// `shim`, when given, is prepended to `PATH` so a stubbed tool shadows the
+/// real one.
+fn run_audit_with_path(script: &str, root: &Path, shim: Option<&Path>) -> (i32, String) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(".claude/scripts")
         .join(script);
-    let out = Command::new("bash")
-        .arg(&path)
-        .arg(root)
+    let mut command = Command::new("bash");
+    command.arg(&path).arg(root);
+    if let Some(shim) = shim {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        command.env("PATH", format!("{}:{inherited}", shim.display()));
+    }
+    let out = command
         .output()
         .unwrap_or_else(|e| panic!("running {}: {e}", path.display()));
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -272,6 +282,32 @@ fn repo_identity_audit_reads_its_markers_from_the_comment_half() {
         "{out}"
     );
     assert_eq!(code, 1, "{out}");
+}
+
+/// The collector's fail-loud direction, the half a permissive edit would
+/// silently reopen: grep's own failure is never an empty result. Both a grep
+/// that ran and failed and a grep that is not there stop the audit at exit 2,
+/// the code reserved for "the scan did not run".
+#[test]
+fn a_collection_whose_grep_fails_stops_the_audit() {
+    for status in [2, 127] {
+        let dir = fixture_tree();
+        let shim = dir.path().join("shim");
+        std::fs::create_dir_all(&shim).expect("shim dir");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
+            &shim.join("grep"),
+            &format!("#!/bin/sh\nprintf 'grep: unusable\\n' >&2\nexit {status}\n"),
+        );
+
+        let (code, out) = run_audit_with_path("audit-log-status.sh", dir.path(), Some(&shim));
+        assert_eq!(code, 2, "grep exiting {status} must stop the audit: {out}");
+        assert!(
+            out.contains(&format!(
+                "file collection exited {status}; the scan did not run."
+            )),
+            "{out}"
+        );
+    }
 }
 
 /// Drive `lib/scan.sh`'s collector directly. `body` runs from `dir` with the
@@ -1052,16 +1088,22 @@ fn audit_scripts() -> Vec<std::path::PathBuf> {
 /// Words that only prefix another command, so the command word is the next one
 /// along. Matched on the BASENAME, the same half of the word the awk names are
 /// matched on, so `/usr/bin/env awk` peels exactly as `env awk` does.
-const COMMAND_WRAPPERS: &[&str] = &["command", "exec", "env", "xargs", "nice", "time", "sudo"];
+const COMMAND_WRAPPERS: &[&str] = &[
+    "command", "exec", "env", "xargs", "nice", "time", "sudo", "busybox", "toybox",
+];
 
 /// Reserved words that introduce a command rather than being one.
 const RESERVED_WORDS: &[&str] = &[
-    "if", "then", "elif", "else", "while", "until", "do", "{", "}", "!",
+    "if", "then", "elif", "else", "while", "until", "do", "coproc", "{", "}", "!",
 ];
 
 /// Builtins that answer whether a program EXISTS. The word after one is the
 /// name being asked about, not a program being run.
 const PROBES: &[&str] = &["type", "hash", "which"];
+
+/// `find` options whose argument is a whole command line, so a command
+/// position opens after one.
+const EXEC_OPTIONS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
 
 /// Every basename that runs an awk program.
 const AWK_NAMES: &[&str] = &["awk", "gawk", "mawk", "nawk"];
@@ -1122,6 +1164,9 @@ fn command_word(segment: &str) -> Option<(&str, &str)> {
             || RESERVED_WORDS.contains(&word)
             || is_assignment(word)
             || COMMAND_WRAPPERS.contains(&base)
+            // A `case` branch's pattern. An unmatched `)` reaches a segment
+            // only there: everywhere else it closes a context and separates.
+            || word.ends_with(')')
         {
             i += 1;
             continue;
@@ -1148,7 +1193,22 @@ struct Segment {
 /// outright: an audit script has no business with either, and both put a
 /// program the pin cannot read into command position.
 fn forbidden_word(segment: &Segment) -> Option<String> {
-    let (word, base) = command_word(&segment.text)?;
+    let mut rest = segment.text.as_str();
+    loop {
+        if let Some(why) = forbidden_at(rest, segment) {
+            return Some(why);
+        }
+        // `find … -exec awk … {} +` runs awk as surely as a pipeline does.
+        let mut words = rest.split_whitespace();
+        let opened = words.find(|w| EXEC_OPTIONS.contains(w))?;
+        let offset = rest.find(opened)? + opened.len();
+        rest = &rest[offset..];
+    }
+}
+
+/// The classifier one command position at a time.
+fn forbidden_at(text: &str, segment: &Segment) -> Option<String> {
+    let (word, base) = command_word(text)?;
     if word.starts_with('$') && word.len() > 1 {
         return Some(format!("a variable in command position (`{word}`)"));
     }
@@ -1322,7 +1382,10 @@ fn command_segments(body: &str) -> Vec<Segment> {
         // continuation; otherwise the next line is more of the same command.
         if !continued && stack.len() == 1 && stack[0] == Quote::Bare {
             let inside = substituted.iter().any(|&s| s);
-            sink.take(index + 1, inside, false);
+            // A line ending on `||` leaves nothing between it and the newline,
+            // so the link to the next command survives the line break.
+            let carry = sink.current.trim().is_empty() && sink.after_or;
+            sink.take(index + 1, inside, carry);
             in_test_expr = false;
         }
         heredoc = heredoc_delimiter(line).map(str::to_string);
@@ -1492,6 +1555,15 @@ fn the_runner_pin_recognises_every_awk_spelling() {
         "mapfile -t FILES < <(grep -rl x crates)",
         "files=\"$(grep -rl x crates)\"",
         "hits=\"$(sed -n 1p file)\" || true",
+        "case \"$mode\" in\n    scan) awk -f prog.awk file ;;\nesac",
+        "case \"$mode\" in\n    scan|run) gawk -f prog.awk file ;;\nesac",
+        "find crates -name '*.rs' -exec awk -f prog.awk {} +",
+        "find crates -name '*.rs' -execdir mawk -f prog.awk {} \\;",
+        "find crates -name '*.rs' -ok nawk -f prog.awk {} \\;",
+        "sed -n 1p file ||\ntrue",
+        "coproc awk -f prog.awk file",
+        "busybox awk -f prog.awk file",
+        "toybox awk -f prog.awk file",
     ] {
         assert!(
             forbidden_command(line).is_some(),
