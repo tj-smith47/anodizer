@@ -245,7 +245,7 @@ fn partial_publish_records_only_succeeded_crate() {
     let prev_path = std::env::var("PATH").ok();
     // SAFETY: serialised by env_mutex above (shared with every other
     // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
     unsafe { std::env::set_var("PATH", &new_path) };
     let result = publish_to_cargo_with(
         &mut ctx,
@@ -258,9 +258,9 @@ fn partial_publish_records_only_succeeded_crate() {
     // SAFETY: restore PATH within the same serial group.
     unsafe {
         match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             None => std::env::remove_var("PATH"),
         }
     }
@@ -339,7 +339,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let prev_path = std::env::var("PATH").ok();
     // SAFETY: serialised by env_mutex above (shared with every other
     // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
     unsafe { std::env::set_var("PATH", &new_path) };
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -366,9 +366,9 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     // SAFETY: restore PATH within the same serial group.
     unsafe {
         match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             None => std::env::remove_var("PATH"),
         }
     }
@@ -421,7 +421,7 @@ fn rollback_is_clean_noop_when_nothing_published() {
     let prev_path = std::env::var("PATH").ok();
     // SAFETY: serialised by env_mutex above (shared with every other
     // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
     unsafe { std::env::set_var("PATH", &new_path) };
 
     let publisher = CargoPublisher::new();
@@ -430,9 +430,9 @@ fn rollback_is_clean_noop_when_nothing_published() {
     // SAFETY: restore PATH within the same serial group.
     unsafe {
         match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             None => std::env::remove_var("PATH"),
         }
     }
@@ -476,15 +476,15 @@ fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
     // PATH mutator in the workspace, including fake_tool::activate)
     // plus the callers' `#[serial(cargo_stub_path)]` guard; paired
     // restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
     unsafe { std::env::set_var("PATH", new_path) };
     let out = f();
     // SAFETY: restore the prior PATH (paired with the set above).
     unsafe {
         match prev {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             None => std::env::remove_var("PATH"),
         }
     }
@@ -982,7 +982,7 @@ fn manifest_read_failure_does_not_skip_publish() {
     let prev_path = std::env::var("PATH").ok();
     // SAFETY: serialised by env_mutex above (shared with every other
     // PATH mutator) plus this test's serial group; paired restore below.
-    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+    // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore below
     unsafe { std::env::set_var("PATH", &new_path) };
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -999,9 +999,9 @@ fn manifest_read_failure_does_not_skip_publish() {
     // SAFETY: restore PATH.
     unsafe {
         match prev_path {
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             Some(p) => std::env::set_var("PATH", p),
-            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
+            // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; paired restore of the set above
             None => std::env::remove_var("PATH"),
         }
     }

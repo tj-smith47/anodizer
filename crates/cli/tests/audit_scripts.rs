@@ -174,7 +174,8 @@ fn spawn_retry_audit_reports_test_context_only() {
 /// freely and each one the audit could not see was a writer it waved through.
 /// It must also stay off production chmods (a stage staging a real binary into
 /// a package tree, a production `DirBuilder` mode) and off a mode carrying an
-/// `// exec-writer-ok:` marker.
+/// `exec-writer-ok:` marker. (Spelled without the comment slashes so this
+/// sentence cannot arm the scanner's own marker rule.)
 #[test]
 fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     let dir = fixture_tree();
