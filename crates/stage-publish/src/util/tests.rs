@@ -96,7 +96,9 @@ fn test_infer_arch_aarch64() {
 #[test]
 fn test_infer_arch_unknown() {
     // map_target passes unrecognised arch prefixes through verbatim
-    assert_eq!(infer_arch("wasm32-unknown-unknown"), "wasm32");
+    assert_eq!(infer_arch("frob-unknown-unknown"), "frob");
+    // A recognised one is canonicalised instead.
+    assert_eq!(infer_arch("wasm32-unknown-unknown"), "wasm");
 }
 
 // -----------------------------------------------------------------------

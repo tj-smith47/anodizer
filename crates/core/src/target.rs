@@ -43,7 +43,7 @@ pub const DEFAULT_TARGETS: &[&str] = &[
 /// composite `armv6`/`armv7` archive-naming tokens — the one place the two
 /// vocabularies genuinely differ, so each caller keeps its own ARM handling.
 ///
-/// Returns `None` for tokens with no known Go arch name (`wasm32`, a typo, a
+/// Returns `None` for tokens with no known Go arch name (a typo, a
 /// user-supplied prebuilt token) so callers choose their own fallthrough.
 pub fn rust_arch_to_goarch(token: &str, little_endian: bool) -> Option<&'static str> {
     let mapped = match token {
@@ -54,6 +54,7 @@ pub fn rust_arch_to_goarch(token: &str, little_endian: bool) -> Option<&'static 
         "riscv64" | "riscv64gc" => "riscv64",
         "loongarch64" | "loong64" => "loong64",
         "sparcv9" | "sparc64" => "sparc64",
+        "powerpc" | "ppc" => "ppc",
         "powerpc64le" | "ppc64le" => "ppc64le",
         "powerpc64" | "ppc64" => {
             if little_endian {
@@ -62,6 +63,7 @@ pub fn rust_arch_to_goarch(token: &str, little_endian: bool) -> Option<&'static 
                 "ppc64"
             }
         }
+        "wasm32" | "wasm" => "wasm",
         "mipsel" => "mipsel",
         "mips64el" => "mips64el",
         "mips" => {
@@ -238,6 +240,7 @@ pub fn debian_arch_from_arch(arch: &str) -> Option<&'static str> {
         "mips64" => "mips64",
         "mips64el" => "mips64el",
         "mips" => "mips",
+        "wasm32" | "wasm" => "wasm",
         "mipsel" => "mipsel",
         "sparc64" => "sparc64",
         "loong64" => "loong64",
@@ -433,9 +436,20 @@ mod tests {
 
     #[test]
     fn test_unknown_target() {
-        let (os, arch) = map_target("wasm32-unknown-unknown");
+        let (os, arch) = map_target("frob-unknown-unknown");
         assert_eq!(os, "unknown");
-        assert_eq!(arch, "wasm32");
+        assert_eq!(arch, "frob");
+    }
+
+    /// 32-bit PowerPC and WebAssembly have canonical Go arch names, so they
+    /// stop reaching arch-keyed surfaces (archive names, checksums, nfpm,
+    /// krew, docker, release asset matching) as their raw Rust tokens.
+    #[test]
+    fn rust_arch_to_goarch_maps_powerpc_and_wasm32() {
+        assert_eq!(rust_arch_to_goarch("powerpc", false), Some("ppc"));
+        assert_eq!(rust_arch_to_goarch("wasm32", false), Some("wasm"));
+        assert_eq!(map_target("wasm32-unknown-unknown").1, "wasm");
+        assert_eq!(map_target("powerpc-unknown-linux-gnu").1, "ppc");
     }
 
     #[test]
@@ -535,7 +549,6 @@ mod tests {
         // map_target needs armv6/armv7 — each caller keeps its own handling.
         assert_eq!(rust_arch_to_goarch("arm", true), None);
         assert_eq!(rust_arch_to_goarch("armv7", false), None);
-        assert_eq!(rust_arch_to_goarch("wasm32", false), None);
         assert_eq!(rust_arch_to_goarch("frob", false), None);
     }
 
@@ -601,11 +614,11 @@ mod tests {
         // Note: deb-arch derivation is arch-only (map_target ignores the OS
         // for the arch token), and the deb stage only ever feeds Linux deb
         // artifacts here — so these are tokens map_target leaves unmapped
-        // (`frob`, `wasm32`) or the `all` synthetic, none of which is a
+        // (`frob`, `zilog80`) or the `all` synthetic, none of which is a
         // dpkg architecture.
         for bad in [
             "frob-unknown-linux-gnu",
-            "wasm32-unknown-unknown",
+            "zilog80-unknown-unknown",
             "darwin-universal",
         ] {
             let err = debian_arch_from_target(bad).expect_err(&format!("'{bad}' must be rejected"));
