@@ -1,3 +1,16 @@
+//! Cryptographic signing of built artifacts — the `signs:`, `binary_signs:`
+//! and `docker_signs:` configuration blocks.
+//!
+//! Where the stage's work lives: `helpers` (artifact selection, signature
+//! paths, argv/stdin resolution), `process` (the shared sign fan-out —
+//! `process/sign_configs.rs` drives one config's jobs, `process/cosign.rs`
+//! classifies and hardens cosign argv, `process/authenticode.rs` the Windows
+//! signer), `docker_render` (every image's argv and env, rendered before any
+//! signing starts), `verify` (post-sign verification modes) and
+//! `verify_assets` (release-time re-verification), `keyload` (keyed
+//! public-key derivation), `expected` (the signature assets a config
+//! promises) and `tuf_cache` (the keyless cosign host lock).
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -27,12 +40,6 @@ pub use verify_assets::{
 use docker_render::{RenderedImageSign, render_image_signs, set_image_template_vars};
 use helpers::{default_sign_cmd, prepare_stdin_from, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
-
-// Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,
-// default_sign_cmd, expand_shell_vars, resolve_sign_args) live in `helpers.rs`.
-
-// Shared sign processing (ArtifactFilter, SignJob, execute_sign_job,
-// process_sign_configs, label_to_static) lives in `process.rs`.
 
 /// Publishers that consume the `signs:` stage's detached signature /
 /// certificate artifacts in publish-only mode.

@@ -35,10 +35,10 @@
 # 0o700 and 0o500 all match.
 #
 # TEST context is lib/test-regions.awk's: a whole test file (a sibling
-# `tests.rs`, anything under `crates/*/tests/`) or an inline `#[cfg(test)]`
-# region bounded by the gated item's braces. Production chmods — the stages
-# that stage a real binary 0755 into a package tree — are OUT OF SCOPE: they
-# write artifacts nothing in the same process then execs.
+# `tests.rs` or `<name>_tests.rs`, anything under `crates/*/tests/`) or an
+# inline `#[cfg(test)]` region bounded by the gated item's braces. Production
+# chmods — the stages that stage a real binary 0755 into a package tree — are
+# OUT OF SCOPE: they write artifacts nothing in the same process then execs.
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"

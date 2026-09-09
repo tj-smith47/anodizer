@@ -24,9 +24,10 @@
 #
 # TEST context = a `Command::new` after a `#[cfg(test)]` / `mod tests {`
 # boundary in a `crates/*/src/**` file, OR any file under `crates/*/tests/**`,
-# OR a file named `tests.rs`. Production spawns (the real release path, which
-# runs serially and not under nextest) are OUT OF SCOPE. The helper's own home
-# (crates/core/src/test_helpers/) is exempt — it IS the helper.
+# OR a file named `tests.rs` or `<name>_tests.rs`. Production spawns (the real
+# release path, which runs serially and not under nextest) are OUT OF SCOPE.
+# The helper's own home (crates/core/src/test_helpers/) is exempt — it IS the
+# helper.
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -51,12 +52,12 @@ fi
 # Per-file awk scan. State resets at FNR==1 (awk carries vars across files).
 #
 # Test-region detection is the shared lib's (lib/test-regions.awk), the same
-# one audit-test-isolation.sh and the god-file scanner use: a `tests.rs` or a
-# `crates/*/tests/**` integration file is test code in its entirety, and inside
-# any other file a `#[cfg(test)]` item is test code from the attribute to the
-# close of its brace block — counted on `strip_code` output, so a brace inside
-# a raw string cannot end the region early. Production code that FOLLOWS an
-# inline test module is production again.
+# one audit-test-isolation.sh and the god-file scanner use: a `tests.rs`, a
+# `<name>_tests.rs` or a `crates/*/tests/**` integration file is test code in
+# its entirety, and inside any other file a `#[cfg(test)]` item is test code
+# from the attribute to the close of its brace block — counted on `strip_code`
+# output, so a brace inside a raw string cannot end the region early.
+# Production code that FOLLOWS an inline test module is production again.
 #
 # A test-context `Command::new("git"|"node")` PASSES iff:
 #   - it is inside an `output_with_spawn_retry(` closure — tracked by a small

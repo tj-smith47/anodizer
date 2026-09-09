@@ -53,8 +53,8 @@
 # SCOPE: this audit scans test code only — inline `#[cfg(test)]` regions,
 # which lib/test-regions.awk bounds by the braces of the gated item (so
 # production code following an inline test module is production again), and
-# whole test files (a sibling `tests.rs`, anything under `crates/*/tests/`),
-# which `is_test_file` names.
+# whole test files (a sibling `tests.rs` or `<name>_tests.rs`, anything under
+# `crates/*/tests/`), which `is_test_file` names.
 #
 # ── cwd-helper pairing class ────────────────────────────────────────────────
 # The raw-call-site cwd class above is blind to a cwd swap performed through a
