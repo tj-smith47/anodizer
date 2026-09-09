@@ -100,6 +100,34 @@ Override the install directory with `INSTALL_DIR=`:
 curl -fsSL .../install.sh | INSTALL_DIR="$HOME/bin" sh
 ```
 
+`--help` prints that surface from the script itself, so a `curl | sh` user who
+never opens the file can still discover it:
+
+```console
+$ sh install.sh --help
+myapp installer — installs myapp from acme/myapp releases.
+
+Usage:
+  sh install.sh [--help]
+  curl -fsSL https://github.com/acme/myapp/releases/latest/download/install.sh | sh
+
+Environment:
+  VERSION       release to install (default: the latest release);
+                accepts a bare version or the full tag, e.g. v1.2.3
+  INSTALL_DIR   directory to install into (default: /usr/local/bin);
+                falls back to $HOME/.local/bin when it is not writable
+
+Supported platforms: darwin-amd64 darwin-arm64 linux-amd64 linux-arm64
+```
+
+`--help` is the only flag; every other argument is a typo and is refused rather
+than ignored:
+
+```console
+$ sh install.sh --bogus
+myapp-install: error: unknown argument: --bogus (try --help)
+```
+
 ## What the generated script does
 
 1. Detects `uname -s` / `uname -m` and maps the pair to the matching release

@@ -372,6 +372,13 @@ struct ScriptParams<'a> {
 /// `` ` ``, `\`, or newline cannot break out and inject shell text. Engine-
 /// rendered shell fragments (the case tables, tag prefix, checksums filename)
 /// and the shell-expandable `@INSTALL_DIR@` pass through verbatim by design.
+///
+/// `@NAME@`, `@TAG_PREFIX@` and `@SUPPORTED_PLATFORMS@` also land inside the
+/// `--help` heredoc, an unquoted `<<EOF` body whose escape context is the same
+/// as a double-quoted string — which is why the `comment_sanitize` markers
+/// (`@DESCRIPTION@`, `@HOMEPAGE@`, `@FILENAME@`) deliberately do NOT appear
+/// there: that helper strips newlines only and escapes neither `$` nor a
+/// backtick, so it is safe in a `#` comment and unsafe in a heredoc.
 fn render_script(params: &ScriptParams) -> String {
     // Human free-text metadata: escaped for its shell context (@NAME@ lands in
     // double-quoted strings and a comment; description/homepage are comment-only).

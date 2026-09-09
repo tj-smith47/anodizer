@@ -664,6 +664,66 @@ fn verify_checksum_false_installs_without_checksums_file() {
 }
 
 // ---------------------------------------------------------------------------
+// Script argument surface
+// ---------------------------------------------------------------------------
+
+/// `--help` describes the env-var surface a `curl | sh` user can never see in
+/// the file's `#` comment header, and returns before any network access.
+#[cfg(unix)]
+#[test]
+fn help_flag_prints_the_env_surface_and_exits_zero() {
+    use std::process::Command;
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    run_and_read(&dist, default_cfg(), "install.sh");
+    let script = dist.join("install.sh");
+
+    for flag in ["--help", "-h"] {
+        let out = Command::new("sh")
+            .arg(&script)
+            .arg(flag)
+            .output()
+            .expect("run install.sh");
+        assert!(out.status.success(), "{flag} must exit 0");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        for needle in ["VERSION", "INSTALL_DIR", "Supported platforms", "acme/tool"] {
+            assert!(
+                text.contains(needle),
+                "{flag} output must name {needle}; got:\n{text}"
+            );
+        }
+    }
+}
+
+/// A mistyped flag is a typo the user must see, not an argument the installer
+/// silently drops on the floor.
+#[cfg(unix)]
+#[test]
+fn unknown_argument_errors_with_a_help_hint() {
+    use std::process::Command;
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    run_and_read(&dist, default_cfg(), "install.sh");
+
+    let out = Command::new("sh")
+        .arg(dist.join("install.sh"))
+        .arg("--bogus")
+        .output()
+        .expect("run install.sh");
+    assert!(
+        !out.status.success(),
+        "an unknown argument must exit non-zero"
+    );
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        text.contains("unknown argument: --bogus (try --help)"),
+        "the refusal must quote the argument and point at --help; got:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // E2E helpers
 // ---------------------------------------------------------------------------
 
