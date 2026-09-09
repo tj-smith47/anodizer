@@ -305,10 +305,26 @@ cfgd-core = { path = "../cfgd-core", version = "0.6.1" }
 cfgd-core = { path = "../cfgd-core", version = "0.7.0" }
 ```
 
+`--dry-run` names exactly the heals the run would make, and writes nothing:
+
 ```text
 $ anodizer tag --dry-run
+   • running auto-tag (per-crate) (dry-run)
    • (dry-run) would heal dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
+   • (dry-run) would create local tag cfgd-v0.7.0 ("Release cfgd-v0.7.0")
+anodizer-output crates=["cfgd"]
+anodizer-output versions={"cfgd":"0.7.0"}
+
+$ anodizer tag
+   • running auto-tag (per-crate)
+   • updated crates/cfgd/Cargo.toml from 0.6.1 to 0.7.0
+   • healed dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
+   • created cfgd-v0.7.0 locally; nothing was pushed — pass --push to push the bump commit + tags atomically
 ```
+
+A floor the run's own version bump already rewrites is reported by that step,
+not twice: only floors the bump leaves behind are reported as heals, in both
+modes.
 
 A floor already at or above the path crate's version is left untouched, and the
 operator and precision the floor was written with (`"0.6"`, `"^0.6.1"`,
@@ -316,7 +332,8 @@ operator and precision the floor was written with (`"0.6"`, `"^0.6.1"`,
 `[build-dependencies]`, their `[target.'cfg(...)']` forms and the root
 `[workspace.dependencies]` table are all swept; a floor whose requirement is
 not a single lower-bounded comparator (`"*"`, `"<0.9"`, `">=0.6, <0.8"`) is
-left alone.
+left alone, as is a whole dependency section written as an inline
+`dependencies = { … }` value.
 
 ### Release all changed crates
 
