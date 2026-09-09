@@ -70,6 +70,54 @@ fn snap_yamls_for_crate_resolves_workspace_only_crate() {
 // generate_snap_yaml tests
 // -----------------------------------------------------------------------
 
+/// `assumes`, `hooks` and `plugs` are top-level snap.yaml keys, not
+/// app-scoped ones: a config that declares no `apps:` map still emits them.
+#[test]
+fn top_level_assumes_plugs_hooks_emit_without_apps() {
+    let mut hooks = std::collections::BTreeMap::new();
+    hooks.insert(
+        "install".to_string(),
+        serde_json::json!({ "plugs": ["network"] }),
+    );
+    let mut plugs = std::collections::BTreeMap::new();
+    plugs.insert(
+        "personal-files".to_string(),
+        serde_json::json!({ "read": ["$HOME/test"] }),
+    );
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("A test snap".to_string()),
+        description: Some("A longer description".to_string()),
+        assumes: Some(vec!["snapd2.38".to_string()]),
+        hooks: Some(hooks),
+        plugs: Some(plugs),
+        ..Default::default()
+    };
+    assert!(cfg.apps.is_none(), "the fixture declares no apps map");
+    let yaml = generate_snap_yaml(&cfg, "1.2.3", &["myapp"], None, None).unwrap();
+    assert!(yaml.contains("assumes:"), "{yaml}");
+    assert!(yaml.contains("snapd2.38"), "{yaml}");
+    assert!(yaml.contains("hooks:"), "{yaml}");
+    assert!(yaml.contains("install:"), "{yaml}");
+    assert!(yaml.contains("plugs:"), "{yaml}");
+    assert!(yaml.contains("personal-files:"), "{yaml}");
+}
+
+/// None of the three set: the keys stay out of the file entirely.
+#[test]
+fn unset_collections_still_omit_their_keys() {
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("A test snap".to_string()),
+        description: Some("A longer description".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "1.2.3", &["myapp"], None, None).unwrap();
+    assert!(!yaml.contains("assumes:"), "{yaml}");
+    assert!(!yaml.contains("hooks:"), "{yaml}");
+    assert!(!yaml.contains("plugs:"), "{yaml}");
+}
+
 #[test]
 fn test_generate_snap_yaml_basic() {
     let cfg = SnapcraftConfig {

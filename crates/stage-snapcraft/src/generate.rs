@@ -164,12 +164,6 @@ pub fn generate_snap_yaml(
         Vec::new()
     };
 
-    // assumes, hooks, and plugs are
-    // populated inside the `for name, config := range snap.Apps` loop. When the
-    // apps map is empty, those fields remain zero-valued and `omitempty` drops
-    // them from the emitted YAML. Mirror that here.
-    let has_apps = config.apps.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
-
     let yaml_model = SnapcraftYaml {
         name,
         version: version.to_string(),
@@ -194,26 +188,14 @@ pub fn generate_snap_yaml(
         // "is_empty_vec" | "BTreeMap::is_empty")]` so empty values produce
         // zero YAML output — these top-level keys are all optional per the
         // snap.yaml schema (https://snapcraft.io/docs/snap-format).
-        assumes: if has_apps {
-            config.assumes.clone().unwrap_or_default()
-        } else {
-            Vec::new()
-        },
+        assumes: config.assumes.clone().unwrap_or_default(),
         architectures,
         apps,
-        plugs: if has_apps {
-            config.plugs.clone().unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        },
+        plugs: config.plugs.clone().unwrap_or_default(),
         // Snapcraft has no top-level `slots:` concept; app-scoped slots live
         // under `apps.<name>.slots` and are emitted via the apps walker above.
         layouts,
-        hooks: if has_apps {
-            config.hooks.clone().unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        },
+        hooks: config.hooks.clone().unwrap_or_default(),
     };
 
     let yaml = serde_yaml_ng::to_string(&yaml_model).context("serialize snapcraft YAML")?;
