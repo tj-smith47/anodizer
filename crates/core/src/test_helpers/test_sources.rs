@@ -496,7 +496,6 @@ mod tests {
         );
     }
 
-    /// The three name rules, and the shapes that look like them but are not.
     /// The inline test module starts at a top-level test-only `cfg` gating a
     /// body opened in place — the `all(test, …)` spelling included — and the
     /// production text before it is returned byte-exact.
@@ -522,6 +521,7 @@ mod tests {
         assert_eq!(production_half(src), src);
     }
 
+    /// The three name rules, and the shapes that look like them but are not.
     #[test]
     fn name_rules_match_the_awk_lexer() {
         for path in [
