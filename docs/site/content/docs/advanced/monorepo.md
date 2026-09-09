@@ -290,6 +290,34 @@ for how this fits alongside `check config`'s other static lints.
 
 When `version_sync.enabled: true` is set per-crate, the tag command also updates that crate's `Cargo.toml` version, any intra-workspace `path + version` dependency specs that reference it, and `Cargo.lock`. The update is committed with `[skip ci]` and the tag points at that commit.
 
+The same commit also heals **every** internal `path + version` floor in the
+workspace against the path crate's post-bump version — not only the crates
+bumped in that run — so a bump commit that never reached the default branch
+cannot leave a stale floor behind to break the next `cargo publish`:
+
+```toml
+# before — cfgd-core is already published at 0.7.0, master still floors 0.6.1
+[dependencies]
+cfgd-core = { path = "../cfgd-core", version = "0.6.1" }
+
+# after the next bump commit
+[dependencies]
+cfgd-core = { path = "../cfgd-core", version = "0.7.0" }
+```
+
+```text
+$ anodizer tag --dry-run
+   • (dry-run) would heal dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
+```
+
+A floor already at or above the path crate's version is left untouched, and the
+operator and precision the floor was written with (`"0.6"`, `"^0.6.1"`,
+`"=0.6.1"`) are preserved. `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]`, their `[target.'cfg(...)']` forms and the root
+`[workspace.dependencies]` table are all swept; a floor whose requirement is
+not a single lower-bounded comparator (`"*"`, `"<0.9"`, `">=0.6, <0.8"`) is
+left alone.
+
 ### Release all changed crates
 
 ```bash

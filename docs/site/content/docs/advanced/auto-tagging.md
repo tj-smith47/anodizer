@@ -299,6 +299,11 @@ updates that crate's `Cargo.toml` version (and any intra-workspace `path +
 version` dependency specs that reference it), commits the change, and tags
 that commit so `cargo publish` reads the right version.
 
+That commit also heals every other internal `path + version` floor in the
+workspace against the path crate's post-bump version, so a crate this run does
+not release cannot leave a stale floor behind — see
+[Monorepo → version_sync](@/docs/advanced/monorepo.md#version-sync).
+
 ### Mixed configs (`crates:` alongside `workspaces:`)
 
 A config can declare both top-level `crates:` entries and `workspaces:`
