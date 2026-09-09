@@ -1183,8 +1183,8 @@ fn test_cask_template_renders_multi_key_zap() {
 }
 
 // ---------------------------------------------------------------------------
-// M4 — cask `additional_url_params` (verified, using, cookies, referer,
-//      headers, user_agent, data) renders on the `url` line.
+// M4 — cask `additional_url_params` (using, cookies, referer, headers,
+//      user_agent, data) renders on the `url` line.
 // ---------------------------------------------------------------------------
 
 use anodizer_core::config::HomebrewCaskURL;
@@ -1209,10 +1209,13 @@ fn test_render_additional_url_params_full() {
     let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
     // Splices directly after the closing `"` of `url "..."`.
     assert!(
-        extras.starts_with(",\n      verified: \"example.com/\""),
-        "extras must start with `,\\n      verified:` — got:\n{extras}"
+        extras.starts_with(",\n      using: :homebrew_curl"),
+        "extras must start with `,\\n      using:` — got:\n{extras}"
     );
-    assert!(extras.contains("using: :homebrew_curl"));
+    assert!(
+        !extras.contains("verified"),
+        "Homebrew removed the verified stanza — got:\n{extras}"
+    );
     assert!(extras.contains("cookies: {"));
     assert!(extras.contains("\"session\" => \"deadbeef\","));
     assert!(extras.contains("referer: \"https://example.com/\""));
@@ -1232,14 +1235,24 @@ fn test_render_additional_url_params_empty_returns_empty() {
     );
 }
 
+/// A cask whose only `url:` sub-field is the removed `verified:` renders no
+/// kwargs at all — the stanza Homebrew dropped never reaches the file.
 #[test]
-fn test_render_additional_url_params_verified_only() {
+fn cask_body_never_emits_verified() {
     let url_cfg = HomebrewCaskURL {
         verified: Some("example.com/".to_string()),
         ..Default::default()
     };
     let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
-    assert_eq!(extras, ",\n      verified: \"example.com/\"");
+    assert_eq!(extras, "");
+
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.url_extras = &extras;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        !cask.contains("verified"),
+        "the rendered cask must carry no verified stanza:\n{cask}"
+    );
 }
 
 #[test]
@@ -1253,10 +1266,6 @@ fn test_cask_template_emits_url_extras() {
     let mut params = empty_cask_params("test", "0.1.0");
     params.url_extras = &extras;
     let cask = generate_cask(&params).unwrap();
-    assert!(
-        cask.contains("verified: \"github.com/org/repo/\""),
-        "verified kwarg missing\n{cask}"
-    );
     assert!(
         cask.contains("using: :homebrew_curl"),
         "using kwarg missing\n{cask}"
@@ -3985,10 +3994,10 @@ fn cask_ruby_escapes_user_values_and_passes_ruby_c() {
     assert_ruby_syntax_ok("cask", &cask);
 }
 
-/// `render_additional_url_params` escapes user values spliced into `verified`,
-/// `referer`, `user_agent`, header, cookies, and data string literals; the
-/// whole `url "…"` continuation renders to valid Ruby. The `using:` symbol is
-/// raw Ruby and stays unescaped.
+/// `render_additional_url_params` escapes user values spliced into `referer`,
+/// `user_agent`, header, cookies, and data string literals; the whole
+/// `url "…"` continuation renders to valid Ruby. The `using:` symbol is raw
+/// Ruby and stays unescaped.
 #[test]
 fn url_params_ruby_escape_passes_ruby_c() {
     use anodizer_core::config::HomebrewCaskURL;
@@ -4011,10 +4020,6 @@ fn url_params_ruby_escape_passes_ruby_c() {
     let extras = super::cask::render_additional_url_params(&u, "      ");
 
     // Embedded quote/backslash are escaped inside each string literal.
-    assert!(
-        extras.contains(r#"verified: "example.com/a\"b\\c""#),
-        "verified should be ruby-escaped; got:\n{extras}"
-    );
     assert!(
         extras.contains(r#"referer: "https://r\"ef\\er""#),
         "referer should be ruby-escaped; got:\n{extras}"

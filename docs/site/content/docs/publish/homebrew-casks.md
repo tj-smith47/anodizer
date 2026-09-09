@@ -80,7 +80,6 @@ homebrew_casks:
     commit_msg_template: ""          # optional
     url:
       template: ""                   # optional; download URL template
-      verified: ""                   # optional
       using: ""                      # optional; download strategy
     completions:
       bash: ""                       # optional; path to bash completion
@@ -150,7 +149,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `template` | string | auto-derived | Download URL template |
-| `verified` | string | none | Verified domain for `verified:` stanza |
+| `verified` | string | none | **Deprecated.** Homebrew [removed the `verified:` stanza](https://github.com/Homebrew/brew/pull/23280) and now applies its default URL verification. Setting it still parses, logs a deprecation warning, and writes nothing into the cask. |
 | `using` | string | none | Download strategy (e.g., `:homebrew_curl`) |
 | `cookies` | map | none | HTTP cookies for the download |
 | `referer` | string | none | Referer header |
@@ -295,9 +294,8 @@ end
 ```
 
 The version substring in each URL is rewritten to `#{version}` so Homebrew
-auto-updates the download on the next release. The `url`/`verified`/`using` and
-other [URL config](#url-config-url) values you set apply inside every per-arch
-block.
+auto-updates the download on the next release. The `url`/`using` and other
+[URL config](#url-config-url) values you set apply inside every per-arch block.
 
 This emission is automatic — there is no flag to enable it. anodizer decides the
 shape from the artifacts present in the release:

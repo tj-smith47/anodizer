@@ -492,6 +492,15 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
 /// per-crate `publish.homebrew_cask`, `workspaces[].crates[].publish`, and
 /// `defaults.publish`.
 pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
+    for msg in homebrew_cask_legacy_warnings(config) {
+        tracing::warn!("{}", msg);
+    }
+}
+
+/// Perform the folds of [`apply_homebrew_cask_legacy_singulars`] and return the
+/// deprecation warnings instead of logging them, so a caller — or a test — can
+/// read what a config tripped.
+pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
     /// Fold both deprecated singular fields (`binary:` → `binaries`,
     /// `manpage:` → `manpages`) on one cask, returning a warning per folded
     /// field. The singular `binary` is prepended to `binaries` so an explicit
@@ -522,6 +531,18 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
                  folded into manpages."
             ));
         }
+        if cask
+            .url
+            .as_ref()
+            .and_then(|u| u.verified.as_deref())
+            .is_some_and(|v| !v.is_empty())
+        {
+            warnings.push(format!(
+                "DEPRECATION: {location}: `url.verified:` is deprecated; Homebrew removed \
+                 it (Homebrew/brew#23280) and now uses the default URL verification \
+                 behavior. anodizer no longer writes it into the cask; remove the field."
+            ));
+        }
         warnings
     }
 
@@ -541,7 +562,5 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
         }
     });
 
-    for msg in warnings {
-        tracing::warn!("{}", msg);
-    }
+    warnings
 }

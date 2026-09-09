@@ -372,7 +372,11 @@ pub struct HomebrewCaskConfig {
 pub struct HomebrewCaskURL {
     /// URL template for the download.
     pub template: Option<String>,
-    /// Verification string (domain shown to user).
+    /// **Deprecated.** Verification string (domain shown to user). Homebrew
+    /// removed the `verified:` stanza (Homebrew/brew#23280) and now applies
+    /// its default URL verification, so anodizer no longer writes it into the
+    /// cask. The field still parses so existing configs keep loading, and a
+    /// deprecation warning names it at config-load time.
     pub verified: Option<String>,
     /// Custom downloader (e.g. `:homebrew_curl`, `:post`).
     pub using: Option<String>,

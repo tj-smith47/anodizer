@@ -11089,3 +11089,71 @@ fn full_changelog_link_parses_and_defaults() {
         "the derived compare link is opt-out, not opt-in"
     );
 }
+
+/// Homebrew removed the `verified:` stanza, so a config that still sets it
+/// keeps loading but is named by a deprecation warning.
+#[test]
+fn cask_url_verified_emits_a_deprecation_notice() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    url:
+      verified: "example.com/"
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("the field must still parse");
+    let warnings = super::homebrew_cask_legacy_warnings(&mut config);
+    let hits: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("`url.verified:` is deprecated"))
+        .collect();
+    assert_eq!(hits.len(), 1, "exactly one notice, got: {warnings:?}");
+    assert!(
+        hits[0].contains("homebrew_casks[0]"),
+        "the notice names the location: {}",
+        hits[0]
+    );
+    assert_eq!(
+        config.homebrew_casks.as_ref().unwrap()[0]
+            .url
+            .as_ref()
+            .and_then(|u| u.verified.as_deref()),
+        Some("example.com/"),
+        "the field is left alone — only the emission stopped"
+    );
+}
+
+/// The same notice fires for a per-crate cask, naming that crate's scope.
+#[test]
+fn cask_url_verified_notice_names_the_crate_scope() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: widget
+    path: .
+    publish:
+      homebrew_cask:
+        name: mycask
+        repository:
+          owner: o
+          name: tap
+        url:
+          verified: "example.com/"
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::homebrew_cask_legacy_warnings(&mut config);
+    let hits: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("`url.verified:` is deprecated"))
+        .collect();
+    assert_eq!(hits.len(), 1, "exactly one notice, got: {warnings:?}");
+    assert!(
+        hits[0].contains("widget"),
+        "the notice must name the crate scope: {}",
+        hits[0]
+    );
+}

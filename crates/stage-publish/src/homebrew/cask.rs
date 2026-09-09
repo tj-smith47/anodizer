@@ -378,11 +378,6 @@ pub(super) fn render_additional_url_params(
     indent: &str,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(ref v) = u.verified
-        && !v.is_empty()
-    {
-        parts.push(format!("verified: \"{}\"", ruby_escape_str(v)));
-    }
     if let Some(ref v) = u.using
         && !v.is_empty()
     {
