@@ -5376,6 +5376,7 @@ mod authenticode {
 mod cosign_tuf_race {
     use super::*;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::test_helpers::test_sources::{declared_under_test_cfg, is_test_source_path};
     use std::path::Path;
 
     /// A keyless cosign sign config pointed at a stub script named `cosign`,
@@ -6544,25 +6545,26 @@ mod cosign_tuf_race {
 
     /// Every production `.rs` file under `dir`, recursively.
     ///
-    /// Test sources are excluded by name — a sibling `tests.rs` and anything
-    /// under a `tests/` directory — rather than by hoping their content
-    /// splits on `#[cfg(`: test modules stub cosign instead of spawning it,
-    /// so a stub's argv would otherwise read as an unlocked spawn site.
-    /// Skipping a `tests.rs` is only sound while it really is test-only, so
-    /// each one skipped is checked against its parent module's declaration.
+    /// Test sources are excluded by name — whatever
+    /// [`is_test_source_path`] names, plus a `tests/` module directory —
+    /// rather than by hoping their content splits on `#[cfg(`: test modules
+    /// stub cosign instead of spawning it, so a stub's argv would otherwise
+    /// read as an unlocked spawn site. Skipping one by name is only sound
+    /// while it really is test-only, so every skipped path is checked
+    /// against its parent module's declaration.
     fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).expect("read src dir") {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == "tests") {
-                    assert_declared_cfg_test(&path);
+                    declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
                     continue;
                 }
                 found.extend(rust_sources(&path));
             } else if path.extension().is_some_and(|e| e == "rs") {
-                if path.file_name().is_some_and(|n| n == "tests.rs") {
-                    assert_declared_cfg_test(&path);
+                if is_test_source_path(&path) {
+                    declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
                 } else {
                     found.push(path);
                 }
@@ -6571,198 +6573,23 @@ mod cosign_tuf_race {
         found
     }
 
-    /// Assert the parent module declares `mod tests;` under `#[cfg(test)]` —
-    /// the premise that makes skipping a `tests.rs` file or a `tests/`
-    /// directory by name equivalent to skipping test code.
-    ///
-    /// The parent is `mod.rs`/`lib.rs`/`main.rs` beside the skipped path, or
-    /// the 2018-layout `<dir>.rs` next to its directory. The attribute may
-    /// sit on the item's own line or anywhere in the contiguous run of
-    /// attribute and comment lines directly above it.
-    fn assert_declared_cfg_test(tests_path: &std::path::Path) {
-        let dir = tests_path
-            .parent()
-            .expect("test source has a parent directory");
-        let sibling = dir
-            .file_name()
-            .map(|name| dir.with_file_name(format!("{}.rs", name.to_string_lossy())));
-        let parent = ["mod.rs", "lib.rs", "main.rs"]
-            .iter()
-            .map(|name| dir.join(name))
-            .chain(sibling)
-            .find(|candidate| candidate.is_file())
-            .unwrap_or_else(|| panic!("no parent module file for {}", tests_path.display()));
-        let text = std::fs::read_to_string(&parent).expect("read parent module");
-        let lines: Vec<&str> = text.lines().collect();
-        let item = lines
-            .iter()
-            .position(|line| is_mod_tests_item(line))
-            .unwrap_or_else(|| {
-                panic!(
-                    "{} declares no `mod tests;` for {}",
-                    parent.display(),
-                    tests_path.display()
-                )
-            });
-        let gated = (0..=item)
-            .rev()
-            .take_while(|&i| {
-                let trimmed = lines[i].trim_start();
-                i == item || trimmed.starts_with("#[") || trimmed.starts_with("//")
-            })
-            .any(|i| lines[i].contains("#[cfg(test)]"));
-        assert!(
-            gated,
-            "{} must be declared under #[cfg(test)] in {} — the keyless-site \
-             walk skips it by name and would otherwise skip production code",
-            tests_path.display(),
-            parent.display()
-        );
-    }
-
-    /// Whether a source line's code — trailing `//` comment stripped, any
-    /// same-line attributes stripped — is exactly the `mod tests;` item
-    /// (`pub`, `pub(crate)` and the like allowed). A comment never matches.
-    fn is_mod_tests_item(line: &str) -> bool {
-        let mut code = line.split("//").next().unwrap_or("").trim();
-        while let Some(rest) = code.strip_prefix("#[") {
-            let Some(close) = rest.find(']') else {
-                return false;
-            };
-            code = rest[close + 1..].trim_start();
-        }
-        if let Some(rest) = code.strip_prefix("pub") {
-            let rest = match rest.strip_prefix('(') {
-                Some(vis) => match vis.find(')') {
-                    Some(close) => &vis[close + 1..],
-                    None => return false,
-                },
-                None => rest,
-            };
-            if !rest.starts_with(char::is_whitespace) {
-                return false;
-            }
-            code = rest.trim_start();
-        }
-        code.strip_prefix("mod")
-            .filter(|rest| rest.starts_with(char::is_whitespace))
-            .map(|rest| rest.trim_start())
-            .and_then(|rest| rest.strip_prefix("tests"))
-            .is_some_and(|rest| rest.trim_start() == ";")
-    }
-
-    /// Lay out `<tmp>/<parent>` with the given parent-module text and a
-    /// `tests.rs` (or `tests/` directory) inside it; returns the skipped path.
-    fn synthetic_module(
-        tmp: &std::path::Path,
-        parent_file: &str,
-        parent_text: &str,
-        tests_dir: bool,
-    ) -> std::path::PathBuf {
-        let module = tmp.join("m");
-        std::fs::create_dir_all(&module).unwrap();
-        std::fs::write(tmp.join(parent_file), parent_text).unwrap();
-        if tests_dir {
-            let dir = module.join("tests");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("mod.rs"), "").unwrap();
-            dir
-        } else {
-            let file = module.join("tests.rs");
-            std::fs::write(&file, "").unwrap();
-            file
-        }
-    }
-
-    /// `#[cfg(test)] mod tests;` on one line is a gated declaration.
+    /// The walk skips a `tests/` module directory, and only while its parent
+    /// really declares it under a test-only `cfg`: gated, the walk yields
+    /// only the parent module; ungated, the walk fails rather than silently
+    /// dropping the production code it would have scanned.
     #[test]
-    fn cfg_test_on_the_same_line_is_accepted() {
+    fn walk_skips_only_a_gated_tests_directory() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(tmp.path(), "m/mod.rs", "#[cfg(test)] mod tests;\n", false);
-        assert_declared_cfg_test(&tests);
-    }
-
-    /// A second attribute between `#[cfg(test)]` and the item is still gated.
-    #[test]
-    fn cfg_test_above_another_attribute_is_accepted() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(
-            tmp.path(),
-            "m/mod.rs",
-            "#[cfg(test)]\n#[allow(clippy::unwrap_used)]\nmod tests;\n",
-            false,
-        );
-        assert_declared_cfg_test(&tests);
-    }
-
-    /// A doc comment between `#[cfg(test)]` and the item is still gated.
-    #[test]
-    fn cfg_test_above_a_doc_comment_is_accepted() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(
-            tmp.path(),
-            "m/mod.rs",
-            "#[cfg(test)]\n/// Unit tests.\npub(crate) mod tests;\n",
-            false,
-        );
-        assert_declared_cfg_test(&tests);
-    }
-
-    /// The 2018 layout declares `m/tests.rs` from `m.rs` beside the directory.
-    #[test]
-    fn sibling_parent_file_is_found() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(tmp.path(), "m.rs", "#[cfg(test)]\nmod tests;\n", false);
-        assert_declared_cfg_test(&tests);
-    }
-
-    /// A `tests/` directory the walk skips needs the same gated declaration:
-    /// gated, the walk yields only the parent; ungated, the walk fails.
-    #[test]
-    fn tests_directory_needs_the_same_declaration() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(tmp.path(), "m/mod.rs", "#[cfg(test)]\nmod tests;\n", true);
-        let module = tests.parent().unwrap().to_path_buf();
+        let module = tmp.path().join("m");
+        std::fs::create_dir_all(module.join("tests")).unwrap();
+        std::fs::write(module.join("tests").join("mod.rs"), "").unwrap();
+        std::fs::write(module.join("mod.rs"), "#[cfg(test)]\nmod tests;\n").unwrap();
         assert_eq!(rust_sources(&module), vec![module.join("mod.rs")]);
 
         std::fs::write(module.join("mod.rs"), "mod tests;\n").unwrap();
         assert!(
             std::panic::catch_unwind(|| rust_sources(&module)).is_err(),
             "an ungated tests/ directory must fail the walk"
-        );
-    }
-
-    /// A comment ending in `mod tests` is not the item; the real gated item
-    /// below it is what the check must find.
-    #[test]
-    fn comment_ending_in_mod_tests_is_not_the_item() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(
-            tmp.path(),
-            "m/mod.rs",
-            "// helpers shared with mod tests\nfn helper() {}\n#[cfg(test)]\nmod tests;\n",
-            false,
-        );
-        assert_declared_cfg_test(&tests);
-    }
-
-    /// An ungated `mod tests;` fails with a message naming both files.
-    #[test]
-    fn ungated_mod_tests_fails_naming_both_files() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let tests = synthetic_module(tmp.path(), "m/mod.rs", "mod tests;\n", false);
-        let panic = std::panic::catch_unwind(|| assert_declared_cfg_test(&tests))
-            .expect_err("an ungated declaration must fail the premise check");
-        let msg = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_default();
-        let parent = tmp.path().join("m").join("mod.rs");
-        assert!(
-            msg.contains(&tests.display().to_string())
-                && msg.contains(&parent.display().to_string()),
-            "message must name the skipped file and its parent: {msg}"
         );
     }
 

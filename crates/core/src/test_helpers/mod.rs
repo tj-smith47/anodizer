@@ -18,6 +18,8 @@
 //! - [`create_config`] — writes `.anodizer.yaml`
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
+//! - [`test_sources`] — what counts as a whole test source file, shared with
+//!   the `.claude/scripts/**` scanners
 //! - [`responder`] — shared in-process HTTP responder for unit tests
 //!   (consolidates ~11 inline copies; fixes the v0.3.0 chocolatey /
 //!   v0.3.0 github-rate-limit CI flakes)
@@ -29,6 +31,7 @@ pub mod https_responder;
 pub mod responder;
 pub mod scripted_responder;
 pub mod spawn;
+pub mod test_sources;
 
 pub use spawn::{
     git_test_ok, git_test_output, git_test_stdout, is_transient_spawn_failure,

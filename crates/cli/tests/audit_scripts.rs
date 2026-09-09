@@ -27,6 +27,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use anodizer_core::test_helpers::test_sources::{declared_under_test_cfg, is_test_source_path};
+
 use tempfile::TempDir;
 
 const LIB_RS: &str = include_str!("fixtures/audit_scripts/lib.rs.txt");
@@ -205,10 +207,10 @@ fn every_named_test_file_is_declared_cfg_test() {
         .map(|e| e.expect("crate entry").path().join("src"))
         .filter(|src| src.is_dir())
     {
-        for file in named_test_files(&src) {
+        for file in test_source_files(&src) {
             seen += 1;
-            if !declared_cfg_test(&file) {
-                undeclared.push(file);
+            if let Err(why) = declared_under_test_cfg(&file) {
+                undeclared.push(why);
             }
         }
     }
@@ -223,73 +225,89 @@ fn every_named_test_file_is_declared_cfg_test() {
     );
 }
 
-/// Every `tests.rs` / `<name>_tests.rs` under `dir`, recursively — the same
-/// name test `lib/test-regions.awk`'s `is_test_file` applies.
-fn named_test_files(dir: &Path) -> Vec<std::path::PathBuf> {
+/// The awk lexer's `is_test_file` and the Rust `is_test_source_path` answer
+/// the same question for two families of consumer — the shell scanners and
+/// the crates' structural walks. Feed both the same paths and compare
+/// verdicts: a rule changed on one side alone fails here.
+const AGREEMENT_PATHS: &[&str] = &[
+    "crates/demo/src/tests.rs",
+    "crates/demo/src/foo_tests.rs",
+    "crates/demo/src/_tests.rs",
+    "crates/demo/src/mytests.rs",
+    "crates/demo/src/Foo_tests.rs",
+    "crates/demo/src/tests.rs.bak",
+    "crates/demo/src/lib.rs",
+    "crates/demo/src/process/tests/mod.rs",
+    "crates/demo/tests/integration.rs",
+    "crates/demo/tests/nested/case.rs",
+    "crates/tests/tests/case.rs",
+    "src/tests/helper.rs",
+    "tests.rs",
+    "foo_tests.rs",
+];
+
+#[test]
+fn test_source_predicate_agrees_with_the_awk_lexer() {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/lib");
+    let dir = TempDir::new().expect("temp dir");
+    let driver = dir.path().join("driver.awk");
+    std::fs::write(&driver, "{ print (is_test_file($0) ? \"1\" : \"0\") }\n").expect("driver");
+    let list = dir.path().join("paths.txt");
+    std::fs::write(&list, format!("{}\n", AGREEMENT_PATHS.join("\n"))).expect("path list");
+
+    let out = Command::new("awk")
+        .arg("-f")
+        .arg(lib.join("rust-lex.awk"))
+        .arg("-f")
+        .arg(lib.join("test-regions.awk"))
+        .arg("-f")
+        .arg(&driver)
+        .arg(&list)
+        .output()
+        .expect("running awk");
+    assert!(
+        out.status.success(),
+        "awk failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let awk: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .expect("awk output is utf-8")
+        .lines()
+        .collect();
+    assert_eq!(
+        awk.len(),
+        AGREEMENT_PATHS.len(),
+        "awk answered {} of {} paths",
+        awk.len(),
+        AGREEMENT_PATHS.len()
+    );
+    let disagreements: Vec<String> = AGREEMENT_PATHS
+        .iter()
+        .zip(&awk)
+        .map(|(path, verdict)| (path, *verdict == "1", is_test_source_path(Path::new(path))))
+        .filter(|(_, awk_says, rust_says)| awk_says != rust_says)
+        .map(|(path, awk_says, rust_says)| format!("{path}: awk={awk_says} rust={rust_says}"))
+        .collect();
+    assert!(
+        disagreements.is_empty(),
+        "is_test_file and is_test_source_path must agree: {disagreements:?}"
+    );
+}
+
+/// Every whole test source file under `dir`, recursively — whatever
+/// `is_test_source_path` (and so `lib/test-regions.awk`'s `is_test_file`)
+/// names.
+fn test_source_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir).expect("read dir") {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
-            found.extend(named_test_files(&path));
-            continue;
-        }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "tests.rs" || name.ends_with("_tests.rs") {
+            found.extend(test_source_files(&path));
+        } else if is_test_source_path(&path) {
             found.push(path);
         }
     }
     found
-}
-
-/// True when the parent module declares `mod <stem>;` gated by `cfg(test)`
-/// (or an `all(test, …)` conjunction), on the item line or in the
-/// attribute/comment run above it.
-fn declared_cfg_test(file: &Path) -> bool {
-    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let dir = file.parent().expect("parent dir");
-    let sibling = dir
-        .file_name()
-        .map(|name| dir.with_file_name(format!("{}.rs", name.to_string_lossy())));
-    let Some(parent) = ["mod.rs", "lib.rs", "main.rs"]
-        .iter()
-        .map(|name| dir.join(name))
-        .chain(sibling)
-        .find(|candidate| candidate.is_file())
-    else {
-        return false;
-    };
-    let text = std::fs::read_to_string(&parent).expect("read parent module");
-    let lines: Vec<&str> = text.lines().collect();
-    let is_item = |line: &str| {
-        let code = line.split("//").next().unwrap_or("").trim();
-        let code = code
-            .strip_prefix("pub")
-            .map(str::trim_start)
-            .unwrap_or(code);
-        let code = code
-            .strip_prefix('(')
-            .and_then(|rest| rest.split_once(')'))
-            .map(|(_, rest)| rest.trim_start())
-            .unwrap_or(code);
-        code.strip_prefix("mod ")
-            .map(|rest| rest.trim() == format!("{stem};"))
-            .unwrap_or(false)
-    };
-    let gated = |line: &str| line.contains("cfg(test)") || line.contains("cfg(all(test");
-    lines.iter().enumerate().any(|(index, line)| {
-        if !is_item(line) {
-            return false;
-        }
-        if gated(line) {
-            return true;
-        }
-        lines[..index]
-            .iter()
-            .rev()
-            .take_while(|l| {
-                let t = l.trim_start();
-                t.starts_with("#[") || t.starts_with("//")
-            })
-            .any(|l| gated(l))
-    })
 }
