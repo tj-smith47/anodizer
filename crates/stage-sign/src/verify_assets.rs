@@ -36,8 +36,10 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 
 use crate::expected::expected_output_paths;
-use crate::helpers::{default_sign_cmd, resolve_sign_args, should_sign_artifact, sign_ids_match};
-use crate::process::{ensure_cosign_consent_env, harden_cosign_args_for_harness};
+use crate::helpers::{default_sign_cmd, should_sign_artifact, sign_ids_match};
+use crate::process::{
+    ensure_cosign_consent_env, harden_cosign_args_for_harness, render_args_without_artifact,
+};
 use crate::verify::{
     ConfigVerifyMode, VerifyJob, VerifyRunVerdict, build_blob_verify_args,
     derive_cosign_public_key, execute_verify_job_classified, resolve_config_verify_mode,
@@ -186,20 +188,18 @@ pub fn verify_signature_assets(
         let cmd = cfg.cmd.clone().unwrap_or_else(default_sign_cmd);
         // Classified on the argv the sign step spawned, never on the
         // template strings: a `--key` can arrive through a template. The
-        // artifact placeholders only vary the paths, so blanking them leaves
-        // the classifying flags intact; the harness hardening is re-applied
-        // because the signed argv carried it.
-        let args: Vec<String> = match resolve_sign_args(&cfg.resolved_args(), "", "", None)
-            .iter()
-            .map(|arg| ctx.render_template(arg))
-            .collect::<anyhow::Result<Vec<_>>>()
-        {
-            Ok(rendered) => harden_cosign_args_for_harness(&cmd, rendered, ctx),
-            Err(e) => {
-                skip_config(&format!("could not render `args:`: {e:#}"));
-                continue;
-            }
-        };
+        // config-level render is the shared one the sign stage classifies an
+        // empty-match config from, so one config is never classified two
+        // ways — and because nothing is ever spawned from this argv, an arg
+        // that needs a per-artifact variable may keep its template text
+        // rather than sinking the whole config's classification. The verify
+        // argv is derived from the resolved mode, not from these args. The
+        // harness hardening is re-applied because the signed argv carried it.
+        let args = harden_cosign_args_for_harness(
+            &cmd,
+            render_args_without_artifact(&cfg.resolved_args(), ctx),
+            ctx,
+        );
         let mode = resolve_config_verify_mode(
             cfg.verify.as_ref(),
             &cmd,
@@ -1212,6 +1212,70 @@ mod tests {
             "keyless re-verification must take the host-level TUF lock"
         );
         assert_eq!(calls(&state).len(), 1, "the verifier must have run");
+    }
+
+    /// An arg carrying a per-artifact variable has nothing to render against
+    /// at config level. That is not a reason to stop classifying the config:
+    /// keyless-ness reads `cmd` and the presence of `--key`, and the verify
+    /// argv is built from the resolved mode, so re-verification still runs
+    /// and still takes the host TUF lock.
+    #[test]
+    fn per_artifact_template_in_args_still_classifies_the_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+        let cache = tmp.path().join("tuf-root");
+
+        let mut cfg = keyless_bundle_config(&stub, &state);
+        cfg.args
+            .as_mut()
+            .unwrap()
+            .push("{{ .ArtifactName }}.attestation".to_string());
+        cfg.env
+            .as_mut()
+            .unwrap()
+            .push(format!("TUF_ROOT={}", cache.display()));
+
+        let mut ctx = ctx_with(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+        );
+
+        let log = ctx.logger("verify-release");
+        verify_signature_assets(
+            &ctx,
+            "app",
+            None,
+            &PublishedSignatureSource::default(),
+            &log,
+        );
+
+        let calls = calls(&state);
+        assert_eq!(
+            calls.len(),
+            1,
+            "the config must still be classified and verified: {calls:?}"
+        );
+        assert!(
+            calls[0].starts_with("verify-blob") && calls[0].contains("--bundle"),
+            "keyless bundle mode must be the derived mode: {calls:?}"
+        );
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "the keyless classification must still take the host TUF lock"
+        );
     }
 
     /// A `--key` arriving through a template makes the sign keyed. The
