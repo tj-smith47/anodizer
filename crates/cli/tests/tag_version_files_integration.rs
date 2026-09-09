@@ -1300,7 +1300,7 @@ fn lockstep_bare_plus_anchored_prerelease_bails() {
         "the double rewrite must bail: {combined}"
     );
     assert!(
-        combined.contains("bumps chain (suite 2.0.0 → 2.0.0-rc1 then suite 2.0.0 → 2.0.0-rc1)"),
+        combined.contains("bumps chain (a 2.0.0 → 2.0.0-rc1 then a 2.0.0 → 2.0.0-rc1)"),
         "chain refusal missing: {combined}"
     );
     assert_eq!(read(root, "chart.yaml"), "pin: v2.0.0\nother: 2.0.0\n");
@@ -1427,20 +1427,13 @@ fn one_declared_crate_rewrites_top_level_version_files() {
     assert_eq!(show_head(root, "README.md"), "app is at 0.1.1\n");
 }
 
-/// The tag/check agreement, per config mode: every entry `check version-files`
-/// validates at version `version` is an entry the bump rewrites FROM that same
-/// version. Runs `check` first (the enrollment it covers, in sync), then the
-/// bump as a dry run (the enrollment it would rewrite).
-fn assert_tag_covers_what_check_validates(
-    root: &Path,
-    mode: &str,
-    tag_args: &[&str],
-    files: &[&str],
-    version: &str,
-) {
+/// The `(file, version)` pairs `check version-files` actually validated, taken
+/// from its own `-v` report rather than a hand-written list, plus a cross-check
+/// that the count it reports matches the number of lines it printed.
+fn check_validated(root: &Path, mode: &str) -> Vec<(String, String)> {
     let out = anodizer()
         .current_dir(root)
-        .args(["check", "version-files"])
+        .args(["check", "version-files", "--verbose"])
         .output()
         .unwrap();
     let combined = format!(
@@ -1449,11 +1442,38 @@ fn assert_tag_covers_what_check_validates(
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "{mode}: check failed: {combined}");
-    assert!(
-        combined.contains("version_files are in sync"),
-        "{mode}: check validated no enrollment: {combined}"
-    );
 
+    let mut pairs: Vec<(String, String)> = combined
+        .lines()
+        .filter_map(|line| {
+            let (file, rest) = line.split_once(" contains ")?;
+            let file = file.split_whitespace().last()?;
+            let version = rest.split_whitespace().next()?;
+            Some((file.to_string(), version.to_string()))
+        })
+        .collect();
+    let reported: usize = combined
+        .lines()
+        .find_map(|l| {
+            l.split_once("all ")?
+                .1
+                .split_once(" version_files are in sync")
+        })
+        .and_then(|(n, _)| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{mode}: check reported no in-sync count: {combined}"));
+    assert_eq!(
+        reported,
+        pairs.len(),
+        "{mode}: check counted {reported} files but reported {} of them: {combined}",
+        pairs.len()
+    );
+    pairs.sort();
+    pairs
+}
+
+/// The `(file, old_version)` pairs a `tag` run planned to rewrite, taken from
+/// its own rewrite lines.
+fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<(String, String)> {
     let out = anodizer()
         .current_dir(root)
         .args(tag_args)
@@ -1465,22 +1485,41 @@ fn assert_tag_covers_what_check_validates(
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "{mode}: tag failed: {combined}");
-    for file in files {
-        let expected = format!("of {version} \u{2192} ");
-        assert!(
-            combined
-                .lines()
-                .any(|l| l.contains(&expected) && l.contains(&format!(" in {file}"))),
-            "{mode}: check validates {file} at {version} but the bump rewrites it from \
-             something else (or not at all): {combined}"
-        );
-    }
+
+    let mut pairs: Vec<(String, String)> = combined
+        .lines()
+        .filter_map(|line| {
+            let rest = line.split_once(" occurrence(s) of ")?.1;
+            let (old, rest) = rest.split_once(' ')?;
+            let file = rest.split_once(" in ")?.1;
+            Some((file.trim().to_string(), old.to_string()))
+        })
+        .collect();
+    pairs.sort();
+    pairs
 }
 
-/// The tag/check agreement across every config mode: single-crate, lockstep,
-/// per-crate, and the one-declared-crate shape whose enrollment lives at the
-/// top level. The last one was the divergence — `check` validated the
-/// top-level list as that crate's list and `tag` planned nothing.
+/// Both commands resolve the same enrollment, so the files `check` validates
+/// and the files `tag` rewrites are the same set at the same versions — the
+/// pin derives BOTH lists from the commands' own output, so a resolver that
+/// drifts on one side fails here without anyone updating a fixture list.
+fn assert_tag_covers_what_check_validates(root: &Path, mode: &str, tag_args: &[&str]) {
+    let checked = check_validated(root, mode);
+    assert!(
+        !checked.is_empty(),
+        "{mode}: check validated no enrolled file"
+    );
+    let rewritten = tag_rewrote(root, mode, tag_args);
+    assert_eq!(
+        checked, rewritten,
+        "{mode}: check validates one set of version_files and tag rewrites another"
+    );
+}
+
+/// The tag/check agreement across every config mode: single-crate, lockstep
+/// with and without a `crates:` block, per-crate, and the one-declared-crate
+/// shape whose enrollment lives at the top level. Both divergences found here
+/// were resolver splits — `check` walked one list and `tag` another.
 #[test]
 fn tag_and_check_agree_in_every_config_mode() {
     let single = TempDir::new().unwrap();
@@ -1489,19 +1528,18 @@ fn tag_and_check_agree_in_every_config_mode() {
         single.path(),
         "single-crate",
         &["tag", "--crate", "app", "--dry-run"],
-        &["Chart.yaml"],
-        "0.1.0",
     );
 
     let lockstep = TempDir::new().unwrap();
-    let root = lockstep.path();
-    lockstep_fixture(root);
+    lockstep_fixture(lockstep.path());
+    assert_tag_covers_what_check_validates(lockstep.path(), "lockstep", &["tag", "--dry-run"]);
+
+    let lockstep_crates = TempDir::new().unwrap();
+    lockstep_with_crates_fixture(lockstep_crates.path());
     assert_tag_covers_what_check_validates(
-        root,
-        "lockstep",
+        lockstep_crates.path(),
+        "lockstep with crates:",
         &["tag", "--dry-run"],
-        &["Chart.yaml"],
-        "0.1.0",
     );
 
     let per_crate = TempDir::new().unwrap();
@@ -1510,13 +1548,7 @@ fn tag_and_check_agree_in_every_config_mode() {
         &[("core", "0.1.0"), ("cli", "0.1.0")],
         "both at 0.1.0\n",
     );
-    assert_tag_covers_what_check_validates(
-        per_crate.path(),
-        "per-crate",
-        &["tag", "--dry-run"],
-        &["shared.md"],
-        "0.1.0",
-    );
+    assert_tag_covers_what_check_validates(per_crate.path(), "per-crate", &["tag", "--dry-run"]);
 
     let one_crate = TempDir::new().unwrap();
     one_declared_crate_fixture(one_crate.path());
@@ -1524,9 +1556,47 @@ fn tag_and_check_agree_in_every_config_mode() {
         one_crate.path(),
         "one declared crate",
         &["tag", "--dry-run"],
-        &["README.md"],
-        "0.1.0",
     );
+}
+
+/// A lockstep workspace that ALSO declares its crate under `crates:`, where the
+/// crate enrolls its own file and a stale top-level list enrolls another. Only
+/// the crate's own list is the enrollment — the top-level list is the fallback
+/// for crates that declare none — so both commands must land on `OWN.md` and
+/// leave `TOP.md` alone.
+fn lockstep_with_crates_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(root.join("OWN.md"), "a is at 0.1.0\n").unwrap();
+    fs::write(root.join("TOP.md"), "top says 0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: lockstep
+crates:
+  - name: a
+    path: crates/a
+    version_files:
+      - OWN.md
+version_files:
+  - TOP.md
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
 }
 
 /// A lockstep workspace (`[workspace.package].version = "0.1.0"`, no `crates:`
@@ -1661,5 +1731,80 @@ fn repo_level_manifest_is_the_one_check_reads() {
     assert!(
         combined.contains("would sync version in") && combined.contains("crates/app"),
         "the declared crate's manifest is not in the planned writes: {combined}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// One occurrence matcher for both commands
+// ---------------------------------------------------------------------------
+
+/// A flat repo at 1.2.3 whose enrolled file mentions only NEIGHBOURING version
+/// strings: `1.2.3` appears as a substring of both, but never as its own word.
+fn near_miss_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"1.2.3\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(root.join("README.md"), "pinned 11.2.3 and 1.2.34\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: app\nversion_files:\n  - README.md\n",
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v1.2.3"]);
+    fs::write(root.join("src/main.rs"), "fn main() {}\n// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+}
+
+/// Presence is decided by ONE matcher for both commands, and it is word-bounded:
+/// `1.2.3` inside `11.2.3` or `1.2.34` is a different version. `check` must
+/// call the file stale and `tag` must rewrite none of it — a substring test on
+/// either side would silently corrupt the neighbours.
+#[test]
+fn version_occurrences_are_word_bounded_on_both_commands() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    near_miss_fixture(root);
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["check", "version-files"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "check treated a neighbouring version as present: {combined}"
+    );
+    assert!(
+        combined.contains("STALE: README.md (expected 1.2.3, not found)"),
+        "check did not name the drifted file: {combined}"
+    );
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "tag failed: {combined}");
+    assert_eq!(
+        read(root, "README.md"),
+        "pinned 11.2.3 and 1.2.34\n",
+        "tag rewrote a neighbouring version"
     );
 }

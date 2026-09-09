@@ -78,9 +78,12 @@ pub(crate) fn rewrite_and_stage_version_files(
 }
 
 /// Build the deduped, conflict-checked set of `version_files` rewrites across
-/// every per-crate group, in first-seen file order (and, within one file,
-/// longest-`old`-first — the order the engine applies them in, so the logged
-/// plan is the applied plan).
+/// every per-crate group, in first-seen file order and, within one file,
+/// longest-`old`-first. That is the LOG order — the order the per-entry
+/// outcome lines are printed in. The engine re-orders for correctness before
+/// applying (anchored entries claim their regions before the bare sweep, and
+/// only then longest-`old`-first), so a file carrying both a bare and an
+/// anchored entry is applied in a different order than it is logged.
 ///
 /// Two entries INTERACT when they name the same file and either share a `match`
 /// anchor or one of them is bare (a bare entry sweeps the whole file, so it
@@ -175,24 +178,26 @@ fn build_version_files_plan(units: &[PlanUnit<'_>]) -> Result<Vec<VersionFileRew
 /// The `version_files` enrollment the repo-level (no `--crate`) tag path owns,
 /// resolved exactly as `anodizer check version-files` resolves it.
 ///
-/// `check` builds one unit per configured crate through
-/// [`resolve_version_files`], so a crate that enrolls nothing of its own is
-/// checked against the TOP-LEVEL list at that crate's version. The repo-level
-/// tag path serves the same shapes — no `crates:` block at all, or a single
-/// declared crate tagged without `--crate` — so it resolves through the same
-/// seam and rewrites what `check` validates.
+/// Both commands resolve their units through
+/// [`crate::commands::version_files_resolve::enrolled_units`],
+/// so a crate that enrolls nothing of its own is checked — and rewritten —
+/// against the TOP-LEVEL list at that crate's version. The repo-level tag path
+/// serves the shapes that resolve to a single unit: no `crates:` block at all,
+/// or one declared crate tagged without `--crate`.
 ///
 /// Several declared crates reach the lockstep or per-crate engine, each of
-/// which resolves its own list through that same seam, so this returns nothing
-/// rather than sweeping the files a second time.
+/// which resolves the same units for itself, so this returns nothing rather
+/// than sweeping the files a second time.
 pub(crate) fn top_level_version_files(
     config: &anodizer_core::config::Config,
 ) -> Vec<anodizer_core::config::VersionFileEntry> {
-    match config.crate_universe().as_slice() {
-        [] => resolve_version_files(None, Some(config)),
-        [single] => resolve_version_files(Some(single), Some(config)),
-        _ => Vec::new(),
+    if config.crate_universe().len() > 1 {
+        return Vec::new();
     }
+    crate::commands::version_files_resolve::enrolled_units(config)
+        .into_iter()
+        .flat_map(|unit| unit.files)
+        .collect()
 }
 
 /// The manifest directory (repo-relative; `"."` for the repo root) the
@@ -315,6 +320,26 @@ pub(crate) fn bump_repo_level(
         ),
     )?;
     Ok(())
+}
+
+/// The plan for a bump where every enrolled owner shares one `old` → `new` —
+/// the lockstep shape — built by the same builder the per-crate and
+/// single-crate paths use, so the guard and the dedupe behave identically.
+pub(crate) fn shared_version_files_plan(
+    units: &[crate::commands::version_files_resolve::EnrolledUnit],
+    old: &str,
+    new: &str,
+) -> Result<Vec<VersionFileRewrite>> {
+    let plan_units: Vec<PlanUnit<'_>> = units
+        .iter()
+        .map(|unit| PlanUnit {
+            files: &unit.files,
+            old,
+            new,
+            owner: &unit.owner,
+        })
+        .collect();
+    build_version_files_plan(&plan_units)
 }
 
 /// Build the deduped, conflict-checked plan for ONE enrollment list under a

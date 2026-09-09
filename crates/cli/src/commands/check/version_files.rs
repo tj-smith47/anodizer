@@ -11,9 +11,9 @@
 
 use crate::commands::bump::cargo_edit::{MemberInfo, WorkspaceInfo, load_workspace};
 use crate::commands::bump::plan::resolve_member_version;
-use crate::commands::version_files_resolve::resolve_version_files;
+use crate::commands::version_files_resolve::{EnrolledUnit, enrolled_units};
 use crate::pipeline;
-use anodizer_core::config::{Config, CrateConfig, VersionFileEntry};
+use anodizer_core::config::Config;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::version_files::check_version_present;
 use anodizer_stage_build::version_sync::read_cargo_version;
@@ -84,7 +84,7 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
             Err(e) => {
                 findings.push(format!(
                     "{}: cannot read current version: {e:#}",
-                    unit.label
+                    unit.label()
                 ));
                 continue;
             }
@@ -139,63 +139,6 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
             findings.len()
         );
     }
-}
-
-/// One enrollment unit to check: a human label, the crate-directory path whose
-/// `Cargo.toml` supplies the reference version, and the effective
-/// `version_files` list.
-struct EnrolledUnit {
-    label: String,
-    path: String,
-    files: Vec<VersionFileEntry>,
-    /// `true` only for the synthetic repo-root unit a lockstep workspace with no
-    /// `crates:` block contributes. Its reference version is the shared
-    /// `[workspace.package].version` — the only case allowed to fall back to it.
-    is_lockstep_root: bool,
-}
-
-/// Resolve the enrollment units to check across all three config modes.
-///
-/// Each configured crate (top-level `crates:` plus every workspace's crates)
-/// contributes a unit scoped to that crate's directory and version. A crate's
-/// per-crate `version_files` already reflects crate → `defaults` precedence
-/// (folded by `apply_defaults` at load time); the top-level
-/// `Config.version_files` is the fallback for a crate that enrolls none of its
-/// own.
-///
-/// A lockstep workspace that declares only the top-level `version_files` (no
-/// `crates:` block) contributes a single unit scoped to the repo root, whose
-/// reference version is the inherited `[workspace.package].version`.
-fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
-    let top_level = config.version_files.as_deref().unwrap_or_default();
-
-    let all_crates: Vec<&CrateConfig> = config.crate_universe();
-
-    let mut units: Vec<EnrolledUnit> = all_crates
-        .iter()
-        .filter_map(|c| {
-            let files = resolve_version_files(Some(c), Some(config));
-            (!files.is_empty()).then(|| EnrolledUnit {
-                label: format!("crate '{}'", c.name),
-                path: c.path.clone(),
-                files,
-                is_lockstep_root: false,
-            })
-        })
-        .collect();
-
-    // Lockstep with no `crates:` block: the top-level enrollment is checked
-    // against the repo-root manifest's (inherited) version.
-    if all_crates.is_empty() && !top_level.is_empty() {
-        units.push(EnrolledUnit {
-            label: "workspace".to_string(),
-            path: ".".to_string(),
-            files: top_level.to_vec(),
-            is_lockstep_root: true,
-        });
-    }
-
-    units
 }
 
 /// Resolve a unit's current declared version, dispatching on what the unit is:

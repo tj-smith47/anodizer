@@ -58,18 +58,6 @@ pub struct FileRewrite {
     pub owner: String,
 }
 
-/// Build the word-boundary-anchored matcher for `version`, covering both the
-/// bare form and the `v`-prefixed form. The version is `regex::escape`d so the
-/// `.` separators match literally rather than as the any-character class.
-fn version_regexes(version: &str) -> Result<(Regex, Regex)> {
-    let escaped = regex::escape(version);
-    let bare = Regex::new(&format!(r"\b{escaped}\b"))
-        .with_context(|| format!("failed to build version matcher for {version:?}"))?;
-    let prefixed = Regex::new(&format!(r"\bv{escaped}\b"))
-        .with_context(|| format!("failed to build v-prefixed version matcher for {version:?}"))?;
-    Ok((bare, prefixed))
-}
-
 /// Compile a `version_files` `match` anchor into a matcher for `version`: the
 /// literal token `{version}` is replaced with the regex-escaped version and
 /// everything else is used as written, so regex quantifiers such as `\d{2}` are
@@ -94,6 +82,10 @@ pub fn anchor_regex(path: &str, anchor: &str, version: &str) -> Result<Regex> {
 /// The word-boundary matcher for one version, covering the bare (`0.1.0`) and
 /// `v`-prefixed (`v0.1.0`) spellings in a single pass so each occurrence is
 /// located once and its `v` (when present) is part of the match.
+///
+/// The ONE matcher for a plain version string: `tag` decides what to rewrite
+/// with it and `check version-files` decides what is in sync with it, so the
+/// two can never disagree about what counts as an occurrence.
 fn occurrence_regex(version: &str) -> Result<Regex> {
     let escaped = regex::escape(version);
     Regex::new(&format!(r"\bv?{escaped}\b"))
@@ -297,8 +289,7 @@ pub fn rewrite_version_in_files(
 ///
 /// Errors only if `version` cannot be compiled into a matcher.
 pub fn contains_version(content: &str, version: &str) -> Result<bool> {
-    let (bare_re, prefixed_re) = version_regexes(version)?;
-    Ok(bare_re.is_match(content) || prefixed_re.is_match(content))
+    Ok(occurrence_regex(version)?.is_match(content))
 }
 
 /// Read-only check: for each `(path, anchor)` entry, whether the file currently
@@ -315,14 +306,14 @@ pub fn check_version_present(
     entries: &[(String, Option<String>)],
     version: &str,
 ) -> Result<Vec<(String, bool)>> {
-    let (bare_re, prefixed_re) = version_regexes(version)?;
+    let occurrence = occurrence_regex(version)?;
     let mut results = Vec::with_capacity(entries.len());
     for (path, anchor) in entries {
         let content = fs::read_to_string(root.join(path))
             .with_context(|| format!("failed to read version file {path}"))?;
         let present = match anchor {
             Some(anchor) => anchor_regex(path, anchor, version)?.is_match(&content),
-            None => bare_re.is_match(&content) || prefixed_re.is_match(&content),
+            None => occurrence.is_match(&content),
         };
         results.push((path.clone(), present));
     }

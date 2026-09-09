@@ -716,10 +716,10 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // must leave it off or the release silently never fires.
     if let Some(ws) = workspace_info {
         let root = workspace_root_path.as_path();
-        // Lockstep shares one version across the whole workspace, so the
-        // top-level `Config.version_files` list (no single crate to scope to)
-        // is the enrollment, rewritten with the shared old→new.
-        let ws_version_files = resolve_version_files(None, Some(&loaded_config));
+        // Lockstep moves every declared crate at once, so the enrollment is
+        // every unit the shared resolver yields — a crate's own list, or the
+        // top-level list it inherits — each rewritten with the shared old→new.
+        let ws_units = enrolled_units(&loaded_config);
         let ws_old = git::version_from_tag(old_tag_str);
         let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
         let cl_config = changelog_config_for(Some(&loaded_config));
@@ -731,8 +731,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             &WorkspaceBumpEdits {
                 vf: VersionFilesBump {
                     old: ws_old.as_deref(),
-                    files: &ws_version_files,
-                    owner: &loaded_config.project_name,
+                    units: &ws_units,
                 },
                 cl: ChangelogBump {
                     enabled: changelog_enabled,

@@ -33,7 +33,7 @@ use crate::commands::bump::plan::{BumpLevel, PlanRow};
 use crate::commands::changelog_sync::{
     ChangelogRouting, ChangelogTarget, render_and_stage_changelogs, resolve_changelog_enabled,
 };
-use crate::commands::version_files_resolve::resolve_version_files;
+use crate::commands::version_files_resolve::{enrolled_units, resolve_version_files};
 
 pub struct TagOpts {
     pub dry_run: bool,
@@ -221,16 +221,16 @@ fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
 ///
 /// Returns `true` when a bump commit was actually created, `false` when the
 /// workspace was already at the target (or in `dry_run`).
-/// The shared old→new bump and the files enrolled to be rewritten by it,
-/// passed through to the workspace bump so `version_files` rewriting rides in
-/// the same commit. `old` is `None` when there is no previous tag to rewrite
-/// from.
+/// The shared old→new bump and every enrolled unit it rewrites, passed through
+/// to the workspace bump so `version_files` rewriting rides in the same commit.
+/// `old` is `None` when there is no previous tag to rewrite from.
+///
+/// A lockstep workspace moves every declared crate at once, so the units are
+/// whatever [`enrolled_units`] resolves for the config — the same set
+/// `check version-files` validates — each rewritten at the shared old→new.
 pub(crate) struct VersionFilesBump<'a> {
     old: Option<&'a str>,
-    files: &'a [anodizer_core::config::VersionFileEntry],
-    /// Crate (or project) name naming the enrollment in a conflict / unmatched
-    /// anchor error.
-    owner: &'a str,
+    units: &'a [crate::commands::version_files_resolve::EnrolledUnit],
 }
 
 /// Lockstep changelog-refresh inputs for [`apply_workspace_bump`]. The shared
