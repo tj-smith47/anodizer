@@ -115,6 +115,12 @@ pub(crate) fn full_changelog_element(
     Ok(Some(format!("---\n**Full Changelog**: {url}")))
 }
 
+/// The blank line every release-body join uses, whether it separates a
+/// header from a changelog or an existing release body from a new one. The
+/// joins and the length budgets that reserve room for them read this one
+/// value, so they cannot drift apart.
+pub(crate) const BODY_SEPARATOR: &str = "\n\n";
+
 /// Line endings stripped from the end of each release-body part before the
 /// join. A YAML block scalar (`header: |`) contributes `\n`; a `from_file`
 /// source authored on Windows contributes `\r\n`, which `read_to_string`
@@ -154,12 +160,12 @@ pub(crate) fn build_release_body(
         if count == 0 {
             return 0;
         }
-        // Header / changelog / footer are separated by a blank line ("\n\n"),
-        // and the body ends in a single newline.
+        // Header / changelog / footer are separated by a blank line, and the
+        // body ends in a single newline.
         header.map_or(0, str::len)
             + changelog_len
             + footer.map_or(0, str::len)
-            + 2 * (count - 1)
+            + BODY_SEPARATOR.len() * (count - 1)
             + 1
     };
 
@@ -189,7 +195,7 @@ pub(crate) fn build_release_body(
     } else {
         // Header / changelog / footer are separated by a blank line so
         // markdown renderers treat them as distinct paragraphs.
-        let mut s = parts.join("\n\n");
+        let mut s = parts.join(BODY_SEPARATOR);
         s.push('\n');
         s
     }
@@ -405,9 +411,6 @@ pub(crate) fn resolve_content_source(
         &ctx.logger("release"),
     )
 }
-
-/// The blank line every two-body mode joins its halves with.
-pub(crate) const BODY_SEPARATOR: &str = "\n\n";
 
 /// Compose the final release body based on the release mode.
 ///
