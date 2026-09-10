@@ -15,17 +15,6 @@ pub(crate) fn process_docker_manifest(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
 ) -> Result<()> {
-    // image_templates must not be empty — a manifest with zero images is
-    // always a configuration error.
-    if manifest_cfg.image_templates.is_empty() {
-        let fallback = format!("index {}", midx);
-        let manifest_label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
-        anyhow::bail!(
-            "docker manifest '{}': image_templates must not be empty",
-            manifest_label
-        );
-    }
-
     let manifest_name = ctx
         .render_template(&manifest_cfg.name_template)
         .with_context(|| {
@@ -70,7 +59,8 @@ pub(crate) fn process_docker_manifest(
         rendered_images.push(img);
     }
 
-    // A manifest whose every template rendered blank has nothing to point at.
+    // A manifest with no image templates at all, or whose every template
+    // rendered blank, has nothing to point at — both are the same skip.
     // Skipping before `resolve_manifester` keeps the manifest tool out of the
     // run entirely: no `manifest create` with zero images, and no failure on a
     // missing docker/podman binary for a manifest that was never going to be

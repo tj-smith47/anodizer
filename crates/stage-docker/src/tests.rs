@@ -4162,9 +4162,11 @@ fn test_docker_v2_duplicate_id_bails() {
     );
 }
 
+/// An empty `image_templates:` list is the same "manifest has no images"
+/// skip GoReleaser raises (`internal/pipe/docker/manifest.go`), not a hard
+/// error: the manifest is left unbuilt and the reason is recorded.
 #[test]
-fn test_docker_manifest_empty_image_templates_bails() {
-    // image_templates=[] is a configuration error per run.rs validation.
+fn test_docker_manifest_empty_image_templates_skips() {
     use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -4198,21 +4200,20 @@ fn test_docker_manifest_empty_image_templates_bails() {
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
-    assert!(
-        err.contains("image_templates must not be empty"),
-        "empty image_templates must surface a clear validation error, got: {err}"
-    );
-    assert!(
-        err.contains("empty"),
-        "error must name the offending manifest, got: {err}"
-    );
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("an image-less manifest must skip, not fail the stage");
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "docker-manifest");
+    assert_eq!(events[0].label, "empty");
+    assert_eq!(events[0].reason, "manifest has no images");
 }
 
 #[test]
 fn test_docker_manifest_empty_image_templates_uses_index_in_message_when_no_id() {
-    // When the manifest has no `id`, the error message should reference
-    // the index (positional fallback).
+    // When the manifest has no `id`, the skip's label references the
+    // index (positional fallback).
     use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -4246,10 +4247,14 @@ fn test_docker_manifest_empty_image_templates_uses_index_in_message_when_no_id()
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
-    assert!(
-        err.contains("index 0"),
-        "error should use index fallback when id is unset, got: {err}"
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("an image-less manifest must skip, not fail the stage");
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(
+        events[0].label, "index 0",
+        "the skip should use the index fallback when id is unset"
     );
 }
 
@@ -6096,11 +6101,13 @@ fn build_manifest_create_cmd_warns_no_digest_when_no_near_match() {
 }
 
 // ---------------------------------------------------------------------------
-// process_docker_manifest — render, skip, empty-image error (dry-run, no spawn)
+// process_docker_manifest — render and skip paths (dry-run, no spawn)
 // ---------------------------------------------------------------------------
 
+/// The empty-list case takes the same skip path as the all-blank-render case
+/// — one reason, one memento entry, no manifest tool resolved.
 #[test]
-fn process_docker_manifest_empty_image_templates_is_hard_error() {
+fn process_docker_manifest_empty_image_templates_skips() {
     use anodizer_core::config::{CrateConfig, DockerManifestConfig};
     let (log, _cap) = capturing_logger();
     let mut ctx = dry_run_ctx_with_crates(vec![]);
@@ -6115,7 +6122,7 @@ fn process_docker_manifest_empty_image_templates_is_hard_error() {
         ..Default::default()
     };
     let mut artifacts = Vec::new();
-    let err = process_docker_manifest(
+    process_docker_manifest(
         &mut ctx,
         &log,
         &krate,
@@ -6126,12 +6133,12 @@ fn process_docker_manifest_empty_image_templates_is_hard_error() {
         true,
         &mut artifacts,
     )
-    .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("docker manifest 'empty-mani': image_templates must not be empty"),
-        "got: {err}",
-    );
+    .expect("an image-less manifest must skip, not fail");
+    assert!(artifacts.is_empty(), "{artifacts:?}");
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "empty-mani");
+    assert_eq!(events[0].reason, "manifest has no images");
 }
 
 #[test]
