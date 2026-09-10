@@ -54,8 +54,14 @@ pub(crate) struct OsArtifact {
     /// amd64 microarchitecture variant (e.g. "v1", "v2", "v3", "v4").
     /// Populated from artifact metadata when present.
     pub amd64_variant: Option<String>,
-    /// ARM version (e.g. "6", "7").
-    /// Populated from artifact metadata when present.
+    /// ARM version (e.g. "6", "7"). Read from artifact metadata when present,
+    /// otherwise derived from the arch token's own `armv<N>` suffix.
+    ///
+    /// The fallback is what makes the field usable: no stage stamps
+    /// `arm_variant` metadata, and a 32-bit ARM build carries its version in
+    /// the arch token itself (`armv7`), so metadata alone would leave the
+    /// field empty for every ARM artifact — and a variant filter that matches
+    /// an empty field matches every ARM archive at once.
     pub arm_variant: Option<String>,
     /// In-archive binary filename for archive artifacts (first entry of
     /// `extra_binaries`), or the binary name for `UploadableBinary`

@@ -462,6 +462,15 @@ pub(super) fn render_additional_url_params(
     out
 }
 
+/// Homebrew's cask token: lowercase, with spaces as dashes.
+///
+/// The token names the file (`Casks/<token>.rb`) and opens the cask body, so
+/// it must match what `brew` derives from the same name — an unnormalised
+/// filename ships a cask `brew` cannot resolve by token.
+pub(crate) fn cask_name_for(name: &str) -> String {
+    name.replace(' ', "-").to_lowercase()
+}
+
 /// Split rendered `alternative_names` into two groups:
 ///
 /// - **Aliases**: pure-string alternative names that Homebrew treats as
@@ -476,15 +485,6 @@ pub(super) fn render_additional_url_params(
 /// `myproject@{{ .Version }}` only makes sense as a separate file, since
 /// using it as an alias would mean every release overwrites the previous
 /// version's record.
-/// Homebrew's cask token: lowercase, with spaces as dashes.
-///
-/// The token names the file (`Casks/<token>.rb`) and opens the cask body, so
-/// it must match what `brew` derives from the same name — an unnormalised
-/// filename ships a cask `brew` cannot resolve by token.
-pub(crate) fn cask_name_for(name: &str) -> String {
-    name.replace(' ', "-").to_lowercase()
-}
-
 pub(super) fn split_alternative_names(
     rendered: &[String],
     cask_name: &str,

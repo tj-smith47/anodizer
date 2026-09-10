@@ -90,9 +90,13 @@ pub struct NfpmRenderTarget<'a> {
     /// by the per-target template vars on the build path; unused by the YAML
     /// generator itself.
     pub os: &'a str,
-    /// Resolved package architecture in nfpm nomenclature (`amd64`, `arm64`,
-    /// …) — always stamped so nfpm never silently defaults a package to
-    /// `amd64`.
+    /// Resolved package architecture in ANODIZER's nomenclature (`amd64`,
+    /// `arm64`, `armv7`, …) — always stamped so nfpm never silently defaults a
+    /// package to `amd64`.
+    ///
+    /// The composite 32-bit ARM tokens are anodizer's archive-naming spelling,
+    /// not nfpm's; `nfpm_arch` translates them to the `armN` form nfpm keys
+    /// its per-packager arch tables on before the value reaches the YAML.
     pub arch: &'a str,
     /// Target triple this config renders for, or `None` for a host build with
     /// no triple.
