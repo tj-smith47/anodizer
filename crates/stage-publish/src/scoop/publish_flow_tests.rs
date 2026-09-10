@@ -967,19 +967,31 @@ fn publish_scoop_skip_upload_short_circuits_before_repo_check() {
     assert!(!pushed, "skip_upload path must report no push");
 }
 
-/// Missing repository config (and skip_upload unset) is a hard error.
+/// A crate whose `scoop.repository:` names no owner/name disqualifies ITSELF,
+/// not the publisher: the entry is recorded as a skip and the run continues,
+/// so every crate after it in `selected` still publishes.
 #[test]
-fn publish_scoop_missing_repository_bails() {
+fn publish_scoop_missing_repository_skips_the_entry() {
     let mut c = scoop_crate_for_bucket("widget", "/unused");
     if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
         s.repository = None;
     }
     let mut ctx = build_ctx(vec![c], "1.0.0");
-    let err =
-        publish_to_scoop(&mut ctx, "widget", &quiet()).expect_err("missing repository must bail");
-    assert!(
-        format!("{err:#}").contains("no repository config"),
-        "got: {err:#}"
+    let pushed = publish_to_scoop(&mut ctx, "widget", &quiet())
+        .expect("a missing repository disqualifies the entry, never the publisher");
+    assert!(!pushed, "a skipped entry pushes nothing");
+    assert_eq!(
+        ctx.skip_memento
+            .snapshot()
+            .into_iter()
+            .map(|e| (e.stage, e.label, e.reason))
+            .collect::<Vec<_>>(),
+        vec![(
+            "scoop".to_string(),
+            "widget".to_string(),
+            "repository.name is not set".to_string()
+        )],
+        "the skipped entry must be recorded for the run summary"
     );
 }
 

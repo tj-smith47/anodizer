@@ -544,8 +544,11 @@ fn test_publish_to_krew_missing_config() {
     assert!(publish_to_krew(&mut ctx, "mytool", &log).is_err());
 }
 
+/// A crate whose `krew.repository:` names no owner/name disqualifies ITSELF,
+/// not the publisher: the entry is recorded as a skip and the run continues,
+/// so every crate after it in `selected` still publishes.
 #[test]
-fn test_publish_to_krew_missing_manifests_repo() {
+fn publish_to_krew_missing_repository_skips_the_entry() {
     use anodizer_core::config::{Config, CrateConfig, KrewConfig, PublishConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::{StageLogger, Verbosity};
@@ -574,7 +577,22 @@ fn test_publish_to_krew_missing_manifests_repo() {
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
 
-    assert!(publish_to_krew(&mut ctx, "mytool", &log).is_err());
+    let outcome = publish_to_krew(&mut ctx, "mytool", &log)
+        .expect("a missing repository disqualifies the entry, never the publisher");
+    assert!(!outcome.pushed, "a skipped entry pushes nothing");
+    assert_eq!(
+        ctx.skip_memento
+            .snapshot()
+            .into_iter()
+            .map(|e| (e.stage, e.label, e.reason))
+            .collect::<Vec<_>>(),
+        vec![(
+            "krew".to_string(),
+            "mytool".to_string(),
+            "repository.name is not set".to_string()
+        )],
+        "the skipped entry must be recorded for the run summary"
+    );
 }
 
 // -----------------------------------------------------------------------

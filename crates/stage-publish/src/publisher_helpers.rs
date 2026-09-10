@@ -983,6 +983,67 @@ mod tests {
         }
     }
 
+    /// A missing `repository:` disqualifies ONE entry, never the run: every
+    /// per-entry publisher turns it into an entry skip rather than an error.
+    ///
+    /// `every_entry_skipping_publisher_evaluates_its_skips` cannot see this —
+    /// it pairs recording with evaluating, and a publisher that raises a hard
+    /// error records nothing at all. That is the hole krew and scoop sat in:
+    /// one crate without `repository:` aborted the publisher with `?`, so
+    /// every crate after it in `selected` never published.
+    ///
+    /// The rule is per function body: where `resolve_repo_owner_name` is
+    /// turned into an error at all, that error is an `entry_skip`.
+    #[test]
+    fn no_publisher_turns_a_missing_repository_into_a_hard_error() {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, rust_sources,
+        };
+
+        // The one block-level `repository:` in the workspace. schemastore
+        // publishes a single fork for the whole run, not one entry per crate,
+        // so there is no sibling entry a hard error could strand.
+        const BLOCK_LEVEL: &str = "schemastore";
+
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        for path in rust_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+            if path.to_string_lossy().contains(BLOCK_LEVEL) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("readable source");
+            for body in function_bodies(production_half(&text)) {
+                for (at, _) in body.match_indices("resolve_repo_owner_name(") {
+                    checked += 1;
+                    // One statement, from the call to the `;` that ends it —
+                    // an `ok_or_else` further down the same function belongs
+                    // to a different value.
+                    let end = body[at..].find(';').map_or(body.len(), |e| at + e);
+                    let statement = &body[at..end];
+                    // `ok_or_else` is the only shape that manufactures an
+                    // error here; `if let Some` / `let … else` already skip.
+                    if !statement.contains("ok_or_else(") || statement.contains("entry_skip(") {
+                        continue;
+                    }
+                    let name = body.lines().next().unwrap_or_default().trim().to_string();
+                    offenders.push(format!("{}: {name}", path.display()));
+                }
+            }
+        }
+        assert!(
+            checked >= 20,
+            "the resolve_repo_owner_name population shrank to {checked}; a rename \
+             likely slipped the walk"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these sites fail the whole publisher when one entry has no \
+             `repository:`, stranding every entry after it; raise an \
+             `entry_skip` instead:\n{}",
+            offenders.join("\n")
+        );
+    }
+
     #[test]
     fn rollback_empty_warning_msg_contains_publisher_and_target() {
         let msg = rollback_empty_warning_msg("artifactory", "upload URLs");

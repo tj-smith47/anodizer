@@ -979,3 +979,47 @@ fn build_krew_reconcile_target_without_a_krew_block_is_none() {
     let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
     assert!(krew_target(&ctx, "x").is_none());
 }
+
+/// A crate whose `repository:` names no owner/name disqualifies itself only:
+/// the crate after it in the same run still reaches its publish path.
+#[test]
+fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
+    let mut broken = krew_crate("alpha");
+    broken
+        .publish
+        .as_mut()
+        .unwrap()
+        .krew
+        .as_mut()
+        .unwrap()
+        .repository = None;
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![broken, krew_crate("beta")])
+        .dry_run(true)
+        .build();
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    KrewPublisher::new()
+        .run(&mut ctx)
+        .expect("a repository-less entry must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "krew");
+    assert_eq!(events[0].label, "alpha");
+    assert_eq!(events[0].reason, "repository.name is not set");
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("would submit Krew plugin manifest for 'beta'"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
+}

@@ -64,9 +64,17 @@ pub fn publish_to_krew(
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
     // Repository fields are template-rendered.
-    let (repo_owner_raw, repo_name_raw) =
+    let Some((repo_owner_raw, repo_name_raw)) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "krew",
+        crate_name,
         crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
+            .ok_or_else(|| anodizer_core::pipe_skip::entry_skip(MISSING_REPOSITORY_REASON)),
+    )?
+    else {
+        return Ok(KrewPublishOutcome::skipped());
+    };
     let repo_owner = util::render_or_warn(ctx, log, "krew.repository.owner", &repo_owner_raw)?;
     let repo_name = util::render_or_warn(ctx, log, "krew.repository.name", &repo_name_raw)?;
 

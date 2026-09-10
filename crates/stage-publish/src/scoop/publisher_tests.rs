@@ -570,3 +570,47 @@ fn build_scoop_reconcile_target_without_a_repository_is_none() {
         "no owner/name means no probe coordinates; run() owns the diagnostics"
     );
 }
+
+/// A crate whose `repository:` names no owner/name disqualifies itself only:
+/// the crate after it in the same run still reaches its publish path.
+#[test]
+fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
+    let mut broken = scoop_crate("alpha");
+    broken
+        .publish
+        .as_mut()
+        .unwrap()
+        .scoop
+        .as_mut()
+        .unwrap()
+        .repository = None;
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![broken, scoop_crate("beta")])
+        .dry_run(true)
+        .build();
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    ScoopPublisher::new()
+        .run(&mut ctx)
+        .expect("a repository-less entry must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "scoop");
+    assert_eq!(events[0].label, "alpha");
+    assert_eq!(events[0].reason, "repository.name is not set");
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("would update Scoop bucket"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
+}

@@ -305,7 +305,14 @@ impl anodizer_core::Publisher for ScoopPublisher {
                 any_pushed = true;
             }
         }
-        if should_warn_no_eligible(processed, selected.len()) {
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "scoop",
+            crate::publisher_helpers::RunLanding::from_landed(any_pushed),
+            selected.len(),
+        );
+        if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
