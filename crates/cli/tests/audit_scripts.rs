@@ -20,7 +20,7 @@
 //!
 //! Treating those siblings as test code by NAME is sound only while every
 //! such file really is declared under `#[cfg(test)]` by its parent module;
-//! `every_named_test_file_is_declared_cfg_test` walks the real tree for that
+//! `every_named_test_source_is_declared_cfg_test` walks the real tree for that
 //! premise.
 #![cfg(unix)]
 
@@ -558,7 +558,7 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
 /// skipped by the production-only scanners and reported by the test-only
 /// ones — both wrong.
 #[test]
-fn every_named_test_file_is_declared_cfg_test() {
+fn every_named_test_source_is_declared_cfg_test() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut undeclared = Vec::new();
     let mut seen = 0usize;
@@ -769,8 +769,7 @@ fn taskfile_block_opt(taskfile: &str, target: &str) -> Option<String> {
     let key = format!("  {target}:");
     let mut lines = taskfile
         .lines()
-        .skip_while(|l| strip_trailing_comment(l) != key)
-        .peekable();
+        .skip_while(|l| strip_trailing_comment(l) != key);
     let first = lines.next()?;
     let mut block = String::from(first);
     for line in lines {
@@ -849,7 +848,7 @@ fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
             // for a target nobody ever wrote. A root, named by the caller, is
             // the other case and keeps the plain lookup panic.
             (None, Some(parent)) => {
-                panic!("`task {parent}` has a dep the walk cannot parse: `{name}`")
+                panic!("`task {parent}` has a dep the walk cannot resolve: `{name}`")
             }
             (None, None) => taskfile_block(taskfile, &name),
         };
@@ -935,7 +934,7 @@ fn an_unparsed_dep_names_its_parent_and_its_raw_text() {
         .unwrap_or_default()
         .to_string();
     assert_eq!(
-        message, "`task t` has a dep the walk cannot parse: `{task: x}`",
+        message, "`task t` has a dep the walk cannot resolve: `{task: x}`",
         "the failure must name the walk's own gap, not a missing target"
     );
 }
