@@ -5,16 +5,6 @@ use crate::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use std::process::Command;
 
-/// Redact sensitive environment variable values from output strings.
-///
-/// Auto-discovers secret-looking env vars using the same heuristics as
-/// secret detection: key suffix matching and value prefix matching.
-/// This catches both well-known and user-defined secrets.
-fn redact_secrets(output: &str) -> String {
-    let env: Vec<(String, String)> = std::env::vars().collect();
-    crate::redact::string(output, &env)
-}
-
 /// Render a hook template string through the full Tera engine.
 ///
 /// Hard-bails on render failure: a typo like `{{ .Teg }}` in a hook command
@@ -254,7 +244,7 @@ fn run_hooks_inner(
             command.arg("-c").arg(&cmd_str);
             // Hooks inherit the host env so toolchain env vars (PATH, MSVC
             // INCLUDE/LIB, RUSTUP_HOME) flow through. Secret leakage is gated
-            // by `redact_secrets` on the output side.
+            // by `redacting_log` on every line this function emits.
             if let Some(ref d) = dir_str {
                 command.current_dir(d);
             }
@@ -282,8 +272,7 @@ fn run_hooks_inner(
             // live so a long-running before/after hook shows progress. Hook
             // output may contain secrets from the inherited host env, so the
             // helper logger carries the whole effective env for redaction —
-            // a superset of the process env the prior `redact_secrets`
-            // coverage used.
+            // a superset of the process env alone.
             let output = crate::run::run_checked(
                 &mut command,
                 &redacting_log,
@@ -314,7 +303,8 @@ fn run_hooks_inner(
             // it twice. The summary exists precisely for the non-verbose case
             // where the live stream is suppressed.
             if output_flag == Some(true) && !log.is_verbose() {
-                let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
+                let redacted_stdout =
+                    redacting_log.redact(&String::from_utf8_lossy(&output.stdout));
                 if !redacted_stdout.trim().is_empty() {
                     log.status(&format!("[hook output] {}", redacted_stdout.trim())); // status-ok: opt-in hook stdout summary, only emitted when output: true and non-verbose
                 }
@@ -1069,6 +1059,36 @@ mod tests {
             env: Some(vec![format!("DEPLOY_TOKEN={HOOK_SECRET}")]),
             ..Default::default()
         })
+    }
+
+    /// The `[hook output]` summary is the only default-verbosity line that
+    /// carries the child's own bytes, so a secret that exists solely in the
+    /// hook's `env:` reaches an operator's terminal through it.
+    #[cfg(all(feature = "test-helpers", unix))]
+    #[test]
+    fn hook_output_line_redacts_a_secret_from_the_hook_env() {
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: "printf '%s' \"$DEPLOY_TOKEN\"".to_string(),
+            env: Some(vec![format!("DEPLOY_TOKEN={HOOK_SECRET}")]),
+            output: Some(true),
+            ..Default::default()
+        })];
+        run_hooks(&hooks, "test", HookRunContext::new(false, &log, None)).expect("hook must run");
+        let summary = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .find(|m| m.contains("[hook output]"))
+            .expect("the run must emit one hook output summary");
+        assert!(
+            summary.contains("$DEPLOY_TOKEN"),
+            "the summary must name the masked variable; got: {summary:?}"
+        );
+        assert!(
+            !summary.contains(HOOK_SECRET),
+            "the summary must not carry the secret value; got: {summary:?}"
+        );
     }
 
     #[cfg(feature = "test-helpers")]
