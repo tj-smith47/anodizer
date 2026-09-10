@@ -383,6 +383,136 @@ fn msi_installer_manifest_emits_silent_switch() {
     assert!(!inst.contains("NestedInstallerType"), "msi is not nested");
 }
 
+/// An identifier that does not render under a non-strict config falls back to
+/// the auto-derived one, and every consumer falls back to the SAME value: the
+/// one-way-door preflight probe searches the package the submission creates,
+/// not a differently-derived name that cannot exist.
+#[test]
+fn preflight_probes_the_package_identifier_the_submission_uses() {
+    let crate_cfg = winget_crate_with("demo", "v{{ .Version }}", "{{ .Env.WINGET_OWNER");
+
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.options.skip_post_publish_poll = true;
+    add_windows_zip(&mut ctx, "demo");
+
+    let log = ctx.logger("publish");
+    let cfg = ctx.config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .winget
+        .clone()
+        .unwrap();
+    let derived = crate::winget::derive_winget_config(&ctx, &log, &cfg, "demo")
+        .expect("a non-strict render failure is not an error");
+    assert_eq!(
+        derived.package_identifier.as_deref(),
+        Some("AcmeCo.demo"),
+        "an unrenderable identifier falls back to the auto-derived one"
+    );
+
+    let target = collect_winget_target(&ctx, "demo", &log)
+        .expect("target ok")
+        .expect("demo is winget-configured");
+    assert_eq!(target.package_id, "AcmeCo.demo", "the submitted identifier");
+
+    let rendered = render_winget_manifests_for_crate(&ctx, "demo", &log)
+        .expect("render ok")
+        .expect("demo not skipped");
+    assert_eq!(
+        rendered.package_id, "AcmeCo.demo",
+        "the manifest identifier"
+    );
+
+    let report = crate::preflight::run_preflight_with_factory(
+        &mut ctx,
+        &log,
+        &crate::testing::CannedFactory {
+            cargo_state: anodizer_core::preflight::PublisherState::Clean,
+            choco_state: anodizer_core::preflight::PublisherState::Clean,
+            winget_state: anodizer_core::preflight::PublisherState::Clean,
+            aur_state: anodizer_core::preflight::PublisherState::Clean,
+        },
+    )
+    .expect("preflight ok");
+    let probed = report
+        .entries
+        .iter()
+        .find(|e| e.publisher == "winget")
+        .expect("a winget preflight entry");
+    assert_eq!(
+        probed.package, "AcmeCo.demo",
+        "the one-way-door probe must search the identifier the submission uses"
+    );
+
+    ctx.config.crates[0]
+        .publish
+        .as_mut()
+        .unwrap()
+        .winget
+        .as_mut()
+        .unwrap()
+        .post_publish_poll = Some(anodizer_core::config::PostPublishPollConfig {
+        enabled: true,
+        ..Default::default()
+    });
+    crate::run_post_publish_pollers(&mut ctx, &[], &log);
+    let polled = &ctx.stage_outputs.post_publish_results;
+    assert_eq!(polled.len(), 1, "got {polled:?}");
+    assert_eq!(
+        polled[0]["package"], "AcmeCo.demo",
+        "the poll listing names the identifier the submission uses: {polled:?}"
+    );
+}
+
+/// An identifier that DOES render is the operator's choice, so it reaches
+/// validation as written. The auto-derived fallback stands in only for a value
+/// that never rendered — replacing a bad one would publish under a name the
+/// operator did not pick.
+#[test]
+fn a_rendered_but_invalid_package_identifier_still_fails_validation() {
+    let crate_cfg = winget_crate_with("demo", "v{{ .Version }}", "{{ .Env.WINGET_OWNER }}");
+
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set_env("WINGET_OWNER", "nodots");
+    add_windows_zip(&mut ctx, "demo");
+
+    let log = ctx.logger("publish");
+    let cfg = ctx.config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .winget
+        .clone()
+        .unwrap();
+    let derived = crate::winget::derive_winget_config(&ctx, &log, &cfg, "demo")
+        .expect("the seam renders the field");
+    assert_eq!(
+        derived.package_identifier.as_deref(),
+        Some("nodots"),
+        "a rendered identifier is kept, never swapped for the auto-derived one"
+    );
+
+    let msg = match render_winget_manifests_for_crate(&ctx, "demo", &log) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a single-segment identifier is not a valid PackageIdentifier"),
+    };
+    assert!(
+        msg.contains("invalid PackageIdentifier 'nodots'"),
+        "validation must name the rendered value: {msg}"
+    );
+    assert!(
+        !msg.contains("AcmeCo.demo"),
+        "the fallback must not stand in for a value that rendered: {msg}"
+    );
+}
+
 /// `package_identifier` is rendered in exactly one place — the derive seam —
 /// and every consumer reads the field the seam wrote: the one-way-door
 /// preflight probe, the emission-validate render, the manifest bodies and the
@@ -407,8 +537,8 @@ fn package_identifier_is_rendered_at_one_seam_only() {
         .winget
         .clone()
         .unwrap();
-    let derived =
-        crate::winget::derive_winget_config(&ctx, &log, &cfg).expect("the seam renders the field");
+    let derived = crate::winget::derive_winget_config(&ctx, &log, &cfg, "demo")
+        .expect("the seam renders the field");
     assert_eq!(
         derived.package_identifier.as_deref(),
         Some("Acme.tool"),

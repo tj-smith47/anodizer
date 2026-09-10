@@ -264,7 +264,7 @@ pub(crate) fn resolve_winget_identity(
 ) -> Result<Option<WingetIdentity>> {
     // Derive the config first so every field read below — the identifier
     // included — is the value the run resolved, not a raw template.
-    let winget_cfg = &super::identifier::derive_winget_config(ctx, log, winget_cfg)?;
+    let winget_cfg = &super::identifier::derive_winget_config(ctx, log, winget_cfg, crate_name)?;
     let label = format!("winget publisher for crate '{}'", crate_name);
     if crate::util::should_skip_publisher_with_if(
         ctx,
@@ -290,11 +290,10 @@ pub(crate) fn resolve_winget_identity(
     let publisher_name =
         resolve_winget_publisher_name(winget_cfg, &repo_owner, crate_name, log)?.to_string();
 
-    let auto_pkg_id = auto_package_identifier(&publisher_name, &name);
-    // The derived config already carries the rendered identifier, so an
-    // identifier that renders invalid is reported as the text winget would
-    // receive, not as the template.
-    let package_id = super::identifier::package_identifier_of(winget_cfg, &auto_pkg_id);
+    // The derived config already carries the identifier the submission uses,
+    // so an identifier that renders invalid is reported as the text winget
+    // would receive, not as the template.
+    let package_id = super::identifier::package_identifier_of(winget_cfg);
 
     validate_package_identifier(&package_id)
         .map_err(|e| anodizer_core::pipe_skip::entry_skip(e.to_string()))?;

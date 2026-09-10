@@ -210,7 +210,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         // not render must never reach the poll listing (or the GitHub search
         // it drives) as a literal `{{ … }}`: the candidate becomes an `Error`
         // row instead, keyed on the crate name, which is never a template.
-        let cfg = match winget::derive_winget_config(ctx, log, &cfg) {
+        let cfg = match winget::derive_winget_config(ctx, log, &cfg, &crate_name) {
             Ok(derived) => derived,
             Err(e) => {
                 errors.push((
@@ -228,20 +228,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
                 continue;
             }
         };
-        let auto_pkg_id = {
-            let publisher = cfg.publisher.as_deref().unwrap_or("");
-            let name = cfg
-                .name
-                .as_deref()
-                .or(cfg.package_name.as_deref())
-                .unwrap_or(crate_name.as_str());
-            if publisher.is_empty() {
-                name.to_string()
-            } else {
-                winget::auto_package_identifier(publisher, name)
-            }
-        };
-        let pkg_id = winget::package_identifier_of(&cfg, &auto_pkg_id);
+        let pkg_id = winget::package_identifier_of(&cfg);
         match poll_cfg {
             None => skipped.push((ord, "winget", pkg_id, version.clone())),
             Some(poll_cfg) => {

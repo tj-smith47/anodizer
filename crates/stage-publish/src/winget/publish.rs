@@ -262,7 +262,7 @@ pub(crate) fn collect_winget_target(
     let Some(cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) else {
         return Ok(None);
     };
-    let cfg = &super::identifier::derive_winget_config(ctx, log, cfg)?;
+    let cfg = &super::identifier::derive_winget_config(ctx, log, cfg, crate_name)?;
     let Some((repo_owner, _repo_name)) =
         crate::util::resolve_repo_owner_name(cfg.repository.as_ref())
     else {
@@ -270,18 +270,8 @@ pub(crate) fn collect_winget_target(
     };
     let fork_owner = util::render_or_warn(ctx, log, "winget.repository.owner", &repo_owner)?;
 
-    let name_raw = cfg.name.as_deref().unwrap_or(crate_name);
-    let name_rendered = util::render_or_warn(ctx, log, "winget.name", name_raw)?;
-
-    let publisher_name = match cfg.publisher.as_deref() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => fork_owner.clone(),
-    };
-
-    let auto_pkg_id = auto_package_identifier(&publisher_name, &name_rendered);
-    let package_id = super::identifier::package_identifier_of(cfg, &auto_pkg_id);
-
     let version = ctx.version();
+    let package_id = super::identifier::package_identifier_of(cfg);
     let auto_branch = format!("{}-{}", package_id, version);
     let branch = crate::util::resolve_branch(ctx, cfg.repository.as_ref()).unwrap_or(auto_branch);
 
