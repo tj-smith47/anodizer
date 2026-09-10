@@ -61,7 +61,7 @@ pub fn run() -> Result<()> {
     // Update .gitignore to include dist/
     let gitignore_path = ".gitignore";
     let gitignore = std::fs::read_to_string(gitignore_path).unwrap_or_default();
-    if !gitignore.contains("dist/") {
+    if !gitignore_ignores_dist(&gitignore) {
         let mut f = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
@@ -76,6 +76,17 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Whether a `.gitignore` text already carries a root `dist/` entry.
+///
+/// The comparison is against the whole line: `# dist/ is handled elsewhere`,
+/// `sub/dist/` and `!dist/keep` all contain `dist/` without ignoring the
+/// directory. `str::lines` drops a trailing `\r`, so a CRLF file compares the
+/// same as an LF one, and no trimming is applied because a leading space makes
+/// the line a different pattern in gitignore syntax.
+fn gitignore_ignores_dist(gitignore: &str) -> bool {
+    gitignore.lines().any(|l| l == "dist/")
 }
 
 /// Generate anodizer.yaml content from a directory root.
@@ -1105,5 +1116,36 @@ path = "src/main.rs"
         // A bogus top-level key under deny_unknown_fields fails to deserialize.
         let bad = "project_name: app\nnot_a_real_key: true\n";
         assert!(validate_enrolled_yaml(bad, &[]).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // .gitignore dist/ entry detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gitignore_append_ignores_a_commented_mention_of_dist() {
+        assert!(!gitignore_ignores_dist("# dist/ is handled by the build\n"));
+    }
+
+    #[test]
+    fn gitignore_append_ignores_a_nested_dist_path() {
+        assert!(!gitignore_ignores_dist("packages/sub/dist/\n!dist/keep\n"));
+    }
+
+    #[test]
+    fn gitignore_append_is_idempotent_for_an_exact_entry() {
+        assert!(gitignore_ignores_dist("target/\ndist/\n"));
+    }
+
+    #[test]
+    fn gitignore_append_matches_a_crlf_entry() {
+        assert!(gitignore_ignores_dist("target/\r\ndist/\r\n"));
+    }
+
+    #[test]
+    fn gitignore_append_does_not_match_an_indented_entry() {
+        // A leading space is part of the pattern in gitignore syntax, so the
+        // indented line does not ignore the root `dist/`.
+        assert!(!gitignore_ignores_dist("target/\n  dist/\n"));
     }
 }
