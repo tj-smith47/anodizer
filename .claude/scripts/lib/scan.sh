@@ -54,9 +54,12 @@ run_scanner() {
 # A root that does not exist is dropped before grep sees it: the call sites
 # pass optional globs (`crates/*/src crates/*/tests`), and an unexpanded
 # `crates/*/tests` on a tree where no crate has one is an absent optional
-# root, not a broken scan. grep always runs with stdin on /dev/null, so a call
-# that ends up with no root at all returns empty instead of reading — or
-# blocking on — whatever the caller's stdin happens to be.
+# root, not a broken scan. When EVERY named root is absent the result is empty
+# without grep running, so an absent optional root can never widen the scan to
+# the whole tree. A call that names no root at all does reach grep, which
+# would then read its file list from stdin — so grep always runs with stdin on
+# /dev/null and returns empty instead of reading, or blocking on, whatever the
+# caller's stdin happens to be.
 collect_files() {
     local -n __collect_out="$1"
     shift

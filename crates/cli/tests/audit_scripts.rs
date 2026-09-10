@@ -380,10 +380,27 @@ fn the_collector_refuses_a_call_without_the_separator() {
     assert!(!out.contains("reached"), "the call must not return: {out}");
 }
 
-/// grep runs on `/dev/null`, so a collection whose roots all vanished returns
-/// empty instead of reading — or blocking on — the caller's stdin.
+/// A collection with NO root at all still runs grep, which then has no file
+/// operand; `< /dev/null` is what keeps it from reading the caller's stdin.
+/// Spelled without `-r`, because a recursive grep with no operand walks the
+/// working directory instead of reading stdin and would prove nothing here.
 #[test]
 fn the_collector_never_reads_the_callers_stdin() {
+    let dir = fixture_tree();
+    let (code, out) = run_collector(
+        dir.path(),
+        "collect_files X -- 'set_var'\nprintf 'n=%d\\n' \"${#X[@]}\"",
+        "set_var from stdin\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("n=0"), "stdin is not a scan root: {out}");
+}
+
+/// Every NAMED root absent is an empty result decided before grep runs, not a
+/// grep over the whole tree. A different mechanism from the stdin guard above:
+/// this call never reaches grep at all.
+#[test]
+fn a_collection_whose_every_named_root_is_absent_returns_empty() {
     let dir = fixture_tree();
     let (code, out) = run_collector(
         dir.path(),
@@ -391,7 +408,10 @@ fn the_collector_never_reads_the_callers_stdin() {
         "set_var from stdin\n",
     );
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("n=0"), "stdin is not a scan root: {out}");
+    assert!(
+        out.contains("n=0"),
+        "an absent named root scans nothing: {out}"
+    );
 }
 
 /// `collect_files` is handed OPTIONAL roots — `crates/*/src crates/*/tests` —
@@ -1234,6 +1254,17 @@ fn command_word(segment: &str) -> Option<(&str, &str)> {
             i += if target_attached { 1 } else { 2 };
             continue;
         }
+        if base == "case" {
+            // Every command position inside a `case` opens after a `)` pattern,
+            // which the trailing-`)` rule below peels; the `case <subject> in`
+            // header runs nothing itself. On one line the header is not its own
+            // segment, so it has to be peeled here or the `case` word answers.
+            i += words[i..]
+                .iter()
+                .position(|w| *w == "in")
+                .map_or(words.len(), |p| p + 1);
+            continue;
+        }
         if word.is_empty()
             || word.starts_with('-')
             || word.chars().all(|c| c.is_ascii_digit())
@@ -1270,11 +1301,18 @@ struct Segment {
 /// program the pin cannot read into command position.
 fn forbidden_word(segment: &Segment) -> Option<String> {
     let mut rest = segment.text.as_str();
+    // `find … -exec awk … {} +` runs awk as surely as a pipeline does — but
+    // only inside a `find` command line. Quoting is erased when a segment is
+    // built, so anywhere else the same word is a pattern or a literal argument
+    // (`grep -rn -- '-exec awk' …` names one, it does not run one).
+    let in_find = command_word(rest).is_some_and(|(_, base)| base == "find");
     loop {
         if let Some(why) = forbidden_at(rest, segment) {
             return Some(why);
         }
-        // `find … -exec awk … {} +` runs awk as surely as a pipeline does.
+        if !in_find {
+            return None;
+        }
         let mut words = rest.split_whitespace();
         let opened = words.find(|w| EXEC_OPTIONS.contains(w))?;
         let offset = rest.find(opened)? + opened.len();
@@ -1545,10 +1583,8 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
                 "{name} calls run_scanner/collect_files without sourcing lib/scan.sh"
             );
         }
-        // The collector's options end at `--`; without one it cannot tell an
-        // option's detached argument from the pattern, so it refuses to guess.
         for (index, line) in logical_lines(&body) {
-            if line.contains("collect_files ") && !line.contains(" -- ") {
+            if collect_without_separator(&line) {
                 forbidden.push(format!(
                     "{name}:{index}: collect_files without a `--` separator: {}",
                     line.trim()
@@ -1565,6 +1601,34 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
         scanners >= 13,
         "expected every scanning script to be walked, found {scanners}"
     );
+}
+
+/// Whether `line` calls the shared collector without the `--` its option
+/// parsing requires. The collector cannot tell an option's detached argument
+/// from the pattern without one, so it refuses to guess.
+fn collect_without_separator(line: &str) -> bool {
+    line.contains("collect_files ") && !line.contains(" -- ")
+}
+
+/// The collector's `--` is the whole of its option parsing, so a call without
+/// one is refused rather than guessed at. Kept as its own table because the
+/// separator rule is not part of `forbidden_command`: an accepted row there
+/// once carried a call the collector would have exited 2 on.
+#[test]
+fn the_separator_rule_reads_both_spellings() {
+    for line in [
+        "collect_files FILES -rlE 'x' crates --include='*.rs'",
+        "collect_files X -r 'set_var' crates",
+    ] {
+        assert!(collect_without_separator(line), "must be refused: {line}");
+    }
+    for line in [
+        "collect_files FILES -rlE --include='*.rs' -- 'x' crates",
+        "collect_files X -r -- 'set_var' crates/*/src",
+        "run_scanner violations -f \"$LIB_DIR/rust-lex.awk\" -f - \"${FILES[@]}\"",
+    ] {
+        assert!(!collect_without_separator(line), "must be allowed: {line}");
+    }
 }
 
 /// The script's lines with `\`-continuations joined, each paired with the
@@ -1633,9 +1697,11 @@ fn the_runner_pin_recognises_every_awk_spelling() {
         "hits=\"$(sed -n 1p file)\" || true",
         "case \"$mode\" in\n    scan) awk -f prog.awk file ;;\nesac",
         "case \"$mode\" in\n    scan|run) gawk -f prog.awk file ;;\nesac",
+        "case \"$mode\" in scan) awk -f prog.awk file ;; esac",
         "find crates -name '*.rs' -exec awk -f prog.awk {} +",
         "find crates -name '*.rs' -execdir mawk -f prog.awk {} \\;",
         "find crates -name '*.rs' -ok nawk -f prog.awk {} \\;",
+        "find crates -name '*.rs' -okdir awk -f prog.awk {} \\;",
         "sed -n 1p file ||\ntrue",
         "coproc awk -f prog.awk file",
         "busybox awk -f prog.awk file",
@@ -1650,7 +1716,7 @@ fn the_runner_pin_recognises_every_awk_spelling() {
     for line in [
         "# awk is named in this comment",
         "run_scanner violations -f \"$LIB_DIR/rust-lex.awk\" -f - \"${FILES[@]}\"",
-        "collect_files FILES -rlE 'x' crates --include='*.rs'",
+        "collect_files FILES -rlE --include='*.rs' -- 'x' crates",
         "grep -qE -- \"task: ${target}\" <<< \"$combined\"",
         "LIB_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)/lib\"",
         "done <<< \"$mod_decls\"",
@@ -1661,6 +1727,7 @@ fn the_runner_pin_recognises_every_awk_spelling() {
         "# a swallowed failure looks like `|| true` — never write one",
         "arr+=(\"$f\")",
         "case \"$x\" in awk) ;; esac",
+        "grep -rn -- '-exec awk' .claude/scripts",
     ] {
         assert!(
             forbidden_command(line).is_none(),
