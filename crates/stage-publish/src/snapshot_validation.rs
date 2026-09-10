@@ -578,26 +578,34 @@ fn validate_derived_asset_names(
             continue;
         }
         if !for_triple.iter().any(|p| p.name == asset.asset_name) {
-            // Quote the level the produced group actually carries so the
-            // remedy works verbatim; an archive with no amd64_variant
-            // metadata is the untagged baseline.
-            let produced_level = for_triple
-                .iter()
-                .find_map(|p| p.amd64_variant.as_deref())
-                .unwrap_or("v1");
+            // Only a produced group that actually carries a micro-arch level
+            // can be the tuning-env cause; with none, no `amd64_variant:`
+            // value would move the derived name a byte, and the remedy has to
+            // stay cause-neutral. The quoted level is the one the group
+            // carries, so the remedy works verbatim.
+            let remedy = match for_triple.iter().find_map(|p| p.amd64_variant.as_deref()) {
+                Some(level) => format!(
+                    "The tuning env was not renderable at config time, so the \
+                     derivation could not reproduce a naming input of the \
+                     produced asset (its amd64 micro-arch level); make the \
+                     tuning env target-static (renderable from config), or \
+                     declare the produced level on the tuned build — \
+                     `amd64_variant: \"{level}\"` in its builds[] entry — which \
+                     overrides detection for both the artifact metadata and \
+                     every derived-name consumer."
+                ),
+                None => "The derivation reads the naming inputs from config alone (the \
+                         archive's `name_template`, its `ids:` filter and the binary they \
+                         resolve to); reconcile them with the ones the archive stage used \
+                         for the produced name."
+                    .to_string(),
+            };
             bail!(
                 "crate '{}' auto-derived asset name for target '{}' resolves to \
                  '{}', but the archives produced for that target are: {}. Every \
                  consumer of the derived name (cargo-binstall pkg_url, the \
                  curl|sh installer's asset table) would request a URL the \
-                 release never uploaded (404). The tuning env was not renderable \
-                 at config time, so the derivation could not reproduce a naming \
-                 input of the produced asset (e.g. its amd64 micro-arch level); \
-                 make the tuning env target-static (renderable from config), or \
-                 declare the produced level on the tuned build — \
-                 `amd64_variant: \"{}\"` in its builds[] entry — which overrides \
-                 detection for both the artifact metadata and every \
-                 derived-name consumer.",
+                 release never uploaded (404). {}",
                 crate_cfg.name,
                 triple,
                 asset.asset_name,
@@ -606,7 +614,7 @@ fn validate_derived_asset_names(
                     .map(|p| p.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
-                produced_level,
+                remedy,
             );
         }
     }
@@ -1151,11 +1159,12 @@ mod tests {
     #[test]
     fn binstall_auto_derived_unrenderable_tuning_env_fails_loud() {
         let (cfg, _bs, mut ctx) = auto_derived_fixture(Some("{{ BuildTimeOnlyFlags }}"));
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
             .expect_err("an unreproducible naming input must fail the snapshot");
@@ -1169,6 +1178,56 @@ mod tests {
         assert!(
             msg.contains("amd64_variant"),
             "offers the declared-level escape hatch: {msg}"
+        );
+    }
+
+    /// A mismatch with no micro-arch level anywhere — the archives were named
+    /// by a template the derivation resolves differently — must not be
+    /// diagnosed as an unreproducible tuning env: no `amd64_variant:` value
+    /// would move the derived name a byte, so the remedy names the naming
+    /// inputs instead.
+    #[test]
+    fn amd64_variant_remedy_is_omitted_without_a_variant_archive() {
+        let (cfg, _bs, mut ctx) = auto_derived_fixture(None);
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-1.0.0-linux-amd64.tar.gz",
+        );
+        let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect_err("a derived/produced name mismatch must fail the snapshot");
+        let msg = format!("{err}");
+        assert!(msg.contains("404"), "explains the failure class: {msg}");
+        assert!(
+            !msg.contains("amd64_variant") && !msg.contains("tuning env"),
+            "no micro-arch level was produced, so no tuning diagnosis may be asserted: {msg}"
+        );
+        assert!(
+            msg.contains("name_template"),
+            "the cause-neutral remedy must name the naming inputs: {msg}"
+        );
+    }
+
+    /// The same bail keeps the tuning remedy when the produced group DOES
+    /// carry a micro-arch level: that is the cause the derivation could not
+    /// reproduce, and the quoted level is the fix.
+    #[test]
+    fn amd64_variant_remedy_is_offered_when_a_variant_archive_was_produced() {
+        let (cfg, _bs, mut ctx) = auto_derived_fixture(Some("{{ BuildTimeOnlyFlags }}"));
+        add_archive_with_variant(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
+        );
+        let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect_err("an unreproducible naming input must fail the snapshot");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`amd64_variant: \"v3\"`"),
+            "the tuning remedy must quote the produced level: {msg}"
         );
     }
 
