@@ -1122,7 +1122,7 @@ fn write_summary(
     };
     let summary = RunSummary {
         schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-        anodize_version: "0.0.0-test".to_string(),
+        anodizer_version: "0.0.0-test".to_string(),
         tag: tag.to_string(),
         submitter_gated: false,
         announce_gated: false,

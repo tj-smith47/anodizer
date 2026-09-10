@@ -456,8 +456,8 @@ Shape:
 
 ```json
 {
-  "schema_version": 2,
-  "anodize_version": "0.2.1",
+  "schema_version": 3,
+  "anodizer_version": "0.2.1",
   "tag": "v0.2.1",
   "submitter_gated": false,
   "announce_gated": false,
@@ -488,7 +488,10 @@ Shape:
 CI consumers can diff this between runs to spot regressions in publisher
 reliability without parsing log output. `schema_version` is bumped on any
 breaking shape change; `#[serde(deny_unknown_fields)]` on the producer side
-keeps drift loud. Version 2 removed the `failure_policy` field (there is no
+keeps drift loud. Version 3 renamed the tool-version field from
+`anodize_version` to `anodizer_version`; a reader accepts either spelling, so a
+summary written by an older release still parses, and a writer emits only the
+new name. Version 2 removed the `failure_policy` field (there is no
 more in-process rollback policy to record — see
 [`release.on_failure`](#release-on-failure) above). A reader built against v2
 still parses a v1 summary from an older release: the field is optional on

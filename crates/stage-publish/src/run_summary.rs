@@ -30,7 +30,11 @@ fn is_zero_f64(v: &f64) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct RunSummary {
     pub schema_version: u32,
-    pub anodize_version: String,
+    /// The anodizer version that wrote this document. Read also under the
+    /// pre-v3 spelling `anodize_version`, so a summary written by an older
+    /// release still parses.
+    #[serde(alias = "anodize_version")]
+    pub anodizer_version: String,
     pub tag: String,
     pub submitter_gated: bool,
     pub announce_gated: bool,
@@ -163,11 +167,15 @@ pub struct DeterminismAllowlistEntry {
 }
 
 impl RunSummary {
+    /// v3 renames the tool-version field from `anodize_version` to
+    /// `anodizer_version`; a reader accepts either spelling, a writer emits
+    /// the new one.
+    ///
     /// v2 drops the `failure_policy` field: automatic rollback (the only
     /// producer of that field) was removed in favor of convergent reconcile
     /// and `anodizer tag rollback`. [`parse_run_summary_lenient`] keeps v1
     /// documents (written with the field present) parseable.
-    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+    pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
     /// Build a `RunSummary` from `Context`. Pulls per-publisher results
     /// from `ctx.publish_report`, the compile-time and runtime
@@ -264,7 +272,7 @@ impl RunSummary {
 
         Self {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
-            anodize_version: env!("CARGO_PKG_VERSION").to_string(),
+            anodizer_version: env!("CARGO_PKG_VERSION").to_string(),
             tag,
             submitter_gated: report.is_some_and(|r| r.submitter_gated),
             announce_gated: report.is_some_and(|r| r.announce_gated),
@@ -685,7 +693,7 @@ mod tests {
     fn populated_summary() -> RunSummary {
         RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.0.0-test".to_string(),
+            anodizer_version: "0.0.0-test".to_string(),
             tag: "v1.2.3".to_string(),
             submitter_gated: true,
             announce_gated: false,
@@ -1563,7 +1571,7 @@ mod tests {
         // listed.
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.0.0-test".to_string(),
+            anodizer_version: "0.0.0-test".to_string(),
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
@@ -1610,7 +1618,7 @@ mod tests {
         // summary doesn't mislabel the cause.
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.0.0-test".to_string(),
+            anodizer_version: "0.0.0-test".to_string(),
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
@@ -1641,7 +1649,7 @@ mod tests {
         // value column aligns.
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.0.0-test".to_string(),
+            anodizer_version: "0.0.0-test".to_string(),
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
@@ -1695,7 +1703,7 @@ mod tests {
         let long_name = "x".repeat(60);
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.0.0-test".to_string(),
+            anodizer_version: "0.0.0-test".to_string(),
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
@@ -1735,10 +1743,45 @@ mod tests {
     }
 
     #[test]
-    fn summary_anodize_version_is_cargo_pkg_version() {
+    fn summary_anodizer_version_is_cargo_pkg_version() {
         let ctx = anodizer_core::context::Context::test_fixture();
         let s = RunSummary::from_context(&ctx);
-        assert_eq!(s.anodize_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(s.anodizer_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The tool spells its own name on the wire: a document written today
+    /// carries `anodizer_version` and never the old spelling.
+    #[test]
+    fn a_summary_written_today_names_the_tool_version_anodizer_version() {
+        let text = serde_json::to_string(&populated_summary()).expect("serialize");
+        assert!(
+            text.contains(r#""anodizer_version":"0.0.0-test""#),
+            "a written summary carries the renamed field: {text}"
+        );
+        assert!(
+            !text.contains(r#""anodize_version""#),
+            "the old spelling must not be written: {text}"
+        );
+    }
+
+    /// The rename is a read-compatible one: a summary a previous release
+    /// wrote still parses, so a consumer that kept an old document is not
+    /// stranded by the schema bump.
+    #[test]
+    fn a_summary_written_before_the_rename_still_reads() {
+        let pre_rename = r#"{
+            "schema_version": 2,
+            "anodize_version": "0.25.1",
+            "tag": "v0.25.1",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "results": [],
+            "determinism_allowlist": {"compile_time": [], "runtime": []}
+        }"#;
+        let parsed: RunSummary =
+            serde_json::from_str(pre_rename).expect("a pre-rename summary parses");
+        assert_eq!(parsed.anodizer_version, "0.25.1");
+        assert_eq!(parsed.schema_version, 2);
     }
 
     #[test]
