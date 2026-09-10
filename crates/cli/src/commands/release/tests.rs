@@ -2252,6 +2252,37 @@ fn release_fails_when_git_refuses_the_repository() {
 }
 
 #[test]
+fn a_crate_selection_release_does_not_recover_from_an_unreadable_repository() {
+    // `--crate foo` names the crate itself, so HEAD's tags do not pick the
+    // selection — but the run still tags, builds and publishes out of a
+    // repository git must be able to read.
+    let mut opts = base_release_opts();
+    opts.crate_names = vec!["myapp".to_string()];
+    let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+    let err = super::run::recover_crate_selection(Err(refused_repository()), &opts, &log)
+        .expect_err("a named crate does not make an unreadable repository survivable");
+    assert!(
+        format!("{err:#}").contains("dubious ownership"),
+        "git's own error must reach the operator: {err:#}"
+    );
+    assert_eq!(
+        capture.warn_count(),
+        0,
+        "the run fails; it does not warn and carry on"
+    );
+}
+
+#[test]
+fn an_all_crates_release_does_not_recover_from_an_unreadable_repository() {
+    let mut opts = base_release_opts();
+    opts.all = true;
+    let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+    super::run::recover_crate_selection(Err(refused_repository()), &opts, &log)
+        .expect_err("--all does not make an unreadable repository survivable");
+    assert_eq!(capture.warn_count(), 0, "the run fails; it does not warn");
+}
+
+#[test]
 fn snapshot_release_warns_when_git_refuses_the_repository() {
     let mut opts = base_release_opts();
     opts.snapshot = true;

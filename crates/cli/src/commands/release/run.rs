@@ -21,6 +21,28 @@ pub(crate) fn selection_depends_on_head_tags(opts: &ReleaseOpts) -> bool {
         && !opts.preflight_secrets
 }
 
+/// Whether this run can proceed without reading the repository at all.
+///
+/// These modes never consult HEAD: `--snapshot` / `--nightly` / `--dry-run`
+/// build without a real tag, `--publish-only` / `--announce-only` consume a
+/// prior dist tree, `--split` / `--merge` drive a multi-host flow, and
+/// `--preflight-secrets` is a gate that runs before any tag exists.
+///
+/// Deliberately NOT the negation of [`selection_depends_on_head_tags`]: that
+/// predicate is also false for `--crate foo` and `--all`, which name the crates
+/// themselves but still need a repository git will read — asking one question
+/// for both let a real release continue past an unreadable repository.
+fn mode_tolerates_an_unreadable_repository(opts: &ReleaseOpts) -> bool {
+    opts.snapshot
+        || opts.nightly
+        || opts.dry_run
+        || opts.publish_only
+        || opts.announce_only
+        || opts.split
+        || opts.merge
+        || opts.preflight_secrets
+}
+
 /// Decide what a failed crate selection means for this run.
 ///
 /// A repository git refuses to read (dubious ownership, a checkout that is not
@@ -36,7 +58,7 @@ pub(crate) fn recover_crate_selection(
     match selection {
         Ok(selected) => Ok(selected),
         Err(e)
-            if !selection_depends_on_head_tags(opts)
+            if mode_tolerates_an_unreadable_repository(opts)
                 && e.chain().any(|c| c.is::<git::RepositoryUnreadable>()) =>
         {
             log.warn(&format!("continuing without the tags at HEAD: {e:#}"));
