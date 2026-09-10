@@ -267,6 +267,22 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         }
     }
 
+    // A signer that exits 0 without writing its output leaves a registered
+    // artifact pointing at nothing, which only fails much later during upload
+    // with an error that no longer names the signer at fault. `std::fs::exists`
+    // rather than `Path::exists` so a permission or I/O error stays silent and
+    // only a definite absence is reported.
+    for produced in &job.new_artifacts {
+        if matches!(std::fs::exists(&produced.path), Ok(false)) {
+            log.warn(&format!(
+                "{}[{}]: the signer exited 0 but did not write {}",
+                job.label,
+                job.id_label,
+                produced.path.display()
+            ));
+        }
+    }
+
     if let Some(result) = &job.authenticode_result {
         log.status(result); // status-ok: per-artifact authenticode result line
     }

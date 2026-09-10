@@ -216,3 +216,121 @@ mod harden_cosign_tests {
         assert_eq!(out.last().map(String::as_str), Some("--tlog-upload=false"));
     }
 }
+
+/// The `signature`/`certificate` outputs a sign job registers, and whether the
+/// signer that is about to "run" actually writes them.
+#[cfg(unix)]
+mod missing_output_warning {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    /// A sign job whose command exits 0 without writing anything, registering
+    /// one artifact per path in `outputs`.
+    fn job_registering(outputs: &[std::path::PathBuf]) -> SignJob {
+        SignJob {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            stdin_data: None,
+            env: None,
+            redact_extra: Vec::new(),
+            env_remove: Vec::new(),
+            label: "sign".to_string(),
+            id_label: "default".to_string(),
+            artifact_display: "app.tar.gz".to_string(),
+            signature_display: "app.tar.gz.sig".to_string(),
+            certificate_display: None,
+            output_flag: false,
+            new_artifacts: outputs
+                .iter()
+                .map(|p| Artifact {
+                    kind: ArtifactKind::Signature,
+                    path: p.clone(),
+                    name: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    target: None,
+                    crate_name: "app".to_string(),
+                    metadata: Default::default(),
+                    size: None,
+                })
+                .collect(),
+            rename_after: None,
+            authenticode_result: None,
+            verify: None,
+        }
+    }
+
+    #[test]
+    fn sign_job_warns_when_the_signer_writes_no_signature() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sig = dir.path().join("app.tar.gz.sig");
+        let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
+        execute_sign_job(&job_registering(std::slice::from_ref(&sig)), &log)
+            .expect("a signer exiting 0 must not fail the job");
+        let warnings: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Warn)
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(warnings.len(), 1, "exactly one warning; got {warnings:?}");
+        assert!(
+            warnings[0].contains("did not write") && warnings[0].contains("app.tar.gz.sig"),
+            "the warning must name the file the signer skipped; got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn sign_job_is_silent_when_the_signature_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sig = dir.path().join("app.tar.gz.sig");
+        std::fs::write(&sig, b"signature").expect("write signature");
+        let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
+        execute_sign_job(&job_registering(&[sig]), &log).expect("sign job must succeed");
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "a written signature warns about nothing"
+        );
+    }
+
+    #[test]
+    fn sign_job_warns_once_per_missing_artifact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sig = dir.path().join("app.tar.gz.sig");
+        let cert = dir.path().join("app.tar.gz.pem");
+        std::fs::write(&sig, b"signature").expect("write signature");
+        let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
+        execute_sign_job(&job_registering(&[sig, cert]), &log).expect("sign job must succeed");
+        let warnings: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Warn)
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "only the missing certificate warns; got {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("app.tar.gz.pem"),
+            "the warning must name the certificate; got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn sign_job_with_no_new_artifacts_never_warns() {
+        // The in-place Authenticode shape registers nothing, so there is no
+        // output path to miss.
+        let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
+        execute_sign_job(&job_registering(&[]), &log).expect("sign job must succeed");
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "a job registering nothing warns about nothing"
+        );
+    }
+}

@@ -7319,3 +7319,60 @@ mod post_sign_verification {
         assert_eq!(calls.len(), 2, "one sign + one verify, no retry: {calls:?}");
     }
 }
+
+#[test]
+#[cfg(unix)]
+fn missing_signature_output_is_still_recorded_as_an_artifact() {
+    use anodizer_core::artifact::Artifact;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let subject = dir.path().join("myapp.tar.gz");
+    std::fs::write(&subject, b"payload").expect("write subject");
+
+    let signs = vec![SignConfig {
+        id: Some("noop".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec!["{{ .Artifact }}".to_string()]),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        authenticode: None,
+        verify: None,
+        if_condition: None,
+    }];
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(signs)
+        .build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "myapp.tar.gz".to_string(),
+        path: subject,
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    SignStage
+        .run(&mut ctx)
+        .expect("a signer exiting 0 must not fail the stage");
+
+    let sigs: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .into_iter()
+        .map(|a| a.name.clone())
+        .collect();
+    assert_eq!(
+        sigs,
+        vec!["myapp.tar.gz.sig".to_string()],
+        "the signature stays registered so downstream stages still see it"
+    );
+}
