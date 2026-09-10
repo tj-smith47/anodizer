@@ -981,6 +981,48 @@ fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
     );
 }
 
+/// A dry run collects targets without submitting any of them. A mixed dry run
+/// — one entry disqualified, one healthy — therefore landed nothing, so the
+/// publisher reports itself skipped rather than claiming an outcome a rollback
+/// would have something to unwind.
+#[test]
+fn a_dry_run_winget_submission_records_no_landed_entry() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![
+            winget_crate_with("broken", "v{{ .Version }}", "Acme.bad id"),
+            winget_crate_with("healthy", "v{{ .Version }}", "Acme.healthy"),
+        ])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    add_windows_zip(&mut ctx, "broken");
+    add_windows_zip(&mut ctx, "healthy");
+
+    let evidence = WingetPublisher::new()
+        .run(&mut ctx)
+        .expect("a dry run must not fail");
+    let anodizer_core::PublishEvidenceExtra::Winget(ref extra) = evidence.extra else {
+        panic!("winget evidence: {:?}", evidence.extra);
+    };
+    assert_eq!(
+        extra.winget_targets.len(),
+        1,
+        "the healthy crate still collects a target"
+    );
+    assert!(
+        matches!(
+            ctx.pending_outcome,
+            Some(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::EntriesSkipped
+            ))
+        ),
+        "a dry run reached no remote, so nothing landed: {:?}",
+        ctx.pending_outcome
+    );
+}
+
 #[test]
 fn winget_publisher_classification() {
     let p = WingetPublisher::new();
