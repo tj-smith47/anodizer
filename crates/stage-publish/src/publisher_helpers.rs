@@ -230,15 +230,23 @@ pub(crate) fn evaluate_entry_skips(
     landing: RunLanding,
     total: usize,
 ) -> usize {
-    // The caller answers which reason its run earned, so the precedence
-    // between them is decided here from that value — never from the order a
-    // caller happens to write its two blocks in.
-    if matches!(landing, RunLanding::NothingApplicable) && ctx.pending_outcome.is_none() {
-        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-            anodizer_core::SkipReason::NotApplicable,
-        ));
-    }
     let reasons = entry_skip_reasons(ctx, publisher);
+    // The precedence between the two terminal reasons is a function of the
+    // landing and the reasons, never of the order two statements are written
+    // in: nothing-applicable answers WHY nothing landed, where entries-skipped
+    // only says that entries disqualified themselves.
+    let outcome = match landing {
+        RunLanding::NothingApplicable => Some(anodizer_core::SkipReason::NotApplicable),
+        RunLanding::NothingLanded if !reasons.is_empty() => {
+            Some(anodizer_core::SkipReason::EntriesSkipped)
+        }
+        RunLanding::NothingLanded | RunLanding::Landed => None,
+    };
+    let recorded = outcome.filter(|_| ctx.pending_outcome.is_none());
+    if let Some(reason) = recorded {
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(reason));
+    }
+    let recorded_entries_skipped = recorded == Some(anodizer_core::SkipReason::EntriesSkipped);
     if reasons.is_empty() {
         return 0;
     }
@@ -257,11 +265,8 @@ pub(crate) fn evaluate_entry_skips(
             "{publisher} skipped {} of {total} entries — {joined}",
             reasons.len(),
         ));
-    } else if ctx.pending_outcome.is_none() {
+    } else if recorded_entries_skipped {
         log.status(&format!("skipping {publisher} — {joined}"));
-        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-            anodizer_core::SkipReason::EntriesSkipped,
-        ));
     }
     reasons.len()
 }
