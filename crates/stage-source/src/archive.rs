@@ -154,6 +154,12 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 }
                 let mut options =
                     zip::write::SimpleFileOptions::default().compression_method(entry_method);
+                // An executable committed to the repo must stay executable
+                // after the rewrite; the default options reset every entry to
+                // 0o644.
+                if let Some(mode) = entry.unix_mode() {
+                    options = options.unix_permissions(mode);
+                }
                 if let Some(t) = sde_zip_time {
                     options = options.last_modified_time(t);
                 }

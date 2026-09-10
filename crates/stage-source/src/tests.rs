@@ -1663,3 +1663,146 @@ fn test_source_archive_zip_extras_deterministic_under_sde() {
         "extras must be appended in sorted src order, got positions {positions:?} in {names:?}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Source zip rewrite: entry metadata survives the append pass
+// -----------------------------------------------------------------------
+
+/// A committed repo whose `scripts/run.sh` is executable and whose
+/// `src/main.rs` is not, plus an uncommitted `extra.txt` for `source.files`.
+#[cfg(unix)]
+fn executable_source_repo(tmp: &std::path::Path) {
+    anodizer_core::test_helpers::create_test_project(tmp);
+    std::fs::create_dir_all(tmp.join("scripts")).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &tmp.join("scripts/run.sh"),
+        "exit 0\n",
+    );
+    anodizer_core::test_helpers::init_git_repo(tmp);
+    std::fs::write(tmp.join("extra.txt"), b"extra\n").unwrap();
+}
+
+#[cfg(unix)]
+fn zip_source_inputs<'a>(
+    tmp: &'a std::path::Path,
+    dist: &'a std::path::Path,
+    extras: &'a [anodizer_core::config::SourceFileEntry],
+    log: &'a anodizer_core::log::StageLogger,
+    sde_mtime: Option<u64>,
+) -> SourceArchiveInputs<'a> {
+    SourceArchiveInputs {
+        dist,
+        format: "zip",
+        name: "test-project-1.2.3",
+        prefix: "test-project-1.2.3/",
+        extra_files: extras,
+        repo_root: tmp,
+        commit: "HEAD",
+        log,
+        strict: false,
+        sde_mtime,
+    }
+}
+
+#[cfg(unix)]
+fn extra_txt_entry() -> anodizer_core::config::SourceFileEntry {
+    anodizer_core::config::SourceFileEntry {
+        src: "extra.txt".to_string(),
+        dst: None,
+        strip_parent: None,
+        info: None,
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn source_zip_rewrite_preserves_executable_mode() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    executable_source_repo(tmp.path());
+
+    let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
+    let extras = vec![extra_txt_entry()];
+    let out = create_source_archive(&zip_source_inputs(tmp.path(), &dist, &extras, &log, None))
+        .expect("zip source archive");
+
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let mut modes = std::collections::HashMap::new();
+    for i in 0..zip.len() {
+        let entry = zip.by_index(i).unwrap();
+        modes.insert(entry.name().to_string(), entry.unix_mode());
+    }
+    let script = modes
+        .get("test-project-1.2.3/scripts/run.sh")
+        .unwrap_or_else(|| panic!("script entry missing; got {:?}", modes.keys()));
+    assert!(
+        script.expect("script entry carries a mode") & 0o111 != 0,
+        "a committed executable must stay executable; got {script:?}"
+    );
+    let plain = modes
+        .get("test-project-1.2.3/Cargo.toml")
+        .unwrap_or_else(|| panic!("Cargo.toml entry missing; got {:?}", modes.keys()));
+    assert_eq!(
+        plain.expect("plain entry carries a mode") & 0o111,
+        0,
+        "a plain file must not gain the executable bit"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn source_zip_rewrite_keeps_the_source_date_epoch_pin() {
+    let tmp = TempDir::new().unwrap();
+    let dist_a = tmp.path().join("dist-a");
+    let dist_b = tmp.path().join("dist-b");
+    std::fs::create_dir_all(&dist_a).unwrap();
+    std::fs::create_dir_all(&dist_b).unwrap();
+    executable_source_repo(tmp.path());
+
+    let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
+    let extras = vec![extra_txt_entry()];
+    let sde = 1_600_000_000u64;
+    let a = create_source_archive(&zip_source_inputs(
+        tmp.path(),
+        &dist_a,
+        &extras,
+        &log,
+        Some(sde),
+    ))
+    .expect("first zip");
+    let b = create_source_archive(&zip_source_inputs(
+        tmp.path(),
+        &dist_b,
+        &extras,
+        &log,
+        Some(sde),
+    ))
+    .expect("second zip");
+
+    assert_eq!(
+        std::fs::read(&a).unwrap(),
+        std::fs::read(&b).unwrap(),
+        "two runs at one SOURCE_DATE_EPOCH must be byte-identical"
+    );
+
+    let (y, mo, d, h, mi, s) = anodizer_core::sde::zip_datetime_fields(sde).unwrap();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&a).unwrap()).unwrap();
+    for i in 0..zip.len() {
+        let entry = zip.by_index(i).unwrap();
+        let t = entry.last_modified().expect("entry carries a timestamp");
+        assert_eq!(
+            (
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ),
+            (y, mo, d, h, mi, s),
+            "entry {} lost the SOURCE_DATE_EPOCH pin",
+            entry.name()
+        );
+    }
+}
