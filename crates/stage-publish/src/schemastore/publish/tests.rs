@@ -1692,6 +1692,102 @@ fn fetch_raw_optional_errors_on_non_404_non_success() {
     );
 }
 
+// --- probe request budget (HTTP-mock, local TCP) ---------------------
+
+/// The catalog route every probe pin needs, answering with a catalog that
+/// already holds the external entry so the probe resolves NoOp.
+fn probe_catalog_route(body: &'static str) -> ScriptedRoute {
+    ScriptedRoute {
+        method: "GET",
+        path_pattern: "/src/api/json/catalog.json",
+        response: body,
+        times: Some(1),
+    }
+}
+
+fn http_response_with_body(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[test]
+fn an_all_external_probe_requests_the_catalog_and_nothing_else() {
+    // The dialect allowlist is read only for a vendor plan, so a config
+    // whose every entry is external must spend exactly one request per
+    // release on the probe: the catalog.
+    let e = external_entry();
+    let desired = catalog::build_entry_json(
+        &e.name,
+        "Anodizer Rust release-automation configuration file",
+        &e.file_match,
+        e.url.as_deref().unwrap(),
+        None,
+    );
+    let catalog_body: &'static str =
+        Box::leak(http_response_with_body(&catalog_with(&[desired])).into_boxed_str());
+    let (addr, log) = spawn_scripted_responder(vec![probe_catalog_route(catalog_body)]);
+
+    let mut ctx = TestContextBuilder::new().build();
+    let cfg = SchemastoreConfig::default();
+    let effective = vec![(
+        &e,
+        "Anodizer Rust release-automation configuration file".to_string(),
+    )];
+    let all_noop =
+        probe_remote_all_noop_from(&mut ctx, &cfg, &effective, &format!("http://{addr}"))
+            .expect("probe against the local responder");
+    assert!(
+        all_noop,
+        "the catalog already holds the entry ⇒ certain no-op"
+    );
+
+    let paths: Vec<String> = log.lock().unwrap().iter().map(|r| r.path.clone()).collect();
+    assert_eq!(
+        paths,
+        vec![format!("/{CATALOG_PATH}")],
+        "an all-external probe must issue the catalog GET and no other request"
+    );
+}
+
+#[test]
+fn a_probe_with_a_vendor_entry_still_requests_the_dialect_allowlist() {
+    // The other direction of the same rule: a vendor plan DOES read the
+    // allowlist, so the fetch must survive for a config that has one.
+    let root = tempfile::tempdir().expect("root");
+    std::fs::create_dir_all(root.path().join("schemas")).unwrap();
+    std::fs::write(
+        root.path().join("schemas/cfgd-config.schema.json"),
+        r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"object"}"#,
+    )
+    .unwrap();
+
+    let catalog_body: &'static str =
+        Box::leak(http_response_with_body(&catalog_with(&[])).into_boxed_str());
+    let (addr, log) = spawn_scripted_responder(vec![probe_catalog_route(catalog_body)]);
+
+    let e = vendor_entry();
+    let mut ctx = TestContextBuilder::new()
+        .project_root(root.path().to_path_buf())
+        .build();
+    let cfg = SchemastoreConfig::default();
+    let effective = vec![(&e, "cfgd machine configuration".to_string())];
+    let all_noop =
+        probe_remote_all_noop_from(&mut ctx, &cfg, &effective, &format!("http://{addr}"))
+            .expect("probe against the local responder");
+    assert!(
+        !all_noop,
+        "the catalog is empty ⇒ the vendor entry needs an Add"
+    );
+
+    let paths: Vec<String> = log.lock().unwrap().iter().map(|r| r.path.clone()).collect();
+    assert!(
+        paths.contains(&format!("/{DIALECT_ALLOWLIST_PATH}")),
+        "a vendor plan reads the allowlist, so the probe must still fetch it; got {paths:?}"
+    );
+}
+
 // --- run_real I/O shell: post-clone splice/write/idempotency ---------
 //
 // `run_real` clones the fork, then `sync_to_upstream` fetches the

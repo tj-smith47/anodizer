@@ -85,15 +85,39 @@ fn probe_remote_all_noop_inner(
     cfg: &SchemastoreConfig,
     effective: &[(&SchemaEntry, String)],
 ) -> anyhow::Result<bool> {
-    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))?;
     let raw_base = format!(
         "https://raw.githubusercontent.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}/{UPSTREAM_DEFAULT_BRANCH}"
     );
+    probe_remote_all_noop_from(ctx, cfg, effective, &raw_base)
+}
+
+/// [`probe_remote_all_noop_inner`] against an explicit raw-content base, so a
+/// test can observe which requests the probe actually issues.
+pub(super) fn probe_remote_all_noop_from(
+    ctx: &mut Context,
+    cfg: &SchemastoreConfig,
+    effective: &[(&SchemaEntry, String)],
+    raw_base: &str,
+) -> anyhow::Result<bool> {
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))?;
     let catalog_url = format!("{raw_base}/{CATALOG_PATH}");
     let catalog_json = fetch_raw_required(&client, &catalog_url)?;
     // One fetch for the whole run: every vendor entry consults the same
     // allowlist file, for both `highSchemaVersion` and its `options` block.
-    let jsonc = fetch_raw_optional(&client, &format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}"))?;
+    // Only a vendor plan reads it, so an all-external config must not spend a
+    // request on a file none of its decisions consults.
+    let mut any_vendor = false;
+    for (entry, _) in effective {
+        if entry.mode()? == SchemaMode::Vendor {
+            any_vendor = true;
+            break;
+        }
+    }
+    let jsonc = if any_vendor {
+        fetch_raw_optional(&client, &format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}"))?
+    } else {
+        None
+    };
 
     let project_root = ctx
         .options
