@@ -1830,10 +1830,23 @@ fn preprocess_leaves_bare_join_alone() {
 
 #[test]
 fn preprocess_leaves_piped_join_filter_alone() {
-    for template in [
-        r#"{{ list(items=[Os, Arch]) | join(sep="-") }}"#,
-        r#"{{ Names | join(sep=", ") }}"#,
+    for (template, expected) in [
+        // The Go-positional head IS rewritten into the named-argument form;
+        // the `join` after the pipe is a Tera filter and must come through
+        // that rewrite untouched.
+        (
+            r#"{{ list "a" "b" | join(sep="-") }}"#,
+            r#"{{ list(items=["a", "b"]) | join(sep="-") }}"#,
+        ),
+        (
+            r#"{{ list(items=[Os, Arch]) | join(sep="-") }}"#,
+            r#"{{ list(items=[Os, Arch]) | join(sep="-") }}"#,
+        ),
+        (
+            r#"{{ Names | join(sep=", ") }}"#,
+            r#"{{ Names | join(sep=", ") }}"#,
+        ),
     ] {
-        assert_eq!(preprocess(template), template, "template {template}");
+        assert_eq!(preprocess(template), expected, "template {template}");
     }
 }

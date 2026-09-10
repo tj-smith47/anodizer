@@ -4720,4 +4720,37 @@ fn tera_list_join_filter_still_works() {
         .unwrap(),
         "linux-amd64"
     );
+    // A literal array piped into the filter is the form that reaches the
+    // preprocessor with no head function to rewrite, so it exercises the
+    // filter path on its own.
+    assert_eq!(
+        render(r#"{{ ["x", "y"] | join(sep=", ") }}"#, &vars).unwrap(),
+        "x, y"
+    );
+}
+
+#[test]
+fn the_join_path_function_never_spells_the_platform_separator() {
+    // `join` is a PATH join whose output is compared across build shards, so
+    // it must emit `/` on every host — Go's `filepath.Join` is host-dependent
+    // and this one deliberately is not. A source that reaches for
+    // `MAIN_SEPARATOR` has re-derived the host rule.
+    let src =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/template/base_tera/path.rs");
+    let declared = anodizer_core::test_helpers::test_sources::rust_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/template/base_tera"),
+    );
+    assert!(
+        declared.contains(&src),
+        "the scanner no longer sees path.rs; got {declared:?}"
+    );
+    let text = std::fs::read_to_string(&src).expect("read path.rs");
+    assert!(
+        !text.contains("MAIN_SEPARATOR"),
+        "the path join must spell the separator as '/' on every platform"
+    );
+    assert!(
+        text.contains("\"/\""),
+        "the separator the function joins on must be a literal slash"
+    );
 }
