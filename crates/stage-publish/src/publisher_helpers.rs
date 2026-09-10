@@ -919,30 +919,77 @@ mod tests {
     /// The pairing is [`skip_label_belongs_to`] — the same rule
     /// [`entry_skip_reasons`] collects by, so a label this accepts as covered
     /// really is the label that publisher collects.
+    /// The publisher/stage label a call site passes: the first string literal
+    /// inside the call's OWN argument list, `tail` starting just after its
+    /// opening parenthesis. Bounded by the call's parentheses, never by a line
+    /// count — a lookahead that runs past the closing paren attributes the
+    /// next statement's literal to this publisher, which is how the helper
+    /// DEFINITIONS' parameter names were arriving.
+    fn first_literal_argument(tail: &str) -> Option<String> {
+        let mut depth = 1usize;
+        let mut chars = tail.char_indices();
+        let mut lit_start = None;
+        while let Some((i, c)) = chars.next() {
+            if let Some(start) = lit_start {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => return Some(tail[start..i].to_string()),
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => lit_start = Some(i + 1),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The label extractor must stop at the call's own closing parenthesis.
+    /// A line-counted lookahead reads the NEXT statement's literal when the
+    /// call passes none, which attributes an unrelated string to a publisher —
+    /// a guard whose attribution can be wrong is the same class as a guard
+    /// that cannot fail.
+    #[test]
+    fn the_label_extractor_stops_at_the_calls_own_arguments() {
+        assert_eq!(
+            first_literal_argument("ctx, \"homebrew\", entry)").as_deref(),
+            Some("homebrew")
+        );
+        // A call passing no literal yields none, even though a literal sits
+        // two lines below it.
+        assert_eq!(
+            first_literal_argument("ctx, publisher, entry)\n        log.status(\"unrelated\");"),
+            None
+        );
+        // A nested call's literal still belongs to this call's argument list.
+        assert_eq!(
+            first_literal_argument("ctx, name_of(\"scoop\"), entry)").as_deref(),
+            Some("scoop")
+        );
+    }
+
     #[test]
     fn every_entry_skipping_publisher_evaluates_its_skips() {
         let files = anodizer_core::test_helpers::test_sources::rust_sources(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
         );
 
-        // The publisher/stage label is the first string literal argument of
-        // each call, on its own line in every call site's formatting.
         fn labels(sources: &[(std::path::PathBuf, String)], call: &str) -> Vec<String> {
             let mut out = Vec::new();
             for (_, text) in sources {
                 for (idx, _) in text.match_indices(call) {
-                    let tail = &text[idx + call.len()..];
-                    let mut lit = None;
-                    for line in tail.lines().take(6) {
-                        if let Some(start) = line.find('"') {
-                            let rest = &line[start + 1..];
-                            if let Some(end) = rest.find('"') {
-                                lit = Some(rest[..end].to_string());
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(lit) = lit {
+                    if let Some(lit) = first_literal_argument(&text[idx + call.len()..]) {
                         out.push(lit);
                     }
                 }
@@ -967,7 +1014,6 @@ mod tests {
         skipping.extend(labels(&sources, "record_entry_skip("));
         skipping.sort();
         skipping.dedup();
-        skipping.retain(|l| l != "publisher" && l != "label");
         let evaluated = labels(&sources, "evaluate_entry_skips(");
 
         assert!(

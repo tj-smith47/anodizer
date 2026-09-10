@@ -667,6 +667,68 @@ fn the_repository_owner_is_rendered_once_per_crate() {
     );
 }
 
+/// The preflight probe reads the same derived config the publish path does, so
+/// an unrenderable owner warns once there too. The render moved to the derive
+/// seam to make that true, and this is the path that would otherwise repeat the
+/// line for every publisher it probes.
+#[test]
+fn a_preflight_run_warns_once_for_an_unrenderable_winget_owner() {
+    let crate_cfg = CrateConfig {
+        name: "demo".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            winget: Some(WingetConfig {
+                publisher: Some("AcmeCo".to_string()),
+                repository: Some(RepositoryConfig {
+                    owner: Some("{{ acme".to_string()),
+                    name: Some("winget-pkgs-fork".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    add_windows_zip(&mut ctx, "demo");
+
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    let log = ctx.logger("publish");
+    let report = crate::preflight::run_preflight_with_factory(
+        &mut ctx,
+        &log,
+        &crate::testing::CannedFactory {
+            cargo_state: anodizer_core::preflight::PublisherState::Clean,
+            choco_state: anodizer_core::preflight::PublisherState::Clean,
+            winget_state: anodizer_core::preflight::PublisherState::Clean,
+            aur_state: anodizer_core::preflight::PublisherState::Clean,
+        },
+    )
+    .expect("a non-strict render failure is not a preflight error");
+    assert!(
+        report.entries.iter().any(|e| e.publisher == "winget"),
+        "the probe still runs: {:?}",
+        report.entries
+    );
+
+    let owner_warns: Vec<String> = capture
+        .warn_messages()
+        .into_iter()
+        .filter(|m| m.contains("winget.repository.owner"))
+        .collect();
+    assert_eq!(
+        owner_warns.len(),
+        1,
+        "the probe reads the seam's derived owner rather than re-rendering it: {owner_warns:?}"
+    );
+}
+
 /// `package_identifier` is a template like every sibling field: the
 /// rendered value is what the manifests, the manifest filenames and the
 /// publish branch carry.
