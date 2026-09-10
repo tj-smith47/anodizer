@@ -406,12 +406,12 @@ pub fn config_time_amd64_variant(
         .unwrap_or_default();
     let log = ctx.logger("build");
 
-    // The archive stage names a target's group by its FIRST binary in
-    // artifact-registration order, which is not raw config order: prebuilt
-    // imports register during planning, compile jobs are registered in
-    // planned order after them, and copy_from jobs drain last. Walk the
-    // builds in the same three passes so the projected variant belongs to
-    // the same build whose metadata names the group.
+    // The archive stage groups a target's binaries by CPU variant, and each
+    // group is named by its first binary in artifact-registration order,
+    // which is not raw config order: prebuilt imports register during
+    // planning, compile jobs are registered in planned order after them, and
+    // copy_from jobs drain last. Walk the builds in the same three passes so
+    // the projected variant belongs to a group that is really produced.
     let pass_matches = |pass: usize, b: &BuildConfig| -> bool {
         let prebuilt = matches!(b.builder, Some(BuilderKind::Prebuilt));
         match pass {

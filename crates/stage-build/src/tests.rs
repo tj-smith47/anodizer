@@ -3429,18 +3429,19 @@ mod no_binary_skip_visibility {
 }
 
 // ---------------------------------------------------------------------------
-// First-binary agreement: real artifact registration + real archive naming
+// Projection agreement: real artifact registration + real archive naming
 // vs the config-time projection
 // ---------------------------------------------------------------------------
 
-/// Executable both-sides pin for the "first binary names the group" rule:
-/// artifacts are registered through the runner's own `add_artifact` in the
-/// REAL registration order (compile results before drained copy_from jobs),
-/// the REAL archive stage names the group, and the config-time projection —
-/// walking the same crate config, where the copy_from entry is listed FIRST —
-/// must pick the same variant the produced archive carries.
+/// Executable both-sides pin for the config-time projection: artifacts are
+/// registered through the runner's own `add_artifact` in the REAL
+/// registration order (compile results before drained copy_from jobs), the
+/// REAL archive stage names the groups — one per CPU variant — and the
+/// config-time projection, walking the same crate config where the copy_from
+/// entry is listed FIRST, must name a variant one of those archives actually
+/// carries: the first-registered build's, not raw config order's.
 #[test]
-fn archive_group_first_binary_variant_agrees_with_projection() {
+fn archive_group_variants_agree_with_the_projection() {
     use anodizer_core::config::{Amd64Variant, BuildConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_stage_archive::ArchiveStage;
@@ -3525,29 +3526,37 @@ fn archive_group_first_binary_variant_agrees_with_projection() {
     )
     .unwrap();
 
-    // Real archive-group naming.
+    // Real archive-group naming: two tuning levels, two archives.
     ArchiveStage.run(&mut ctx).expect("archive stage runs");
     let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-    assert_eq!(archives.len(), 1, "one group for the target");
-    let group_variant = archives[0].metadata.get("amd64_variant").cloned();
+    let mut produced: Vec<(Option<String>, String)> = archives
+        .iter()
+        .map(|a| (a.metadata.get("amd64_variant").cloned(), a.name.clone()))
+        .collect();
+    produced.sort();
     assert_eq!(
-        group_variant.as_deref(),
-        Some("v2"),
-        "the group carries its FIRST registered binary's variant"
+        produced.len(),
+        2,
+        "each CPU variant of the target archives separately: {produced:?}"
     );
     assert!(
-        archives[0].name.contains("amd64v2"),
-        "the produced name renders the first binary's level: {}",
-        archives[0].name
+        produced[0].1.contains("amd64v2") && produced[1].1.contains("amd64v3"),
+        "each produced name renders its own group's level: {produced:?}"
     );
 
-    // The projection picks the same build — compile pass before copy_from —
-    // so both sides agree on the group's level.
+    // The projection picks the first-REGISTERED build — the compile pass,
+    // ahead of the drained copy_from job — so the name it derives belongs to
+    // an archive that was really produced.
     let projected =
         anodizer_core::build_env::config_time_amd64_variant(&krate, target, &[], &mut ctx).unwrap();
     assert_eq!(
-        projected, group_variant,
-        "projection must agree with the produced group's first-binary variant"
+        projected.as_deref(),
+        Some("v2"),
+        "projection follows registration order, not raw config order"
+    );
+    assert!(
+        produced.iter().any(|(variant, _)| *variant == projected),
+        "the projected variant must name a produced group: {produced:?}"
     );
 
     // Guard the fixture's premise: a declared level on the copy entry would
