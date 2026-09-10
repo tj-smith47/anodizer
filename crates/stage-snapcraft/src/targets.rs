@@ -15,8 +15,10 @@ use anodizer_core::context::Context;
 /// resort of the snap-name resolution chain (`snapcrafts[].name` → project
 /// name → primary binary), mirroring `generate_snap_yaml`, which names the
 /// shipped snap after the first staged binary when nothing else is set.
-pub(crate) fn crate_primary_binary(krate: &CrateConfig) -> String {
-    anodizer_core::build_plan::crate_primary_binary_name(krate)
+pub(crate) fn crate_primary_binary(ctx: &Context, krate: &CrateConfig) -> String {
+    anodizer_core::build_plan::crate_primary_binary_name(krate, |build| {
+        anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
+    })
 }
 
 /// Serialized shape of a recorded snapcraft publish. One entry per
@@ -80,7 +82,7 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
             // actually uploaded.
             let package_name = snap_cfg.name.clone().unwrap_or_else(|| {
                 if ctx.config.project_name.is_empty() {
-                    crate_primary_binary(krate)
+                    crate_primary_binary(ctx, krate)
                 } else {
                     ctx.config.project_name.clone()
                 }

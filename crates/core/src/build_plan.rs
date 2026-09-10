@@ -225,20 +225,26 @@ pub fn binary_or_crate_name(krate: &CrateConfig, build: &BuildConfig) -> String 
 }
 
 /// The binary a crate's release is named after when no archive selector
-/// narrows the candidates: the first PRODUCING build entry's binary, else the
-/// crate's own `[[bin]]` name. The last resort of every "what is this crate's
-/// binary called" chain — the snap name, the installed-version probe.
+/// narrows the candidates: the first build entry the run actually RELEASES —
+/// one that produces an artifact and that `is_skipped` does not veto — else
+/// the crate's own `[[bin]]` name. The last resort of every "what is this
+/// crate's binary called" chain — the snap name, the installed-version probe.
 ///
 /// Taking the first CONFIGURED build instead names the release after an entry
 /// the run never compiles: a `defaults.builds:` template materialized onto a
 /// crate carries `binary: None` and resolves no default `--bin <crate>`, so it
-/// produces nothing while still sitting first in the list.
-pub fn crate_primary_binary_name(krate: &CrateConfig) -> String {
+/// produces nothing while still sitting first in the list; a `skip:` build
+/// compiles nothing for the same reason. Pass [`build_is_skipped`] against a
+/// live context for `is_skipped`.
+pub fn crate_primary_binary_name(
+    krate: &CrateConfig,
+    mut is_skipped: impl FnMut(&BuildConfig) -> bool,
+) -> String {
     planned_builds(krate)
         .and_then(|builds| {
             builds
                 .iter()
-                .find(|b| build_produces(krate, b))
+                .find(|b| build_produces(krate, b) && !is_skipped(b))
                 .map(|b| binary_or_crate_name(krate, b))
         })
         .unwrap_or_else(|| krate.name.clone())

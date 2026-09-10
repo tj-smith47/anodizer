@@ -241,7 +241,7 @@ pub(crate) fn run_uploads(
                     let snap_name = resolve_snap_name(
                         snap_cfg,
                         &project_name,
-                        &crate::targets::crate_primary_binary(krate),
+                        &crate::targets::crate_primary_binary(ctx, krate),
                     );
                     let probe_channels = effective_channels.clone().unwrap_or_default();
                     match revision_missing_channels(&snap_name, version, arch, &probe_channels, log)

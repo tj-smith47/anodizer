@@ -244,7 +244,7 @@ fn resolve_snap_names(ctx: &Context) -> Vec<String> {
             if !proceed {
                 continue;
             }
-            let name = snap_name_for(snap_cfg, project_name, &primary_binary(krate));
+            let name = snap_name_for(snap_cfg, project_name, &primary_binary(ctx, krate));
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -255,8 +255,10 @@ fn resolve_snap_names(ctx: &Context) -> Vec<String> {
 
 /// The crate's primary binary name — the first build's `binary`, falling back
 /// to the crate name. Last resort of the snap-name resolution chain.
-fn primary_binary(krate: &anodizer_core::config::CrateConfig) -> String {
-    anodizer_core::build_plan::crate_primary_binary_name(krate)
+fn primary_binary(ctx: &Context, krate: &anodizer_core::config::CrateConfig) -> String {
+    anodizer_core::build_plan::crate_primary_binary_name(krate, |build| {
+        anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
+    })
 }
 
 /// `snapcrafts[].name` → project name → primary binary, mirroring
@@ -879,7 +881,8 @@ Rev    Uploaded              Arches  Version  Channels
             }]),
             ..Default::default()
         };
-        assert_eq!(primary_binary(&with_build), "mybin");
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
+        assert_eq!(primary_binary(&ctx, &with_build), "mybin");
         // No builds ⇒ the crate name is the last resort.
         let no_build = CrateConfig {
             name: "app".to_string(),
@@ -887,20 +890,27 @@ Rev    Uploaded              Arches  Version  Channels
             builds: None,
             ..Default::default()
         };
-        assert_eq!(primary_binary(&no_build), "app");
+        assert_eq!(primary_binary(&ctx, &no_build), "app");
     }
 
-    /// A `defaults.builds:` template materialized onto a crate leaves a first
-    /// entry that declares no `binary:` and resolves no `[[bin]]` of its own,
-    /// so the release compiles nothing for it. Naming the snap after that
-    /// entry publishes the crate name where the shipped binary's name belongs.
+    /// A build the release never runs must not name the snap, whichever way it
+    /// fails to run: a `skip:` entry compiles nothing, and a `defaults.builds:`
+    /// template materialized onto a crate leaves an entry that declares no
+    /// `binary:` and resolves no `[[bin]]` of its own. Naming the snap after
+    /// either publishes a name no shipped binary carries.
     #[test]
     fn a_snap_name_ignores_a_build_the_release_never_produces() {
-        use anodizer_core::config::BuildConfig;
+        use anodizer_core::config::{BuildConfig, StringOrBool};
+        let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
         let krate = CrateConfig {
             name: "app".to_string(),
             path: ".".to_string(),
             builds: Some(vec![
+                BuildConfig {
+                    binary: Some("never-run".into()),
+                    skip: Some(StringOrBool::Bool(true)),
+                    ..Default::default()
+                },
                 BuildConfig::default(),
                 BuildConfig {
                     binary: Some("real".into()),
@@ -910,7 +920,11 @@ Rev    Uploaded              Arches  Version  Channels
             ..Default::default()
         };
         assert_eq!(
-            snap_name_for(&SnapcraftConfig::default(), "", &primary_binary(&krate)),
+            snap_name_for(
+                &SnapcraftConfig::default(),
+                "",
+                &primary_binary(&ctx, &krate)
+            ),
             "real"
         );
     }

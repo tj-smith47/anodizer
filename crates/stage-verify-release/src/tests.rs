@@ -604,11 +604,12 @@ fn produced_asset_names_honors_release_ids_filter() {
 
 #[test]
 fn crate_binary_name_prefers_build_binary_then_falls_back() {
+    let ctx = TestContextBuilder::new().tag("v1.0.0").build();
     let with_bin = published_crate("mycrate", Some("mybin"));
-    assert_eq!(crate_binary_name(&with_bin), "mybin");
+    assert_eq!(crate_binary_name(&ctx, &with_bin), "mybin");
     let without = published_crate("mycrate", None);
     assert_eq!(
-        crate_binary_name(&without),
+        crate_binary_name(&ctx, &without),
         "mycrate",
         "falls back to crate name when no build binary is set"
     );

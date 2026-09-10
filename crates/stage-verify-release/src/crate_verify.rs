@@ -248,7 +248,7 @@ pub(crate) fn verify_one_crate(
         && scope.docker_ok
         && let Some(smoke_cfg) = cfg.install_smoke.as_ref()
     {
-        let binary = crate_binary_name(crate_cfg);
+        let binary = crate_binary_name(ctx, crate_cfg);
         for (path, name, target) in linux_packages(ctx, &crate_cfg.name) {
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
