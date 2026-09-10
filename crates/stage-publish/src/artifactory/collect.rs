@@ -261,7 +261,7 @@ pub(crate) fn collect_upload_artifacts_owned(
 /// enumeration**, degrading to the mode/ids/exts-filtered set when
 /// `extra_files` resolution fails.
 ///
-/// Used by both publishers' `collect_*_targets` evidence walkers. A quiet
+/// The returned set is the artifact list a rollback would DELETE. A quiet
 /// logger swallows the `extra_files` glob warnings (rollback enumeration is
 /// not a user-facing render pass), and a resolution error only narrows the
 /// rollback checklist — the publish path itself called
