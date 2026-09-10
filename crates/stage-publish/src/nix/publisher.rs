@@ -563,8 +563,6 @@ mod publisher_tests {
         }
     }
 
-    /// An overlay-less entry disqualifies itself only: the crate after it in
-    /// the same run still reaches its publish path.
     /// Every entry disqualifying itself is a different defect from no crate
     /// carrying a `publish.nix` block, and the two have different remedies.
     /// An all-skipped run must name the entry reasons and must NOT send the
@@ -628,6 +626,8 @@ mod publisher_tests {
         );
     }
 
+    /// An overlay-less entry disqualifies itself only: the crate after it in
+    /// the same run still reaches its publish path.
     #[test]
     fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
         let mut broken = nix_crate("alpha");
