@@ -1806,3 +1806,51 @@ fn source_zip_rewrite_keeps_the_source_date_epoch_pin() {
         );
     }
 }
+
+#[test]
+#[cfg(unix)]
+fn source_zip_extra_files_appear_once_under_their_relative_path() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    anodizer_core::test_helpers::create_test_project(tmp.path());
+    std::fs::write(tmp.path().join("extra.txt"), b"extra\n").unwrap();
+    anodizer_core::test_helpers::init_git_repo(tmp.path());
+
+    // Glob expansion hands the stage an absolute `src`, which is what used to
+    // reach the archive verbatim.
+    let extras = vec![anodizer_core::config::SourceFileEntry {
+        src: tmp.path().join("extra.txt").to_string_lossy().into_owned(),
+        dst: None,
+        strip_parent: None,
+        info: None,
+    }];
+    let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
+    let out = create_source_archive(&zip_source_inputs(tmp.path(), &dist, &extras, &log, None))
+        .expect("zip source archive");
+
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let names: Vec<String> = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .collect();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.as_str() == "test-project-1.2.3/extra.txt")
+            .count(),
+        1,
+        "the extra file belongs in the archive exactly once under its relative path; got {names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.contains(&tmp.path().to_string_lossy().into_owned())),
+        "no entry may carry the machine's absolute path; got {names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|n| n.ends_with("extra.txt")).count(),
+        1,
+        "the extra file must not be appended beside the copy git archive already made; \
+         got {names:?}"
+    );
+}

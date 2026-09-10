@@ -145,6 +145,10 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             let writer = std::io::Cursor::new(&mut out_buf);
             let mut zip_writer = zip::ZipWriter::new(writer);
 
+            // Names the git archive already carries, so an extra file that
+            // names one of them is not appended a second time.
+            let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
+
             // Copy existing entries
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i).context("source: read zip entry")?;
@@ -163,8 +167,10 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 if let Some(t) = sde_zip_time {
                     options = options.last_modified_time(t);
                 }
+                let entry_name = entry.name().to_string();
+                written.insert(entry_name.clone());
                 zip_writer
-                    .start_file(entry.name().to_string(), options)
+                    .start_file(entry_name, options)
                     .context("source: start zip entry")?;
                 let mut data = Vec::new();
                 entry
@@ -198,13 +204,22 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| file_entry.src.clone())
                 } else {
-                    file_entry.src.clone()
+                    // Glob expansion yields absolute paths, which would land
+                    // the file under the machine's own directory tree inside
+                    // the archive instead of beside the sources it belongs to.
+                    src.strip_prefix(repo_root)
+                        .unwrap_or(src)
+                        .to_string_lossy()
+                        .replace('\\', "/")
                 };
 
                 let archive_path = if prefix.is_empty() {
                     dest_rel
                 } else {
-                    format!("{}/{}", prefix, dest_rel)
+                    // The prefix carries its own trailing slash whenever it
+                    // names a directory, and a doubled separator is a distinct
+                    // entry name from the one `git archive` wrote.
+                    format!("{}/{}", prefix.trim_end_matches('/'), dest_rel)
                 };
 
                 if !src.exists() {
@@ -228,6 +243,13 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     zip::write::SimpleFileOptions::default().compression_method(extras_method);
                 if let Some(t) = sde_zip_time {
                     options = options.last_modified_time(t);
+                }
+                if !written.insert(archive_path.clone()) {
+                    log.warn(&format!(
+                        "skipped extra file '{}' — '{}' is already in the archive",
+                        file_entry.src, archive_path
+                    ));
+                    continue;
                 }
                 zip_writer
                     .start_file(&archive_path, options)
