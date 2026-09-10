@@ -441,6 +441,85 @@ mod tests {
         assert!(crate_target_list(&krate, &defaults, |_| false).is_empty());
     }
 
+    /// A build entry's `skip:` is evaluated in two shapes: leniently, where a
+    /// render failure means "not skipped" ([`build_is_skipped`]), and
+    /// strictly, where it is an error the caller propagates. The lenient shape
+    /// has ONE spelling, and a hand-written copy of it is how a caller drifts
+    /// from the planner it is supposed to mirror — which is what
+    /// `cross_requirements` did until it routed here.
+    ///
+    /// The named owners each read `build.skip` for a reason that is not a
+    /// second lenient gate:
+    ///
+    /// | Owner | Why it reads the field directly |
+    /// |---|---|
+    /// | `build_is_skipped` | it IS the lenient gate |
+    /// | `build_skipped` (`build_env.rs`) | propagates the render error |
+    /// | `plan_prebuilt_build` (`stage-build`) | propagates the render error |
+    /// | `plan_build_jobs` (`stage-build`) | propagates the render error |
+    /// | `configured_build_targets` (`env_preflight.rs`) | hands the field to the shared `entry_inactive` predicate |
+    #[test]
+    fn every_build_skip_read_belongs_to_a_named_owner() {
+        use crate::test_helpers::test_sources::{function_bodies, production_half, rust_sources};
+
+        const OWNERS: &[&str] = &[
+            "build_is_skipped",
+            "build_skipped",
+            "plan_prebuilt_build",
+            "plan_build_jobs",
+            "configured_build_targets",
+        ];
+
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ above crates/core");
+        let mut sources: Vec<std::path::PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
+            let src = entry.expect("crate entry").path().join("src");
+            if src.is_dir() {
+                sources.extend(rust_sources(&src));
+            }
+        }
+        assert!(
+            sources.len() > 100,
+            "the walk must cover every crate's production sources, found {}",
+            sources.len()
+        );
+
+        let mut strays: Vec<String> = Vec::new();
+        for source in &sources {
+            let text = std::fs::read_to_string(source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                // Whitespace around `.` is erased so a receiver split across
+                // lines reads the same as one written inline.
+                let flat = body
+                    .replace('\n', " ")
+                    .split('.')
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                if !flat.contains("build.skip") {
+                    continue;
+                }
+                let name = body
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split("fn ").nth(1))
+                    .and_then(|l| l.split(['(', '<', ' ']).next())
+                    .unwrap_or("<unnamed>")
+                    .to_string();
+                if !OWNERS.contains(&name.as_str()) {
+                    strays.push(format!("{}: {name}", source.display()));
+                }
+            }
+        }
+        assert!(
+            strays.is_empty(),
+            "a build entry's skip: is read by one of {OWNERS:?}; these read it \
+             themselves and will drift from the planner: {strays:#?}"
+        );
+    }
+
     #[test]
     fn crate_target_list_uses_default_targets_for_declared_bin() {
         let dir = crate_dir("[package]\nname = \"app\"\nversion = \"0.0.0\"\n", true);
