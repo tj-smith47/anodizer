@@ -880,6 +880,81 @@ mod tests {
         );
     }
 
+    /// The outcome space as a chain: every variant names the one after it and
+    /// the last names `None`. Both matches are exhaustive, so a new
+    /// `PublisherOutcome` or `SkipReason` cannot reach the enum without being
+    /// linked in here — and every pin that walks the space then sees it.
+    fn next_outcome(outcome: &PublisherOutcome) -> Option<PublisherOutcome> {
+        fn next_reason(reason: &SkipReason) -> Option<SkipReason> {
+            Some(match reason {
+                SkipReason::SubmitterGated => SkipReason::NotConfigured,
+                SkipReason::NotConfigured => SkipReason::Snapshot,
+                SkipReason::Snapshot => SkipReason::DryRun,
+                SkipReason::DryRun => SkipReason::Nightly,
+                SkipReason::Nightly => SkipReason::NotApplicable,
+                SkipReason::NotApplicable => SkipReason::AlreadyPublished,
+                SkipReason::AlreadyPublished => SkipReason::Deselected,
+                SkipReason::Deselected => SkipReason::VerifyGateBlocked,
+                SkipReason::VerifyGateBlocked => SkipReason::ConfigSkipped,
+                SkipReason::ConfigSkipped => SkipReason::EntriesSkipped,
+                SkipReason::EntriesSkipped => return None,
+            })
+        }
+        Some(match outcome {
+            PublisherOutcome::Succeeded => PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+            PublisherOutcome::Skipped(reason) => match next_reason(reason) {
+                Some(next) => PublisherOutcome::Skipped(next),
+                None => PublisherOutcome::Failed("boom".into()),
+            },
+            PublisherOutcome::Failed(_) => PublisherOutcome::RolledBack,
+            PublisherOutcome::RolledBack => PublisherOutcome::RollbackFailed("boom".into()),
+            PublisherOutcome::RollbackFailed(_) => PublisherOutcome::RollbackSkippedNoScope,
+            PublisherOutcome::RollbackSkippedNoScope => PublisherOutcome::PendingModeration,
+            PublisherOutcome::PendingModeration => PublisherOutcome::PendingValidation,
+            PublisherOutcome::PendingValidation => PublisherOutcome::PublishedNoRollback,
+            PublisherOutcome::PublishedNoRollback => return None,
+        })
+    }
+
+    /// Every outcome a publisher result can carry, walked from
+    /// [`next_outcome`]'s chain.
+    fn every_outcome() -> Vec<PublisherOutcome> {
+        let mut out = vec![PublisherOutcome::Succeeded];
+        while let Some(next) = next_outcome(out.last().expect("the chain starts non-empty")) {
+            out.push(next);
+        }
+        out
+    }
+
+    /// Whether the publish action landed, answered variant by variant rather
+    /// than by restating the production rule: a new outcome must be
+    /// classified here before this module compiles.
+    fn expect_landed(outcome: &PublisherOutcome) -> bool {
+        match outcome {
+            PublisherOutcome::Succeeded
+            | PublisherOutcome::RolledBack
+            | PublisherOutcome::RollbackFailed(_)
+            | PublisherOutcome::RollbackSkippedNoScope
+            | PublisherOutcome::PendingModeration
+            | PublisherOutcome::PendingValidation
+            | PublisherOutcome::PublishedNoRollback => true,
+            PublisherOutcome::Failed(_) => false,
+            PublisherOutcome::Skipped(reason) => match reason {
+                SkipReason::SubmitterGated
+                | SkipReason::NotConfigured
+                | SkipReason::Snapshot
+                | SkipReason::DryRun
+                | SkipReason::Nightly
+                | SkipReason::NotApplicable
+                | SkipReason::AlreadyPublished
+                | SkipReason::Deselected
+                | SkipReason::VerifyGateBlocked
+                | SkipReason::ConfigSkipped
+                | SkipReason::EntriesSkipped => false,
+            },
+        }
+    }
+
     fn result_in(group: PublisherGroup, outcome: PublisherOutcome) -> PublisherResult {
         PublisherResult {
             name: "p".to_string(),
@@ -891,52 +966,50 @@ mod tests {
         }
     }
 
+    /// Durable published state, counted over the whole outcome space: a
+    /// withdrawn (`RolledBack`) or never-run publisher leaves nothing behind,
+    /// and only an outright `Failed` counts as failed.
     #[test]
     fn count_publish_state_classifies_every_outcome() {
-        let result = |outcome: PublisherOutcome| result_in(PublisherGroup::Manager, outcome);
-        let results = vec![
-            result(PublisherOutcome::Succeeded),
-            result(PublisherOutcome::PendingModeration),
-            result(PublisherOutcome::PendingValidation),
-            result(PublisherOutcome::PublishedNoRollback),
-            result(PublisherOutcome::RollbackFailed("boom".into())),
-            result(PublisherOutcome::Failed("boom".into())),
-            result(PublisherOutcome::Skipped(SkipReason::NotConfigured)),
-            result(PublisherOutcome::RolledBack),
-            result(PublisherOutcome::RollbackSkippedNoScope),
-        ];
-        let (succeeded, failed) = count_publish_state(&results);
-        assert_eq!(
-            succeeded, 6,
-            "published-state outcomes: Succeeded + 2 Pending + PublishedNoRollback \
-             + RollbackFailed + RollbackSkippedNoScope"
-        );
-        assert_eq!(failed, 1, "only Failed counts as failed");
+        for outcome in every_outcome() {
+            let results = vec![result_in(PublisherGroup::Manager, outcome.clone())];
+            let expected = match &outcome {
+                PublisherOutcome::Succeeded
+                | PublisherOutcome::PendingModeration
+                | PublisherOutcome::PendingValidation
+                | PublisherOutcome::PublishedNoRollback
+                | PublisherOutcome::RollbackFailed(_)
+                | PublisherOutcome::RollbackSkippedNoScope => (1, 0),
+                PublisherOutcome::Failed(_) => (0, 1),
+                PublisherOutcome::RolledBack | PublisherOutcome::Skipped(_) => (0, 0),
+            };
+            assert_eq!(
+                count_publish_state(&results),
+                expected,
+                "count_publish_state({outcome:?})"
+            );
+        }
     }
 
+    /// Landed = the publish action reached the remote at some point. Only
+    /// never-ran (skipped) and ran-but-did-not-land (failed) are non-landed;
+    /// a rolled-back Submitter publish still burned its version slot. Walked
+    /// over the whole outcome space, so a new variant is classified before it
+    /// can reach a rollback decision unseen.
     #[test]
     fn outcome_landed_classifies_every_outcome() {
-        // Landed = the publish action reached the remote at some point.
-        // Only never-ran (skipped) and ran-but-did-not-land (failed) are
-        // non-landed; a rolled-back Submitter publish still burned its
-        // version slot.
-        for (outcome, landed) in [
-            (PublisherOutcome::Succeeded, true),
-            (PublisherOutcome::PendingModeration, true),
-            (PublisherOutcome::PendingValidation, true),
-            (PublisherOutcome::PublishedNoRollback, true),
-            (PublisherOutcome::RollbackFailed("boom".into()), true),
-            (PublisherOutcome::RolledBack, true),
-            (PublisherOutcome::RollbackSkippedNoScope, true),
-            (PublisherOutcome::Failed("boom".into()), false),
-            (PublisherOutcome::Skipped(SkipReason::NotConfigured), false),
-        ] {
+        for outcome in every_outcome() {
             assert_eq!(
                 outcome_landed(&outcome),
-                landed,
+                expect_landed(&outcome),
                 "outcome_landed({outcome:?})"
             );
         }
+        assert!(
+            !outcome_landed(&PublisherOutcome::Skipped(SkipReason::EntriesSkipped)),
+            "a publisher whose every entry disqualified itself landed nothing — \
+             which is why one that DID land keeps its own outcome instead"
+        );
     }
 
     #[test]
@@ -1196,27 +1269,7 @@ mod tests {
         // The read-side (status-string) rule must agree with the
         // build-side (outcome) rule across every outcome, through a full
         // serialize → deserialize round-trip.
-        let all_outcomes = [
-            PublisherOutcome::Succeeded,
-            PublisherOutcome::PendingModeration,
-            PublisherOutcome::PendingValidation,
-            PublisherOutcome::PublishedNoRollback,
-            PublisherOutcome::RollbackFailed("boom".into()),
-            PublisherOutcome::RolledBack,
-            PublisherOutcome::RollbackSkippedNoScope,
-            PublisherOutcome::Failed("boom".into()),
-            PublisherOutcome::Skipped(SkipReason::SubmitterGated),
-            PublisherOutcome::Skipped(SkipReason::NotConfigured),
-            PublisherOutcome::Skipped(SkipReason::Snapshot),
-            PublisherOutcome::Skipped(SkipReason::DryRun),
-            PublisherOutcome::Skipped(SkipReason::Nightly),
-            PublisherOutcome::Skipped(SkipReason::NotApplicable),
-            PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
-            PublisherOutcome::Skipped(SkipReason::Deselected),
-            PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
-            PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
-        ];
-        for outcome in all_outcomes {
+        for outcome in every_outcome() {
             let mut ctx = anodizer_core::context::Context::test_fixture();
             ctx.publish_report = Some(PublishReport {
                 submitter_gated: false,
