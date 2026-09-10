@@ -304,6 +304,26 @@ fn top_level_terms(terms: &str) -> impl Iterator<Item = &str> {
 mod tests {
     use super::*;
 
+    /// The walk skips a `tests/` module directory, and only while its parent
+    /// really declares it under a test-only `cfg`: gated, the walk yields
+    /// only the parent module; ungated, the walk fails rather than silently
+    /// dropping the production code it would have scanned.
+    #[test]
+    fn walk_skips_only_a_gated_tests_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let module = tmp.path().join("m");
+        std::fs::create_dir_all(module.join("tests")).unwrap();
+        std::fs::write(module.join("tests").join("mod.rs"), "").unwrap();
+        std::fs::write(module.join("mod.rs"), "#[cfg(test)]\nmod tests;\n").unwrap();
+        assert_eq!(rust_sources(&module), vec![module.join("mod.rs")]);
+
+        std::fs::write(module.join("mod.rs"), "mod tests;\n").unwrap();
+        assert!(
+            std::panic::catch_unwind(|| rust_sources(&module)).is_err(),
+            "an ungated tests/ directory must fail the walk"
+        );
+    }
+
     /// Lay out `<tmp>/<parent>` with the given parent-module text and a
     /// `tests.rs` (or `tests/` directory) inside `<tmp>/m`; returns the
     /// module path the premise check is asked about.

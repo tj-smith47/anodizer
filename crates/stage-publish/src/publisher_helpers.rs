@@ -799,27 +799,8 @@ mod tests {
     /// `evaluate_entry_skips`.
     #[test]
     fn every_entry_skipping_publisher_evaluates_its_skips() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).expect("readable source dir") {
-                let path = entry.expect("readable dir entry").path();
-                if path.is_dir() {
-                    if path.file_name().is_some_and(|n| n == "tests") {
-                        continue;
-                    }
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && !path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy().contains("tests"))
-                {
-                    out.push(path);
-                }
-            }
-        }
-        let mut files = Vec::new();
-        walk(
+        let files = anodizer_core::test_helpers::test_sources::rust_sources(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut files,
         );
 
         // The publisher/stage label is the first string literal argument of

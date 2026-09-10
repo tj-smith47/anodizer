@@ -5481,9 +5481,7 @@ mod authenticode {
 mod cosign_tuf_race {
     use super::*;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
-    use anodizer_core::test_helpers::test_sources::{
-        declared_under_test_cfg, is_test_source_path, production_half,
-    };
+    use anodizer_core::test_helpers::test_sources::{production_half, rust_sources};
     use std::path::Path;
 
     /// A keyless cosign sign config pointed at a stub script named `cosign`,
@@ -6646,56 +6644,6 @@ mod cosign_tuf_race {
             "expected exactly the three known keyless cosign spawn sites \
              (sign fan-out, docker signing, release re-verification); a new \
              one must be added to the rules catalog too"
-        );
-    }
-
-    /// Every production `.rs` file under `dir`, recursively.
-    ///
-    /// Test sources are excluded by name — whatever
-    /// [`is_test_source_path`] names, plus a `tests/` module directory —
-    /// rather than by hoping their content splits on `#[cfg(`: test modules
-    /// stub cosign instead of spawning it, so a stub's argv would otherwise
-    /// read as an unlocked spawn site. Skipping one by name is only sound
-    /// while it really is test-only, so every skipped path is checked
-    /// against its parent module's declaration.
-    fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let mut found = Vec::new();
-        for entry in std::fs::read_dir(dir).expect("read src dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n == "tests") {
-                    declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
-                    continue;
-                }
-                found.extend(rust_sources(&path));
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                if is_test_source_path(&path) {
-                    declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
-                } else {
-                    found.push(path);
-                }
-            }
-        }
-        found
-    }
-
-    /// The walk skips a `tests/` module directory, and only while its parent
-    /// really declares it under a test-only `cfg`: gated, the walk yields
-    /// only the parent module; ungated, the walk fails rather than silently
-    /// dropping the production code it would have scanned.
-    #[test]
-    fn walk_skips_only_a_gated_tests_directory() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let module = tmp.path().join("m");
-        std::fs::create_dir_all(module.join("tests")).unwrap();
-        std::fs::write(module.join("tests").join("mod.rs"), "").unwrap();
-        std::fs::write(module.join("mod.rs"), "#[cfg(test)]\nmod tests;\n").unwrap();
-        assert_eq!(rust_sources(&module), vec![module.join("mod.rs")]);
-
-        std::fs::write(module.join("mod.rs"), "mod tests;\n").unwrap();
-        assert!(
-            std::panic::catch_unwind(|| rust_sources(&module)).is_err(),
-            "an ungated tests/ directory must fail the walk"
         );
     }
 
