@@ -406,6 +406,9 @@ pub(crate) fn resolve_content_source(
     )
 }
 
+/// The blank line every two-body mode joins its halves with.
+pub(crate) const BODY_SEPARATOR: &str = "\n\n";
+
 /// Compose the final release body based on the release mode.
 ///
 /// - `"replace"` — use new_body as-is (current behavior)
@@ -430,7 +433,18 @@ pub(crate) fn compose_body_for_mode(
             if let Some(existing) = existing_body
                 && !existing.is_empty()
             {
-                return format!("{}\n\n{}", existing, new_body);
+                // The new body ends with the derived Full-Changelog link and
+                // the attribution footer, and `build_release_body` already
+                // fit it under the limit. So the EXISTING half absorbs the
+                // cut: truncating the joined string would land on the tail,
+                // which is exactly where that trailer lives.
+                let budget = GITHUB_RELEASE_BODY_MAX_CHARS
+                    .saturating_sub(new_body.len() + BODY_SEPARATOR.len());
+                let existing = truncate_with_ellipsis(existing, budget);
+                if existing.is_empty() {
+                    return new_body.to_string();
+                }
+                return format!("{existing}{BODY_SEPARATOR}{new_body}");
             }
             new_body.to_string()
         }
@@ -438,7 +452,7 @@ pub(crate) fn compose_body_for_mode(
             if let Some(existing) = existing_body
                 && !existing.is_empty()
             {
-                return format!("{}\n\n{}", new_body, existing);
+                return format!("{new_body}{BODY_SEPARATOR}{existing}");
             }
             new_body.to_string()
         }

@@ -17,7 +17,7 @@ use anodizer_core::test_helpers::TestContextBuilder;
 use super::ReleaseStage;
 use super::github::build_octocrab_client;
 use super::release_body::{
-    GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
+    BODY_SEPARATOR, GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
     build_release_json, collect_extra_files, compose_body_for_mode, compose_release_trailer,
     full_changelog_element, render_nondeterministic_exemptions_block, resolve_content_source,
     resolve_header_footer, resolve_make_latest, resolve_release_footer,
@@ -2715,6 +2715,40 @@ fn test_compose_body_append_no_existing() {
 fn test_compose_body_append_empty_existing() {
     let result = compose_body_for_mode("append", Some(""), "new body");
     assert_eq!(result, "new body");
+}
+
+#[test]
+fn appending_to_an_oversized_existing_body_keeps_the_new_trailer() {
+    // `mode: append` concatenates a release body GitHub already holds with
+    // the one this run composed. The new half ends with the derived link and
+    // the attribution, so the EXISTING half has to absorb the cut — a
+    // truncation of the joined string would take the trailer off the tail.
+    let new_body = format!(
+        "## What's new in v1.2.3\n\nchanges\n\n---\n**Full Changelog**: \
+         https://github.com/myorg/myapp/compare/v1.2.2...v1.2.3\n{}\n",
+        ReleaseConfig::DEFAULT_FOOTER
+    );
+    let existing = "e".repeat(GITHUB_RELEASE_BODY_MAX_CHARS);
+
+    let composed = compose_body_for_mode("append", Some(&existing), &new_body);
+
+    assert!(
+        composed.len() <= GITHUB_RELEASE_BODY_MAX_CHARS,
+        "the composed body must still fit GitHub's limit, got {}",
+        composed.len()
+    );
+    assert!(
+        composed.ends_with(&new_body),
+        "the new body — link and attribution included — must survive whole"
+    );
+    assert!(
+        composed.starts_with("eee"),
+        "the existing body must still open the result"
+    );
+    assert!(
+        composed.contains(&format!("e...{BODY_SEPARATOR}")),
+        "the ellipsis must mark the cut on the existing half"
+    );
 }
 
 #[test]
