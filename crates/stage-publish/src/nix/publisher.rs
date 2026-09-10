@@ -508,6 +508,61 @@ mod publisher_tests {
         }
     }
 
+    /// Two entries failing the same way name one defect: the joined skip
+    /// line carries the reason once, while each entry is still named on its
+    /// own skip line so the operator knows which ones to fix.
+    #[test]
+    fn a_repeated_entry_skip_reason_appears_once_in_the_skip_line() {
+        let mut alpha = nix_crate("alpha");
+        alpha
+            .publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut beta = nix_crate("beta");
+        beta.publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![alpha, beta])
+            .dry_run(true)
+            .show_skipped(true)
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+
+        NixPublisher::new().run(&mut ctx).expect("run ok");
+
+        let messages: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        let skip_line = messages
+            .iter()
+            .find(|m| m.starts_with("skipping nix — "))
+            .expect("the publisher reports its entry skips");
+        assert_eq!(
+            skip_line.matches("repository.name is not set").count(),
+            1,
+            "one defect is named once: {skip_line}"
+        );
+        for crate_name in ["alpha", "beta"] {
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.contains(&format!("skipped nix for '{crate_name}'"))),
+                "each disqualified entry is still named: {messages:?}"
+            );
+        }
+    }
+
     /// An overlay-less entry disqualifies itself only: the crate after it in
     /// the same run still reaches its publish path.
     /// Every entry disqualifying itself is a different defect from no crate

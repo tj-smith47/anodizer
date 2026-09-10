@@ -194,14 +194,23 @@ pub(crate) fn evaluate_entry_skips(
     if reasons.is_empty() {
         return 0;
     }
+    // Two entries failing the same way are one thing to fix, so the joined
+    // line names the defect once — the entries themselves are already named
+    // one per line. The COUNT stays per-entry.
+    let mut distinct: Vec<&str> = Vec::new();
+    for reason in &reasons {
+        if !distinct.contains(&reason.as_str()) {
+            distinct.push(reason);
+        }
+    }
+    let joined = distinct.join(", ");
     if landed {
         log.status(&format!(
-            "{publisher} skipped {} of {total} entries — {}",
+            "{publisher} skipped {} of {total} entries — {joined}",
             reasons.len(),
-            reasons.join(", ")
         ));
     } else if ctx.pending_outcome.is_none() {
-        log.status(&format!("skipping {publisher} — {}", reasons.join(", ")));
+        log.status(&format!("skipping {publisher} — {joined}"));
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
             anodizer_core::SkipReason::EntriesSkipped,
         ));
