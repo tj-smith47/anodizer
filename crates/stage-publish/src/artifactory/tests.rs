@@ -1072,6 +1072,29 @@ fn artifact_url_escapes_the_appended_name() {
     }
 }
 
+/// The separator is appended only when the target's path lacks one, so a
+/// target whose own path ends in an empty segment keeps it — the server is
+/// told exactly the path the operator configured.
+#[test]
+fn artifact_url_appends_the_separator_only_when_absent() {
+    assert_eq!(
+        url_for("https://h/files", "notes.txt", false),
+        "https://h/files/notes.txt"
+    );
+    assert_eq!(
+        url_for("https://h/files/", "notes.txt", false),
+        "https://h/files/notes.txt"
+    );
+    assert_eq!(
+        url_for("https://h/files//", "notes.txt", false),
+        "https://h/files//notes.txt"
+    );
+    assert_eq!(
+        url_for("https://h/files//?token=abc", "notes.txt", false),
+        "https://h/files//notes.txt?token=abc"
+    );
+}
+
 /// The name joins the path, so a target carrying a query keeps it at the end
 /// — and an already-escaped byte in the target's own path is left alone.
 #[test]

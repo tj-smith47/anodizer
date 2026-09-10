@@ -106,13 +106,17 @@ pub fn render_artifact_url(
         // appending to `…/repo?props=a` would otherwise bury the file name
         // inside the query. Its bytes are escaped the way a server escapes a
         // path it received, so a space or `#` in an artifact name survives the
-        // round trip while a directory in the name stays a directory.
+        // round trip while a directory in the name stays a directory. The
+        // separator is added only when the path lacks one, so a configured
+        // empty segment reaches the server as configured rather than collapsed.
         let (path, suffix) = match rendered.find(['?', '#']) {
             Some(i) => rendered.split_at(i),
             None => (rendered.as_str(), ""),
         };
-        let mut out = path.trim_end_matches('/').to_string();
-        out.push('/');
+        let mut out = path.to_string();
+        if !out.ends_with('/') {
+            out.push('/');
+        }
         out.push_str(&anodizer_core::url::percent_encode_url_path(art_name));
         out.push_str(suffix);
         rendered = out;
