@@ -374,7 +374,7 @@ pub fn crate_archive_asset_names(
     let Some(archive) = binstallable_archive(crate_cfg) else {
         return Ok(None);
     };
-    let targets = derive_target_list(crate_cfg, default_targets);
+    let targets = derive_target_list(crate_cfg, default_targets, ctx);
     if targets.is_empty() {
         return Ok(None);
     }
@@ -505,15 +505,25 @@ pub(crate) fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveCon
 }
 
 /// Resolve the full set of target triples binstall metadata must cover for
-/// `crate_cfg`: the union of each producing build's targets (a build's own
-/// `targets:` when set, else the global `default_targets`), de-duplicated.
-/// Routed through the build-synthesis SSOT
+/// `crate_cfg`: the union of each producing, non-skipped build's targets (a
+/// build's own `targets:` when set, else the global `default_targets`),
+/// de-duplicated. Routed through the build-synthesis SSOT
 /// ([`crate::build_plan::crate_target_list`]) so the derived override set equals
 /// the asset set the build stage actually releases — a library crate with no
 /// default binary (or a `binary: None` build with no matching `--bin`) compiles
 /// nothing and so contributes no targets.
-fn derive_target_list(crate_cfg: &CrateConfig, default_targets: &[String]) -> Vec<String> {
-    crate::build_plan::crate_target_list(crate_cfg, default_targets)
+///
+/// The `skip:` gate is the same one the binary derivation applies: a triple
+/// whose only build is skipped produces no archive, so an override naming it
+/// would resolve to a download URL the release never uploads.
+fn derive_target_list(
+    crate_cfg: &CrateConfig,
+    default_targets: &[String],
+    ctx: &Context,
+) -> Vec<String> {
+    crate::build_plan::crate_target_list(crate_cfg, default_targets, |build| {
+        crate::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
+    })
 }
 
 /// Render the crate's tag template with the version expressed as
@@ -1859,6 +1869,25 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         assert_eq!(
             names["x86_64-unknown-linux-gnu"],
             "myapp-cli-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// A triple whose only build is skipped releases no archive, so it must
+    /// leave the derived map entirely. Keeping it there emits a `pkg_url` and
+    /// an installer arm for an asset the release never uploads — and, with no
+    /// surviving build to name it after, one that falls back to the crate name.
+    #[test]
+    fn a_skipped_builds_triple_is_not_a_derived_target() {
+        let mut alpha = build_for("alpha", &["x86_64-unknown-linux-gnu"]);
+        alpha.skip = Some(crate::config::StringOrBool::Bool(true));
+        let names = derived_names(&binary_named_crate(
+            vec![alpha, build_for("beta", &["aarch64-apple-darwin"])],
+            None,
+            None,
+        ));
+        assert_eq!(
+            names.keys().cloned().collect::<Vec<_>>(),
+            vec!["aarch64-apple-darwin".to_string()]
         );
     }
 

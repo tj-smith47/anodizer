@@ -311,14 +311,7 @@ fn expected_platform_identities(
         }
 
         let skip_evaluator = |build: &anodizer_core::config::BuildConfig| {
-            build
-                .skip
-                .as_ref()
-                .map(|s| {
-                    s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
+            anodizer_core::build_plan::build_is_skipped(build, |tmpl| ctx.render_template(tmpl))
         };
         let entries = crate_build_target_entries(c, &default_targets, skip_evaluator);
 

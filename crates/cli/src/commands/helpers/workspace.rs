@@ -33,7 +33,7 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
         // The compile/artifact gate inside `crate_target_list` drops a library
         // crate with no default binary — it builds nothing, so reporting
         // `defaults.targets` for it would over-report what the build produces.
-        for t in anodizer_core::build_plan::crate_target_list(krate, &default_targets) {
+        for t in anodizer_core::build_plan::crate_target_list(krate, &default_targets, |_| false) {
             if !targets.contains(&t) {
                 targets.push(t);
             }

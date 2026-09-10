@@ -267,8 +267,13 @@ fn archive_packs_binary(binary: &str, archive_binaries: Option<&[String]>) -> bo
 
 /// Whether a build entry's `skip:` evaluates truthy. An expression that fails
 /// to render does not skip the build, matching every other consumer of the
-/// build-planning gate.
-fn build_is_skipped(build: &BuildConfig, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
+/// build-planning gate. THE spelling of that gate for callers supplying the
+/// `is_skipped` predicate [`crate_build_target_entries`],
+/// [`crate_target_list`] and [`crate_primary_binary_name`] take.
+pub fn build_is_skipped(
+    build: &BuildConfig,
+    render: impl Fn(&str) -> anyhow::Result<String>,
+) -> bool {
     build
         .skip
         .as_ref()
@@ -324,11 +329,22 @@ pub fn archive_binary_name(
 
 /// The de-duplicated, order-preserving list of target triples a crate's builds
 /// will actually produce: planner synthesis ([`planned_builds`]) + the compile/
-/// artifact gate ([`build_produces`]) + per-build `targets:` override of
-/// `default_targets`. THE single source of truth for crate target enumeration.
-pub fn crate_target_list(krate: &CrateConfig, default_targets: &[String]) -> Vec<String> {
+/// artifact gate ([`build_produces`]) + `is_skipped` + per-build `targets:`
+/// override of `default_targets`. THE single source of truth for crate target
+/// enumeration.
+///
+/// `is_skipped` vetoes a build entry the same way it does in
+/// [`crate_build_target_entries`] — pass [`build_is_skipped`] against a live
+/// context to enumerate the triples THIS run releases, or `|_| false` to
+/// enumerate every configured triple (what a config-time check wants, since a
+/// `skip:` expression can resolve differently on the machine that releases).
+pub fn crate_target_list(
+    krate: &CrateConfig,
+    default_targets: &[String],
+    is_skipped: impl FnMut(&BuildConfig) -> bool,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for entry in crate_build_target_entries(krate, default_targets, |_| false) {
+    for entry in crate_build_target_entries(krate, default_targets, is_skipped) {
         for t in entry.targets {
             if !out.contains(&t) {
                 out.push(t);
@@ -416,7 +432,7 @@ mod tests {
             Some(vec![BuildConfig::default()]),
         );
         let defaults = vec!["x86_64-unknown-linux-gnu".to_string()];
-        assert!(crate_target_list(&krate, &defaults).is_empty());
+        assert!(crate_target_list(&krate, &defaults, |_| false).is_empty());
     }
 
     #[test]
@@ -427,6 +443,6 @@ mod tests {
             "x86_64-unknown-linux-gnu".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),
         ];
-        assert_eq!(crate_target_list(&krate, &defaults), defaults);
+        assert_eq!(crate_target_list(&krate, &defaults, |_| false), defaults);
     }
 }

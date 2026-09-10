@@ -774,7 +774,9 @@ pub(crate) fn crate_build_targets(
     ctx: &anodizer_core::context::Context,
     c: &anodizer_core::config::CrateConfig,
 ) -> Vec<String> {
-    anodizer_core::build_plan::crate_target_list(c, &ctx.config.effective_default_targets())
+    anodizer_core::build_plan::crate_target_list(c, &ctx.config.effective_default_targets(), |_| {
+        false
+    })
 }
 
 /// Config-time validation for a per-target publisher's `targets:` allowlist:

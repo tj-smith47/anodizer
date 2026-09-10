@@ -665,9 +665,13 @@ fn configured_target_set(
     ctx: &Context,
     crate_cfg: &CrateConfig,
 ) -> std::collections::BTreeSet<String> {
-    anodizer_core::build_plan::crate_target_list(crate_cfg, &ctx.config.effective_default_targets())
-        .into_iter()
-        .collect()
+    anodizer_core::build_plan::crate_target_list(
+        crate_cfg,
+        &ctx.config.effective_default_targets(),
+        |_| false,
+    )
+    .into_iter()
+    .collect()
 }
 
 fn configured_targets_str(set: &std::collections::BTreeSet<String>) -> String {
