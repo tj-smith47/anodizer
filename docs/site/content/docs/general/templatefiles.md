@@ -179,7 +179,19 @@ trailing glob so it still matches:
 A release with one libc per platform pays nothing for this:
 `InstallerDetectLibc` renders empty, `InstallerAssetCaseSubject` renders
 `${OS}-${ARCH}`, and the arms keep their plain keys. A musl-only release does
-not split either — a static musl binary runs on glibc hosts too.
+not split either — a static musl binary runs on glibc hosts too, and neither
+does a release whose two libc builds are archived under one asset name: two
+arms naming one file would advertise a platform the release never uploads.
+
+**Match the case on `InstallerAssetCaseSubject`, never on a hand-written
+`"${OS}-${ARCH}"`.** A template that reads `InstallerAssetCases` but keeps its
+own subject matches nothing the day its project starts shipping both libcs —
+every host would fall through to the unsupported-platform error. anodizer
+refuses that render instead, failing the templatefiles stage with:
+
+```text
+template_files id 'install' (src 'scripts/install.sh.tpl') builds an installer from the engine case arms but never reads InstallerAssetCaseSubject. This release ships both glibc and musl builds for at least one platform, so the arms are keyed '${OS}-${ARCH}-${LIBC}' and a script matching on '${OS}-${ARCH}' matches none of them. Emit InstallerDetectLibc after the arch detection and match the case on InstallerAssetCaseSubject
+```
 
 The mips family is deliberately absent from the generated `uname -m` arms:
 `uname -m` reports `mips`/`mips64` for both endiannesses, so the script cannot

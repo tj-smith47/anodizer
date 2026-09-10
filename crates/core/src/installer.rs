@@ -151,20 +151,68 @@ pub fn template_files_consume_installer_vars(ctx: &mut Context) -> bool {
     };
     entries
         .iter()
-        .any(|entry| entry_reads_installer_vars(ctx, entry))
+        .any(|entry| entry_reads_vars(ctx, entry, INSTALLER_TEMPLATE_VARS))
 }
 
-fn entry_reads_installer_vars(
+/// Refuse a render whose hand-written installer template would stop matching:
+/// once a release ships both libcs on one platform the asset arms are keyed
+/// `${OS}-${ARCH}-${LIBC}`, so a template that still matches on `${OS}-${ARCH}`
+/// sends EVERY host to the unsupported-platform error. The entry cannot be
+/// updated by anodize — it lives in the user's repo — so the failure has to
+/// arrive at render time, naming the entry and the one-line edit, rather than
+/// on the machines of everyone who runs the published script.
+///
+/// Only entries that already consume an installer var are checked: an ordinary
+/// `template_files:` entry has nothing to adopt.
+pub fn require_case_subject_consumption(ctx: &mut Context, cases: &InstallerCases) -> Result<()> {
+    if cases.detect_libc.is_empty() {
+        return Ok(());
+    }
+    let Some(entries) = ctx.config.template_files.clone() else {
+        return Ok(());
+    };
+    for entry in &entries {
+        if !entry_reads_vars(ctx, entry, INSTALLER_TEMPLATE_VARS) {
+            continue;
+        }
+        if entry_reads_vars(ctx, entry, &["InstallerAssetCaseSubject"]) {
+            continue;
+        }
+        let id = entry.id.as_deref().unwrap_or("default");
+        anyhow::bail!(
+            "template_files id '{}' (src '{}') builds an installer from the \
+             engine case arms but never reads InstallerAssetCaseSubject. This \
+             release ships both glibc and musl builds for at least one \
+             platform, so the arms are keyed '{}' and a script matching on \
+             '{}' matches none of them. Emit InstallerDetectLibc after the arch \
+             detection and match the case on InstallerAssetCaseSubject",
+            id,
+            entry.src,
+            ASSET_CASE_SUBJECT_LIBC,
+            ASSET_CASE_SUBJECT_PLAIN,
+        );
+    }
+    Ok(())
+}
+
+fn entry_reads_vars(
     ctx: &mut Context,
     entry: &crate::config::TemplateFileConfig,
+    vars: &[&str],
 ) -> bool {
     const PROBE: &str = "\u{1}anodizer-installer-consumption-probe\u{1}";
     let prior: Vec<(&str, Option<String>)> = INSTALLER_TEMPLATE_VARS
         .iter()
         .map(|k| (*k, ctx.template_vars().get(k).cloned()))
         .collect();
+    // Every installer var is bound on both renders — an unbound one is a
+    // template error, which the fail-safe below reads as consumption — so only
+    // the probed subset varies between them.
     let render_with = |ctx: &mut Context, value: &str| {
         for k in INSTALLER_TEMPLATE_VARS {
+            ctx.template_vars_mut().set(k, "");
+        }
+        for k in vars {
             ctx.template_vars_mut().set(k, value);
         }
         crate::template_file_render::render_templated_file_entry(
@@ -1034,6 +1082,76 @@ mod tests {
             "a musl-only release keeps the plain key: {arms:?}"
         );
         assert_eq!(cases.detect_libc, "");
+    }
+
+    /// A hand-written installer template that reads the engine arms but keeps
+    /// matching on `${OS}-${ARCH}` matches nothing once its project ships both
+    /// libcs — every host would fall through to the unsupported-platform
+    /// error. The render refuses instead, naming the entry.
+    #[test]
+    fn dual_libc_render_refuses_a_template_that_ignores_the_case_subject() {
+        use crate::config::TemplateFileConfig;
+        let tmp = tempfile::tempdir().unwrap();
+        let stale = tmp.path().join("stale-install.sh.tera");
+        std::fs::write(
+            &stale,
+            "case \"${OS}-${ARCH}\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        let adopted = tmp.path().join("install.sh.tera");
+        std::fs::write(
+            &adopted,
+            "{{ InstallerDetectLibc }}\ncase \"{{ InstallerAssetCaseSubject }}\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        let plain = tmp.path().join("notes.md.tera");
+        std::fs::write(&plain, "release {{ Version }}\n").unwrap();
+        let entry = |src: &std::path::Path| TemplateFileConfig {
+            id: Some("installer".to_string()),
+            src: src.to_string_lossy().into_owned(),
+            dst: "out.txt".to_string(),
+            ..Default::default()
+        };
+
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+
+        ctx.config.template_files = Some(vec![entry(&stale)]);
+        let err = require_case_subject_consumption(&mut ctx, &cases)
+            .expect_err("a stale case subject must fail the render")
+            .to_string();
+        assert!(
+            err.contains("installer") && err.contains("InstallerAssetCaseSubject"),
+            "the failure must name the entry and the value it must consume: {err}"
+        );
+
+        ctx.config.template_files = Some(vec![entry(&adopted), entry(&plain)]);
+        require_case_subject_consumption(&mut ctx, &cases)
+            .expect("an adopted template, and a non-installer entry, both pass");
+    }
+
+    /// A single-libc release asks nothing of a template that never adopted the
+    /// case subject: the arms it renders are still keyed `${OS}-${ARCH}`.
+    #[test]
+    fn single_libc_render_accepts_a_template_that_ignores_the_case_subject() {
+        use crate::config::TemplateFileConfig;
+        let tmp = tempfile::tempdir().unwrap();
+        let stale = tmp.path().join("stale-install.sh.tera");
+        std::fs::write(&stale, "{{ InstallerAssetCases }}\n").unwrap();
+
+        let mut ctx = anodize_ctx(None);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        ctx.config.template_files = Some(vec![TemplateFileConfig {
+            src: stale.to_string_lossy().into_owned(),
+            dst: "out.txt".to_string(),
+            ..Default::default()
+        }]);
+        require_case_subject_consumption(&mut ctx, &cases).expect("no split, nothing to adopt");
     }
 
     /// Both libcs rendering the SAME asset name is not a split: an
