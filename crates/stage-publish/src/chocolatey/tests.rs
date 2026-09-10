@@ -1292,3 +1292,67 @@ fn chocolatey_sha256_empty_metadata_bails_with_actionable_error() {
         "error must include a next-step hint; got: {msg}"
     );
 }
+
+/// Two Windows amd64 archives are ambiguous: the offline validator that
+/// `check` and `--snapshot` run surfaces the disqualification instead of
+/// letting a coin-flip payload reach a nupkg.
+///
+/// The live publish path absorbs the same `entry_skip` through
+/// `absorb_entry_skip`, so the crates after the ambiguous one still publish.
+/// This test drives the validator rather than the push path because the
+/// validator reaches the selection without contacting any package feed.
+#[test]
+fn validate_install_mode_rejects_two_amd64_archives() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig {
+                repository: Some(anodizer_core::config::RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("mytool".to_string()),
+                    ..Default::default()
+                }),
+                description: Some("A great tool".to_string()),
+                license: Some("MIT".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    for name in ["mytool-windows-amd64.zip", "mytool-win64.zip"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            name: name.to_string(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("sha256".to_string(), "deadbeef".to_string());
+                m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+                m
+            },
+            size: None,
+        });
+    }
+    let log = StageLogger::new("publish", Verbosity::Quiet);
+    let err = super::validate_install_mode_for_crate(&ctx, "mytool", false, &log)
+        .expect_err("two amd64 archives must be rejected before a nupkg is built");
+    let reason = anodizer_core::pipe_skip::entry_skip_reason(&err)
+        .expect("the ambiguity is an entry skip, not a publisher failure");
+    assert!(
+        reason.contains("multiple archives for the same platform (amd64)")
+            && reason.contains("mytool-windows-amd64.zip")
+            && reason.contains("mytool-win64.zip"),
+        "the reason must name both candidates; got: {reason}"
+    );
+}

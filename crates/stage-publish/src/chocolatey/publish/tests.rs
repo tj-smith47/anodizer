@@ -245,8 +245,10 @@ fn resolve_metadata_missing_license_returns_actionable_bail() {
 // select_windows_artifacts
 // -----------------------------------------------------------------
 
+/// Two equally-preferred amd64 archives are ambiguous: the entry is skipped
+/// rather than shipping whichever was discovered first.
 #[test]
-fn select_windows_artifacts_partitions_first_386_and_first_amd64() {
+fn select_windows_artifacts_skips_the_entry_on_two_archives_for_one_arch() {
     let mut ctx = ctx_with_choco(ChocolateyConfig::default());
     ctx.artifacts.add(windows_artifact(
         "mytool",
@@ -265,10 +267,16 @@ fn select_windows_artifacts_partitions_first_386_and_first_amd64() {
     ));
     let cfg = ChocolateyConfig::default();
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
-    assert_eq!(a32.unwrap().name, "a-386.zip");
-    // First amd64 wins; second is dropped.
-    assert_eq!(a64.unwrap().name, "b-amd64.zip");
+    let err = select_windows_artifacts(&ctx, &cfg, "mytool", &log)
+        .expect_err("two amd64 archives must disqualify the entry");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some(
+            "chocolatey: found multiple archives for the same platform (amd64) for \
+             'mytool': 'b-amd64.zip' and 'c-amd64-dup.zip'"
+        ),
+        "the ambiguity is an entry skip, not a publisher failure: {err:#}"
+    );
 }
 
 #[test]
@@ -281,7 +289,8 @@ fn select_windows_artifacts_logs_and_skips_arm64() {
     ));
     let cfg = ChocolateyConfig::default();
     let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-    let (a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert!(a32.is_none() && a64.is_none());
     let msgs = cap.all_messages();
     assert!(
@@ -308,7 +317,8 @@ fn select_windows_artifacts_ids_filter_drops_non_matching() {
         ..Default::default()
     };
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (_a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert_eq!(a64.unwrap().name, "wanted.zip");
 }
 
@@ -328,7 +338,8 @@ fn select_windows_artifacts_amd64_variant_filter() {
         ..Default::default()
     };
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (_a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert_eq!(a64.unwrap().name, "amd64-v3.zip");
 }
 
@@ -374,7 +385,8 @@ fn select_windows_artifacts_use_msi_picks_msi_over_nsis() {
         ..Default::default()
     };
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (_a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert_eq!(
         a64.expect("an amd64 installer must be selected").name,
         "app-x64.msi",
@@ -403,7 +415,8 @@ fn select_windows_artifacts_use_nsis_picks_nsis_over_msi() {
         ..Default::default()
     };
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (_a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert_eq!(
         a64.expect("an amd64 installer must be selected").name,
         "app-setup.exe",
@@ -425,7 +438,8 @@ fn select_windows_artifacts_keeps_format_less_installer() {
         ..Default::default()
     };
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (_a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     assert_eq!(
         a64.expect("a format-less installer must still be selectable")
             .name,
@@ -442,7 +456,8 @@ fn select_windows_artifacts_matches_windows_in_path_when_target_empty() {
     ctx.artifacts.add(art);
     let cfg = ChocolateyConfig::default();
     let log = StageLogger::new("publish", Verbosity::Quiet);
-    let (a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+    let (a32, a64) =
+        select_windows_artifacts(&ctx, &cfg, "mytool", &log).expect("one artifact per arch");
     // No target => arch=="" => both 386/amd64 buckets stay empty.
     // (Path match qualifies the filter, but the arch dispatcher only
     // matches canonical "386"/"amd64" tokens.)

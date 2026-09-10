@@ -175,18 +175,25 @@ fn derive_license_blob_url(ctx: &Context, repo_url: &str) -> String {
 /// Filters the crate's artifacts down to Windows targets (matching by
 /// triple substring or path fallback), applies the `ids:` allow-list and
 /// the `amd64_variant` microarchitecture selector, and partitions the
-/// survivors into the first `386` and first `amd64` artifact. Artifacts
-/// for other architectures (arm64, etc.) are logged and dropped because
-/// Chocolatey's install script only dispatches on bitness.
+/// survivors into the `386` and `amd64` artifact. Artifacts for other
+/// architectures (arm64, etc.) are logged and dropped because Chocolatey's
+/// install script only dispatches on bitness.
+///
+/// Two equally-preferred artifacts for one architecture are ambiguous: the
+/// nupkg would carry whichever was discovered first, and a wrong-payload
+/// package is what Chocolatey moderation rejects. That disqualifies the
+/// entry (an `entry_skip`, so the crates after it still publish) rather
+/// than shipping a coin flip. An artifact that matches the format `use:`
+/// implies outranks a format-less one, so that pair is not ambiguous.
 pub(super) fn select_windows_artifacts<'a>(
     ctx: &'a Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> (
+) -> Result<(
     Option<&'a anodizer_core::artifact::Artifact>,
     Option<&'a anodizer_core::artifact::Artifact>,
-) {
+)> {
     // Find both 32-bit and 64-bit Windows artifacts.
     // Apply IDs + amd64_variant filter.
     let ids_filter = choco_cfg.ids.as_deref();
@@ -271,22 +278,19 @@ pub(super) fn select_windows_artifacts<'a>(
     // Classify by the canonical arch token (`amd64` / `386`) from
     // `map_target`, not by string-substring on the triple, so future
     // triple variations can't slip through.
-    let mut artifact_32 = None;
-    let mut artifact_64 = None;
+    let format_rank =
+        |a: &anodizer_core::artifact::Artifact| match (required_format, a.metadata.get("format")) {
+            (Some(want), Some(have)) if have == want => 0u8,
+            _ => 1u8,
+        };
+    let mut slot_32: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
+    let mut slot_64: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
     for a in win_artifacts {
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodizer_core::target::map_target(target);
         match raw_arch.as_str() {
-            "386" => {
-                if artifact_32.is_none() {
-                    artifact_32 = Some(a);
-                }
-            }
-            "amd64" => {
-                if artifact_64.is_none() {
-                    artifact_64 = Some(a);
-                }
-            }
+            "386" => slot_32.push(a),
+            "amd64" => slot_64.push(a),
             other => {
                 // arm64 / any other architecture: skip with a log line so
                 // the operator sees why their arm64 build wasn't packaged
@@ -301,7 +305,25 @@ pub(super) fn select_windows_artifacts<'a>(
             }
         }
     }
-    (artifact_32, artifact_64)
+    let pick = |slot: &[&'a anodizer_core::artifact::Artifact],
+                arch: &str|
+     -> Result<Option<&'a anodizer_core::artifact::Artifact>> {
+        let Some(first) = slot.first().copied() else {
+            return Ok(None);
+        };
+        if let Some(second) = slot.get(1).copied()
+            && format_rank(first) == format_rank(second)
+        {
+            return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                "chocolatey: found multiple archives for the same platform ({arch}) for \
+                 '{crate_name}': '{}' and '{}'",
+                first.name(),
+                second.name()
+            )));
+        }
+        Ok(Some(first))
+    };
+    Ok((pick(&slot_32, "386")?, pick(&slot_64, "amd64")?))
 }
 
 /// Combines the selected 32/64-bit artifacts into the `InstallMode`

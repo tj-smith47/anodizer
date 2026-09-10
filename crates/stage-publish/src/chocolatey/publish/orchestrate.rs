@@ -137,7 +137,16 @@ pub fn publish_to_chocolatey(
     // gate here would double every resolved-with-warning value's log line.
     let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name, log)?;
 
-    let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
+    let Some((artifact_32, artifact_64)) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "chocolatey",
+        crate_name,
+        select_windows_artifacts(ctx, choco_cfg, crate_name, log),
+    )?
+    else {
+        return Ok(false);
+    };
     let install_mode = build_install_mode(
         ctx,
         choco_cfg,
@@ -299,7 +308,7 @@ pub(crate) fn validate_install_mode_for_crate(
     };
     let version = ctx.version();
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
-    let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
+    let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log)?;
     if partial_shard && artifact_32.is_none() && artifact_64.is_none() {
         return Ok(false);
     }

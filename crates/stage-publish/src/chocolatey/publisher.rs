@@ -383,7 +383,14 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 targets.push(t);
             }
         }
-        if processed == 0 {
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "chocolatey",
+            crate::publisher_helpers::RunLanding::from_landed(!targets.is_empty()),
+            selected.len(),
+        );
+        if entry_skips == 0 && processed == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
