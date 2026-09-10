@@ -615,21 +615,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
-        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
-            ctx,
-            &log,
-            "homebrew",
-            any_pushed,
-            selected.len() + cask_result.total,
-        );
-        if entry_skips == 0 && should_warn_no_eligible(processed, selected.len(), cask_result.total)
-        {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
-        } else {
-            log.status(&run_done_message(processed, cask_result.applicable));
-        }
-
-        // Aggregate applicability: when the current crate scope had no
+        // Aggregate applicability, decided BEFORE the entry-skip
+        // evaluation: `NotApplicable` answers WHY nothing was published and
+        // outranks `EntriesSkipped`, which only says that entries
+        // disqualified themselves. When the current crate scope had no
         // per-crate `publish.homebrew` block AND every configured
         // top-level cask was inapplicable (no macOS artifact in scope),
         // record `Skipped(NotApplicable)` so the publisher summary and
@@ -643,6 +632,20 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
                 anodizer_core::SkipReason::NotApplicable,
             ));
+        }
+
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "homebrew",
+            any_pushed,
+            selected.len() + cask_result.total,
+        );
+        if entry_skips == 0 && should_warn_no_eligible(processed, selected.len(), cask_result.total)
+        {
+            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        } else {
+            log.status(&run_done_message(processed, cask_result.applicable));
         }
 
         let mut evidence = anodizer_core::PublishEvidence::new("homebrew");
@@ -1503,6 +1506,51 @@ mod publisher_tests {
                 ctx.pending_outcome,
                 Some(anodizer_core::PublisherOutcome::Skipped(
                     anodizer_core::SkipReason::EntriesSkipped
+                ))
+            ),
+            "unexpected outcome: {:?}",
+            ctx.pending_outcome
+        );
+    }
+
+    /// A run can be both not-applicable and entry-skipped: no crate carries
+    /// a `publish.homebrew` block, one cask disqualifies itself and the other
+    /// has no macOS artifact in scope. `NotApplicable` is the more specific
+    /// answer and wins; `EntriesSkipped` would only say that entries
+    /// disqualified themselves.
+    #[test]
+    fn nothing_applicable_outranks_entries_skipped_when_both_hold() {
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.config.homebrew_casks = Some(vec![
+            HomebrewCaskConfig {
+                name: Some("broken".to_string()),
+                repository: None,
+                ..Default::default()
+            },
+            HomebrewCaskConfig {
+                name: Some("healthy".to_string()),
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("homebrew-cask-tap".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ]);
+
+        HomebrewPublisher::new()
+            .run(&mut ctx)
+            .expect("a not-applicable publisher must not fail the run");
+
+        assert!(
+            !crate::publisher_helpers::entry_skip_reasons(&ctx, "homebrew").is_empty(),
+            "the fixture must record an entry skip for the precedence to matter"
+        );
+        assert!(
+            matches!(
+                ctx.pending_outcome,
+                Some(anodizer_core::PublisherOutcome::Skipped(
+                    anodizer_core::SkipReason::NotApplicable
                 ))
             ),
             "unexpected outcome: {:?}",
