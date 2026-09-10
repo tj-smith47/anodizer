@@ -406,7 +406,7 @@ impl anodizer_core::Publisher for NixPublisher {
                 continue;
             }
             log.verbose(&run_per_crate_start_message(crate_name));
-            let skips_before = crate::publisher_helpers::entry_skips_recorded(ctx, "nix");
+            processed += 1;
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered derivation carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
@@ -416,15 +416,12 @@ impl anodizer_core::Publisher for NixPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_nix(ctx, crate_name, &log),
             )?;
-            if crate::publisher_helpers::entry_skips_recorded(ctx, "nix") == skips_before {
-                processed += 1;
-            }
             if pushed {
                 any_pushed = true;
             }
         }
-        crate::publisher_helpers::record_all_entries_skipped(ctx, &log, "nix", processed);
-        if should_warn_no_eligible(processed, selected.len()) {
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "nix");
+        if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
@@ -507,6 +504,69 @@ mod publisher_tests {
 
     /// An overlay-less entry disqualifies itself only: the crate after it in
     /// the same run still reaches its publish path.
+    /// Every entry disqualifying itself is a different defect from no crate
+    /// carrying a `publish.nix` block, and the two have different remedies.
+    /// An all-skipped run must name the entry reasons and must NOT send the
+    /// operator to `--crate` / `--all`, which would not fix anything.
+    #[test]
+    fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
+        let mut alpha = nix_crate("alpha");
+        alpha
+            .publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut beta = nix_crate("beta");
+        beta.publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![alpha, beta])
+            .dry_run(true)
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+
+        NixPublisher::new()
+            .run(&mut ctx)
+            .expect("an all-skipped publisher must not fail the run");
+
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !logged.contains("had a nix config block"),
+            "the missing-config-block warning is false when every entry was skipped: {logged}"
+        );
+        assert!(
+            logged.contains("repository.name is not set"),
+            "the run must name why each entry was skipped: {logged}"
+        );
+        assert!(
+            matches!(
+                ctx.pending_outcome,
+                Some(anodizer_core::PublisherOutcome::Skipped(
+                    anodizer_core::SkipReason::EntriesSkipped
+                ))
+            ),
+            "unexpected outcome: {:?}",
+            ctx.pending_outcome
+        );
+    }
+
     #[test]
     fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
         let mut broken = nix_crate("alpha");

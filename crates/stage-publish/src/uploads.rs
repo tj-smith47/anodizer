@@ -29,10 +29,6 @@ pub struct UploadsSummary {
     pub uploaded: usize,
     /// Artifacts skipped because an identical copy already existed.
     pub already_present: usize,
-    /// Entries that reached their upload work — every entry the run did NOT
-    /// disqualify. Zero alongside a recorded skip means the publisher itself
-    /// was skipped, not run.
-    pub entries_run: usize,
 }
 
 impl UploadsSummary {
@@ -275,7 +271,6 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                     url
                 ));
             }
-            summary.entries_run += 1;
             continue;
         }
 
@@ -303,7 +298,6 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             entry.trusted_certificates.as_deref(),
         )?;
 
-        summary.entries_run += 1;
         let artifacts = collect_upload_artifacts_owned(
             ctx,
             "uploads",
@@ -642,12 +636,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 anodizer_core::SkipReason::AlreadyPublished,
             ));
         }
-        crate::publisher_helpers::record_all_entries_skipped(
-            ctx,
-            &log,
-            "uploads",
-            summary.entries_run,
-        );
+        crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "uploads");
         let mut evidence = anodizer_core::PublishEvidence::new("uploads");
         let targets = collect_upload_targets(ctx);
         if let Some(first) = targets.first() {
@@ -1157,7 +1146,7 @@ mod tests {
             matches!(
                 ctx.pending_outcome,
                 Some(anodizer_core::PublisherOutcome::Skipped(
-                    anodizer_core::SkipReason::AllEntriesSkipped
+                    anodizer_core::SkipReason::EntriesSkipped
                 ))
             ),
             "unexpected outcome: {:?}",
@@ -1168,7 +1157,7 @@ mod tests {
     /// One entry skipped while another reached its work is NOT an all-skipped
     /// publisher — the run must stay a run so its evidence is kept.
     #[test]
-    fn one_skipped_entry_alongside_a_live_one_still_reports_a_run() {
+    fn one_skipped_entry_reports_the_publisher_skipped_and_still_lists_the_live_one() {
         let mut config = Config::default();
         config.uploads = Some(vec![
             UploadConfig {
@@ -1183,11 +1172,29 @@ mod tests {
             },
         ]);
         let mut ctx = dry_run_ctx(config);
+        let (_log, capture) =
+            StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Normal);
+        ctx.with_log_capture(capture.clone());
         UploadsPublisher::new().run(&mut ctx).expect("Ok");
         assert!(
-            ctx.pending_outcome.is_none(),
+            matches!(
+                ctx.pending_outcome,
+                Some(anodizer_core::PublisherOutcome::Skipped(
+                    anodizer_core::SkipReason::EntriesSkipped
+                ))
+            ),
             "unexpected outcome: {:?}",
             ctx.pending_outcome
+        );
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("would upload artifacts to 'named'"),
+            "the entry that ran must still be listed: {logged}"
         );
     }
 
@@ -1797,13 +1804,11 @@ mod tests {
         let s = UploadsSummary {
             uploaded: 0,
             already_present: 3,
-            ..Default::default()
         };
         assert!(s.is_fully_idempotent_skip());
         let s2 = UploadsSummary {
             uploaded: 1,
             already_present: 2,
-            ..Default::default()
         };
         assert!(!s2.is_fully_idempotent_skip());
     }

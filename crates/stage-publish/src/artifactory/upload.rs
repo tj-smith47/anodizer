@@ -379,10 +379,6 @@ pub struct ArtifactoryUploadSummary {
     pub uploaded: usize,
     /// Artifacts skipped because an identical copy already existed.
     pub already_present: usize,
-    /// Entries that reached their upload work — every entry the run did NOT
-    /// disqualify. Zero alongside a recorded skip means the publisher itself
-    /// was skipped, not run.
-    pub entries_run: usize,
 }
 
 impl ArtifactoryUploadSummary {
@@ -617,7 +613,6 @@ pub fn publish_to_artifactory(
                 let url = append_deb_matrix_params(&url, a, entry)?;
                 log.status(&format!("(dry-run) {} ({}) → {}", a.name(), a.kind, url));
             }
-            summary.entries_run += 1;
             continue;
         }
 
@@ -641,8 +636,6 @@ pub fn publish_to_artifactory(
         {
             continue;
         }
-
-        summary.entries_run += 1;
 
         // Build HTTP client
         let client = build_reqwest_client(

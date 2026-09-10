@@ -366,7 +366,7 @@ fn outcome_to_status_string(outcome: &PublisherOutcome) -> String {
             SkipReason::Deselected => "skipped-deselected".into(),
             SkipReason::VerifyGateBlocked => "skipped-verify-gate-blocked".into(),
             SkipReason::ConfigSkipped => "skipped-config".into(),
-            SkipReason::AllEntriesSkipped => "skipped-all-entries-skipped".into(),
+            SkipReason::EntriesSkipped => "skipped-entries-skipped".into(),
         },
         PublisherOutcome::Failed(_) => "failed".into(),
         PublisherOutcome::RolledBack => "rolled-back".into(),

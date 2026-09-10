@@ -147,43 +147,25 @@ pub(crate) fn record_entry_skip(
     ctx.remember_skip(publisher, label, reason);
 }
 
-/// Count the entry skips recorded so far for `publisher`.
+/// Report a publisher any of whose entries disqualified itself as skipped,
+/// and answer how many of its entries did.
+///
+/// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
+/// (`internal/pipe/pipe.go`): a non-empty memento skips the pipe with the
+/// joined reasons, whatever else the loop managed to publish — otherwise a
+/// misconfigured entry is invisible in the run summary, which reads the same
+/// as a publisher that published everything it was given. The entries that
+/// did publish keep their own per-entry result lines.
 ///
 /// Skips land under the publisher's own name or under a `<publisher>-<sub>`
 /// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
-/// spellings are counted. Callers sample this either side of one entry's work
-/// to learn whether that entry disqualified itself.
-pub(crate) fn entry_skips_recorded(
-    ctx: &anodizer_core::context::Context,
-    publisher: &str,
-) -> usize {
-    let sub_prefix = format!("{publisher}-");
-    ctx.skip_memento
-        .snapshot()
-        .iter()
-        .filter(|e| e.stage == publisher || e.stage.starts_with(&sub_prefix))
-        .count()
-}
-
-/// Report a publisher whose every entry disqualified itself as skipped.
-///
-/// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
-/// (`internal/pipe/pipe.go`): a loop that reached no real work, having skipped
-/// each entry it had, reports the pipe as skipped rather than as run —
-/// otherwise a wholly misconfigured publisher is indistinguishable in the run
-/// summary from one that published everything.
-///
-/// `ran` counts entries whose publish work was reached. A publisher that
-/// already recorded its own terminal outcome keeps it.
-pub(crate) fn record_all_entries_skipped(
+/// spellings count. A publisher that already recorded its own terminal
+/// outcome keeps it, and the count is still reported.
+pub(crate) fn evaluate_entry_skips(
     ctx: &mut anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
     publisher: &str,
-    ran: usize,
-) {
-    if ran > 0 || ctx.pending_outcome.is_some() {
-        return;
-    }
+) -> usize {
     let sub_prefix = format!("{publisher}-");
     let reasons: Vec<String> = ctx
         .skip_memento
@@ -193,15 +175,15 @@ pub(crate) fn record_all_entries_skipped(
         .map(|e| e.reason)
         .collect();
     if reasons.is_empty() {
-        return;
+        return 0;
     }
-    log.status(&format!(
-        "skipping {publisher} — every configured entry was skipped: {}",
-        reasons.join(", ")
-    ));
-    ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-        anodizer_core::SkipReason::AllEntriesSkipped,
-    ));
+    if ctx.pending_outcome.is_none() {
+        log.status(&format!("skipping {publisher} — {}", reasons.join(", ")));
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::EntriesSkipped,
+        ));
+    }
+    reasons.len()
 }
 
 /// Resolve the effective list of crates a per-crate publisher should
@@ -779,10 +761,10 @@ mod tests {
 
     /// Walk the crate's production sources and pair the two halves of the
     /// entry-skip contract: a publisher that can disqualify one entry must
-    /// also be able to report itself skipped when every entry disqualified,
-    /// or a wholly misconfigured publisher reads as a successful one in the
-    /// run summary. A new entry-skipping publisher fails this until its
-    /// `run()` calls `record_all_entries_skipped`.
+    /// also evaluate its skips at the end of the run, or a misconfigured
+    /// entry reads as a successful publisher in the run summary. A new
+    /// entry-skipping publisher fails this until its `run()` calls
+    /// `evaluate_entry_skips`.
     #[test]
     fn every_entry_skipping_publisher_evaluates_its_skips() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -851,7 +833,7 @@ mod tests {
         skipping.sort();
         skipping.dedup();
         skipping.retain(|l| l != "publisher" && l != "label");
-        let evaluated = labels(&sources, "record_all_entries_skipped(");
+        let evaluated = labels(&sources, "evaluate_entry_skips(");
 
         assert!(
             !skipping.is_empty() && !evaluated.is_empty(),
@@ -862,7 +844,8 @@ mod tests {
                 evaluated
                     .iter()
                     .any(|p| stage == p || stage.starts_with(&format!("{p}-"))),
-                "publisher '{stage}' records entry skips but never calls                  record_all_entries_skipped; evaluated={evaluated:?}"
+                "publisher '{stage}' records entry skips but never calls \
+                 evaluate_entry_skips; evaluated={evaluated:?}"
             );
         }
     }

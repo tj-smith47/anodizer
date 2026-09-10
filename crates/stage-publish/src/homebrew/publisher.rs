@@ -594,7 +594,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 continue;
             }
             log.verbose(&run_per_crate_start_message(crate_name));
-            let skips_before = crate::publisher_helpers::entry_skips_recorded(ctx, "homebrew");
+            processed += 1;
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered formula carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
@@ -604,9 +604,6 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_homebrew(ctx, crate_name, &log),
             )?;
-            if crate::publisher_helpers::entry_skips_recorded(ctx, "homebrew") == skips_before {
-                processed += 1;
-            }
             if pushed {
                 any_pushed = true;
             }
@@ -618,13 +615,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
-        crate::publisher_helpers::record_all_entries_skipped(
-            ctx,
-            &log,
-            "homebrew",
-            processed + cask_result.applicable,
-        );
-        if should_warn_no_eligible(processed, selected.len(), cask_result.total) {
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "homebrew");
+        if entry_skips == 0 && should_warn_no_eligible(processed, selected.len(), cask_result.total)
+        {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed, cask_result.applicable));
@@ -1454,6 +1447,61 @@ mod publisher_tests {
             .build();
         let p = HomebrewPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    /// Every formula entry disqualifying itself is a different defect from no
+    /// crate carrying a `publish.homebrew` block, and the two have different
+    /// remedies. An all-skipped run must name the entry reasons and must NOT
+    /// send the operator to `--crate` / `--all` or to `homebrew_casks:`.
+    #[test]
+    fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
+        let mut alpha = homebrew_crate("alpha");
+        alpha
+            .publish
+            .as_mut()
+            .unwrap()
+            .homebrew
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![alpha])
+            .dry_run(true)
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+
+        HomebrewPublisher::new()
+            .run(&mut ctx)
+            .expect("an all-skipped publisher must not fail the run");
+
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !logged.contains("had a homebrew"),
+            "the missing-config-block warning is false when every entry was skipped: {logged}"
+        );
+        assert!(
+            logged.contains("repository.name is not set"),
+            "the run must name why each entry was skipped: {logged}"
+        );
+        assert!(
+            matches!(
+                ctx.pending_outcome,
+                Some(anodizer_core::PublisherOutcome::Skipped(
+                    anodizer_core::SkipReason::EntriesSkipped
+                ))
+            ),
+            "unexpected outcome: {:?}",
+            ctx.pending_outcome
+        );
     }
 
     #[test]

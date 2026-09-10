@@ -732,6 +732,57 @@ fn guard_counts_windows_portable_binary() {
     );
 }
 
+/// Every entry disqualifying itself is a different defect from no crate
+/// carrying a `publish.winget` block, and the two have different remedies. An
+/// all-skipped run must name the entry reasons and must NOT send the operator
+/// to `--crate` / `--all`, which would not fix anything.
+#[test]
+fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
+    let crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "Acme.bad id");
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![crate_cfg])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    add_windows_zip(&mut ctx, "widget");
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    WingetPublisher::new()
+        .run(&mut ctx)
+        .expect("an all-skipped publisher must not fail the run");
+
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !logged.contains("had a winget config block"),
+        "the missing-config-block warning is false when every entry was skipped: {logged}"
+    );
+    assert!(
+        logged.contains("Acme.bad id"),
+        "the run must name why each entry was skipped: {logged}"
+    );
+    assert!(
+        matches!(
+            ctx.pending_outcome,
+            Some(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::EntriesSkipped
+            ))
+        ),
+        "unexpected outcome: {:?}",
+        ctx.pending_outcome
+    );
+}
+
 #[test]
 fn winget_publisher_classification() {
     let p = WingetPublisher::new();

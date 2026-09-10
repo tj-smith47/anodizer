@@ -232,7 +232,7 @@ fn every_entry_skipped_reports_the_publisher_as_skipped() {
         matches!(
             ctx.pending_outcome,
             Some(anodizer_core::PublisherOutcome::Skipped(
-                anodizer_core::SkipReason::AllEntriesSkipped
+                anodizer_core::SkipReason::EntriesSkipped
             ))
         ),
         "unexpected outcome: {:?}",

@@ -174,16 +174,17 @@ pub enum SkipReason {
     /// absent entirely) and from `Deselected` (an operator `--skip` /
     /// `--publishers` choice, not a config-derived inactivity).
     ConfigSkipped,
-    /// Every entry the publisher iterated disqualified itself — each one
-    /// recorded its own reason in the run's intentional-skip summary and the
-    /// publisher reached no upload/submit work at all. Mirrors GoReleaser's
-    /// `pipe.SkipMemento.Evaluate()`, which turns a loop whose every item
-    /// returned `pipe.Skip` into a skipped pipe rather than a successful one.
+    /// At least one entry the publisher iterated disqualified itself — each
+    /// one recorded its own reason in the run's intentional-skip summary.
+    /// Mirrors GoReleaser's
+    /// `pipe.SkipMemento.Evaluate()`, which turns a loop ANY of whose items
+    /// returned `pipe.Skip` into a skipped pipe rather than a successful one —
+    /// the entries that did publish are still reported individually.
     /// Distinct from `ConfigSkipped` (decided BEFORE `run()` from `skip:` /
     /// `if:` alone) — here `run()` did execute, and the disqualifications are
     /// per-entry defects (a missing `name:`/`target:`, a half-set credential
     /// pair) that only the run itself can see.
-    AllEntriesSkipped,
+    EntriesSkipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
