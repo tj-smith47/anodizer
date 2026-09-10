@@ -491,7 +491,14 @@ pub(crate) fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveCon
     let ArchivesConfig::Configs(configs) = &crate_cfg.archives else {
         return None;
     };
-    configs
+    // A `meta: true` entry packs no binaries, so the archive stage binds an
+    // EMPTY `{{ .Binary }}` while naming it. Deriving its name from a build's
+    // binary would resolve an asset the release never writes.
+    let packing: Vec<&ArchiveConfig> = configs
+        .iter()
+        .filter(|a| !a.meta.unwrap_or(false))
+        .collect();
+    packing
         .iter()
         .find(|a| {
             a.formats
@@ -500,8 +507,8 @@ pub(crate) fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveCon
                 .map(|fmt| binstall_pkg_fmt(fmt).is_some())
                 .unwrap_or(true)
         })
-        .cloned()
-        .or_else(|| configs.first().cloned())
+        .or(packing.first())
+        .map(|a| (*a).clone())
 }
 
 /// Resolve the full set of target triples binstall metadata must cover for
@@ -1869,6 +1876,41 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         assert_eq!(
             names["x86_64-unknown-linux-gnu"],
             "myapp-cli-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// The archive stage packs no binaries into a `meta: true` entry and binds
+    /// an EMPTY `Binary` while naming it, so it can never be the archive a
+    /// derived download URL points at — even when its format looks
+    /// binstallable and it is listed first.
+    #[test]
+    fn a_meta_archive_is_not_chosen_as_the_binstallable_one() {
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(vec![build_for("solo", &["x86_64-unknown-linux-gnu"])]),
+            archives: ArchivesConfig::Configs(vec![
+                ArchiveConfig {
+                    id: Some("docs".to_string()),
+                    meta: Some(true),
+                    name_template: Some("{{ ProjectName }}-meta-{{ Version }}".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
+                    ..Default::default()
+                },
+                ArchiveConfig {
+                    id: Some("default".to_string()),
+                    name_template: Some(
+                        "{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string(),
+                    ),
+                    formats: Some(vec!["tar.gz".to_string()]),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let names = derived_names(&krate);
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "solo-1.0.0-linux-amd64.tar.gz"
         );
     }
 
