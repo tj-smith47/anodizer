@@ -955,6 +955,53 @@ mod tests {
         }
     }
 
+    /// The wire token each outcome serializes as, restated variant by variant
+    /// rather than by calling the production mapper: a new outcome must be
+    /// given its `status` string here before this module compiles.
+    fn expect_status(outcome: &PublisherOutcome) -> &'static str {
+        match outcome {
+            PublisherOutcome::Succeeded => "succeeded",
+            PublisherOutcome::Skipped(reason) => match reason {
+                SkipReason::SubmitterGated => "skipped-submitter-gated",
+                SkipReason::NotConfigured => "skipped-not-configured",
+                SkipReason::Snapshot => "skipped-snapshot",
+                SkipReason::DryRun => "skipped-dry-run",
+                SkipReason::Nightly => "skipped-nightly",
+                SkipReason::NotApplicable => "skipped-not-applicable",
+                SkipReason::AlreadyPublished => "skipped-already-published",
+                SkipReason::Deselected => "skipped-deselected",
+                SkipReason::VerifyGateBlocked => "skipped-verify-gate-blocked",
+                SkipReason::ConfigSkipped => "skipped-config",
+                SkipReason::EntriesSkipped => "skipped-entries-skipped",
+            },
+            PublisherOutcome::Failed(_) => "failed",
+            PublisherOutcome::RolledBack => "rolled-back",
+            PublisherOutcome::RollbackFailed(_) => "rollback-failed",
+            PublisherOutcome::RollbackSkippedNoScope => "rollback-skipped-no-scope",
+            PublisherOutcome::PendingModeration => "pending-moderation",
+            PublisherOutcome::PendingValidation => "pending-validation",
+            PublisherOutcome::PublishedNoRollback => "published-no-rollback",
+        }
+    }
+
+    /// Eight `PublisherOutcome` variants plus the eleven skip reasons the
+    /// ninth carries.
+    const OUTCOME_COUNT: usize = 19;
+
+    /// Naming a variant in the chain is not reaching it: an arm returning
+    /// `None` beside the terminator compiles, and the variant then vanishes
+    /// from every walk below without any of them failing. The count is what
+    /// notices.
+    #[test]
+    fn every_outcome_yields_every_variant() {
+        assert_eq!(
+            every_outcome().len(),
+            OUTCOME_COUNT,
+            "the chain must REACH every variant, not only name it: {:?}",
+            every_outcome()
+        );
+    }
+
     fn result_in(group: PublisherGroup, outcome: PublisherOutcome) -> PublisherResult {
         PublisherResult {
             name: "p".to_string(),
@@ -1012,55 +1059,97 @@ mod tests {
         );
     }
 
+    /// Every status token, walked over the whole outcome space: these strings
+    /// are the consumer-visible `status` field of the report and summary JSON,
+    /// so a new skip reason must not be able to ship an unpinned wire token.
     #[test]
     fn outcome_to_status_string_for_each_variant() {
+        for outcome in every_outcome() {
+            assert_eq!(
+                outcome_to_status_string(&outcome),
+                expect_status(&outcome),
+                "outcome_to_status_string({outcome:?})"
+            );
+        }
+    }
+
+    /// The two rows an operator sees when one publisher landed with a
+    /// misconfigured entry beside it and another's every entry disqualified
+    /// itself. The block in `docs/advanced/release-resilience.md` is this
+    /// fixture's rendering.
+    fn entry_skip_summary() -> RunSummary {
+        RunSummary {
+            submitter_gated: false,
+            publishers_succeeded: 1,
+            results: vec![
+                RunSummaryResult {
+                    name: "uploads".to_string(),
+                    group: PublisherGroup::Assets,
+                    required: false,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                    entry_skips: vec![
+                        "uploads: entry 'mirror' is missing required 'target' URL".to_string(),
+                    ],
+                },
+                RunSummaryResult {
+                    name: "winget".to_string(),
+                    group: PublisherGroup::Submitter,
+                    required: false,
+                    status: "skipped-entries-skipped".to_string(),
+                    evidence: None,
+                    entry_skips: vec!["winget: no repository config for 'widget'".to_string()],
+                },
+            ],
+            ..populated_summary()
+        }
+    }
+
+    /// A publisher that landed keeps its own status, and the skip count is
+    /// what makes the misconfigured entry visible on its row.
+    #[test]
+    fn a_landed_publisher_with_entry_skips_shows_its_outcome_and_the_count() {
+        let rows = status_table_rows(&entry_skip_summary(), PublishDisposition::Ran);
         assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Succeeded),
-            "succeeded"
+            rows[0],
+            (
+                "uploads".to_string(),
+                "Assets     optional  succeeded  (1 entry skipped)".to_string()
+            ),
+            "rows: {rows:?}"
         );
+    }
+
+    /// Two disqualified entries are two things to fix, and the row says so.
+    #[test]
+    fn two_entry_skips_render_the_plural_suffix() {
+        let mut summary = entry_skip_summary();
+        summary.results[0]
+            .entry_skips
+            .push("uploads: entry 'backup' is missing required 'target' URL".to_string());
+        let rows = status_table_rows(&summary, PublishDisposition::Ran);
         assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Skipped(SkipReason::SubmitterGated)),
-            "skipped-submitter-gated"
+            rows[0],
+            (
+                "uploads".to_string(),
+                "Assets     optional  succeeded  (2 entries skipped)".to_string()
+            ),
+            "rows: {rows:?}"
         );
+    }
+
+    /// A publisher whose every entry disqualified itself carries the count
+    /// too: the status says nothing landed, the count says how much did not.
+    #[test]
+    fn a_skipped_publisher_row_shows_the_skip_count_beside_its_status() {
+        let rows = status_table_rows(&entry_skip_summary(), PublishDisposition::Ran);
         assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Skipped(SkipReason::NotConfigured)),
-            "skipped-not-configured"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Skipped(SkipReason::Snapshot)),
-            "skipped-snapshot"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Skipped(SkipReason::DryRun)),
-            "skipped-dry-run"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::Failed("boom".into())),
-            "failed"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::RolledBack),
-            "rolled-back"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::RollbackFailed("oops".into())),
-            "rollback-failed"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::RollbackSkippedNoScope),
-            "rollback-skipped-no-scope"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::PendingModeration),
-            "pending-moderation"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::PendingValidation),
-            "pending-validation"
-        );
-        assert_eq!(
-            outcome_to_status_string(&PublisherOutcome::PublishedNoRollback),
-            "published-no-rollback"
+            rows[1],
+            (
+                "winget".to_string(),
+                "Submitter  optional  skipped-entries-skipped  (1 entry skipped)".to_string()
+            ),
+            "rows: {rows:?}"
         );
     }
 
