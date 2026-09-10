@@ -135,6 +135,17 @@ pub(crate) fn write_tar_entries<W: std::io::Write>(
     Ok(())
 }
 
+/// Flush the finished archive to the OS and surface any write-back error.
+///
+/// A format writer's `finish()` only guarantees the bytes reached the file
+/// descriptor. Dropping the `File` afterwards discards the close-time error a
+/// full disk or an NFS write-back reports, so a truncated archive would be
+/// published as a success.
+pub(crate) fn finish_archive_file(file: File, label: &str, output: &Path) -> Result<()> {
+    file.sync_all()
+        .with_context(|| format!("{label}: failed to close archive file {}", output.display()))
+}
+
 // ---------------------------------------------------------------------------
 // tar.gz / tar.xz / tar.zst / tar / gz / zip / binary writers
 // ---------------------------------------------------------------------------
@@ -159,7 +170,10 @@ pub fn create_tar_gz(
     write_tar_entries(
         &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz",
     )?;
-    tar.finish().context("tar.gz: finish")
+    tar.finish().context("tar.gz: finish")?;
+    let enc = tar.into_inner().context("tar.gz: finish tar")?;
+    let out_file = enc.finish().context("tar.gz: finish gzip")?;
+    finish_archive_file(out_file, "tar.gz", output)
 }
 
 /// Create a tar.xz archive containing the given files.
@@ -186,7 +200,10 @@ pub fn create_tar_xz(
     write_tar_entries(
         &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz",
     )?;
-    tar.finish().context("tar.xz: finish")
+    tar.finish().context("tar.xz: finish")?;
+    let enc = tar.into_inner().context("tar.xz: finish tar")?;
+    let out_file = enc.finish().context("tar.xz: finish xz")?;
+    finish_archive_file(out_file, "tar.xz", output)
 }
 
 /// Create a tar.zst archive containing the given files.
@@ -209,8 +226,8 @@ pub fn create_tar_zst(
         &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst",
     )?;
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
-    enc.finish().context("tar.zst: finish zstd")?;
-    Ok(())
+    let out_file = enc.finish().context("tar.zst: finish zstd")?;
+    finish_archive_file(out_file, "tar.zst", output)
 }
 
 /// Create an uncompressed tar archive containing the given files.
@@ -226,7 +243,9 @@ pub fn create_tar(
         File::create(output).with_context(|| format!("create tar: {}", output.display()))?;
     let mut tar = tar::Builder::new(out_file);
     write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar")?;
-    tar.finish().context("tar: finish")
+    tar.finish().context("tar: finish")?;
+    let out_file = tar.into_inner().context("tar: finish tar")?;
+    finish_archive_file(out_file, "tar", output)
 }
 
 /// Create a standalone .gz file from a single input file.
@@ -241,8 +260,8 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
     let mut enc = GzEncoder::new(out_file, Compression::best());
     let data = fs::read(file).with_context(|| format!("gz: read {}", file.display()))?;
     enc.write_all(&data).context("gz: write compressed data")?;
-    enc.finish().context("gz: finish")?;
-    Ok(())
+    let out_file = enc.finish().context("gz: finish")?;
+    finish_archive_file(out_file, "gz", output)
 }
 
 /// Create a standalone .xz file from a single input file.
@@ -263,8 +282,8 @@ pub fn create_xz(file: &Path, output: &Path) -> Result<()> {
     let mut enc = xz2::write::XzEncoder::new(out_file, 9);
     let data = fs::read(file).with_context(|| format!("xz: read {}", file.display()))?;
     enc.write_all(&data).context("xz: write compressed data")?;
-    enc.finish().context("xz: finish")?;
-    Ok(())
+    let out_file = enc.finish().context("xz: finish")?;
+    finish_archive_file(out_file, "xz", output)
 }
 
 /// Create a zip archive containing the given files.
@@ -309,8 +328,8 @@ pub fn create_zip(
             .with_context(|| format!("zip: write {name}"))?;
     }
 
-    zip.finish().context("zip: finish")?;
-    Ok(())
+    let out_file = zip.finish().context("zip: finish")?;
+    finish_archive_file(out_file, "zip", output)
 }
 
 /// Copy one binary directly to `output` (the `binary` archive format — no

@@ -7102,3 +7102,174 @@ mod binary_name_read_policy {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// Archive close: every writer flushes through `finish_archive_file`
+// -----------------------------------------------------------------------
+
+/// Decode one archive of `format` at `path` and return its entry names with
+/// their bytes. A truncated archive — the shape a dropped, unsynced `File`
+/// leaves behind — fails to decode here rather than passing as a success.
+fn round_trip_archive(format: &str, path: &Path) -> HashMap<String, Vec<u8>> {
+    let bytes =
+        fs::read(path).unwrap_or_else(|e| panic!("[{format}] read {}: {e}", path.display()));
+    assert!(!bytes.is_empty(), "[{format}] archive is empty");
+    match format {
+        "zip" => {
+            let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                .unwrap_or_else(|e| panic!("[{format}] open zip: {e}"));
+            let mut out = HashMap::new();
+            for i in 0..zip.len() {
+                let mut entry = zip.by_index(i).unwrap();
+                let name = entry.name().to_string();
+                let mut content = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
+                out.insert(name, content);
+            }
+            out
+        }
+        "tar" => read_tar_entries(tar::Archive::new(std::io::Cursor::new(bytes))),
+        "tar.gz" | "tgz" => read_tar_entries(tar::Archive::new(flate2::read::GzDecoder::new(
+            std::io::Cursor::new(bytes),
+        ))),
+        "tar.xz" | "txz" => read_tar_entries(tar::Archive::new(xz2::read::XzDecoder::new(
+            std::io::Cursor::new(bytes),
+        ))),
+        "tar.zst" | "tzst" => read_tar_entries(tar::Archive::new(
+            zstd::Decoder::new(std::io::Cursor::new(bytes)).unwrap(),
+        )),
+        "gz" => {
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(
+                &mut flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
+                &mut content,
+            )
+            .unwrap_or_else(|e| panic!("[{format}] decode: {e}"));
+            HashMap::from([("payload".to_string(), content)])
+        }
+        "xz" => {
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(
+                &mut xz2::read::XzDecoder::new(std::io::Cursor::new(bytes)),
+                &mut content,
+            )
+            .unwrap_or_else(|e| panic!("[{format}] decode: {e}"));
+            HashMap::from([("payload".to_string(), content)])
+        }
+        other => panic!("no round-trip decoder for {other}"),
+    }
+}
+
+#[test]
+fn every_format_syncs_its_archive_file() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("myapp");
+    fs::write(&src, b"binary content").unwrap();
+
+    for format in ["tar", "tar.gz", "tar.xz", "tar.zst", "zip", "gz", "xz"] {
+        let out = tmp.path().join(format!("myapp.{format}"));
+        match format {
+            "tar" => create_tar(&[&src], &out, None, None, None, None),
+            "tar.gz" => create_tar_gz(&[&src], &out, None, None, None, None),
+            "tar.xz" => create_tar_xz(&[&src], &out, None, None, None, None),
+            "tar.zst" => create_tar_zst(&[&src], &out, None, None, None, None),
+            "zip" => create_zip(&[&src], &out, None, None),
+            "gz" => create_gz(&src, &out),
+            "xz" => create_xz(&src, &out),
+            other => panic!("unhandled format {other}"),
+        }
+        .unwrap_or_else(|e| panic!("[{format}] writer failed: {e:#}"));
+
+        let entries = round_trip_archive(format, &out);
+        assert!(
+            entries.values().any(|v| v == b"binary content"),
+            "[{format}] archive does not round-trip its payload; got {:?}",
+            entries.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn write_archive_in_format_syncs_every_arm() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("myapp");
+    fs::write(&src, b"binary content").unwrap();
+    let entry = ArchiveEntry {
+        src: src.clone(),
+        archive_name: PathBuf::from("myapp"),
+        info: None,
+    };
+    let log = StageLogger::new("archive", Verbosity::Normal);
+
+    for format in [
+        "zip", "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "gz", "xz",
+    ] {
+        let out = tmp.path().join(format!("myapp-arm.{format}"));
+        crate::run_helpers::write_archive_in_format(
+            format,
+            &out,
+            &[&entry],
+            &[src.as_path()],
+            None,
+            false,
+            &log,
+        )
+        .unwrap_or_else(|e| panic!("[{format}] arm failed: {e:#}"));
+
+        let entries = round_trip_archive(format, &out);
+        assert!(
+            entries.values().any(|v| v == b"binary content"),
+            "[{format}] arm does not round-trip its payload; got {:?}",
+            entries.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn finish_archive_file_surfaces_a_write_back_error() {
+    // `fsync` on a character device is EINVAL, which stands in for the
+    // close-time write-back error a full disk or an NFS mount reports.
+    let path = Path::new("/dev/null");
+    let file = File::open(path).unwrap();
+    let err = formats::finish_archive_file(file, "zip", path)
+        .expect_err("a failing sync_all must reach the caller");
+    assert_eq!(
+        err.to_string(),
+        "zip: failed to close archive file /dev/null"
+    );
+}
+
+#[test]
+fn every_archive_writer_finishes_through_the_helper() {
+    // Twelve writer sites: the seven `formats.rs` entry points plus the five
+    // arms of `write_archive_in_format` that build their own writer. The `gz`
+    // and `xz` arms delegate to `formats::create_gz`/`create_xz` and must not
+    // sync a second time.
+    let mut calls = 0usize;
+    for src in [include_str!("formats.rs"), include_str!("run_helpers.rs")] {
+        for line in src.lines() {
+            let line = line.trim_start();
+            if line.starts_with("//") || line.starts_with("pub(crate) fn finish_archive_file(") {
+                continue;
+            }
+            calls += line.matches("finish_archive_file(").count();
+        }
+    }
+    assert_eq!(
+        calls, 12,
+        "every archive writer must close through finish_archive_file"
+    );
+    assert_eq!(
+        include_str!("formats.rs").matches("sync_all()").count(),
+        1,
+        "sync_all belongs to finish_archive_file alone"
+    );
+    assert_eq!(
+        include_str!("run_helpers.rs").matches("sync_all()").count(),
+        0,
+        "sync_all belongs to finish_archive_file alone"
+    );
+}

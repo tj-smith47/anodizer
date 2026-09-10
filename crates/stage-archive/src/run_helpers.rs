@@ -18,7 +18,7 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template_file_render::render_templated_file_entry;
 
 use crate::entries::{ArchiveEntry, write_archive_entries, write_zip_entries};
-use crate::formats::{create_gz, create_xz};
+use crate::formats::{create_gz, create_xz, finish_archive_file};
 use crate::run::ARCHIVE_TEMPLATED_STAGING_DIR;
 
 pub(crate) fn validate_archive_configs(
@@ -148,7 +148,8 @@ pub(crate) fn write_archive_in_format(
                 source_date_epoch,
                 strict,
             )?;
-            zip.finish().context("zip: finish")?;
+            let out_file = zip.finish().context("zip: finish")?;
+            finish_archive_file(out_file, "zip", archive_path)?;
         }
         "tar.gz" | "tgz" => {
             let out_file = File::create(archive_path)
@@ -163,6 +164,9 @@ pub(crate) fn write_archive_in_format(
                 strict,
             )?;
             tar.finish().context("tar.gz: finish")?;
+            let enc = tar.into_inner().context("tar.gz: finish tar")?;
+            let out_file = enc.finish().context("tar.gz: finish gzip")?;
+            finish_archive_file(out_file, "tar.gz", archive_path)?;
         }
         "tar.xz" | "txz" => {
             let out_file = File::create(archive_path)
@@ -177,6 +181,9 @@ pub(crate) fn write_archive_in_format(
                 strict,
             )?;
             tar.finish().context("tar.xz: finish")?;
+            let enc = tar.into_inner().context("tar.xz: finish tar")?;
+            let out_file = enc.finish().context("tar.xz: finish xz")?;
+            finish_archive_file(out_file, "tar.xz", archive_path)?;
         }
         "tar.zst" | "tzst" => {
             let out_file = File::create(archive_path)
@@ -191,7 +198,8 @@ pub(crate) fn write_archive_in_format(
                 strict,
             )?;
             let enc = tar.into_inner().context("tar.zst: finish tar")?;
-            enc.finish().context("tar.zst: finish zstd")?;
+            let out_file = enc.finish().context("tar.zst: finish zstd")?;
+            finish_archive_file(out_file, "tar.zst", archive_path)?;
         }
         "tar" => {
             let out_file = File::create(archive_path)
@@ -205,6 +213,8 @@ pub(crate) fn write_archive_in_format(
                 strict,
             )?;
             tar.finish().context("tar: finish")?;
+            let out_file = tar.into_inner().context("tar: finish tar")?;
+            finish_archive_file(out_file, "tar", archive_path)?;
         }
         "gz" => {
             if path_refs.is_empty() {
