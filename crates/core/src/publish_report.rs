@@ -40,7 +40,7 @@ pub enum PublisherGroup {
 /// Per-publisher terminal state in [`PublishReport`]. Stage-level statuses
 /// like `pending-moderation` / `pending-validation` / `announce-gated`
 /// live on the run summary, not here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum::EnumCount)]
 pub enum PublisherOutcome {
     /// `Publisher::run` returned `Ok` and the artifact is live.
     Succeeded,
@@ -99,7 +99,7 @@ impl PublisherOutcome {
 
 /// Reason a publisher was [`PublisherOutcome::Skipped`]. Serialized as
 /// kebab-case (e.g. `"submitter-gated"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumCount)]
 #[serde(rename_all = "kebab-case")]
 pub enum SkipReason {
     /// Skipped because a required publisher in an already-run group

@@ -689,6 +689,7 @@ mod tests {
     use super::*;
     use anodizer_core::publish_evidence::PublishEvidence;
     use anodizer_core::publish_report::{PublishReport, PublisherResult};
+    use strum::EnumCount as _;
 
     fn populated_summary() -> RunSummary {
         RunSummary {
@@ -992,9 +993,12 @@ mod tests {
         }
     }
 
-    /// Eight `PublisherOutcome` variants plus the eleven skip reasons the
-    /// ninth carries.
-    const OUTCOME_COUNT: usize = 19;
+    /// Every `PublisherOutcome` variant except `Skipped`, plus one member per
+    /// `SkipReason` that variant carries. Counted by the compiler, so adding
+    /// a variant to either enum moves the expected number with no bookkeeping
+    /// here — an orphan that is named but never reached fails the walk below
+    /// instead of passing a restated literal.
+    const OUTCOME_COUNT: usize = PublisherOutcome::COUNT - 1 + SkipReason::COUNT;
 
     /// Naming a variant in the chain is not reaching it: an arm returning
     /// `None` beside the terminator compiles, and the variant then vanishes
