@@ -113,6 +113,56 @@ fn run_checked_verbose_failure_no_double_emit() {
     );
 }
 
+/// A `*_KEY` env value spanning three lines is not a substring of any single
+/// line the child prints, so per-line redaction printed it verbatim. The
+/// stream redacter holds the partial value until the whole of it has been
+/// seen.
+#[test]
+#[cfg(unix)]
+fn tee_stream_never_prints_a_secret_split_across_lines() {
+    let pem =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAABBBBCCCC\n-----END OPENSSH PRIVATE KEY-----";
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let log = log.with_env(vec![("SSH_PRIVATE_KEY".to_string(), pem.to_string())]);
+    let mut cmd = sh("printf '%s' \"$SSH_PRIVATE_KEY\" >&2");
+    cmd.env("SSH_PRIVATE_KEY", pem);
+    run_checked(&mut cmd, &log, "leaky").expect("the child must succeed");
+
+    let recorded: String = cap
+        .all_messages()
+        .into_iter()
+        .map(|(_, msg)| msg)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        recorded.contains("$SSH_PRIVATE_KEY"),
+        "the streamed secret must be masked by name; got: {recorded:?}"
+    );
+    for line in pem.lines() {
+        assert!(
+            !recorded.contains(line),
+            "no line of the key body may reach the log, including the header; \
+             leaked {line:?} in {recorded:?}"
+        );
+    }
+}
+
+/// With no secrets attached the tee must emit exactly what it emitted before
+/// the stream redacter existed: one record per line, terminator stripped.
+#[test]
+#[cfg(unix)]
+fn tee_stream_line_output_is_unchanged_without_secrets() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    run_checked(&mut sh("echo one; echo two"), &log, "echoes").expect("the child must succeed");
+    let verbose: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(lvl, _)| *lvl == LogLevel::Verbose)
+        .map(|(_, msg)| msg)
+        .collect();
+    assert_eq!(verbose, vec!["one".to_string(), "two".to_string()]);
+}
+
 #[test]
 #[cfg(unix)]
 fn run_checked_with_stdin_roundtrips() {

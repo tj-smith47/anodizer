@@ -519,7 +519,7 @@ impl StageLogger {
     ///
     /// `line` must be a single line with its trailing newline already
     /// stripped (the caller's line reader does this); the newline is added
-    /// here by `eprintln!`.
+    /// back before the line is emitted.
     pub fn stream_child_stdout(&self, line: &str) {
         self.stream_child_line(line, false);
     }
@@ -547,9 +547,40 @@ impl StageLogger {
     /// other body-line emitter (`verbose` / `status` / `error` / `debug`)
     /// upholds.
     fn stream_child_line(&self, line: &str, from_stderr: bool) {
-        let redacted = self.redact(line);
+        self.stream_child_chunk(&format!("{}\n", self.redact(line)), from_stderr);
+    }
+
+    /// A boundary-spanning redacter over this logger's attached env, for
+    /// streaming a child process's output.
+    ///
+    /// The env is snapshotted once, when the stream starts — unlike
+    /// [`Self::redact`], which re-reads the shared cell on every call.
+    pub fn stream_redacter(&self) -> crate::redact::StreamRedacter {
+        match &self.env {
+            Some(env) => {
+                let table = env.lock().unwrap_or_else(|e| e.into_inner());
+                crate::redact::StreamRedacter::new(&table)
+            }
+            None => crate::redact::StreamRedacter::new(&[]),
+        }
+    }
+
+    /// Emit a chunk of child output whose secret env values have ALREADY been
+    /// masked by a [`crate::redact::StreamRedacter`].
+    ///
+    /// Written verbatim to this process's stderr (see
+    /// [`Self::stream_child_stdout`] for why stderr) after the URL-credential
+    /// half of the redaction policy is applied. `from_stderr` selects the
+    /// capture level (`LogLevel::Error` vs `LogLevel::Verbose`).
+    ///
+    /// The chunk carries its own line terminators, so nothing is appended.
+    pub fn stream_child_chunk(&self, chunk: &str, from_stderr: bool) {
+        // Only the URL-credential half runs here: the env-value half already
+        // ran in the stream redacter, and repeating it would rescan the whole
+        // chunk for every attached secret on every write.
+        let text = crate::redact::redact_url_credentials(chunk);
         flush_pending();
-        eprintln!("{redacted}");
+        eprint!("{text}");
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             let level = if from_stderr {
@@ -557,7 +588,7 @@ impl StageLogger {
             } else {
                 LogLevel::Verbose
             };
-            cap.record(level, redacted);
+            cap.record(level, text.trim_end_matches('\n'));
         }
         #[cfg(not(feature = "test-helpers"))]
         let _ = from_stderr;

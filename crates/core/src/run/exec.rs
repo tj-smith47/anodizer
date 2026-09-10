@@ -574,23 +574,35 @@ fn tee_stream<R: std::io::Read>(
     let mut buf = BufReader::new(reader);
     let mut capture: Vec<u8> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
+    // One redacter for the whole stream: a secret split across two reads is
+    // only recognisable to something that remembers the first half.
+    let mut redacter = tee.then(|| log.stream_redacter());
     loop {
         line.clear();
         match buf.read_until(b'\n', &mut line) {
             Ok(0) => break,
             Ok(_) => {
                 capture.extend_from_slice(&line);
-                if tee {
+                if let Some(r) = redacter.as_mut() {
+                    // Normalise to a single trailing newline so the emitted
+                    // bytes stay identical to the previous per-line write.
                     let text = String::from_utf8_lossy(&line);
-                    let stripped = text.trim_end_matches(['\n', '\r']);
-                    if is_stderr {
-                        log.stream_child_stderr(stripped);
-                    } else {
-                        log.stream_child_stdout(stripped);
+                    let normalized = format!("{}\n", text.trim_end_matches(['\n', '\r']));
+                    let released = r.push(&normalized);
+                    if !released.is_empty() {
+                        log.stream_child_chunk(&released, is_stderr);
                     }
                 }
             }
             Err(_) => break,
+        }
+    }
+    // Runs on the read-error path too, so a mid-stream failure cannot strand a
+    // withheld secret prefix in the buffer.
+    if let Some(r) = redacter.as_mut() {
+        let tail = r.flush();
+        if !tail.is_empty() {
+            log.stream_child_chunk(&tail, is_stderr);
         }
     }
     capture

@@ -73,24 +73,188 @@ fn is_boolean_shape(value: &str) -> bool {
     )
 }
 
-/// Redact secret values in a string, replacing them with `$KEY_NAME`.
+/// The shortest secret value redaction acts on.
 ///
-/// Longer values are replaced first to prevent partial matches.
+/// A one-character value matches almost everywhere: masking it rewrites every
+/// occurrence of that character in unrelated output — a version string, a
+/// revision number, a progress bar — while protecting nothing, because a
+/// single character carries no credential. `is_boolean_shape` already exempts
+/// the `0`/`1` enable-flag spelling; this floor covers every other lone
+/// character.
+const MIN_SECRET_LEN: usize = 2;
+
+/// The secret entries of `env`, ordered longest-value-first with the key
+/// ascending as the tiebreak, so a longer secret is always masked before a
+/// shorter one it contains.
 ///
-/// Redact secret env-var values found in a string.
-pub fn string(input: &str, env: &[(String, String)]) -> String {
+/// The single definition of both the secret set and that ordering, shared by
+/// [`string`] and [`StreamRedacter`].
+fn secret_pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     let mut secrets: Vec<(&str, &str)> = env
         .iter()
-        .filter(|(k, v)| is_secret(k, v))
+        .filter(|(k, v)| v.len() >= MIN_SECRET_LEN && is_secret(k, v))
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    secrets
+}
 
+/// Redact secret values in a string, replacing them with `$KEY_NAME`.
+///
+/// Longer values are replaced first to prevent partial matches. Only a secret
+/// that appears whole in `input` is masked — text arriving in chunks whose
+/// boundaries can split a value needs [`StreamRedacter`].
+pub fn string(input: &str, env: &[(String, String)]) -> String {
     let mut result = input.to_string();
-    for (key, value) in secrets {
+    for (key, value) in secret_pairs(env) {
         result = result.replace(value, &format!("${}", key));
     }
     result
+}
+
+/// A redacter for text that arrives in chunks whose boundaries are not under
+/// the writer's control.
+///
+/// [`string`] can only mask a secret that appears whole in the text it is
+/// given. A child process printing a PEM key, or any secret straddling a read
+/// boundary, therefore reaches the log verbatim. This type withholds a
+/// trailing run of bytes that is a strict prefix of a known secret until the
+/// next chunk proves it is not one, and masks it on [`flush`](Self::flush) if
+/// the stream ends there instead.
+///
+/// The withheld buffer never exceeds the longest known secret, so a stream of
+/// any length is bounded.
+///
+/// ```
+/// use anodizer_core::redact::StreamRedacter;
+///
+/// let env = vec![("API_KEY".to_string(), "abcdefgh".to_string())];
+/// let mut r = StreamRedacter::new(&env);
+/// assert_eq!(r.push("value abcd"), "value ");
+/// assert_eq!(r.push("efgh done"), "$API_KEY done");
+/// assert_eq!(r.flush(), "");
+/// ```
+pub struct StreamRedacter {
+    /// `(key, value)` secrets in [`secret_pairs`] order — longest value first,
+    /// so [`Self::match_at`] can take the first match.
+    secrets: Vec<(String, String)>,
+    /// Length of the longest secret value; `0` when there are none.
+    max_len: usize,
+    /// Bytes withheld from the last [`Self::push`] because they may be the
+    /// start of a secret.
+    pending: String,
+}
+
+impl StreamRedacter {
+    /// Build a redacter over the secret entries in `env`.
+    pub fn new(env: &[(String, String)]) -> Self {
+        let secrets: Vec<(String, String)> = secret_pairs(env)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let max_len = secrets.iter().map(|(_, v)| v.len()).max().unwrap_or(0);
+        Self {
+            secrets,
+            max_len,
+            pending: String::new(),
+        }
+    }
+
+    /// Feed the next chunk; returns the text that is safe to emit now.
+    ///
+    /// Bytes held back are returned by a later `push` or by
+    /// [`flush`](Self::flush).
+    pub fn push(&mut self, chunk: &str) -> String {
+        if self.secrets.is_empty() {
+            return chunk.to_string();
+        }
+        let mut s = std::mem::take(&mut self.pending);
+        s.push_str(chunk);
+        let (out, pending) = self.replace_partial(&s);
+        self.pending = pending;
+        out
+    }
+
+    /// Release everything still withheld, fully masked. Call once at end of
+    /// stream; a second call returns `""`.
+    pub fn flush(&mut self) -> String {
+        if self.pending.is_empty() {
+            return String::new();
+        }
+        let pending = std::mem::take(&mut self.pending);
+        self.replace_all(&pending)
+    }
+
+    /// Mask every secret that appears whole in `s` — [`string`] restricted to
+    /// this redacter's already-ordered secret set.
+    fn replace_all(&self, s: &str) -> String {
+        let mut result = s.to_string();
+        for (key, value) in &self.secrets {
+            result = result.replace(value.as_str(), &format!("${key}"));
+        }
+        result
+    }
+
+    /// Split `s` into `(safe_to_emit, withheld)`.
+    ///
+    /// Walks `s` masking whole secrets, and stops at the first position whose
+    /// remainder is a strict prefix of some secret — that remainder is the
+    /// withheld tail.
+    fn replace_partial(&self, s: &str) -> (String, String) {
+        if !self.has_incomplete_suffix(s) {
+            return (self.replace_all(s), String::new());
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while !rest.is_empty() {
+            if self.is_incomplete_secret(rest) {
+                return (out, rest.to_string());
+            }
+            if let Some((key, value)) = self.match_at(rest) {
+                out.push('$');
+                out.push_str(key);
+                rest = &rest[value.len()..];
+                continue;
+            }
+            // Advance one CHAR, not one byte: `&str` slicing panics off a
+            // code-point boundary, and the input is always valid UTF-8.
+            let Some(ch) = rest.chars().next() else { break };
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+        (out, String::new())
+    }
+
+    /// Whether any suffix within the last `max_len - 1` bytes of `s` could be
+    /// the start of a secret. A fast rejection for the common chunk that ends
+    /// nowhere near a secret.
+    fn has_incomplete_suffix(&self, s: &str) -> bool {
+        if self.max_len == 0 {
+            return false;
+        }
+        let start = s.len().saturating_sub(self.max_len - 1);
+        s.char_indices()
+            .filter(|&(i, _)| i >= start)
+            .any(|(i, _)| self.is_incomplete_secret(&s[i..]))
+    }
+
+    /// Whether `s` is a strict prefix of some secret, i.e. more bytes could
+    /// still complete it.
+    fn is_incomplete_secret(&self, s: &str) -> bool {
+        s.len() < self.max_len
+            && self
+                .secrets
+                .iter()
+                .any(|(_, v)| v.len() > s.len() && v.starts_with(s))
+    }
+
+    /// The longest secret `s` starts with, as `(key, value)`.
+    fn match_at(&self, s: &str) -> Option<(&str, &str)> {
+        self.secrets
+            .iter()
+            .find(|(_, v)| s.starts_with(v.as_str()))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+    }
 }
 
 /// Apply the full outbound-text redaction policy: strip inline URL
@@ -282,6 +446,127 @@ fn match_authorization_prefix(bytes: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A three-line PEM-shaped secret — the value class the stream redacter
+    /// exists for, since no single line of it is a substring of the whole.
+    const PEM: &str = "-----BEGIN KEY-----\nAAAABBBBCCCC\n-----END KEY-----";
+
+    fn pem_env() -> Vec<(String, String)> {
+        vec![("AUTH_KEY".to_string(), PEM.to_string())]
+    }
+
+    #[test]
+    fn stream_redacter_masks_secret_split_across_chunks() {
+        let env = pem_env();
+        let mut r = StreamRedacter::new(&env);
+        let mut out = String::new();
+        // Split mid-value, three times, at boundaries no `string` call could
+        // stitch back together.
+        out.push_str(&r.push("prefix -----BEGIN KEY-----\nAAAA"));
+        out.push_str(&r.push("BBBBCCCC\n-----END"));
+        out.push_str(&r.push(" KEY----- suffix"));
+        out.push_str(&r.flush());
+        assert!(
+            out.contains("$AUTH_KEY"),
+            "the split secret must be masked: {out:?}"
+        );
+        assert!(
+            !out.contains("AAAABBBB"),
+            "no fragment of the secret may survive: {out:?}"
+        );
+        assert!(
+            out.starts_with("prefix ") && out.ends_with(" suffix"),
+            "surrounding text must pass through unchanged: {out:?}"
+        );
+    }
+
+    #[test]
+    fn stream_redacter_flushes_a_trailing_secret_prefix() {
+        // The shorter value is a strict prefix of the longer one, so a stream
+        // ending on it is withheld — the next byte could still have grown it
+        // into the longer secret — and must be masked when the stream ends.
+        let env = vec![
+            ("SESSION_TOKEN".to_string(), "tok_abc123".to_string()),
+            ("REFRESH_TOKEN".to_string(), "tok_abc123def456".to_string()),
+        ];
+        let mut r = StreamRedacter::new(&env);
+        let held = r.push("session tok_abc123");
+        assert!(
+            !held.contains("tok_abc123"),
+            "a value that could still grow into the longer secret must be withheld: {held:?}"
+        );
+        assert_eq!(
+            r.flush(),
+            "$SESSION_TOKEN",
+            "flush must release the withheld tail through the full replace"
+        );
+        assert_eq!(r.flush(), "", "a second flush releases nothing");
+    }
+
+    #[test]
+    fn stream_redacter_passes_through_non_secret_text() {
+        let env = vec![("SECRET_TOKEN".to_string(), "hunter2hunter2".to_string())];
+        let mut r = StreamRedacter::new(&env);
+        assert_eq!(r.push("hello\n"), "hello\n");
+        assert_eq!(r.flush(), "");
+    }
+
+    #[test]
+    fn stream_redacter_withholds_at_most_the_longest_secret() {
+        let env = vec![("SECRET_TOKEN".to_string(), "SECRETVALUE".to_string())];
+        let mut r = StreamRedacter::new(&env);
+        // 64 KiB of the secret's first byte: every position looks like it
+        // could start the secret, so an unbounded implementation buffers the
+        // whole stream.
+        let flood = "S".repeat(64 * 1024);
+        let released = r.push(&flood);
+        assert!(
+            released.len() >= flood.len() - "SECRETVALUE".len(),
+            "the withheld buffer must stay within the longest secret; held {} of {}",
+            flood.len() - released.len(),
+            flood.len()
+        );
+    }
+
+    #[test]
+    fn stream_redacter_is_a_noop_without_secrets() {
+        let mut r = StreamRedacter::new(&[]);
+        assert_eq!(
+            r.push("ghp_looks_like_a_token but is not in env"),
+            "ghp_looks_like_a_token but is not in env"
+        );
+        assert_eq!(r.flush(), "");
+    }
+
+    #[test]
+    fn stream_redacter_masks_multibyte_neighbours() {
+        let env = vec![("API_KEY".to_string(), "abcdefgh".to_string())];
+        let mut r = StreamRedacter::new(&env);
+        let mut out = r.push("café → abcd");
+        out.push_str(&r.push("efgh ← naïve"));
+        out.push_str(&r.flush());
+        assert_eq!(out, "café → $API_KEY ← naïve");
+    }
+
+    #[test]
+    fn stream_redacter_skips_a_one_character_secret_and_masks_a_three_line_one() {
+        let env = vec![
+            ("SHORT_KEY".to_string(), "e".to_string()),
+            ("AUTH_KEY".to_string(), PEM.to_string()),
+        ];
+        let mut r = StreamRedacter::new(&env);
+        let mut out = r.push("evidence: -----BEGIN KEY-----\nAAAA");
+        out.push_str(&r.push("BBBBCCCC\n-----END KEY----- done"));
+        out.push_str(&r.flush());
+        assert!(
+            out.starts_with("evidence: "),
+            "a one-character secret must not rewrite every matching character: {out:?}"
+        );
+        assert!(
+            out.contains("$AUTH_KEY") && !out.contains("AAAABBBB"),
+            "the multi-line secret must still be masked: {out:?}"
+        );
+    }
 
     #[test]
     fn test_redact_by_key_suffix() {
