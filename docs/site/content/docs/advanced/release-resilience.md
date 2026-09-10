@@ -469,14 +469,20 @@ Shape:
       "name": "github-release",
       "group": "Assets",
       "required": true,
-      "outcome": "Succeeded",
-      "evidence": { "publisher": "github-release", "primary_ref": "...", "...": "..." }
+      "status": "succeeded",
+      "evidence": {
+        "schema_version": 2,
+        "publisher": "github-release",
+        "primary_ref": "https://github.com/acme/widget/releases/tag/v0.2.1",
+        "artifact_paths": ["dist/widget_0.2.1_linux_amd64.tar.gz"],
+        "extra": null
+      }
     },
     {
       "name": "homebrew",
       "group": "Manager",
       "required": false,
-      "outcome": { "Failed": "tap push rejected: branch protection" },
+      "status": "failed",
       "evidence": null,
       "entry_skips": ["homebrew: no repository config for 'widget'"]
     }
@@ -581,9 +587,10 @@ carries them in `entry_skips` on its `report.json` / `summary.json` result, and
 the summary's publisher row appends the count to the status:
 
 ```
-   • uploads    Assets     optional  succeeded  (1 entry skipped)
-   • winget     Submitter  optional  skipped-entries-skipped  (1 entry skipped)
-   • run flags  submitter_gated=false announce_gated=false
+     Summary
+     • uploads    Assets     optional  succeeded  (1 entry skipped)
+     • winget     Submitter  optional  skipped-entries-skipped  (1 entry skipped)
+     • run flags  submitter_gated=false announce_gated=false
 ```
 
 ```json

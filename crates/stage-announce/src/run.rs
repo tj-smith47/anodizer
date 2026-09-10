@@ -357,7 +357,7 @@ pub fn emit_summary(ctx: &mut Context) {
     // keys padded to the widest so the value columns align. Tagged
     // `publisher-summary` (not `announce`) so the section header reads
     // `Summary` rather than the announce stage's phrase.
-    let log = ctx.logger("publisher-summary");
+    let log = ctx.logger(anodizer_stage_publish::run_summary::SUMMARY_SECTION);
     // The report is installed only when the dispatcher finished;
     // publish_attempted is set at stage entry. The pair separates the
     // three placeholder causes: ran-with-zero-publishers, aborted by a
@@ -369,16 +369,7 @@ pub fn emit_summary(ctx: &mut Context) {
     } else {
         anodizer_stage_publish::run_summary::PublishDisposition::Skipped
     };
-    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary, disposition);
-    let key_width = rows
-        .iter()
-        .map(|(k, _)| k.chars().count())
-        .max()
-        .unwrap_or(0);
-    let _section = log.group("publisher-summary");
-    for (key, value) in &rows {
-        log.kv(key, value, key_width);
-    }
+    anodizer_stage_publish::run_summary::emit_status_table(&summary, disposition, &log);
 }
 
 #[cfg(test)]

@@ -102,6 +102,51 @@ pub(super) fn render_gutter(
     }
 }
 
+/// The exact section-header line [`StageLogger::group`](crate::log::StageLogger::group) prints for
+/// `stage` at nesting `depth` — the line a reader of a run's transcript sees
+/// above that section's body rows.
+///
+/// Exposed so a document that quotes a rendered section can be held to the
+/// renderer that produces it instead of to a hand-typed copy.
+pub fn render_stage_header_line(depth: usize, stage: &str) -> String {
+    let (verb, msg) = split_header(stage);
+    render_header(depth, verb, msg)
+}
+
+/// Split a stage's [`stage_header`] phrase into the `(verb, message)` pair the
+/// gutter renderer takes. The verb is everything up to the first space; the
+/// message is the remainder (empty for a single-word phrase, which renders as
+/// a bare gutter verb). An unknown stage (default `"Running"`) takes the stage
+/// name itself as the message, so it reads `   Running myfancystage`.
+pub(super) fn split_header(title: &str) -> (&str, &str) {
+    let phrase = stage_header(title);
+    match phrase.split_once(' ') {
+        Some((verb, rest)) => (verb, rest),
+        // Single-word phrase: the default "Running" echoes the stage name
+        // as its object; any other single word renders verb-only.
+        None if phrase == "Running" => (phrase, title),
+        None => (phrase, ""),
+    }
+}
+
+/// The exact `•` key/value row [`StageLogger::kv`](crate::log::StageLogger::kv) prints at nesting
+/// `depth`: the body indent, the detail marker, the key padded to
+/// `key_width`, a two-space gutter and the value.
+pub fn render_kv_row(depth: usize, key: &str, value: &str, key_width: usize) -> String {
+    // Pad the PLAIN key to width before coloring — padding the already-dimmed
+    // string would count the ANSI escape bytes toward the field width and
+    // misalign the value column.
+    let padded = format!("{key:<key_width$}");
+    format!(
+        "{}{}{} {}  {}",
+        "  ".repeat(depth),
+        BODY_INDENT,
+        MARKER_DETAIL.cyan(),
+        padded.dimmed(),
+        value
+    )
+}
+
 /// Width of the right-aligned verb column in [`StageLogger::step`](crate::log::StageLogger::step),
 /// matching Cargo's `   Compiling foo` look (3 leading spaces + 9-char
 /// verb = a 12-column gutter before the message).
@@ -253,7 +298,7 @@ pub(super) fn label_indent() -> String {
 /// a propagated error message that reaches a non-terminal sink — a failure
 /// email, the `on_error` hook's `$ANODIZER_ERROR`, a JSON run summary — where
 /// they render as garbage around every styled token.
-pub(crate) fn strip_ansi(s: &str) -> String {
+pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {

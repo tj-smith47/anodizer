@@ -9,7 +9,8 @@ use super::capture::{LogCapture, LogLevel};
 use super::depth::{SECTION_DEPTH, SectionGuard, current_depth};
 use super::render::{
     BODY_INDENT, MARKER_DETAIL, MARKER_FAILURE, MARKER_SUCCESS, PENDING, PendingHeader,
-    flush_pending, indent, render_error, render_header, render_warning, stage_header, strip_ansi,
+    flush_pending, indent, render_error, render_header, render_kv_row, render_warning,
+    split_header, strip_ansi,
 };
 use super::verbosity::Verbosity;
 use std::sync::Arc;
@@ -341,17 +342,8 @@ impl StageLogger {
     /// ```
     pub fn kv(&self, key: &str, value: &str, key_width: usize) {
         if self.verbosity >= Verbosity::Normal {
-            // Pad the PLAIN key to width before coloring — padding the
-            // already-dimmed string would count the ANSI escape bytes toward
-            // the field width and misalign the value column. Two spaces after
-            // the padded key give a readable gutter without a separator glyph.
-            let padded = format!("{key:<key_width$}");
-            let row = format!("{}  {}", padded.dimmed(), value);
             flush_pending();
-            eprintln!(
-                "{}",
-                Self::render_body(&MARKER_DETAIL.cyan().to_string(), &row)
-            );
+            eprintln!("{}", render_kv_row(current_depth(), key, value, key_width));
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -422,14 +414,7 @@ impl StageLogger {
     /// stage (default `"Running"`) takes the stage name itself as the
     /// message, so it reads `   Running myfancystage`.
     pub(super) fn split_header<'a>(&self, title: &'a str) -> (&'a str, &'a str) {
-        let phrase = stage_header(title);
-        match phrase.split_once(' ') {
-            Some((verb, rest)) => (verb, rest),
-            // Single-word phrase: the default "Running" echoes the stage name
-            // as its object; any other single word renders verb-only.
-            None if phrase == "Running" => (phrase, title),
-            None => (phrase, ""),
-        }
+        split_header(title)
     }
 
     /// Detail message — shown only at Verbose and above. Renders as a `•`

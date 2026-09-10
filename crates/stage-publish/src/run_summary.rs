@@ -684,6 +684,55 @@ pub fn status_table_rows(
     rows
 }
 
+/// The log section the end of a run prints for the publisher rows: the
+/// `publisher-summary` header, then one `•` row per [`status_table_rows`]
+/// pair, every key padded to the widest so the value columns align.
+pub const SUMMARY_SECTION: &str = "publisher-summary";
+
+/// Emit that section through `log`.
+pub fn emit_status_table(
+    summary: &RunSummary,
+    disposition: PublishDisposition,
+    log: &anodizer_core::log::StageLogger,
+) {
+    let rows = status_table_rows(summary, disposition);
+    let width = key_width(&rows);
+    let _section = log.group(SUMMARY_SECTION);
+    for (key, value) in &rows {
+        log.kv(key, value, width);
+    }
+}
+
+/// The lines [`emit_status_table`] produces, rendered at nesting `depth`
+/// instead of written to the log — what a document quoting the section must
+/// contain, character for character.
+pub fn summary_section_lines(
+    summary: &RunSummary,
+    disposition: PublishDisposition,
+    depth: usize,
+) -> Vec<String> {
+    let rows = status_table_rows(summary, disposition);
+    let width = key_width(&rows);
+    // The section's rows sit one level inside the header, which renders at the
+    // depth the section was opened at.
+    let mut lines = vec![anodizer_core::log::render_stage_header_line(
+        depth,
+        SUMMARY_SECTION,
+    )];
+    lines.extend(
+        rows.iter()
+            .map(|(key, value)| anodizer_core::log::render_kv_row(depth + 1, key, value, width)),
+    );
+    lines
+}
+
+fn key_width(rows: &[(String, String)]) -> usize {
+    rows.iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,6 +1048,60 @@ mod tests {
     /// here — an orphan that is named but never reached fails the walk below
     /// instead of passing a restated literal.
     const OUTCOME_COUNT: usize = PublisherOutcome::COUNT - 1 + SkipReason::COUNT;
+
+    /// The rendered publisher-summary section quoted in the release-resilience
+    /// document is this fixture's real output: the lines are produced here,
+    /// through the renderer a run uses, and looked up in the document. A
+    /// column width, an indent constant or a marker that changes leaves the
+    /// document behind and fails here.
+    #[test]
+    fn the_documented_summary_block_matches_the_renderer() {
+        let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/site/content/docs/advanced/release-resilience.md");
+        let text =
+            std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {}: {e}", doc.display()));
+        let block = summary_section_lines(&entry_skip_summary(), PublishDisposition::Ran, 0)
+            .iter()
+            .map(|line| anodizer_core::log::strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            text.matches(&block).count(),
+            1,
+            "{} must quote the rendered section exactly once:\n{block}",
+            doc.display()
+        );
+    }
+
+    /// The document's `summary.json` shape block is the document CI consumers
+    /// are told to parse, so it must be a document this type accepts:
+    /// `deny_unknown_fields` turns any drift — a renamed key, a field the
+    /// serializer never emits — into a failure here rather than into a
+    /// surprise in a consumer's pipeline.
+    #[test]
+    fn the_documented_summary_json_parses_back_into_a_run_summary() {
+        let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/site/content/docs/advanced/release-resilience.md");
+        let text =
+            std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {}: {e}", doc.display()));
+        let block = text
+            .split("```json")
+            .find(|b| b.contains("\"determinism_allowlist\""))
+            .and_then(|b| b.split("```").next())
+            .expect("the summary.json shape block");
+        let parsed: RunSummary = serde_json::from_str(block)
+            .unwrap_or_else(|e| panic!("the documented summary.json must parse: {e}\n{block}"));
+        assert_eq!(parsed.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            parsed
+                .results
+                .iter()
+                .map(|r| r.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["succeeded", "failed"],
+            "the documented statuses are the tokens the serializer writes"
+        );
+    }
 
     /// Naming a variant in the chain is not reaching it: an arm returning
     /// `None` beside the terminator compiles, and the variant then vanishes

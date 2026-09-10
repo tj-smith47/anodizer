@@ -85,7 +85,10 @@ mod tests;
 #[cfg(feature = "test-helpers")]
 pub use capture::{LogCapture, LogLevel};
 pub use depth::{IndentGuard, LOG_DEPTH_ENV, SectionGuard, current_depth, indent_one_level};
-pub use render::{indent, render_error, render_note, render_warning, stage_header};
+pub use render::{
+    indent, render_error, render_kv_row, render_note, render_stage_header_line, render_warning,
+    stage_header, strip_ansi,
+};
 
 pub use stage_logger::StageLogger;
 pub use verbosity::Verbosity;
