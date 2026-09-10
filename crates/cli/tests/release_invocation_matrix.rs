@@ -55,23 +55,6 @@ crates:
     )
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            for c2 in chars.by_ref() {
-                if c2.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Collect the stage names the Pipeline reported as skipped.
 ///
 /// Pipeline-level stage skips are consolidated into kv rows — consecutive
@@ -94,7 +77,7 @@ fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
     stderr
         .lines()
         .filter_map(|line| {
-            let line = strip_ansi(line);
+            let line = anodizer_core::log::strip_ansi(line);
             let body = line.trim_start().strip_prefix("• ")?;
             let names = body.strip_prefix("skipped  ")?.trim_start();
             let names = names.strip_suffix(" (no binaries)").unwrap_or(names);
@@ -615,7 +598,7 @@ fn host_targets_requires_snapshot_or_dry_run() {
         "--host-targets without --snapshot/--dry-run must fail.\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    let stderr = anodizer_core::log::strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
         stderr.contains("--host-targets is only valid with --snapshot or --dry-run"),
         "must explain the snapshot/dry-run gate.\nstderr:\n{stderr}"
@@ -637,7 +620,7 @@ fn host_targets_allowed_with_dry_run() {
             "--skip=build,archive,sign,checksum,sbom,docker",
         ],
     );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    let stderr = anodizer_core::log::strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
         !stderr.contains("--host-targets is only valid with"),
         "the safety gate must NOT trip under --dry-run.\nstderr:\n{stderr}"
@@ -667,7 +650,7 @@ fn host_targets_empty_result_hard_errors_on_linux() {
         "apple-only config on a non-apple host must hard-error.\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    let stderr = anodizer_core::log::strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
         stderr.contains("none of the")
             && stderr.contains("can be built on this host")
@@ -712,7 +695,7 @@ fn host_targets_logs_skipped_apple_and_msvc_on_linux() {
             "--skip=build,archive,sign,checksum,sbom,docker",
         ],
     );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    let stderr = anodizer_core::log::strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
         stderr.contains("skipped 3 target(s) — not buildable")
             && stderr.contains("x86_64-apple-darwin")

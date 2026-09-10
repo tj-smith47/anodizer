@@ -107,7 +107,9 @@ pub(super) fn render_gutter(
 /// above that section's body rows.
 ///
 /// Exposed so a document that quotes a rendered section can be held to the
-/// renderer that produces it instead of to a hand-typed copy.
+/// renderer that produces it instead of to a hand-typed copy — a test need, so
+/// it compiles only under the feature that serves those.
+#[cfg(feature = "test-helpers")]
 pub fn render_stage_header_line(depth: usize, stage: &str) -> String {
     let (verb, msg) = split_header(stage);
     render_header(depth, verb, msg)

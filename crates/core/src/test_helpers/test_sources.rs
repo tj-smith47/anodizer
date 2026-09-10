@@ -428,6 +428,14 @@ mod tests {
             }
             let tests = krate.join("tests");
             if tests.is_dir() {
+                // An integration-test file is named for what it tests
+                // (`integration.rs`), not `tests.rs`, so the name rules put it
+                // in the production half of its own directory. Both halves are
+                // sources a structural guard must see. Split directly rather
+                // than asked for through `rust_sources`, whose parent-module
+                // check has no answer here: an integration test root is
+                // declared by cargo, not by a `mod` item.
+                out.extend(partition_sources(&tests).0);
                 expand(&tests, &mut out);
             }
         }
@@ -448,6 +456,68 @@ mod tests {
     /// contains no `"rs"` token at all.
     fn is_rust_source_walk(body: &str) -> bool {
         body.contains("read_dir(") && (body.contains("\"rs\"") || body.contains("\".rs\""))
+    }
+
+    /// The renderer internals a documented-render pin needs are re-exported
+    /// only under the `test-helpers` feature. Ungated they are permanent
+    /// public API of a consumer-facing library, and un-promising them later is
+    /// a breaking change — the cheaper direction is not to promise them.
+    #[test]
+    fn the_renderer_internals_are_re_exported_only_under_the_test_feature() {
+        let mod_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/log/mod.rs");
+        let text = std::fs::read_to_string(&mod_rs).expect("readable log module");
+        // Read the whole `pub use` STATEMENT, not one line of it: rustfmt
+        // wraps a long re-export list across lines, and a line-anchored check
+        // then sees a `pub use render::{` carrying none of the names.
+        for (idx, _) in text.match_indices("pub use render::{") {
+            let end = text[idx..].find("};").expect("a terminated re-export") + idx;
+            let statement = &text[idx..end];
+            // Only the attribute/doc run directly above the statement gates
+            // it. Stopping at the first blank line instead would find a
+            // neighbouring re-export's `cfg` and call every statement gated.
+            let gated = text[..idx]
+                .lines()
+                .rev()
+                .take_while(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("#[") || t.starts_with("//")
+                })
+                .any(|l| l.contains("cfg(feature = \"test-helpers\")"));
+            for name in ["render_kv_row", "render_stage_header_line", "strip_ansi"] {
+                assert!(
+                    !statement.contains(name) || gated,
+                    "`{name}` is re-exported without the test-helpers gate:\n{statement}"
+                );
+            }
+        }
+    }
+
+    /// The ANSI stripper is defined once, in the log renderer. Three
+    /// definitions existed — two of them in the CLI's integration tests — and
+    /// each answered a different question about what an escape sequence is, so
+    /// a test could pass against a line the renderer never produced.
+    ///
+    /// The needle is assembled at runtime so this test's own source does not
+    /// read as a definition.
+    #[test]
+    fn the_ansi_stripper_is_defined_once_in_the_workspace() {
+        let needle = format!("fn {}(", "strip_ansi");
+        let mut defs = Vec::new();
+        for source in workspace_sources() {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            for _ in 0..text.matches(&needle).count() {
+                defs.push(source.display().to_string());
+            }
+        }
+        assert_eq!(
+            defs.len(),
+            1,
+            "the stripper belongs to the renderer that writes the escapes: {defs:?}"
+        );
+        assert!(
+            defs[0].contains("core/src/log/render.rs"),
+            "the one definition is the renderer's: {defs:?}"
+        );
     }
 
     /// The walk detector must see both ways a source names the extension. A

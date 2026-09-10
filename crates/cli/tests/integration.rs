@@ -1065,7 +1065,7 @@ fn test_release_prepare_matches_explicit_skip() {
         stderr
             .lines()
             .filter_map(|line| {
-                let line = strip_ansi(line);
+                let line = anodizer_core::log::strip_ansi(line);
                 let body = line.trim_start().strip_prefix("• ")?;
                 let names = body.strip_prefix("skipped  ")?.trim_start();
                 let names = names.strip_suffix(" (no binaries)").unwrap_or(names);
@@ -1173,28 +1173,6 @@ fn test_release_prepare_matches_explicit_skip() {
          --prepare skipped: {:?}\n--skip skipped: {:?}",
         skipped_prepare, skipped_explicit
     );
-}
-
-/// Strip ANSI escape sequences (CSI: ESC `[ ... <final-byte>`). Tiny
-/// inline implementation so this test file doesn't add a dependency.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            // CSI parameter/intermediate bytes are 0x20..=0x3F; final
-            // byte is 0x40..=0x7E.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// E2E: `anodizer release --dry-run` runs full pipeline with no side effects.

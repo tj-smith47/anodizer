@@ -705,7 +705,9 @@ pub fn emit_status_table(
 
 /// The lines [`emit_status_table`] produces, rendered at nesting `depth`
 /// instead of written to the log — what a document quoting the section must
-/// contain, character for character.
+/// contain, character for character. Holding a document to the renderer is a
+/// test need, so this is not part of the crate's shipped surface.
+#[cfg(test)]
 pub fn summary_section_lines(
     summary: &RunSummary,
     disposition: PublishDisposition,
