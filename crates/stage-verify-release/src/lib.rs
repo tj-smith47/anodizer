@@ -480,16 +480,10 @@ pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
     }
 }
 
-/// Resolve the binary name to version-check for a crate: the first build's
-/// `binary`, falling back to the crate name (mirrors BuildConfig's documented
-/// fallback).
+/// Resolve the binary name to version-check for a crate: the crate's primary
+/// binary, as the build-planning SSOT resolves it.
 fn crate_binary_name(crate_cfg: &CrateConfig) -> String {
-    crate_cfg
-        .builds
-        .as_ref()
-        .and_then(|b| b.first())
-        .and_then(|b| b.binary.clone())
-        .unwrap_or_else(|| crate_cfg.name.clone())
+    anodizer_core::build_plan::crate_primary_binary_name(crate_cfg)
 }
 
 /// The produced (upload-candidate) asset NAMES for one crate.

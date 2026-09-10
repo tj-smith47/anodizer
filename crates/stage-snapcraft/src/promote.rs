@@ -256,12 +256,7 @@ fn resolve_snap_names(ctx: &Context) -> Vec<String> {
 /// The crate's primary binary name — the first build's `binary`, falling back
 /// to the crate name. Last resort of the snap-name resolution chain.
 fn primary_binary(krate: &anodizer_core::config::CrateConfig) -> String {
-    krate
-        .builds
-        .as_ref()
-        .and_then(|b| b.first())
-        .and_then(|b| b.binary.clone())
-        .unwrap_or_else(|| krate.name.clone())
+    anodizer_core::build_plan::crate_primary_binary_name(krate)
 }
 
 /// `snapcrafts[].name` → project name → primary binary, mirroring
@@ -893,6 +888,31 @@ Rev    Uploaded              Arches  Version  Channels
             ..Default::default()
         };
         assert_eq!(primary_binary(&no_build), "app");
+    }
+
+    /// A `defaults.builds:` template materialized onto a crate leaves a first
+    /// entry that declares no `binary:` and resolves no `[[bin]]` of its own,
+    /// so the release compiles nothing for it. Naming the snap after that
+    /// entry publishes the crate name where the shipped binary's name belongs.
+    #[test]
+    fn a_snap_name_ignores_a_build_the_release_never_produces() {
+        use anodizer_core::config::BuildConfig;
+        let krate = CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![
+                BuildConfig::default(),
+                BuildConfig {
+                    binary: Some("real".into()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            snap_name_for(&SnapcraftConfig::default(), "", &primary_binary(&krate)),
+            "real"
+        );
     }
 
     #[test]

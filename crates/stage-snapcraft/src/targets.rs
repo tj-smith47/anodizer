@@ -16,12 +16,7 @@ use anodizer_core::context::Context;
 /// name → primary binary), mirroring `generate_snap_yaml`, which names the
 /// shipped snap after the first staged binary when nothing else is set.
 pub(crate) fn crate_primary_binary(krate: &CrateConfig) -> String {
-    krate
-        .builds
-        .as_ref()
-        .and_then(|b| b.first())
-        .and_then(|b| b.binary.clone())
-        .unwrap_or_else(|| krate.name.clone())
+    anodizer_core::build_plan::crate_primary_binary_name(krate)
 }
 
 /// Serialized shape of a recorded snapcraft publish. One entry per

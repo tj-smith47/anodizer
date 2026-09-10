@@ -128,13 +128,13 @@ pub(super) fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<St
 pub(super) fn check_copy_from(config: &Config, errors: &mut Vec<String>) {
     for c in config.crate_universe() {
         if let Some(builds) = &c.builds {
-            let effective: Vec<&str> = builds
+            let effective: Vec<String> = builds
                 .iter()
-                .map(|b| b.binary.as_deref().unwrap_or(c.name.as_str()))
+                .map(|b| anodizer_core::build_plan::binary_or_crate_name(c, b))
                 .collect();
-            let binaries: HashSet<&str> = effective.iter().copied().collect();
+            let binaries: HashSet<&str> = effective.iter().map(String::as_str).collect();
             for (idx, build) in builds.iter().enumerate() {
-                let bin = effective[idx];
+                let bin = &effective[idx];
                 if let Some(copy_from) = &build.copy_from
                     && !binaries.contains(copy_from.as_str())
                 {

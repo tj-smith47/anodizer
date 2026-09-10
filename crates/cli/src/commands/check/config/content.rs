@@ -40,7 +40,7 @@ pub(super) fn check_target_triples(config: &Config, warnings: &mut Vec<String>) 
         if let Some(builds) = &c.builds {
             for b in builds {
                 if let Some(targets) = &b.targets {
-                    let bin = b.binary.as_deref().unwrap_or(c.name.as_str());
+                    let bin = anodizer_core::build_plan::binary_or_crate_name(c, b);
                     for t in targets {
                         check_triple(t, &format!("crate '{}' build '{}'", c.name, bin));
                     }

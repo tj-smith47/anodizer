@@ -217,9 +217,31 @@ fn static_build_id(krate: &CrateConfig, build: &BuildConfig) -> BuildId {
 }
 
 /// The binary a build entry compiles: its `binary:`, else the crate's own
-/// `[[bin]]` target, which is what an entry omitting `binary:` builds.
-fn binary_or_crate_name(krate: &CrateConfig, build: &BuildConfig) -> String {
+/// `[[bin]]` target, which is what an entry omitting `binary:` builds. THE
+/// spelling of that fallback — a call site re-deriving it drifts the moment
+/// the rule does.
+pub fn binary_or_crate_name(krate: &CrateConfig, build: &BuildConfig) -> String {
     build.binary.clone().unwrap_or_else(|| krate.name.clone())
+}
+
+/// The binary a crate's release is named after when no archive selector
+/// narrows the candidates: the first PRODUCING build entry's binary, else the
+/// crate's own `[[bin]]` name. The last resort of every "what is this crate's
+/// binary called" chain — the snap name, the installed-version probe.
+///
+/// Taking the first CONFIGURED build instead names the release after an entry
+/// the run never compiles: a `defaults.builds:` template materialized onto a
+/// crate carries `binary: None` and resolves no default `--bin <crate>`, so it
+/// produces nothing while still sitting first in the list.
+pub fn crate_primary_binary_name(krate: &CrateConfig) -> String {
+    planned_builds(krate)
+        .and_then(|builds| {
+            builds
+                .iter()
+                .find(|b| build_produces(krate, b))
+                .map(|b| binary_or_crate_name(krate, b))
+        })
+        .unwrap_or_else(|| krate.name.clone())
 }
 
 /// Whether an archive's `ids:` filter selects a build entry's id. The
