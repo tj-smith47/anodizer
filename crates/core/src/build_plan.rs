@@ -96,8 +96,9 @@ pub fn crate_declares_bin(crate_path: &str, wanted: &str) -> bool {
 ///
 /// - a non-empty `builds:` list is used as-is;
 /// - a crate with no `builds:` that declares a `--bin <crate>` target named
-///   after itself gets a single synthesized default build (`binary = <crate>`,
-///   targets inherited from `defaults.targets`);
+///   after itself gets a single synthesized default build whose binary is
+///   whatever [`binary_or_crate_name`] resolves for a defaulted entry, with
+///   targets inherited from `defaults.targets`;
 /// - a crate with neither — a library, or one carrying only differently-named
 ///   helper bins — compiles nothing and yields `None`.
 ///
@@ -108,7 +109,7 @@ pub fn planned_builds(krate: &CrateConfig) -> Option<Vec<BuildConfig>> {
         Some(b) if !b.is_empty() => Some(b.to_vec()),
         _ => crate_declares_bin(&krate.path, &krate.name).then(|| {
             vec![BuildConfig {
-                binary: Some(krate.name.clone()),
+                binary: Some(binary_or_crate_name(krate, &BuildConfig::default())),
                 ..Default::default()
             }]
         }),
@@ -383,6 +384,22 @@ mod tests {
             builds,
             ..Default::default()
         }
+    }
+
+    /// The synthesized default build must name its binary through the same
+    /// helper every other site derives a binary name from. Spelled a second
+    /// time here, the synthesized entry stops moving when the fallback rule
+    /// moves, and the name the planner compiles diverges from every name
+    /// derived from it.
+    #[test]
+    fn the_synthesized_default_build_names_the_binary_the_helper_names() {
+        let dir = crate_dir("[package]\nname = \"my_app\"\nversion = \"0.0.0\"\n", true);
+        let krate = krate_at("my_app", dir.path().to_str().unwrap(), None);
+        let builds = planned_builds(&krate).expect("a crate declaring its own bin plans a build");
+        assert_eq!(
+            builds.iter().map(|b| b.binary.clone()).collect::<Vec<_>>(),
+            vec![Some(binary_or_crate_name(&krate, &BuildConfig::default()))],
+        );
     }
 
     #[test]
