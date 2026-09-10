@@ -147,6 +147,41 @@ fn tee_stream_never_prints_a_secret_split_across_lines() {
     }
 }
 
+/// A secret whose value carries `\r\n` is masked exactly like its LF sibling.
+///
+/// The tee normalised the terminator before the redacter saw the bytes, so a
+/// CRLF-valued key matched nothing the redacter held and every line of it
+/// reached the log.
+#[test]
+#[cfg(unix)]
+fn tee_stream_masks_a_crlf_valued_secret() {
+    let pem =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\r\nAAAABBBBCCCC\r\n-----END OPENSSH PRIVATE KEY-----";
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let log = log.with_env(vec![("SSH_PRIVATE_KEY".to_string(), pem.to_string())]);
+    let mut cmd = sh("printf '%s' \"$SSH_PRIVATE_KEY\" >&2");
+    cmd.env("SSH_PRIVATE_KEY", pem);
+    run_checked(&mut cmd, &log, "leaky").expect("the child must succeed");
+
+    let recorded: String = cap
+        .all_messages()
+        .into_iter()
+        .map(|(_, msg)| msg)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        recorded.contains("$SSH_PRIVATE_KEY"),
+        "the streamed CRLF secret must be masked by name; got: {recorded:?}"
+    );
+    for line in pem.lines() {
+        assert!(
+            !recorded.contains(line),
+            "no line of the CRLF key body may reach the log, including the header; \
+             leaked {line:?} in {recorded:?}"
+        );
+    }
+}
+
 /// With no secrets attached the tee must emit exactly what it emitted before
 /// the stream redacter existed: one record per line, terminator stripped.
 #[test]

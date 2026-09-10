@@ -577,6 +577,9 @@ fn tee_stream<R: std::io::Read>(
     // One redacter for the whole stream: a secret split across two reads is
     // only recognisable to something that remembers the first half.
     let mut redacter = tee.then(|| log.stream_redacter());
+    // A child that ends without a terminator used to have one appended per
+    // line; the terminating newline is now added once, after the last release.
+    let mut open_line = false;
     loop {
         line.clear();
         match buf.read_until(b'\n', &mut line) {
@@ -584,14 +587,11 @@ fn tee_stream<R: std::io::Read>(
             Ok(_) => {
                 capture.extend_from_slice(&line);
                 if let Some(r) = redacter.as_mut() {
-                    // Normalise to a single trailing newline so the emitted
-                    // bytes stay identical to the previous per-line write.
-                    let text = String::from_utf8_lossy(&line);
-                    let normalized = format!("{}\n", text.trim_end_matches(['\n', '\r']));
-                    let released = r.push(&normalized);
-                    if !released.is_empty() {
-                        log.stream_child_chunk(&released, is_stderr);
-                    }
+                    // The child's REAL bytes, terminator included: a secret
+                    // whose value carries `\r\n` is only recognisable to a
+                    // redacter that receives what the child actually wrote.
+                    let released = r.push(&String::from_utf8_lossy(&line));
+                    emit_released(&released, log, is_stderr, &mut open_line);
                 }
             }
             Err(_) => break,
@@ -601,9 +601,26 @@ fn tee_stream<R: std::io::Read>(
     // withheld secret prefix in the buffer.
     if let Some(r) = redacter.as_mut() {
         let tail = r.flush();
-        if !tail.is_empty() {
-            log.stream_child_chunk(&tail, is_stderr);
+        emit_released(&tail, log, is_stderr, &mut open_line);
+        if open_line {
+            log.stream_child_chunk("\n", is_stderr);
         }
     }
     capture
+}
+
+/// Emit already-masked child output, collapsing every `\r\n` terminator to a
+/// bare `\n` and recording whether the stream is left mid-line.
+///
+/// The collapse happens on the RELEASED text rather than on the child's input:
+/// the released text is masked, so shortening a terminator here cannot damage a
+/// secret, while doing it first hid a CRLF-valued secret from the redacter
+/// entirely.
+fn emit_released(text: &str, log: &StageLogger, is_stderr: bool, open_line: &mut bool) {
+    if text.is_empty() {
+        return;
+    }
+    let normalized = text.replace("\r\n", "\n");
+    *open_line = !normalized.ends_with('\n');
+    log.stream_child_chunk(&normalized, is_stderr);
 }
