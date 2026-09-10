@@ -231,15 +231,30 @@ fn case_word(line: &str) -> Option<&str> {
 }
 
 /// The variable name a line assigns `subject` to (`subj="${OS}-${ARCH}-…"`),
-/// which a later `case "$subj" in` matches on just as directly.
+/// which a later `case "$subj" in` matches on just as directly. A single
+/// leading declaration word (`export subj=…`) binds the same variable.
 fn hoisted_subject_name<'a>(line: &'a str, subject: &str) -> Option<&'a str> {
     let (name, value) = strip_trailing_comment(line).trim().split_once('=')?;
-    let name = name.trim();
+    let name = strip_declaration_word(name.trim());
     (!name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && value.contains(subject))
     .then_some(name)
+}
+
+/// The assignment target with one leading declaration keyword removed, so
+/// `export subj` reads as the variable `subj`.
+fn strip_declaration_word(target: &str) -> &str {
+    target
+        .split_once(char::is_whitespace)
+        .filter(|(word, _)| {
+            matches!(
+                *word,
+                "export" | "local" | "readonly" | "declare" | "typeset"
+            )
+        })
+        .map_or(target, |(_, rest)| rest.trim())
 }
 
 /// Whether `word` expands the shell variable `name` (`$name` or `${name}`).
@@ -1281,6 +1296,22 @@ mod tests {
             err.contains("InstallerAssetCaseSubject"),
             "the failure must name the value the case has to consume: {err}"
         );
+    }
+
+    /// `export subj="…"` binds the subject to `subj` exactly as a bare
+    /// assignment does, so a `case` on it is the accepted hoisted shape.
+    #[test]
+    fn an_exported_hoisted_subject_is_accepted() {
+        let (mut ctx, cases, tmp) = dual_libc_gate_fixture();
+        let src = tmp.path().join("exported-install.sh.tera");
+        std::fs::write(
+            &src,
+            "{{ InstallerDetectLibc }}\nexport subj=\"{{ InstallerAssetCaseSubject }}\"\ncase \"$subj\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        ctx.config.template_files = Some(vec![gate_entry(&src)]);
+        require_case_subject_consumption(&mut ctx, &cases)
+            .expect("an exported hoisted subject is the same hoisted shape");
     }
 
     /// A dual-libc context with the case tables bound, plus a tempdir to write
