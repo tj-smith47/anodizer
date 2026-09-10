@@ -240,7 +240,6 @@ pub fn debian_arch_from_arch(arch: &str) -> Option<&'static str> {
         "mips64" => "mips64",
         "mips64el" => "mips64el",
         "mips" => "mips",
-        "wasm32" | "wasm" => "wasm",
         "mipsel" => "mipsel",
         "sparc64" => "sparc64",
         "loong64" => "loong64",
@@ -614,11 +613,12 @@ mod tests {
         // Note: deb-arch derivation is arch-only (map_target ignores the OS
         // for the arch token), and the deb stage only ever feeds Linux deb
         // artifacts here — so these are tokens map_target leaves unmapped
-        // (`frob`, `zilog80`) or the `all` synthetic, none of which is a
+        // (`frob`) or an arch dpkg has no name for (`wasm`, from
+        // `wasm32-unknown-unknown`) or the `all` synthetic, none of which is a
         // dpkg architecture.
         for bad in [
             "frob-unknown-linux-gnu",
-            "zilog80-unknown-unknown",
+            "wasm32-unknown-unknown",
             "darwin-universal",
         ] {
             let err = debian_arch_from_target(bad).expect_err(&format!("'{bad}' must be rejected"));
