@@ -270,6 +270,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // explicit targets, and no cargo-only knobs.
     anodizer_core::config::validate_builds(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
+    // Validate the macOS notarization timeout against Apple's ceiling: the
+    // App Store Connect token lifetime is derived from it, so a larger value
+    // fails authentication with a message that never mentions the timeout.
+    anodizer_core::config::validate_notarize_timeout(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate changelog.groups subgroup depth (capped at one level).
     anodizer_core::config::validate_changelog_groups_depth(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
@@ -992,6 +997,79 @@ crates:
             "submitter advisories must use the verbose register (hidden at \
              default), got: {advisory_lines:?}"
         );
+    }
+
+    /// Apple derives the App Store Connect token lifetime from the
+    /// notarization timeout and refuses a token that lives longer, so a
+    /// timeout past the ceiling is an auth failure whose message never
+    /// mentions the timeout. Both receivers of a `notarize:` block are
+    /// rejected at the load: the defaults fold runs after validation, so a
+    /// ceiling enforced on the top-level block alone would wave the same
+    /// value through under `defaults:`.
+    #[test]
+    fn load_config_rejects_a_notarization_timeout_past_the_ceiling() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        for (scope, body) in [
+            (
+                "notarize.macos[0]",
+                r#"
+notarize:
+  macos:
+    - notarize:
+        timeout: 30m
+"#,
+            ),
+            (
+                "defaults.notarize.macos[0]",
+                r#"
+defaults:
+  notarize:
+    macos:
+      - notarize:
+          timeout: 30m
+"#,
+            ),
+        ] {
+            fs::write(
+                &cfg_path,
+                format!(
+                    r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+{body}"#
+                ),
+            )
+            .unwrap();
+            let err = load_config(&cfg_path).expect_err("a 30m timeout must fail the load");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&format!("{scope}.notarize.timeout must be at most 20m")),
+                "names the field and the ceiling: {msg}"
+            );
+            assert!(msg.contains("got 30m"), "names the configured value: {msg}");
+        }
+
+        // The ceiling itself stays accepted.
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+notarize:
+  macos:
+    - notarize:
+        timeout: 20m
+"#,
+        )
+        .unwrap();
+        load_config(&cfg_path).expect("20m is the ceiling, not past it");
     }
 
     /// The defaults-axis bypass is closed at the PARSE: `validate_builds`

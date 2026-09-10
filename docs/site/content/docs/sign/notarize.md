@@ -49,7 +49,7 @@ notarize:
 | `issuer_id` | string | none | App Store Connect API key issuer UUID (template) |
 | `key` | string | none | Path to .p8 key file or base64 contents (template) |
 | `key_id` | string | none | API key ID (template) |
-| `timeout` | string | `10m` | Timeout for notarization polling |
+| `timeout` | string | `10m` | Timeout for notarization polling. Maximum `20m` — the App Store Connect token lifetime is derived from it and Apple rejects tokens that live longer, so a larger value fails config validation. |
 | `wait` | bool | none | Whether to wait for notarization to complete |
 
 ## Native mode (codesign + xcrun)

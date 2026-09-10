@@ -8744,7 +8744,7 @@
           ]
         },
         "timeout": {
-          "description": "Timeout for notarization status polling. Humantime-style string (e.g. `\"10m\"`, `\"15s\"`, `\"1h\"`). Default when omitted: `\"10m\"`.",
+          "description": "Timeout for notarization status polling. Humantime-style string (e.g. `\"10m\"`, `\"15s\"`). Default when omitted: `\"10m\"`, maximum `\"20m\"` — the App Store Connect token lifetime is derived from this value and Apple rejects a token that lives longer, so a larger timeout fails config validation instead of authenticating.",
           "default": null,
           "anyOf": [
             {

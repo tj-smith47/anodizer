@@ -861,3 +861,41 @@ pub fn validate_exclude_globs(config: &Config) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Validate every configured macOS notarization `timeout` against
+/// [`MacOSNotarizeApiConfig::MAX_TIMEOUT`].
+///
+/// Both receivers of a `NotarizeConfig` are walked — the top-level
+/// `notarize:` block and `defaults.notarize:` — because the defaults fold
+/// runs after config validation, so a ceiling checked on the top-level block
+/// alone would wave the same value through when it is written under
+/// `defaults:`.
+pub fn validate_notarize_timeout(config: &Config) -> Result<(), String> {
+    let max = HumanDuration(MacOSNotarizeApiConfig::MAX_TIMEOUT).as_humantime_string();
+    let check = |scope: &str, notarize: &NotarizeConfig| -> Result<(), String> {
+        let Some(ref macos) = notarize.macos else {
+            return Ok(());
+        };
+        for (i, cfg) in macos.iter().enumerate() {
+            let Some(timeout) = cfg.notarize.as_ref().and_then(|n| n.timeout) else {
+                continue;
+            };
+            if timeout.duration() > MacOSNotarizeApiConfig::MAX_TIMEOUT {
+                return Err(format!(
+                    "{scope}.macos[{i}].notarize.timeout must be at most {max}, got {}: \
+                     the App Store Connect token lifetime is derived from it and Apple \
+                     rejects tokens that live longer",
+                    timeout.as_humantime_string()
+                ));
+            }
+        }
+        Ok(())
+    };
+    if let Some(ref notarize) = config.notarize {
+        check("notarize", notarize)?;
+    }
+    if let Some(notarize) = config.defaults.as_ref().and_then(|d| d.notarize.as_ref()) {
+        check("defaults.notarize", notarize)?;
+    }
+    Ok(())
+}

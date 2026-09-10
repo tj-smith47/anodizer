@@ -159,7 +159,10 @@ pub struct MacOSNotarizeApiConfig {
     /// API key ID. Templates allowed.
     pub key_id: Option<String>,
     /// Timeout for notarization status polling. Humantime-style string
-    /// (e.g. `"10m"`, `"15s"`, `"1h"`). Default when omitted: `"10m"`.
+    /// (e.g. `"10m"`, `"15s"`). Default when omitted: `"10m"`, maximum
+    /// `"20m"` — the App Store Connect token lifetime is derived from this
+    /// value and Apple rejects a token that lives longer, so a larger
+    /// timeout fails config validation instead of authenticating.
     pub timeout: Option<HumanDuration>,
     /// Whether to wait for notarization to complete.
     pub wait: Option<bool>,
@@ -168,6 +171,14 @@ pub struct MacOSNotarizeApiConfig {
 impl MacOSNotarizeApiConfig {
     /// Default notarization wait window (10 minutes).
     pub const DEFAULT_TIMEOUT: &'static str = "10m";
+
+    /// Longest notarization wait window Apple's authentication accepts.
+    ///
+    /// The App Store Connect token minted for the submission takes its
+    /// lifetime from this timeout, and Apple refuses a token that lives
+    /// longer, so a bigger value is not a longer wait — it is an
+    /// authentication failure whose message says nothing about the timeout.
+    pub const MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
     /// Resolve `wait`, falling back to `false` (don't block on notary).
     pub fn resolved_wait(&self) -> bool {
