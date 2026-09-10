@@ -73,15 +73,65 @@ fn is_boolean_shape(value: &str) -> bool {
     )
 }
 
-/// The shortest secret value redaction acts on.
+/// Whether `c` continues a word, for the boundary rule below.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether an occurrence of `value` sitting between `before` and `after` stands
+/// on its own rather than inside a longer word.
 ///
-/// A one-character value matches almost everywhere: masking it rewrites every
-/// occurrence of that character in unrelated output — a version string, a
-/// revision number, a progress bar — while protecting nothing, because a
-/// single character carries no credential. `is_boolean_shape` already exempts
-/// the `0`/`1` enable-flag spelling; this floor covers every other lone
-/// character.
-const MIN_SECRET_LEN: usize = 2;
+/// A short secret matches almost everywhere: masking `SHORT=s` without this
+/// rewrites the `s` of `git ls-remote`, corrupting unrelated output while
+/// protecting nothing. A length floor answered the same worry with an
+/// arbitrary constant that a two-character secret walks straight past; this
+/// asks the question the floor was standing in for, at every length.
+///
+/// The test is applied per edge and only where the value's own edge is a word
+/// character, so a secret that begins or ends in punctuation — a PEM block's
+/// `-----BEGIN`, a URL — is masked wherever it appears.
+fn stands_alone(before: Option<char>, value: &str, after: Option<char>) -> bool {
+    let edge_ok = |edge: Option<char>, value_edge: Option<char>| {
+        !value_edge.is_some_and(is_word_char) || !edge.is_some_and(is_word_char)
+    };
+    edge_ok(before, value.chars().next()) && edge_ok(after, value.chars().last())
+}
+
+/// Mask every whole-word occurrence of a secret in `input`, in one pass.
+///
+/// `secrets` must be ordered longest-value-first (as [`secret_pairs`] returns
+/// them) so the longest match at a position wins. `before` is the character
+/// immediately preceding `input` in the stream, if any; the return carries the
+/// last character of the text scanned so a caller feeding chunks can pass it
+/// back.
+fn mask_from<'a>(
+    input: &str,
+    secrets: impl Fn(&str) -> Option<(&'a str, &'a str)>,
+    before: Option<char>,
+) -> (String, Option<char>) {
+    let mut out = String::with_capacity(input.len());
+    let mut prev = before;
+    let mut i = 0;
+    while i < input.len() {
+        let rest = &input[i..];
+        if let Some((key, value)) = secrets(rest)
+            && stands_alone(prev, value, rest[value.len()..].chars().next())
+        {
+            out.push('$');
+            out.push_str(key);
+            i += value.len();
+            prev = value.chars().last();
+            continue;
+        }
+        // Advance one CHAR, not one byte: `&str` slicing panics off a
+        // code-point boundary, and the input is always valid UTF-8.
+        let Some(ch) = rest.chars().next() else { break };
+        out.push(ch);
+        i += ch.len_utf8();
+        prev = Some(ch);
+    }
+    (out, prev)
+}
 
 /// The secret entries of `env`, ordered longest-value-first with the key
 /// ascending as the tiebreak, so a longer secret is always masked before a
@@ -92,7 +142,7 @@ const MIN_SECRET_LEN: usize = 2;
 fn secret_pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     let mut secrets: Vec<(&str, &str)> = env
         .iter()
-        .filter(|(k, v)| v.len() >= MIN_SECRET_LEN && is_secret(k, v))
+        .filter(|(k, v)| !v.is_empty() && is_secret(k, v))
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
@@ -105,11 +155,21 @@ fn secret_pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
 /// that appears whole in `input` is masked — text arriving in chunks whose
 /// boundaries can split a value needs [`StreamRedacter`].
 pub fn string(input: &str, env: &[(String, String)]) -> String {
-    let mut result = input.to_string();
-    for (key, value) in secret_pairs(env) {
-        result = result.replace(value, &format!("${}", key));
+    let secrets = secret_pairs(env);
+    if secrets.is_empty() {
+        return input.to_string();
     }
-    result
+    mask_from(
+        input,
+        |rest| {
+            secrets
+                .iter()
+                .find(|(_, v)| rest.starts_with(*v))
+                .map(|(k, v)| (*k, *v))
+        },
+        None,
+    )
+    .0
 }
 
 /// A redacter for text that arrives in chunks whose boundaries are not under
@@ -143,6 +203,9 @@ pub struct StreamRedacter {
     /// Bytes withheld from the last [`Self::push`] because they may be the
     /// start of a secret.
     pending: String,
+    /// The last character released, so the boundary rule can be asked about a
+    /// secret sitting at the very start of the next chunk.
+    prev: Option<char>,
 }
 
 impl StreamRedacter {
@@ -157,6 +220,7 @@ impl StreamRedacter {
             secrets,
             max_len,
             pending: String::new(),
+            prev: None,
         }
     }
 
@@ -170,8 +234,9 @@ impl StreamRedacter {
         }
         let mut s = std::mem::take(&mut self.pending);
         s.push_str(chunk);
-        let (out, pending) = self.replace_partial(&s);
+        let (out, pending, prev) = self.replace_partial(&s);
         self.pending = pending;
+        self.prev = prev;
         out
     }
 
@@ -182,17 +247,15 @@ impl StreamRedacter {
             return String::new();
         }
         let pending = std::mem::take(&mut self.pending);
-        self.replace_all(&pending)
+        let (out, prev) = self.replace_all(&pending, self.prev);
+        self.prev = prev;
+        out
     }
 
-    /// Mask every secret that appears whole in `s` — [`string`] restricted to
-    /// this redacter's already-ordered secret set.
-    fn replace_all(&self, s: &str) -> String {
-        let mut result = s.to_string();
-        for (key, value) in &self.secrets {
-            result = result.replace(value.as_str(), &format!("${key}"));
-        }
-        result
+    /// Mask every whole-word secret in `s` — [`string`] restricted to this
+    /// redacter's already-ordered secret set, continuing from `prev`.
+    fn replace_all(&self, s: &str, prev: Option<char>) -> (String, Option<char>) {
+        mask_from(s, |rest| self.match_at(rest), prev)
     }
 
     /// Split `s` into `(safe_to_emit, withheld)`.
@@ -200,20 +263,25 @@ impl StreamRedacter {
     /// Walks `s` masking whole secrets, and stops at the first position whose
     /// remainder is a strict prefix of some secret — that remainder is the
     /// withheld tail.
-    fn replace_partial(&self, s: &str) -> (String, String) {
+    fn replace_partial(&self, s: &str) -> (String, String, Option<char>) {
+        let mut prev = self.prev;
         if !self.has_incomplete_suffix(s) {
-            return (self.replace_all(s), String::new());
+            let (out, prev) = self.replace_all(s, prev);
+            return (out, String::new(), prev);
         }
         let mut out = String::with_capacity(s.len());
         let mut rest = s;
         while !rest.is_empty() {
             if self.is_incomplete_secret(rest) {
-                return (out, rest.to_string());
+                return (out, rest.to_string(), prev);
             }
-            if let Some((key, value)) = self.match_at(rest) {
+            if let Some((key, value)) = self.match_at(rest)
+                && stands_alone(prev, value, rest[value.len()..].chars().next())
+            {
                 out.push('$');
                 out.push_str(key);
                 rest = &rest[value.len()..];
+                prev = value.chars().last();
                 continue;
             }
             // Advance one CHAR, not one byte: `&str` slicing panics off a
@@ -221,8 +289,9 @@ impl StreamRedacter {
             let Some(ch) = rest.chars().next() else { break };
             out.push(ch);
             rest = &rest[ch.len_utf8()..];
+            prev = Some(ch);
         }
-        (out, String::new())
+        (out, String::new(), prev)
     }
 
     /// Whether any suffix within the last `max_len - 1` bytes of `s` could be
@@ -232,20 +301,26 @@ impl StreamRedacter {
         if self.max_len == 0 {
             return false;
         }
-        let start = s.len().saturating_sub(self.max_len - 1);
+        let start = s.len().saturating_sub(self.max_len);
         s.char_indices()
             .filter(|&(i, _)| i >= start)
             .any(|(i, _)| self.is_incomplete_secret(&s[i..]))
     }
 
-    /// Whether `s` is a strict prefix of some secret, i.e. more bytes could
-    /// still complete it.
+    /// Whether `s` is a prefix of some secret and so cannot be decided yet.
+    ///
+    /// A strict prefix could still grow into the secret. An EXACT match is
+    /// undecided too: the boundary rule needs the character that follows, and
+    /// it has not arrived. End of stream supplies that answer — [`flush`] masks
+    /// what is withheld.
+    ///
+    /// [`flush`]: Self::flush
     fn is_incomplete_secret(&self, s: &str) -> bool {
-        s.len() < self.max_len
+        s.len() <= self.max_len
             && self
                 .secrets
                 .iter()
-                .any(|(_, v)| v.len() > s.len() && v.starts_with(s))
+                .any(|(_, v)| v.len() >= s.len() && v.starts_with(s))
     }
 
     /// The longest secret `s` starts with, as `(key, value)`.
@@ -388,9 +463,15 @@ pub fn redact_bearer_tokens(input: &str) -> String {
             }
             continue;
         }
-        // Emit one byte verbatim and advance.
-        out.push(bytes[i] as char);
-        i += 1;
+        // Emit one CHAR verbatim and advance. `bytes[i] as char` widened each
+        // byte of a multi-byte sequence into its own code point, so a registry
+        // error body came back as mojibake — a corruption of text this
+        // function is only meant to mask parts of.
+        let Some(ch) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -549,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_redacter_skips_a_one_character_secret_and_masks_a_three_line_one() {
+    fn stream_redacter_keeps_a_one_character_secret_inside_a_word_and_masks_a_three_line_one() {
         let env = vec![
             ("SHORT_KEY".to_string(), "e".to_string()),
             ("AUTH_KEY".to_string(), PEM.to_string()),
@@ -560,7 +641,7 @@ mod tests {
         out.push_str(&r.flush());
         assert!(
             out.starts_with("evidence: "),
-            "a one-character secret must not rewrite every matching character: {out:?}"
+            "a one-character secret inside a word must not rewrite it: {out:?}"
         );
         assert!(
             out.contains("$AUTH_KEY") && !out.contains("AAAABBBB"),
@@ -1049,5 +1130,57 @@ mod tests {
         // unrelated zeros in output (`v0.9.0`, a revision `10`).
         let env = vec![("GPG_SIGN_KEY".to_string(), "0".to_string())];
         assert_eq!(string("sign=0 rev 10 v0.9.0", &env), "sign=0 rev 10 v0.9.0");
+    }
+
+    #[test]
+    fn a_two_character_secret_is_masked_on_a_word_boundary() {
+        let env = vec![("VER_TOKEN".to_string(), "v2".to_string())];
+        // Standing alone it is a credential; inside `dev2x` and `v2x` it is
+        // someone else's text, and a length floor of two let both through.
+        assert_eq!(
+            string("use v2 for dev2x and v2x", &env),
+            "use $VER_TOKEN for dev2x and v2x"
+        );
+    }
+
+    #[test]
+    fn a_one_character_secret_is_masked_on_a_word_boundary() {
+        let env = vec![("SHORT_KEY".to_string(), "s".to_string())];
+        assert_eq!(
+            string("git ls-remote s", &env),
+            "git ls-remote $SHORT_KEY",
+            "the lone value is a credential; the s of ls-remote is not"
+        );
+    }
+
+    #[test]
+    fn a_punctuated_secret_is_masked_wherever_it_appears() {
+        // The boundary rule asks about the value's own edges, so a secret that
+        // begins and ends in punctuation is never held back by it.
+        let env = vec![("AUTH_KEY".to_string(), PEM.to_string())];
+        let masked = string(&format!("x{PEM}y"), &env);
+        assert_eq!(masked, "x$AUTH_KEYy");
+    }
+
+    #[test]
+    fn stream_redacter_masks_a_secret_that_ends_the_stream() {
+        let env = vec![("API_KEY".to_string(), "abcdefgh".to_string())];
+        let mut r = StreamRedacter::new(&env);
+        let mut out = r.push("key: abcdefgh");
+        out.push_str(&r.flush());
+        assert_eq!(
+            out, "key: $API_KEY",
+            "end of stream is a word boundary, so the withheld tail is masked"
+        );
+    }
+
+    #[test]
+    fn redact_bearer_tokens_preserves_non_ascii_bytes() {
+        let input = "café ☕ naïve: Bearer abc123 — 世界";
+        assert_eq!(
+            redact_bearer_tokens(input),
+            "café ☕ naïve: Bearer <redacted> — 世界",
+            "text outside the masked token must survive byte-for-byte"
+        );
     }
 }
