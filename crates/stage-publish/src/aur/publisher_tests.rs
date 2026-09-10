@@ -324,7 +324,7 @@ fn run_per_crate_start_message_names_crate() {
 }
 
 #[test]
-fn run_done_message_reports_processed_count() {
+fn run_done_message_reports_considered_count() {
     let msg = run_done_message(2);
     assert!(msg.starts_with("finished aur publish"), "{msg}");
     assert!(msg.contains("2 configured crate(s) considered"), "{msg}");

@@ -1129,7 +1129,7 @@ mod publisher_tests {
     }
 
     #[test]
-    fn run_done_message_reports_processed_count() {
+    fn run_done_message_reports_considered_count() {
         let msg = run_done_message(2, 0);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
         // Two formula crates, no casks → total unit count is 2.
