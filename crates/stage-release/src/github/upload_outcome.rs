@@ -38,8 +38,8 @@ pub(crate) enum UploadAttemptOutcome {
     /// GitHub returned a 403/429 whose body matches the secondary
     /// rate-limit signature (see
     /// [`is_secondary_rate_limit`]).
-    /// The loop honours `Retry-After` (clamped) and sleeps before
-    /// retrying, NOT the normal exponential backoff.
+    /// The loop honours `Retry-After` as sent (capped at 10 minutes) and
+    /// sleeps before retrying, NOT the normal exponential backoff.
     SecondaryRateLimited,
     /// GitHub returned a 429, or a 403 whose body carries a rate-limit
     /// signal (see [`anodizer_core::git::is_rate_limit_signature`]) that

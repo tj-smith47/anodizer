@@ -15,12 +15,15 @@
 //! ([`RetryAfterService`]) intercepts every HTTP response *before* octocrab
 //! processes it and stores the header's integer value in a shared
 //! [`RetryAfterCapture`]. The retry loops then read that captured value via
-//! [`secondary_rl_delay`] and honour it (clamped to [60, 600] seconds) instead
-//! of always falling back to a fixed constant.
+//! [`secondary_rl_delay`] and honour it instead of always falling back to a
+//! fixed constant.
 //!
-//! Reads the exact
-//! `Retry-After` from go-github's `*AbuseRateLimitError`, clamped with a
-//! 1-minute floor and 10-minute cap.
+//! A present `Retry-After` is the server saying when to retry, so it is
+//! honoured as sent — a one-second hint sleeps one second. The 60 s constant
+//! is the fallback for an ABSENT header, never a floor under a present one:
+//! raising a short hint to a minute spends 59 s of every retry waiting for
+//! nothing. Only the 10-minute cap still applies, so a misbehaving proxy
+//! cannot stall the release indefinitely.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -32,13 +35,14 @@ use std::time::Duration;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use tower::{Layer, Service};
 
-/// Minimum sleep when a secondary rate-limit response is detected, absent a
-/// more specific `Retry-After` hint accessible through the API.
+/// Sleep applied when a secondary rate-limit response carries NO usable
+/// `Retry-After` header — the fallback, not a floor under a header the
+/// server did send.
 ///
 /// GitHub's documentation states that secondary rate-limit waits typically
 /// range from 30–90 seconds. 60 s is the conservative midpoint.
 /// Override via `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`.
-pub(crate) const SECONDARY_RL_MIN_SECS: u64 = 60;
+pub(crate) const SECONDARY_RL_FALLBACK_SECS: u64 = 60;
 
 /// Maximum `Retry-After` value the retry loop will honour (10 minutes).
 /// Values above this are clamped to avoid indefinite stalls from a
@@ -181,9 +185,10 @@ fn override_delay_secs_from<E: EnvSource + ?Sized>(env: &E) -> Option<u64> {
 ///
 /// Precedence (first match wins):
 /// 1. `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` env var — hard override.
-/// 2. `capture` — the server's `Retry-After` header value, clamped to
-///    \[60, 600\] seconds.
-/// 3. [`SECONDARY_RL_MIN_SECS`] (60 s) constant fallback.
+/// 2. `capture` — the server's `Retry-After` header value, honoured as sent
+///    and capped at 600 seconds.
+/// 3. [`SECONDARY_RL_FALLBACK_SECS`] (60 s) constant fallback, for a response
+///    that carried no usable header.
 ///
 /// Callers should apply `jitter_duration` on top of the returned value.
 pub(crate) fn secondary_rl_delay(capture: Option<&RetryAfterCapture>) -> Duration {
@@ -203,15 +208,15 @@ pub(crate) fn secondary_rl_delay_with_env<E: EnvSource + ?Sized>(
         return Duration::from_secs(secs);
     }
 
-    // Honour the server's Retry-After header, clamped to [60, 600].
+    // Honour the server's Retry-After header as sent. Only the cap applies:
+    // a floor here would turn `Retry-After: 1` into a minute of waiting for
+    // a limit that had already cleared.
     if let Some(captured) = capture.and_then(RetryAfterCapture::get) {
-        let secs = captured
-            .as_secs()
-            .clamp(SECONDARY_RL_MIN_SECS, RETRY_AFTER_MAX_SECS);
+        let secs = captured.as_secs().min(RETRY_AFTER_MAX_SECS);
         return Duration::from_secs(secs);
     }
 
-    Duration::from_secs(SECONDARY_RL_MIN_SECS)
+    Duration::from_secs(SECONDARY_RL_FALLBACK_SECS)
 }
 
 #[cfg(test)]
@@ -342,7 +347,7 @@ mod tests {
         let env = MapEnvSource::new();
         assert_eq!(
             secondary_rl_delay_with_env(None, &env),
-            Duration::from_secs(SECONDARY_RL_MIN_SECS)
+            Duration::from_secs(SECONDARY_RL_FALLBACK_SECS)
         );
     }
 
@@ -370,15 +375,17 @@ mod tests {
     }
 
     #[test]
-    fn secondary_rl_delay_clamps_low_captured_value() {
-        // A server-sent Retry-After: 5 is below the 60 s floor.
+    fn secondary_rl_delay_honours_a_short_captured_value() {
+        // A server-sent `Retry-After: 5` says the limit clears in five
+        // seconds. Raising it to the 60 s fallback spent 55 s of every retry
+        // waiting for nothing; the fallback belongs to an ABSENT header.
         let env = MapEnvSource::new();
         let cap = RetryAfterCapture::new();
         cap.set(5);
         assert_eq!(
             secondary_rl_delay_with_env(Some(&cap), &env),
-            Duration::from_secs(SECONDARY_RL_MIN_SECS),
-            "values below 60 s must be clamped to the floor"
+            Duration::from_secs(5),
+            "a present Retry-After is honoured as sent, however short"
         );
     }
 

@@ -51,7 +51,8 @@ use crate::release_log;
 /// When a secondary rate-limit response (403/429 with GitHub's secondary-RL
 /// body text) is detected, the helper logs a dedicated warning and sleeps for
 /// `secondary_rl_delay()` — which honours the server's `Retry-After` header
-/// (captured by [`RetryAfterCapture`] middleware), clamped to [60, 600] s,
+/// (captured by [`RetryAfterCapture`] middleware) as sent, capped at 600 s
+/// and falling back to 60 s when no header was received,
 /// overridable via `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` — with ±20 %
 /// jitter before retrying. The policy's normal exp-backoff delay is skipped
 /// for secondary-RL attempts to avoid doubling the sleep.
@@ -95,8 +96,8 @@ where
                             return RetryStep::Fail(err);
                         }
                         // The two paths sleep different amounts: a secondary
-                        // rate-limit honours the server's 60–600s Retry-After
-                        // slot, everything else uses the policy's exp-backoff.
+                        // rate-limit honours the server's Retry-After hint,
+                        // everything else uses the policy's exp-backoff.
                         let (delay, cause) = if secondary_rl {
                             (
                                 jitter_duration(secondary_rl_delay(retry_after)),
