@@ -1,5 +1,51 @@
 use super::*;
 
+/// Whether the tags at HEAD decide which crates this run releases.
+///
+/// `--snapshot` / `--nightly` / `--dry-run` build without a real tag,
+/// `--publish-only` / `--announce-only` consume a prior dist tree,
+/// `--split` / `--merge` drive a multi-host flow, and `--preflight-secrets` is
+/// a gate that runs before any tag exists. All of those read "no selected
+/// crates" as "every crate", so HEAD's tags neither pick the crates nor end the
+/// run.
+pub(crate) fn selection_depends_on_head_tags(opts: &ReleaseOpts) -> bool {
+    opts.crate_names.is_empty()
+        && !opts.all
+        && !opts.snapshot
+        && !opts.nightly
+        && !opts.dry_run
+        && !opts.publish_only
+        && !opts.announce_only
+        && !opts.split
+        && !opts.merge
+        && !opts.preflight_secrets
+}
+
+/// Decide what a failed crate selection means for this run.
+///
+/// A repository git refuses to read (dubious ownership, a checkout that is not
+/// a work tree) used to read as "HEAD carries no release tags", so a release
+/// that should have failed reported nothing to do and exited 0. It is now a
+/// hard error wherever HEAD's tags pick the crates, and a warning that
+/// continues with no selection in the modes that never consult them.
+pub(crate) fn recover_crate_selection(
+    selection: Result<Vec<String>>,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    match selection {
+        Ok(selected) => Ok(selected),
+        Err(e)
+            if !selection_depends_on_head_tags(opts)
+                && e.chain().any(|c| c.is::<git::RepositoryUnreadable>()) =>
+        {
+            log.warn(&format!("continuing without the tags at HEAD: {e:#}"));
+            Ok(Vec::new())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     if opts.prepare {
         apply_prepare_mode_to_skip(&mut opts.skip);
@@ -35,31 +81,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     apply_release_meta_overrides(&mut config, &opts)?;
 
     let all_known_crates: Vec<CrateConfig> = config.crate_universe().into_iter().cloned().collect();
-    let selected_sorted = resolve_selected_crates(&opts, &all_known_crates, &config, &log)?;
+    let selected_sorted = recover_crate_selection(
+        resolve_selected_crates(&opts, &all_known_crates, &config, &log),
+        &opts,
+        &log,
+    )?;
 
     // Tags-at-HEAD default path: when no --crate and no --all were given and
     // HEAD has no matching tags, this is a no-op (the push that triggered this
     // run didn't include any release tags).
-    //
-    // Excluded modes: --snapshot / --nightly / --dry-run build without a real
-    // tag; --publish-only / --announce-only consume a prior dist tree;
-    // --split / --merge drive a multi-host flow. All of those modes use
-    // "empty selected_crates = all crates" and must not be short-circuited.
-    if selected_sorted.is_empty()
-        && opts.crate_names.is_empty()
-        && !opts.all
-        && !opts.snapshot
-        && !opts.nightly
-        && !opts.dry_run
-        && !opts.publish_only
-        && !opts.announce_only
-        && !opts.split
-        && !opts.merge
-        // `--preflight-secrets` is a PRE-tag gate: by design it runs before
-        // any tag exists at HEAD, so the tags-at-HEAD short-circuit must not
-        // pre-empt it (it would otherwise exit 0 without checking secrets).
-        && !opts.preflight_secrets
-    {
+    if selected_sorted.is_empty() && selection_depends_on_head_tags(&opts) {
         log.status("no release tags at HEAD — nothing to do");
         return Ok(());
     }

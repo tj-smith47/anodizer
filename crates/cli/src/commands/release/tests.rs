@@ -2221,3 +2221,53 @@ fn dist_holding_bookkeeping_and_an_artifact_is_refused() {
     assert!(err.contains("myapp_linux_amd64.tar.gz"), "{err}");
     assert!(!err.contains("config.yaml"), "{err}");
 }
+
+// -----------------------------------------------------------------------
+// A repository git refuses to read is not "no release tags at HEAD"
+// -----------------------------------------------------------------------
+
+fn refused_repository() -> anyhow::Error {
+    anyhow::Error::new(anodizer_core::git::RepositoryUnreadable {
+        message: "detected dubious ownership in repository at '/src'".to_string(),
+    })
+    .context("failed to read tags at HEAD")
+}
+
+#[test]
+fn release_fails_when_git_refuses_the_repository() {
+    let opts = base_release_opts();
+    let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+    let err = super::run::recover_crate_selection(Err(refused_repository()), &opts, &log)
+        .expect_err("a repository git cannot read must fail the release");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("dubious ownership"),
+        "git's own error must reach the operator: {text}"
+    );
+    assert_eq!(
+        capture.warn_count(),
+        0,
+        "the run fails; it does not warn and carry on"
+    );
+}
+
+#[test]
+fn snapshot_release_warns_when_git_refuses_the_repository() {
+    let mut opts = base_release_opts();
+    opts.snapshot = true;
+    let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+    let selected = super::run::recover_crate_selection(Err(refused_repository()), &opts, &log)
+        .expect("a snapshot never consults HEAD's tags, so it continues");
+    assert!(selected.is_empty(), "got {selected:?}");
+    let warnings: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Warn)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(warnings.len(), 1, "exactly one warning; got {warnings:?}");
+    assert!(
+        warnings[0].contains("dubious ownership"),
+        "the warning must carry git's own error: {warnings:?}"
+    );
+}
