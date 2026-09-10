@@ -78,8 +78,52 @@ fn partition_sources(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     (production, tests)
 }
 
+/// Whether a trimmed source line opens a `fn` item: an optional visibility
+/// (`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`), then any run of item
+/// qualifiers (`default`, `const`, `async`, `unsafe`, `extern "C"`), then
+/// `fn `.
+///
+/// Spelled as a rule rather than as a list of the four commonest prefixes,
+/// because a list leaves `async fn`, `const fn`, `unsafe fn` and
+/// `pub(in …) fn` — all of which this workspace contains — unexamined by every
+/// guard that composes [`function_bodies`], and a guard that cannot see a
+/// shape cannot fail on it.
+fn opens_fn_item(trimmed: &str) -> bool {
+    let mut rest = trimmed;
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        rest = match after_pub.strip_prefix('(') {
+            Some(scoped) => match scoped.split_once(')') {
+                Some((_, tail)) => tail,
+                None => return false,
+            },
+            None => after_pub,
+        };
+        if !rest.starts_with(' ') {
+            return false;
+        }
+    }
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with("fn ") {
+            return true;
+        }
+        let Some((word, tail)) = rest.split_once(' ') else {
+            return false;
+        };
+        // A quoted ABI is the second half of `extern "C"`; every other
+        // qualifier is a bare keyword.
+        if !matches!(word, "default" | "const" | "async" | "unsafe" | "extern")
+            && !word.starts_with('"')
+        {
+            return false;
+        }
+        rest = tail;
+    }
+}
+
 /// Split Rust source into function bodies: a `fn` line opens a body that ends
-/// at the first line closing a brace at the `fn`'s own indent.
+/// at the first line closing a brace at the `fn`'s own indent. Every `fn`
+/// spelling [`opens_fn_item`] accepts opens one.
 ///
 /// A structural guard that asks "does any ONE function do both of these
 /// things" needs the per-function grain — a whole-file substring search
@@ -89,11 +133,7 @@ pub fn function_bodies(src: &str) -> Vec<String> {
     let mut bodies = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if !(trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("pub(crate) fn ")
-            || trimmed.starts_with("pub(super) fn "))
-        {
+        if !opens_fn_item(trimmed) {
             continue;
         }
         let indent = line.len() - trimmed.len();
@@ -401,13 +441,96 @@ mod tests {
     /// code they report on — and two such copies had already drifted before
     /// this guard existed. Any function that both reads a directory and tests
     /// for the Rust file extension fails here until it goes through this walk.
+    /// Whether a function body is a Rust-source directory walk: it reads a
+    /// directory AND tests for the extension. Both spellings count — an
+    /// `extension() == "rs"` compare and a `ends_with(".rs")` one — because a
+    /// detector that knows only the first is blind to the second, which
+    /// contains no `"rs"` token at all.
+    fn is_rust_source_walk(body: &str) -> bool {
+        body.contains("read_dir(") && (body.contains("\"rs\"") || body.contains("\".rs\""))
+    }
+
+    /// The walk detector must see both ways a source names the extension. A
+    /// `.ends_with(".rs")` walker contains no `"rs"` token, so a detector
+    /// spelled only the first way welcomes it with a green suite.
+    #[test]
+    fn the_walk_detector_reads_both_extension_spellings() {
+        assert!(is_rust_source_walk(
+            "fn a(d: &Path) { for e in std::fs::read_dir(d)? { if e.path().extension() == Some(\"rs\".as_ref()) {} } }"
+        ));
+        assert!(is_rust_source_walk(
+            "fn b(d: &Path) { for e in std::fs::read_dir(d)? { if e.path().to_string_lossy().ends_with(\".rs\") {} } }"
+        ));
+        // A directory read that never asks about the extension is not a
+        // Rust-source walk.
+        assert!(!is_rust_source_walk(
+            "fn c(d: &Path) { std::fs::read_dir(d) }"
+        ));
+    }
+
+    /// Every `fn` spelling this workspace contains must open a body, or a
+    /// structural guard composing the split simply never examines the
+    /// function — the shape it was built to catch passes unseen.
+    #[test]
+    fn function_bodies_opens_every_fn_spelling() {
+        let src = "\
+fn plain() {
+}
+pub fn public() {
+}
+pub(crate) fn crate_scoped() {
+}
+pub(super) fn super_scoped() {
+}
+pub(in crate::a) fn path_scoped() {
+}
+async fn asynchronous() {
+}
+const fn constant() {
+}
+unsafe fn unsafely() {
+}
+pub async unsafe fn qualified() {
+}
+unsafe extern \"C\" fn abi() {
+}
+const NOT_A_FN: usize = 1;
+unsafe impl Send for NotAFn {
+}
+";
+        let names: Vec<String> = function_bodies(src)
+            .iter()
+            .map(|b| {
+                b.split_once("fn ")
+                    .and_then(|(_, rest)| rest.split('(').next())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "plain",
+                "public",
+                "crate_scoped",
+                "super_scoped",
+                "path_scoped",
+                "asynchronous",
+                "constant",
+                "unsafely",
+                "qualified",
+                "abi",
+            ],
+        );
+    }
+
     #[test]
     fn every_rust_source_walk_comes_from_the_shared_scanner() {
         let mut walks = Vec::new();
         for source in workspace_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
             for body in function_bodies(&text) {
-                if !body.contains("read_dir(") || !body.contains("\"rs\"") {
+                if !is_rust_source_walk(&body) {
                     continue;
                 }
                 let name = body
