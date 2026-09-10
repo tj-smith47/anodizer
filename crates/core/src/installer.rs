@@ -207,14 +207,61 @@ pub fn require_case_subject_consumption(ctx: &mut Context, cases: &InstallerCase
     Ok(())
 }
 
-/// Whether some `case … in` line matches on `subject`. The generated arms are
-/// reachable only through the word the engine keyed them by, so a template that
-/// prints the subject somewhere else still matches nothing.
+/// Whether some `case … in` line matches on `subject`, directly or through a
+/// variable the script hoisted it into. The generated arms are reachable only
+/// through the word the engine keyed them by, so a template that prints the
+/// subject somewhere else (a banner, a comment) still matches nothing.
 fn case_matches_on(contents: &str, subject: &str) -> bool {
-    contents.lines().any(|line| {
-        let line = line.trim();
-        line.starts_with("case ") && line.ends_with(" in") && line.contains(subject)
-    })
+    let hoisted: Vec<&str> = contents
+        .lines()
+        .filter_map(|line| hoisted_subject_name(line, subject))
+        .collect();
+    contents
+        .lines()
+        .filter_map(case_word)
+        .any(|word| word.contains(subject) || hoisted.iter().any(|n| expands(word, n)))
+}
+
+/// The word a `case … in` line matches on, or `None` for any other line.
+fn case_word(line: &str) -> Option<&str> {
+    strip_trailing_comment(line)
+        .trim()
+        .strip_prefix("case ")?
+        .strip_suffix(" in")
+}
+
+/// The variable name a line assigns `subject` to (`subj="${OS}-${ARCH}-…"`),
+/// which a later `case "$subj" in` matches on just as directly.
+fn hoisted_subject_name<'a>(line: &'a str, subject: &str) -> Option<&'a str> {
+    let (name, value) = strip_trailing_comment(line).trim().split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && value.contains(subject))
+    .then_some(name)
+}
+
+/// Whether `word` expands the shell variable `name` (`$name` or `${name}`).
+fn expands(word: &str, name: &str) -> bool {
+    word.contains(&format!("${name}")) || word.contains(&format!("${{{name}}}"))
+}
+
+/// The line with any trailing `#` comment removed. A `#` inside quotes, or one
+/// glued to the end of a word, is data the shell keeps.
+fn strip_trailing_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut after_space = true;
+    for (i, c) in line.char_indices() {
+        match c {
+            '\'' | '"' if quote == Some(c) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            '#' if quote.is_none() && after_space => return &line[..i],
+            _ => {}
+        }
+        after_space = c.is_whitespace();
+    }
+    line
 }
 
 fn entry_reads_vars(
@@ -1166,6 +1213,63 @@ mod tests {
         ctx.config.template_files = Some(vec![entry(&adopted), entry(&plain)]);
         require_case_subject_consumption(&mut ctx, &cases)
             .expect("an adopted template, and a non-installer entry, both pass");
+    }
+
+    /// A `case` line carrying a trailing shell comment still matches on the
+    /// subject — the comment is not part of the word the shell tests.
+    #[test]
+    fn case_line_with_a_trailing_comment_is_accepted() {
+        let (mut ctx, cases, tmp) = dual_libc_gate_fixture();
+        let src = tmp.path().join("commented-install.sh.tera");
+        std::fs::write(
+            &src,
+            "{{ InstallerDetectLibc }}\ncase \"{{ InstallerAssetCaseSubject }}\" in # pick the asset\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        ctx.config.template_files = Some(vec![gate_entry(&src)]);
+        require_case_subject_consumption(&mut ctx, &cases)
+            .expect("a trailing comment leaves the case matching on the subject");
+    }
+
+    /// Hoisting the subject into a variable and matching the `case` on that
+    /// variable reaches the generated arms just as directly.
+    #[test]
+    fn case_on_a_hoisted_subject_variable_is_accepted() {
+        let (mut ctx, cases, tmp) = dual_libc_gate_fixture();
+        let src = tmp.path().join("hoisted-install.sh.tera");
+        std::fs::write(
+            &src,
+            "{{ InstallerDetectLibc }}\nkey=\"{{ InstallerAssetCaseSubject }}\"\ncase \"$key\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        ctx.config.template_files = Some(vec![gate_entry(&src)]);
+        require_case_subject_consumption(&mut ctx, &cases)
+            .expect("a case on the hoisted subject matches the engine arms");
+    }
+
+    /// A dual-libc context with the case tables bound, plus a tempdir to write
+    /// candidate installer templates into.
+    fn dual_libc_gate_fixture() -> (Context, InstallerCases, tempfile::TempDir) {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        cases.bind(ctx.template_vars_mut());
+        (ctx, cases, tempfile::tempdir().unwrap())
+    }
+
+    /// A `template_files:` entry rendering `src` — the shape the case-subject
+    /// gate inspects.
+    fn gate_entry(src: &std::path::Path) -> crate::config::TemplateFileConfig {
+        crate::config::TemplateFileConfig {
+            id: Some("installer".to_string()),
+            src: src.to_string_lossy().into_owned(),
+            dst: "out.txt".to_string(),
+            ..Default::default()
+        }
     }
 
     /// A single-libc release asks nothing of a template that never adopted the
