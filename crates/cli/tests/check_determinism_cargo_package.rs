@@ -90,7 +90,10 @@ fn cargo_package_stage_is_byte_stable_on_minimal_repo() {
     let report: DeterminismReport =
         serde_json::from_str(&json).unwrap_or_else(|e| panic!("parsing report JSON: {e}\n{json}"));
 
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(
+        report.schema_version,
+        anodizer_core::determinism_report::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(report.runs, 2, "harness ran exactly --runs=2 times");
     assert!(
         report

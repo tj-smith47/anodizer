@@ -7,7 +7,7 @@
 //! field is consumed by downstream CI parsers, so the serde contract is
 //! load-bearing:
 //!
-//! - `schema_version: 1` (constant; bump only on a breaking shape change).
+//! - `schema_version: 2` (constant; bump only on a breaking shape change).
 //! - `#[serde(deny_unknown_fields)]` enforced on every struct so a typo'd
 //!   field in a downstream-edited report fails loudly instead of being
 //!   silently dropped.
@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 /// Current schema version emitted by the harness. Bump on any breaking
 /// field rename or removal; deserialization callers should match on this
 /// before consuming the rest of the payload.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+///
+/// v2 renames the tool-version field from `anodize_version` to
+/// `anodizer_version`; a reader accepts either spelling, a writer emits the
+/// new one.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Top-level determinism report shape.
 ///
@@ -33,8 +37,11 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub struct DeterminismReport {
     /// Schema version — currently `1`. See [`CURRENT_SCHEMA_VERSION`].
     pub schema_version: u32,
-    /// `anodize` crate version that produced the report.
-    pub anodize_version: String,
+    /// The anodizer version that produced the report. Read also under the
+    /// pre-v2 spelling `anodize_version`, so a report written by an older
+    /// release still parses.
+    #[serde(alias = "anodize_version")]
+    pub anodizer_version: String,
     /// Full commit SHA of HEAD at harness invocation time.
     pub commit: String,
     /// Committer timestamp (seconds since UNIX epoch) of `commit`. In
@@ -153,7 +160,7 @@ mod tests {
     fn sample_report() -> DeterminismReport {
         DeterminismReport {
             schema_version: CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.2.1".into(),
+            anodizer_version: "0.2.1".into(),
             commit: "abc123".into(),
             commit_timestamp: 1_715_000_000,
             runs: 2,
@@ -203,8 +210,46 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_constant_is_one() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 1);
+    fn schema_version_constant_is_two() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 2);
+    }
+
+    /// The tool spells its own name on the wire: a report written today
+    /// carries `anodizer_version` and never the old spelling.
+    #[test]
+    fn a_report_written_today_names_the_tool_version_anodizer_version() {
+        let text = serde_json::to_string(&sample_report()).expect("serialize");
+        assert!(
+            text.contains(r#""anodizer_version":"0.2.1""#),
+            "a written report carries the renamed field: {text}"
+        );
+        assert!(
+            !text.contains(r#""anodize_version""#),
+            "the old spelling must not be written: {text}"
+        );
+    }
+
+    /// The rename is a read-compatible one: a `determinism.json` a previous
+    /// release wrote still parses, so a consumer holding an old report is not
+    /// stranded by the schema bump.
+    #[test]
+    fn a_report_written_before_the_rename_still_reads() {
+        let pre_rename = r#"{
+            "schema_version": 1,
+            "anodize_version": "0.25.1",
+            "commit": "abc",
+            "commit_timestamp": 0,
+            "runs": 1,
+            "stages_under_test": [],
+            "allowlist": { "compile_time": [], "runtime": [] },
+            "artifacts": [],
+            "drift": [],
+            "drift_count": 0
+        }"#;
+        let parsed: DeterminismReport =
+            serde_json::from_str(pre_rename).expect("a pre-rename report parses");
+        assert_eq!(parsed.anodizer_version, "0.25.1");
+        assert_eq!(parsed.schema_version, 1);
     }
 
     #[test]
@@ -246,7 +291,7 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let s = r#"{
             "schema_version": 1,
-            "anodize_version": "0.2.1",
+            "anodizer_version": "0.2.1",
             "commit": "abc",
             "commit_timestamp": 0,
             "runs": 1,
@@ -268,7 +313,7 @@ mod tests {
     fn unknown_fields_rejected_on_allowlist_entry() {
         let s = r#"{
             "schema_version": 1,
-            "anodize_version": "0.2.1",
+            "anodizer_version": "0.2.1",
             "commit": "abc",
             "commit_timestamp": 0,
             "runs": 1,

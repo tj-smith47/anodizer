@@ -101,7 +101,10 @@ fn docker_stage_token_parses_and_runs_to_completion() {
     let report: DeterminismReport =
         serde_json::from_str(&json).unwrap_or_else(|e| panic!("parsing report JSON: {e}\n{json}"));
 
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(
+        report.schema_version,
+        anodizer_core::determinism_report::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(report.runs, 2, "harness ran exactly --runs=2 times");
     assert!(
         report.stages_under_test.iter().any(|s| s == "docker"),
@@ -285,7 +288,10 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
     let report: DeterminismReport =
         serde_json::from_str(&json).unwrap_or_else(|e| panic!("parsing report JSON: {e}\n{json}"));
 
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(
+        report.schema_version,
+        anodizer_core::determinism_report::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(report.runs, 2);
     assert!(
         report.stages_under_test.iter().any(|s| s == "docker"),

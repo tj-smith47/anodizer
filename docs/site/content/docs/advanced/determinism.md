@@ -279,8 +279,8 @@ shared with the failure-handling run report). Shape:
 
 ```json
 {
-  "schema_version": 1,
-  "anodize_version": "0.2.1",
+  "schema_version": 2,
+  "anodizer_version": "0.2.1",
   "commit": "abc123...",
   "commit_timestamp": 1715000000,
   "runs": 2,

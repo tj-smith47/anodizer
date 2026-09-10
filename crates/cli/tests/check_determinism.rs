@@ -258,7 +258,11 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
     let report: DeterminismReport =
         serde_json::from_str(&json).unwrap_or_else(|e| panic!("parsing report JSON: {e}\n{json}"));
 
-    assert_eq!(report.schema_version, 1, "schema_version pinned at 1");
+    assert_eq!(
+        report.schema_version,
+        anodizer_core::determinism_report::CURRENT_SCHEMA_VERSION,
+        "the written report carries the current schema version"
+    );
     assert_eq!(report.runs, 2, "harness ran exactly --runs=2 times");
     assert!(
         report.drift_count > 0,

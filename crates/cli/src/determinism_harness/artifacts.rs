@@ -1039,7 +1039,7 @@ mod tests {
 
         let report = DeterminismReport {
             schema_version: CURRENT_SCHEMA_VERSION,
-            anodize_version: "0.3.0".into(),
+            anodizer_version: "0.3.0".into(),
             commit: "abc".into(),
             commit_timestamp: 0,
             runs: 2,

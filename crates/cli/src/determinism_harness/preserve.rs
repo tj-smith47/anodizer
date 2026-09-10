@@ -748,7 +748,7 @@ mod tests {
     fn empty_report(commit: &str) -> DeterminismReport {
         DeterminismReport {
             schema_version: 1,
-            anodize_version: "test".into(),
+            anodizer_version: "test".into(),
             commit: commit.into(),
             commit_timestamp: 1_715_000_000,
             runs: 2,

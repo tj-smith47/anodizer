@@ -215,7 +215,7 @@ impl Harness {
 
         DeterminismReport {
             schema_version: CURRENT_SCHEMA_VERSION,
-            anodize_version: env!("CARGO_PKG_VERSION").into(),
+            anodizer_version: env!("CARGO_PKG_VERSION").into(),
             commit: self.commit.clone(),
             commit_timestamp: self.sde,
             runs: self.runs,

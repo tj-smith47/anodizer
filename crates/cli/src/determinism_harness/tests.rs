@@ -163,7 +163,10 @@ fn harness_report_shape_serializes_correctly() {
         ],
     );
     let report = h.build_report(runs);
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(
+        report.schema_version,
+        anodizer_core::determinism_report::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(report.runs, 2);
     assert_eq!(report.commit, "deadbeef");
     assert_eq!(report.stages_under_test, vec!["archive", "checksum"]);
