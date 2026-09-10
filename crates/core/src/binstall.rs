@@ -483,10 +483,16 @@ fn release_repo(crate_cfg: &CrateConfig, ctx: &Context) -> Option<(String, Strin
     Some((owner, repo, base.to_string()))
 }
 
-/// Pick the archive entry cargo-binstall should install from: the first entry
-/// whose default format is binstallable (tar.gz / zip / …),
-/// the primary archive is the one consumers fetch; auxiliary entries (e.g. a
-/// `tar.xz`/`tar.zst` `-extra` entry) are skipped.
+/// Pick the archive entry cargo-binstall should install from.
+///
+/// A `meta: true` entry is excluded first, and that exclusion governs the
+/// fallback too: such an entry packs no binaries, so it can never be the
+/// archive a download URL points at. Among the entries that remain, the first
+/// whose default format is binstallable (tar.gz / zip / …) wins, because the
+/// primary archive is the one consumers fetch and auxiliary entries (e.g. a
+/// `tar.xz`/`tar.zst` `-extra` entry) are skipped. When none of them declares
+/// a binstallable default format the first remaining entry stands in, and a
+/// crate whose archives are all `meta: true` yields `None`.
 pub(crate) fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
     let ArchivesConfig::Configs(configs) = &crate_cfg.archives else {
         return None;
@@ -1784,7 +1790,8 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         }
     }
 
-    /// The derived asset names of [`binary_named_crate`], keyed by target.
+    /// The derived asset names of a crate config, keyed by target — either a
+    /// [`binary_named_crate`] shape or a hand-built [`CrateConfig`].
     fn derived_names(crate_cfg: &CrateConfig) -> BTreeMap<String, String> {
         let mut ctx = make_ctx();
         crate_archive_asset_names(crate_cfg, &[], &mut ctx)

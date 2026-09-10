@@ -872,7 +872,7 @@ Rev    Uploaded              Arches  Version  Channels
     }
 
     #[test]
-    fn primary_binary_prefers_first_build_binary_else_crate_name() {
+    fn primary_binary_prefers_a_released_build_binary_else_crate_name() {
         use anodizer_core::config::BuildConfig;
         let with_build = CrateConfig {
             name: "app".to_string(),
