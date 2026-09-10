@@ -99,4 +99,4 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-echo "audit-binary-name: ${#FILES[@]} file(s) scanned; every binary-name read goes through Artifact::binary_name."
+echo "audit-binary-name: ${#FILES[@]} file(s) scanned; every binary-name read goes through binary_name_of."
