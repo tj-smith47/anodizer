@@ -253,8 +253,10 @@ fn resolve_snap_names(ctx: &Context) -> Vec<String> {
     names
 }
 
-/// The crate's primary binary name — the first build's `binary`, falling back
-/// to the crate name. Last resort of the snap-name resolution chain.
+/// The crate's primary binary name, as the build-planning SSOT resolves it:
+/// the first build the run actually releases — one that produces an artifact
+/// and that `skip:` does not veto — falling back to the crate name. Last
+/// resort of the snap-name resolution chain.
 fn primary_binary(ctx: &Context, krate: &anodizer_core::config::CrateConfig) -> String {
     anodizer_core::build_plan::crate_primary_binary_name(krate, |build| {
         anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))

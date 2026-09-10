@@ -10,11 +10,13 @@
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
 
-/// The crate's primary binary name — the first build's `binary`, falling back
-/// to the crate name (BuildConfig's documented fallback). This is the last
-/// resort of the snap-name resolution chain (`snapcrafts[].name` → project
-/// name → primary binary), mirroring `generate_snap_yaml`, which names the
-/// shipped snap after the first staged binary when nothing else is set.
+/// The crate's primary binary name, as the build-planning SSOT resolves it:
+/// the first build the run actually releases — one that produces an artifact
+/// and that `skip:` does not veto — falling back to the crate name. This is
+/// the last resort of the snap-name resolution chain (`snapcrafts[].name` →
+/// project name → primary binary), mirroring `generate_snap_yaml`, which
+/// names the shipped snap after the first staged binary when nothing else is
+/// set.
 pub(crate) fn crate_primary_binary(ctx: &Context, krate: &CrateConfig) -> String {
     anodizer_core::build_plan::crate_primary_binary_name(krate, |build| {
         anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
