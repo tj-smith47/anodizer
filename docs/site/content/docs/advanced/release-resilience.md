@@ -477,7 +477,8 @@ Shape:
       "group": "Manager",
       "required": false,
       "outcome": { "Failed": "tap push rejected: branch protection" },
-      "evidence": null
+      "evidence": null,
+      "entry_skips": ["homebrew: no repository config for 'widget'"]
     }
   ],
   "determinism_allowlist": { "compile_time": [], "runtime": [] }
@@ -577,8 +578,9 @@ carries them in `entry_skips` on its `report.json` / `summary.json` result, and
 the summary's publisher row appends the count to the status:
 
 ```
-• uploads   Assets  optional  succeeded  (1 entry skipped)
-• winget    Submitter  optional  skipped-entries-skipped
+   • uploads    Assets     optional  succeeded  (1 entry skipped)
+   • winget     Submitter  optional  skipped-entries-skipped  (1 entry skipped)
+   • run flags  submitter_gated=false announce_gated=false
 ```
 
 ```json
@@ -587,6 +589,7 @@ the summary's publisher row appends the count to the status:
   "group": "Assets",
   "required": false,
   "outcome": "Succeeded",
+  "evidence": null,
   "entry_skips": ["uploads: entry 'mirror' is missing required 'target' URL"]
 }
 ```
