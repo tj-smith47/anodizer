@@ -398,9 +398,9 @@ mod tests {
     /// [`partition_sources`] is the only directory walk that picks Rust files
     /// out of a tree. A second one drifts from it silently — a rule taught to
     /// one walk and not the other reports on code the scanners skip, or skips
-    /// code they report on — and two such survivors have already had to be
-    /// found by review. Any function that both reads a directory and tests for
-    /// the Rust file extension fails here until it goes through this walk.
+    /// code they report on — and two such copies had already drifted before
+    /// this guard existed. Any function that both reads a directory and tests
+    /// for the Rust file extension fails here until it goes through this walk.
     #[test]
     fn every_rust_source_walk_comes_from_the_shared_scanner() {
         let mut walks = Vec::new();
@@ -682,9 +682,12 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let tests = synthetic_module(tmp.path(), "m/mod.rs", "fn helper() {}\n", false);
         let msg = declared_under_test_cfg(&tests).expect_err("no declaration is rejected");
+        let parent = tmp.path().join("m").join("mod.rs");
         assert!(
-            msg.contains("mod tests;") && msg.contains(&tests.display().to_string()),
-            "message must name the missing item and the module file: {msg}"
+            msg.contains("mod tests;")
+                && msg.contains(&tests.display().to_string())
+                && msg.contains(&parent.display().to_string()),
+            "message must name the missing item, the module file and its parent: {msg}"
         );
     }
 
