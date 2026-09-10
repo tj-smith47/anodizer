@@ -256,7 +256,7 @@ pub(crate) fn plan_crate(
             .clone()
             .unwrap_or_else(|| global_format_overrides.to_vec());
 
-        for (target, target_bins) in &by_target {
+        for ((target, group_variant), target_bins) in &by_target {
             let selected_bins: Vec<Artifact> = target_bins
                 .iter()
                 .filter(|b| match &archive_cfg.binaries {
@@ -278,10 +278,6 @@ pub(crate) fn plan_crate(
                 archive_cfg,
                 global_default_format,
             );
-            let group_variant: Option<String> = selected_bins
-                .first()
-                .and_then(|b| b.metadata.get("amd64_variant"))
-                .cloned();
             seed_target_context(
                 ctx,
                 target,
@@ -376,7 +372,7 @@ pub(crate) fn plan_crate(
                 binary_only: formats.iter().all(|f| f.format == "binary"),
                 binary: selected_bins.first().and_then(|b| b.binary_name()),
                 selected_bins,
-                group_variant,
+                group_variant: group_variant.clone(),
                 archive_stem,
                 formats,
             });
@@ -393,11 +389,22 @@ pub(crate) fn plan_crate(
     })
 }
 
-/// The entry's binaries (after its `ids:` filter) grouped by build target,
-/// or `None` when the entry has nothing to archive.
+/// One archive group: the build target triple and the binaries'
+/// `amd64_variant`.
+///
+/// Two amd64 builds of one triple (baseline `v1` and, e.g., `v3`) share
+/// `Os`/`Arch` but are different machine code, so the variant is part of the
+/// key — grouping on the triple alone merged them into one archive named
+/// after whichever binary the registry happened to hold first, and the other
+/// build never shipped. The same key shape as `stage-snapcraft`'s
+/// `SnapTargetKey`.
+type ArchiveTargetKey = (String, Option<String>);
+
+/// The entry's binaries (after its `ids:` filter) grouped by build target and
+/// CPU variant, or `None` when the entry has nothing to archive.
 ///
 /// `BTreeMap` is load-bearing: the map is iterated to register one archive
-/// per target, and `HashMap` order is randomised per process, which would
+/// per group, and `HashMap` order is randomised per process, which would
 /// surface as per-run drift in `dist/artifacts.json`.
 fn group_binaries_by_target(
     ctx: &Context,
@@ -405,7 +412,7 @@ fn group_binaries_by_target(
     archive_cfg: &ArchiveConfig,
     crate_name: &str,
     all_binaries: &[Artifact],
-) -> Result<Option<BTreeMap<String, Vec<Artifact>>>> {
+) -> Result<Option<BTreeMap<ArchiveTargetKey, Vec<Artifact>>>> {
     let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
     let is_meta = archive_cfg.meta.unwrap_or(false);
     let binaries: Vec<Artifact> = if is_meta {
@@ -440,13 +447,14 @@ fn group_binaries_by_target(
         return Ok(None);
     }
 
-    let mut by_target: BTreeMap<String, Vec<Artifact>> = BTreeMap::new();
+    let mut by_target: BTreeMap<ArchiveTargetKey, Vec<Artifact>> = BTreeMap::new();
     for bin in binaries {
         let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());
-        by_target.entry(target).or_default().push(bin);
+        let variant = bin.metadata.get("amd64_variant").cloned();
+        by_target.entry((target, variant)).or_default().push(bin);
     }
     if is_meta && by_target.is_empty() {
-        by_target.insert("unknown".to_string(), Vec::new());
+        by_target.insert(("unknown".to_string(), None), Vec::new());
     }
 
     // The "binary" format is exempt from the equal-count check, as in
@@ -465,7 +473,13 @@ fn group_binaries_by_target(
         if counts.iter().any(|&c| c != first) {
             let details: Vec<_> = by_target
                 .iter()
-                .map(|(t, b)| format!("{t}={}", b.len()))
+                .map(|((t, variant), b)| {
+                    let variant = variant
+                        .as_deref()
+                        .map(|v| format!("+{v}"))
+                        .unwrap_or_default();
+                    format!("{t}{variant}={}", b.len())
+                })
                 .collect();
             bail!(
                 "binary counts differ across targets ({:?}); set allow_different_binary_count: true to allow this",

@@ -7345,3 +7345,73 @@ fn every_archive_writer_matches_a_finish_call() {
         "sync_all belongs to finish_archive_file alone"
     );
 }
+
+/// Two builds of one triple at different micro-architecture levels are
+/// different machine code, so each must get its own archive. Keying the group
+/// on the triple alone merged them and named the single archive after
+/// whichever binary the registry held first, so one of the two builds never
+/// shipped.
+#[test]
+fn two_amd64_variants_of_one_triple_produce_two_archives() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    for (dir, variant) in [("v1", None), ("v3", Some("v3"))] {
+        let bin_dir = tmp.path().join(dir);
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join("myapp");
+        fs::write(&bin_path, dir.as_bytes()).unwrap();
+
+        let mut meta = HashMap::new();
+        meta.insert("binary".to_string(), "myapp".to_string());
+        if let Some(v) = variant {
+            meta.insert("amd64_variant".to_string(), v.to_string());
+        }
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let mut names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Archive)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "myapp_1.0.0_linux_amd64.tar.gz".to_string(),
+            "myapp_1.0.0_linux_amd64v3.tar.gz".to_string()
+        ]
+    );
+}
