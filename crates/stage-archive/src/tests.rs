@@ -7230,15 +7230,17 @@ fn write_archive_in_format_syncs_every_arm() {
 #[test]
 #[cfg(unix)]
 fn finish_archive_file_surfaces_a_write_back_error() {
-    // `fsync` on a character device is EINVAL, which stands in for the
-    // close-time write-back error a full disk or an NFS mount reports.
-    let path = Path::new("/dev/null");
-    let file = File::open(path).unwrap();
+    // A socket is a descriptor no unix can synchronize, so `fsync` fails on
+    // every platform the CI matrix builds — unlike `fsync` on a character
+    // device, which is EINVAL on Linux and a silent success on macOS.
+    let (sock, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    let file = File::from(std::os::fd::OwnedFd::from(sock));
+    let path = Path::new("dist/app.zip");
     let err = formats::finish_archive_file(file, "zip", path)
         .expect_err("a failing sync_all must reach the caller");
     assert_eq!(
         err.to_string(),
-        "zip: failed to close archive file /dev/null"
+        "zip: failed to close archive file dist/app.zip"
     );
 }
 
