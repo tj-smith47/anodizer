@@ -192,18 +192,68 @@ pub fn crate_build_target_entries(
             Some(ts) => ts,
             None => default_targets,
         };
-        let id = match build.id.clone() {
-            Some(id) => BuildId::Explicit(id),
-            None => {
-                BuildId::BinaryFallback(build.binary.clone().unwrap_or_else(|| krate.name.clone()))
-            }
-        };
+        let id = static_build_id(krate, build);
         out.push(CrateBuildTargets {
             id,
             targets: chosen.to_vec(),
         });
     }
     out
+}
+
+/// A build entry's static id, the value `stage-build` stamps onto the
+/// artifacts it produces: an explicit `build.id`, else the `binary`-fallback
+/// (see [`BuildId`]).
+fn static_build_id(krate: &CrateConfig, build: &BuildConfig) -> BuildId {
+    match build.id.clone() {
+        Some(id) => BuildId::Explicit(id),
+        None => BuildId::BinaryFallback(binary_or_crate_name(krate, build)),
+    }
+}
+
+/// The binary a build entry compiles: its `binary:`, else the crate's own
+/// `[[bin]]` target, which is what an entry omitting `binary:` builds.
+fn binary_or_crate_name(krate: &CrateConfig, build: &BuildConfig) -> String {
+    build.binary.clone().unwrap_or_else(|| krate.name.clone())
+}
+
+/// Whether an archive's `ids:` filter selects a build entry. The static-id
+/// half of the artifact-level `matches_id_filter`, which judges the produced
+/// artifacts by that same id; an absent or empty list selects every build.
+fn archive_selects_build(
+    krate: &CrateConfig,
+    build: &BuildConfig,
+    archive_ids: Option<&[String]>,
+) -> bool {
+    match archive_ids {
+        None | Some([]) => true,
+        Some(ids) => {
+            let id = static_build_id(krate, build);
+            ids.iter().any(|want| want == id.raw())
+        }
+    }
+}
+
+/// The binary an archive's assets are named after — the value bound to
+/// `{{ .Binary }}` while rendering its `name_template`.
+///
+/// The archive stage names each asset after the first binary the entry packs,
+/// so the name is decided by the archive's own `ids:` filter: an archive
+/// selecting the second of a crate's two builds is named after THAT build's
+/// binary. Every derived-name consumer (the cargo-binstall `pkg_url`, the
+/// `curl | sh` installer's asset table) must resolve it the same way or it
+/// publishes a URL the release never uploaded. Falls back to the crate's own
+/// `[[bin]]` name, which is what a build entry declaring no `binary:`
+/// compiles.
+pub fn archive_binary_name(krate: &CrateConfig, archive_ids: Option<&[String]>) -> String {
+    planned_builds(krate)
+        .and_then(|builds| {
+            builds
+                .iter()
+                .find(|b| build_produces(krate, b) && archive_selects_build(krate, b, archive_ids))
+                .map(|b| binary_or_crate_name(krate, b))
+        })
+        .unwrap_or_else(|| krate.name.clone())
 }
 
 /// The de-duplicated, order-preserving list of target triples a crate's builds

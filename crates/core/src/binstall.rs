@@ -395,8 +395,7 @@ pub fn crate_archive_asset_names(
         .name_template
         .clone()
         .unwrap_or_else(|| crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string());
-    let primary_binary = crate::build_plan::planned_builds(crate_cfg)
-        .and_then(|builds| builds.iter().find_map(|b| b.binary.clone()));
+    let primary_binary = crate::build_plan::archive_binary_name(crate_cfg, archive.ids.as_deref());
 
     let render_all = |ctx: &mut Context| -> Result<BTreeMap<String, ArchiveAssetName>> {
         let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
@@ -435,14 +434,7 @@ pub fn crate_archive_asset_names(
     // the derived installer arms and `pkg_url` fail on a template the producer
     // accepts — the same drift class this module exists to close.
     let prior = ctx.template_vars().get("Binary").cloned();
-    // A `builds:` entry that omits `binary:` compiles the crate's own
-    // `[[bin]]`, which is what `planned_builds` synthesizes for a crate with no
-    // `builds:` block at all — one rule, so a name derived here cannot disagree
-    // with the name the build and archive stages use.
-    ctx.template_vars_mut().set(
-        "Binary",
-        primary_binary.as_deref().unwrap_or(&crate_cfg.name),
-    );
+    ctx.template_vars_mut().set("Binary", &primary_binary);
     let rendered = render_all(ctx);
     match prior {
         Some(v) => ctx.template_vars_mut().set("Binary", &v),
@@ -1683,6 +1675,48 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         assert_eq!(
             assets["x86_64-unknown-linux-gnu"].asset_name,
             "myapp-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// A crate shipping two binaries names each archive after the build that
+    /// archive's `ids:` filter selects — the producer packs exactly those
+    /// binaries and names the asset after the first of them. Deriving the
+    /// first PLANNED build instead publishes a `pkg_url` for an asset the
+    /// release never uploaded (the 404 class).
+    #[test]
+    fn two_binary_crate_with_archive_ids_derives_the_selected_binary() {
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(vec![
+                BuildConfig {
+                    id: Some("alpha".to_string()),
+                    binary: Some("alpha".to_string()),
+                    targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                    ..Default::default()
+                },
+                BuildConfig {
+                    id: Some("beta".to_string()),
+                    binary: Some("beta".to_string()),
+                    targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                    ..Default::default()
+                },
+            ]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                ids: Some(vec!["beta".to_string()]),
+                name_template: Some("{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("binstallable archive with targets derives names");
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name,
+            "beta-1.0.0-linux-amd64.tar.gz"
         );
     }
 
