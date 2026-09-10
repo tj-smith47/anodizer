@@ -79,9 +79,14 @@ fi
 # job has no `task` binary on PATH, so fall back to grepping Taskfile.yml's
 # `gate:` cmds block + the `ci:` cmds block it composes — less precise, but
 # it doesn't require the binary.
+#
+# go-task evaluates `preconditions:` even under `-n`, so the host-resource
+# floors `task doc` declares would decide this walk. They gate running the
+# work, not naming it; ANODIZER_STRUCTURAL_WALK lets each leg stand down for
+# a walk that spawns none of it.
 unreachable=""
 if command -v task >/dev/null 2>&1; then
-    if ! dryrun=$(task -n gate 2>&1); then
+    if ! dryrun=$(ANODIZER_STRUCTURAL_WALK=1 task -n gate 2>&1); then
         echo "audit-gate-mirror: 'task -n gate' failed — refusing to report a pass on unparsed input." >&2
         echo "$dryrun" >&2
         exit 2

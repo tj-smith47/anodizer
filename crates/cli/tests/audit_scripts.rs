@@ -1053,6 +1053,97 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     );
 }
 
+/// A directory holding an `awk` that reports a MemAvailable of 1024 kB and
+/// delegates every other script to the real binary, so a walk of the task
+/// graph runs against a host the 8 GB floor rejects.
+fn low_memory_awk_shim() -> tempfile::TempDir {
+    let real = Command::new("sh")
+        .args(["-c", "command -v awk"])
+        .output()
+        .expect("locating awk");
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+    assert!(!real.is_empty(), "awk must be on PATH for this pin");
+
+    let dir = tempfile::tempdir().expect("shim dir");
+    let shim = dir.path().join("awk");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &shim,
+        &format!(
+            "#!/usr/bin/env bash\n\
+             for a in \"$@\"; do\n\
+             case \"$a\" in *MemAvailable*) echo 1024; exit 0 ;; esac\n\
+             done\n\
+             exec {real} \"$@\"\n"
+        ),
+    );
+    dir
+}
+
+/// go-task evaluates `preconditions:` even under `-n`, so before the bypass
+/// existed the gate-mirror audit exited 2 on a host under the memory floor —
+/// a question it never asked, answered by a resource it never spends.
+#[test]
+fn the_gate_mirror_audit_walks_the_graph_on_a_host_under_the_memory_floor() {
+    if Command::new("sh")
+        .args([
+            "-c",
+            "command -v task >/dev/null && command -v yq >/dev/null",
+        ])
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(true)
+    {
+        eprintln!(
+            "SKIP the_gate_mirror_audit_walks_the_graph_on_a_host_under_the_memory_floor: task or yq missing"
+        );
+        return;
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let shim = low_memory_awk_shim();
+    let (code, out) = run_audit_with_path("audit-gate-mirror.sh", &repo, Some(shim.path()));
+    assert_eq!(
+        code, 0,
+        "a structural walk of the task graph spawns no rustdoc, so the memory \
+         floor must not decide it; got:\n{out}"
+    );
+}
+
+/// The other direction: the bypass is scoped to the walk. A real `task gate`
+/// on the same host still refuses, because that one would spawn rustdoc.
+#[test]
+fn the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it() {
+    if Command::new("sh")
+        .args(["-c", "command -v task >/dev/null"])
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(true)
+    {
+        eprintln!(
+            "SKIP the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it: task missing"
+        );
+        return;
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let shim = low_memory_awk_shim();
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new("task")
+        .args(["-n", "gate"])
+        .current_dir(&repo)
+        .env("PATH", format!("{}:{inherited}", shim.path().display()))
+        .env_remove("ANODIZER_STRUCTURAL_WALK")
+        .output()
+        .expect("task -n gate");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success() && text.contains("8388608 kB (8 GB) floor"),
+        "without the walk's own bypass the floor must still refuse; got:\n{text}"
+    );
+}
+
 /// Every `audit-*.sh` under `.claude/scripts`.
 fn audit_scripts() -> Vec<std::path::PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -18,7 +18,7 @@ tasks:
       # (Claude sandbox host). macOS, Windows, and GitHub Actions runners
       # all back /tmp with real disk; on those the linker can't OOM from
       # /tmp pressure, so skip the check entirely.
-      - sh: '[ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
+      - sh: '[ -n "${ANODIZER_STRUCTURAL_WALK:-}" ] || [ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
   _check:mem-headroom:
@@ -35,9 +35,9 @@ tasks:
       # Without this leg an unreadable /proc/meminfo leaves the floor test below
       # as `[ "" -ge 8388608 ]` — a shell error go-task reports with the floor's
       # message, telling a host with a fine amount of memory that it is short.
-      - sh: '[ "$(uname)" != "Linux" ] || printf %s "{{.MEM_AVAILABLE_KB}}" | grep -qE "^[0-9]+$"'
+      - sh: '[ -n "${ANODIZER_STRUCTURAL_WALK:-}" ] || [ "$(uname)" != "Linux" ] || printf %s "{{.MEM_AVAILABLE_KB}}" | grep -qE "^[0-9]+$"'
         msg: "Cannot read MemAvailable from /proc/meminfo, so the 8388608 kB (8 GB) floor cannot be checked. `task doc` is the rustdoc gate for `task gate` / `task push` and for CI's rustdoc job; rustdoc over this workspace holds ~7 GB, so it is refused rather than run blind."
-      - sh: '[ "$(uname)" != "Linux" ] || [ "{{.MEM_AVAILABLE_KB}}" -ge 8388608 ]'
+      - sh: '[ -n "${ANODIZER_STRUCTURAL_WALK:-}" ] || [ "$(uname)" != "Linux" ] || [ "{{.MEM_AVAILABLE_KB}}" -ge 8388608 ]'
         msg: "MemAvailable is {{.MEM_AVAILABLE_KB}} kB, under the 8388608 kB (8 GB) floor: rustdoc over this workspace holds ~7 GB and the kernel OOM-kills the largest process on the host. `task doc` is the rustdoc gate for `task gate` / `task push` and for CI's rustdoc job; free memory and re-run."
 
   build:
