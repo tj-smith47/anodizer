@@ -615,30 +615,23 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
-        // Aggregate applicability, decided BEFORE the entry-skip
-        // evaluation: `NotApplicable` answers WHY nothing was published and
-        // outranks `EntriesSkipped`, which only says that entries
-        // disqualified themselves. When the current crate scope had no
-        // per-crate `publish.homebrew` block AND every configured
-        // top-level cask was inapplicable (no macOS artifact in scope),
-        // record `Skipped(NotApplicable)` so the publisher summary and
-        // submitter-gate logic see a non-failure outcome. Conditional on
-        // `pending_outcome.is_none()` so sticky-pending signals already
-        // recorded by `publish_top_level_homebrew_casks` (PR-already-
-        // exists skips, etc.) are not overwritten.
-        let nothing_applicable =
-            processed == 0 && cask_result.total > 0 && cask_result.applicable == 0;
-        if nothing_applicable && ctx.pending_outcome.is_none() {
-            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-                anodizer_core::SkipReason::NotApplicable,
-            ));
-        }
+        // Nothing applied when the crate scope carried no per-crate
+        // `publish.homebrew` block AND every configured top-level cask was
+        // inapplicable (no macOS artifact in scope). Reporting that as the
+        // run's landing lets `evaluate_entry_skips` rank it against the
+        // entries that disqualified themselves, and keeps the summary and the
+        // submitter gate on a non-failure outcome.
+        let landing = if processed == 0 && cask_result.total > 0 && cask_result.applicable == 0 {
+            crate::publisher_helpers::RunLanding::NothingApplicable
+        } else {
+            crate::publisher_helpers::RunLanding::from_landed(any_pushed)
+        };
 
         let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
             ctx,
             &log,
             "homebrew",
-            any_pushed,
+            landing,
             selected.len() + cask_result.total,
         );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len(), cask_result.total)

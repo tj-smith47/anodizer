@@ -424,7 +424,7 @@ impl anodizer_core::Publisher for NixPublisher {
             ctx,
             &log,
             "nix",
-            any_pushed,
+            crate::publisher_helpers::RunLanding::from_landed(any_pushed),
             selected.len(),
         );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {

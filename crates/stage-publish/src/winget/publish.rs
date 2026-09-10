@@ -597,7 +597,9 @@ impl anodizer_core::Publisher for WingetPublisher {
             "winget",
             // A dry run collects targets without submitting any of them, so
             // nothing landed and nothing can be unwound.
-            !ctx.is_dry_run() && !targets.is_empty(),
+            crate::publisher_helpers::RunLanding::from_landed(
+                !ctx.is_dry_run() && !targets.is_empty(),
+            ),
             selected.len(),
         );
         // `processed` counts the targets that survived collection, so an

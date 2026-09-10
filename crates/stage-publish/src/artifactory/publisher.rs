@@ -115,7 +115,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
             ctx,
             &log,
             "artifactory",
-            summary.uploaded > 0,
+            crate::publisher_helpers::RunLanding::from_landed(summary.uploaded > 0),
             configured_entries,
         );
         let mut evidence = anodizer_core::PublishEvidence::new("artifactory");

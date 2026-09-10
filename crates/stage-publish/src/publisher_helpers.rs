@@ -173,8 +173,33 @@ pub(crate) fn entry_skip_reasons(
         .collect()
 }
 
+/// What a publisher's run earned aside from the entries that disqualified
+/// themselves — the aggregate answer [`evaluate_entry_skips`] needs to rank
+/// the terminal outcomes against each other.
+pub(crate) enum RunLanding {
+    /// Something reached the publisher's remote.
+    Landed,
+    /// Nothing landed, and the run had entries that could have published.
+    NothingLanded,
+    /// Nothing landed because nothing the run configured applied at all —
+    /// the reason that outranks entries disqualifying themselves.
+    NothingApplicable,
+}
+
+impl RunLanding {
+    /// The landing of a publisher with no aggregate applicability of its own:
+    /// it either put something at its remote or it did not.
+    pub(crate) fn from_landed(landed: bool) -> Self {
+        if landed {
+            Self::Landed
+        } else {
+            Self::NothingLanded
+        }
+    }
+}
+
 /// Report the entries a publisher disqualified this run, and answer how many
-/// there were. `landed` says whether the publisher put anything at its remote;
+/// there were. `landing` says what the run earned aside from those entries;
 /// `total` is how many entries it iterated.
 ///
 /// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
@@ -194,9 +219,17 @@ pub(crate) fn evaluate_entry_skips(
     ctx: &mut anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
     publisher: &str,
-    landed: bool,
+    landing: RunLanding,
     total: usize,
 ) -> usize {
+    // The caller answers which reason its run earned, so the precedence
+    // between them is decided here from that value — never from the order a
+    // caller happens to write its two blocks in.
+    if matches!(landing, RunLanding::NothingApplicable) && ctx.pending_outcome.is_none() {
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::NotApplicable,
+        ));
+    }
     let reasons = entry_skip_reasons(ctx, publisher);
     if reasons.is_empty() {
         return 0;
@@ -211,7 +244,7 @@ pub(crate) fn evaluate_entry_skips(
         }
     }
     let joined = distinct.join(", ");
-    if landed {
+    if matches!(landing, RunLanding::Landed) {
         log.status(&format!(
             "{publisher} skipped {} of {total} entries — {joined}",
             reasons.len(),
