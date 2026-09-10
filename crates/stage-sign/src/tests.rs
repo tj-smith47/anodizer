@@ -5481,7 +5481,9 @@ mod authenticode {
 mod cosign_tuf_race {
     use super::*;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
-    use anodizer_core::test_helpers::test_sources::{production_half, rust_sources};
+    use anodizer_core::test_helpers::test_sources::{
+        function_bodies, production_half, rust_sources,
+    };
     use std::path::Path;
 
     /// A keyless cosign sign config pointed at a stub script named `cosign`,
@@ -6645,32 +6647,6 @@ mod cosign_tuf_race {
              (sign fan-out, docker signing, release re-verification); a new \
              one must be added to the rules catalog too"
         );
-    }
-
-    /// Split Rust source into function bodies: a `fn` line opens a body that
-    /// ends at the first line closing a brace at the `fn`'s own indent.
-    fn function_bodies(src: &str) -> Vec<String> {
-        let lines: Vec<&str> = src.lines().collect();
-        let mut bodies = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim_start();
-            if !(trimmed.starts_with("fn ")
-                || trimmed.starts_with("pub fn ")
-                || trimmed.starts_with("pub(crate) fn ")
-                || trimmed.starts_with("pub(super) fn "))
-            {
-                continue;
-            }
-            let indent = line.len() - trimmed.len();
-            let closing = format!("{}}}", " ".repeat(indent));
-            let end = lines[i + 1..]
-                .iter()
-                .position(|l| *l == closing)
-                .map(|p| i + 1 + p)
-                .unwrap_or(lines.len() - 1);
-            bodies.push(lines[i..=end].join("\n"));
-        }
-        bodies
     }
 
     /// A `--key` that arrives through a template is invisible in the

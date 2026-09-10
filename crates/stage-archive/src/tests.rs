@@ -7080,15 +7080,8 @@ mod binary_name_read_policy {
         // audit is not on the path a contributor ran.
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut hits: Vec<(String, usize)> = Vec::new();
-        for entry in fs::read_dir(&src).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
+        for path in anodizer_core::test_helpers::test_sources::rust_sources(&src) {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            if name == "tests.rs" {
-                continue;
-            }
             let body = fs::read_to_string(&path).unwrap();
             for (i, line) in body.lines().enumerate() {
                 // Matched on the call shape alone: rustfmt splits the

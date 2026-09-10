@@ -17,7 +17,10 @@
 //! - [`rust_sources`] is the walk itself: every production `.rs` file under a
 //!   directory, with test sources skipped by name once their declaration has
 //!   been checked. [`test_sources`] is that walk's other half — the sources it
-//!   skipped, unchecked, for the caller that checks them.
+//!   skipped, unchecked, for the caller that checks them. Both come from
+//!   `partition_sources`, the one directory walk in the workspace.
+//! - [`function_bodies`] splits a source into per-function bodies, the grain a
+//!   structural guard needs to ask what one function does.
 
 use std::path::{Path, PathBuf};
 
@@ -73,6 +76,36 @@ fn partition_sources(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
     }
     (production, tests)
+}
+
+/// Split Rust source into function bodies: a `fn` line opens a body that ends
+/// at the first line closing a brace at the `fn`'s own indent.
+///
+/// A structural guard that asks "does any ONE function do both of these
+/// things" needs the per-function grain — a whole-file substring search
+/// answers a different, weaker question.
+pub fn function_bodies(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut bodies = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !(trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("pub(super) fn "))
+        {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        let closing = format!("{}}}", " ".repeat(indent));
+        let end = lines[i + 1..]
+            .iter()
+            .position(|l| *l == closing)
+            .map(|p| i + 1 + p)
+            .unwrap_or(lines.len() - 1);
+        bodies.push(lines[i..=end].join("\n"));
+    }
+    bodies
 }
 
 /// Whether `path` is a whole test source file by name, exactly as
@@ -329,6 +362,87 @@ fn top_level_terms(terms: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `.rs` file the workspace ships, production and test alike,
+    /// reached through the shared walk itself. An integration-test directory
+    /// is only expanded: its files are declared by cargo's target layout, not
+    /// by a parent module, so the declaration check does not apply to them.
+    fn workspace_sources() -> Vec<std::path::PathBuf> {
+        fn expand(dir: &Path, out: &mut Vec<PathBuf>) {
+            for path in test_sources(dir) {
+                if path.is_dir() {
+                    expand(&path, out);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&crates).expect("crates dir") {
+            let krate = entry.expect("crate entry").path();
+            let src = krate.join("src");
+            if src.is_dir() {
+                out.extend(rust_sources(&src));
+                expand(&src, &mut out);
+            }
+            let tests = krate.join("tests");
+            if tests.is_dir() {
+                expand(&tests, &mut out);
+            }
+        }
+        assert!(!out.is_empty(), "no source under {}", crates.display());
+        out
+    }
+
+    /// [`partition_sources`] is the only directory walk that picks Rust files
+    /// out of a tree. A second one drifts from it silently — a rule taught to
+    /// one walk and not the other reports on code the scanners skip, or skips
+    /// code they report on — and two such survivors have already had to be
+    /// found by review. Any function that both reads a directory and tests for
+    /// the Rust file extension fails here until it goes through this walk.
+    #[test]
+    fn every_rust_source_walk_comes_from_the_shared_scanner() {
+        let mut walks = Vec::new();
+        for source in workspace_sources() {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            for body in function_bodies(&text) {
+                if !body.contains("read_dir(") || !body.contains("\"rs\"") {
+                    continue;
+                }
+                let name = body
+                    .split_once("fn ")
+                    .and_then(|(_, rest)| rest.split(['(', '<']).next())
+                    .unwrap_or_default()
+                    .to_string();
+                walks.push(format!("{}: {name}", source.display()));
+            }
+        }
+        // `crate_has_binary_target` lists one crate's `src/bin` to answer
+        // whether a binary target exists at all; it collects no source to
+        // scan, so it is not a walk this module can serve.
+        const ALLOWED: [&str; 2] = [
+            "core/src/test_helpers/test_sources.rs: partition_sources",
+            "stage-build/src/command.rs: crate_has_binary_target",
+        ];
+        let mut found: Vec<String> = walks
+            .iter()
+            .map(|w| {
+                ALLOWED
+                    .iter()
+                    .find(|a| w.ends_with(*a))
+                    .map_or_else(|| w.clone(), |a| (*a).to_string())
+            })
+            .collect();
+        found.sort();
+        let mut expected: Vec<String> = ALLOWED.iter().map(|a| (*a).to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "a Rust-source walk outside the shared scanner: it must take its \
+             files from `rust_sources` / `test_sources`"
+        );
+    }
 
     /// The walk skips a `tests/` module directory, and only while its parent
     /// really declares it under a test-only `cfg`: gated, the walk yields

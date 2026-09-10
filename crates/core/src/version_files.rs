@@ -331,7 +331,7 @@ mod tests {
     /// `tests.rs` sibling. A test module scanned as production would report a
     /// version literal inside a fixture as a matcher the population declares.
     #[test]
-    fn collect_rust_sources_skips_a_gated_tests_directory() {
+    fn rust_sources_skips_a_gated_tests_directory() {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("mod.rs"),
