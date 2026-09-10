@@ -351,15 +351,15 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate winget publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `processed` is the count of
+/// Final summary emitted at publisher exit. `considered` is the count of
 /// crates the publisher actually invoked `publish_to_winget` on (not
 /// the count of successful PRs — `publish_to_winget` has its own skip
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
 /// line, and the gh CLI submission helper logs its own success/warn).
-pub(crate) fn run_done_message(processed: usize) -> String {
+pub(crate) fn run_done_message(considered: usize) -> String {
     format!(
-        "finished winget publish — {} configured crate(s) processed",
-        processed
+        "finished winget publish — {} configured crate(s) considered",
+        considered
     )
 }
 
@@ -608,6 +608,10 @@ impl anodizer_core::Publisher for WingetPublisher {
             !targets.is_empty(),
             selected.len(),
         );
+        // `processed` counts the targets that survived collection, so an
+        // entry that disqualified itself leaves it at zero — without the
+        // entry-skip term the run would blame a missing `publish.winget`
+        // block for a defect the skip lines already named.
         if entry_skips == 0 && processed == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {

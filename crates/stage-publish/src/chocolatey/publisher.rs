@@ -94,15 +94,15 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate chocolatey publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `processed` is the count of
+/// Final summary emitted at publisher exit. `considered` is the count of
 /// crates the publisher actually invoked `publish_to_chocolatey` on (not
 /// the count of successful pushes — `publish_to_chocolatey` has its own
 /// skip paths for moderation/hash-match/dry-run/etc., each of which logs
 /// its own status line).
-pub(crate) fn run_done_message(processed: usize) -> String {
+pub(crate) fn run_done_message(considered: usize) -> String {
     format!(
-        "finished chocolatey publish — {} configured crate(s) processed",
-        processed
+        "finished chocolatey publish — {} configured crate(s) considered",
+        considered
     )
 }
 
@@ -1095,7 +1095,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
-        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
     }
 
     #[test]

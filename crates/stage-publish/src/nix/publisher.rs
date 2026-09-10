@@ -107,15 +107,15 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate nix publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `processed` is the count of
+/// Final summary emitted at publisher exit. `considered` is the count of
 /// crates the publisher actually invoked `publish_to_nix` on (not the
 /// count of successful overlay pushes — `publish_to_nix` has its own
 /// skip paths for skip_upload/dry-run/etc., each of which logs its own
 /// status line).
-pub(crate) fn run_done_message(processed: usize) -> String {
+pub(crate) fn run_done_message(considered: usize) -> String {
     format!(
-        "finished nix publish — {} configured crate(s) processed",
-        processed
+        "finished nix publish — {} configured crate(s) considered",
+        considered
     )
 }
 
@@ -626,6 +626,62 @@ mod publisher_tests {
         );
     }
 
+    /// The done line counts the crates the loop reached, not the ones that
+    /// published. An all-skipped run reports every configured crate there, so
+    /// the wording must not read as work done — otherwise the pair the
+    /// operator sees is `skipping nix — <reasons>` followed by a line that
+    /// sounds like two crates were published.
+    #[test]
+    fn an_all_skipped_run_does_not_claim_a_crate_was_published() {
+        let mut alpha = nix_crate("alpha");
+        alpha
+            .publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut beta = nix_crate("beta");
+        beta.publish
+            .as_mut()
+            .unwrap()
+            .nix
+            .as_mut()
+            .unwrap()
+            .repository = None;
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![alpha, beta])
+            .dry_run(true)
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+
+        NixPublisher::new()
+            .run(&mut ctx)
+            .expect("an all-skipped publisher must not fail the run");
+
+        let done = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .find(|m| m.starts_with("finished nix publish"))
+            .expect("the publisher emits its done line");
+        assert!(
+            done.contains("2 configured crate(s) considered"),
+            "the counter names what the loop reached: {done}"
+        );
+        for claim in ["processed", "published —", "pushed"] {
+            assert!(
+                !done.contains(claim),
+                "an all-skipped run must not claim {claim:?}: {done}"
+            );
+        }
+    }
+
     /// An overlay-less entry disqualifies itself only: the crate after it in
     /// the same run still reaches its publish path.
     #[test]
@@ -1028,7 +1084,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished nix publish"), "{msg}");
-        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
     }
 
     #[test]

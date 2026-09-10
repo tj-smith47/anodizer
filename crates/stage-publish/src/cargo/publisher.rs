@@ -48,14 +48,14 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 }
 
 /// Operator-visible done line, emitted after `publish_to_cargo` returns
-/// Ok. `processed` counts crates whose publish path was actually
+/// Ok. `considered` counts crates whose publish path was actually
 /// invoked (skipped-by-already-published, skipped-by-skip-template, and
-/// dry-run paths all count as processed — they're successful runs of
+/// dry-run paths all count as considered — they're successful runs of
 /// the correct code path).
-pub(crate) fn run_done_message(processed: usize) -> String {
+pub(crate) fn run_done_message(considered: usize) -> String {
     format!(
-        "finished cargo publish — {} selected crate(s) processed",
-        processed
+        "finished cargo publish — {} selected crate(s) considered",
+        considered
     )
 }
 

@@ -237,15 +237,15 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate aur publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `processed` is the count of
+/// Final summary emitted at publisher exit. `considered` is the count of
 /// crates the publisher actually invoked `publish_to_aur` on (not the
 /// count of successful AUR pushes — `publish_to_aur` has its own skip
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
 /// line).
-pub(crate) fn run_done_message(processed: usize) -> String {
+pub(crate) fn run_done_message(considered: usize) -> String {
     format!(
-        "finished aur publish — {} configured crate(s) processed",
-        processed
+        "finished aur publish — {} configured crate(s) considered",
+        considered
     )
 }
 

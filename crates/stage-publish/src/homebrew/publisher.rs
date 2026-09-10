@@ -162,7 +162,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 
 /// Final summary emitted at publisher exit.
 ///
-/// `processed` is the count of crates the publisher invoked
+/// `considered` is the count of crates the publisher invoked
 /// `publish_to_homebrew` on for the per-crate FORMULA surface (not the
 /// count of successful tap pushes — `publish_to_homebrew` has its own skip
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
@@ -171,13 +171,13 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 ///
 /// Both surfaces count toward the unit total: a cask-only project (the
 /// recommended path, zero formula blocks) would otherwise report
-/// `0 unit(s) processed` even after pushing its cask, which reads as a
+/// `0 unit(s) considered` even after pushing its cask, which reads as a
 /// no-op to operators scanning the log.
-pub(crate) fn run_done_message(processed: usize, casks: usize) -> String {
+pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
     format!(
-        "finished homebrew publish — {} configured unit(s) processed ({} formula crate(s), {} cask(s))",
-        processed + casks,
-        processed,
+        "finished homebrew publish — {} configured unit(s) considered ({} formula crate(s), {} cask(s))",
+        considered + casks,
+        considered,
         casks,
     )
 }
@@ -1140,7 +1140,7 @@ mod publisher_tests {
         let msg = run_done_message(2, 0);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
         // Two formula crates, no casks → total unit count is 2.
-        assert!(msg.contains("2 configured unit(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured unit(s) considered"), "{msg}");
         assert!(msg.contains("2 formula crate(s)"), "{msg}");
         assert!(msg.contains("0 cask(s)"), "{msg}");
     }
@@ -1152,13 +1152,13 @@ mod publisher_tests {
     fn run_done_message_counts_published_casks() {
         let msg = run_done_message(0, 1);
         assert!(
-            msg.contains("1 configured unit(s) processed"),
+            msg.contains("1 configured unit(s) considered"),
             "cask-only run must report 1 unit, not 0; got: {msg}"
         );
         assert!(msg.contains("1 cask(s)"), "{msg}");
         // Mixed: 1 formula + 2 casks → 3 units total.
         let mixed = run_done_message(1, 2);
-        assert!(mixed.contains("3 configured unit(s) processed"), "{mixed}");
+        assert!(mixed.contains("3 configured unit(s) considered"), "{mixed}");
     }
 
     #[test]

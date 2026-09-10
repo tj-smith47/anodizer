@@ -2733,7 +2733,7 @@ fn run_start_and_done_messages_carry_counts() {
     );
     assert_eq!(
         run_done_message(2),
-        "finished cargo publish — 2 selected crate(s) processed"
+        "finished cargo publish — 2 selected crate(s) considered"
     );
 }
 
