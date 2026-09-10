@@ -395,11 +395,21 @@ pub fn crate_archive_asset_names(
         .name_template
         .clone()
         .unwrap_or_else(|| crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string());
-    let primary_binary = crate::build_plan::archive_binary_name(crate_cfg, archive.ids.as_deref());
-
     let render_all = |ctx: &mut Context| -> Result<BTreeMap<String, ArchiveAssetName>> {
         let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
         for target in &targets {
+            // The archive stage groups its binaries by target before naming
+            // the asset after the first one, so a crate whose builds split by
+            // platform binds a different `Binary` on each target.
+            let binary = crate::build_plan::archive_binary_name(
+                crate_cfg,
+                archive.ids.as_deref(),
+                archive.binaries.as_deref(),
+                target,
+                default_targets,
+                |t| ctx.render_template(t),
+            );
+            ctx.template_vars_mut().set("Binary", &binary);
             let format = archive_format_for_target(&archive, target, &global_default_format);
             // The archive stage names a v2/v3-tuned group's asset with the
             // amd64 micro-arch level detected from the build env; derive the
@@ -434,7 +444,6 @@ pub fn crate_archive_asset_names(
     // the derived installer arms and `pkg_url` fail on a template the producer
     // accepts — the same drift class this module exists to close.
     let prior = ctx.template_vars().get("Binary").cloned();
-    ctx.template_vars_mut().set("Binary", &primary_binary);
     let rendered = render_all(ctx);
     match prior {
         Some(v) => ctx.template_vars_mut().set("Binary", &v),
@@ -1717,6 +1726,133 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         assert_eq!(
             assets["x86_64-unknown-linux-gnu"].asset_name,
             "beta-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// A build entry named after the binary it compiles, restricted to
+    /// `targets`.
+    fn build_for(binary: &str, targets: &[&str]) -> BuildConfig {
+        BuildConfig {
+            id: Some(binary.to_string()),
+            binary: Some(binary.to_string()),
+            targets: Some(targets.iter().map(|t| (*t).to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// A crate whose single archive names every asset after the binary it
+    /// packs, so each derived name says which build the derivation selected.
+    fn binary_named_crate(
+        builds: Vec<BuildConfig>,
+        ids: Option<Vec<String>>,
+        binaries: Option<Vec<String>>,
+    ) -> CrateConfig {
+        CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(builds),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                ids,
+                binaries,
+                name_template: Some("{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// The derived asset names of [`binary_named_crate`], keyed by target.
+    fn derived_names(crate_cfg: &CrateConfig) -> BTreeMap<String, String> {
+        let mut ctx = make_ctx();
+        crate_archive_asset_names(crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("binstallable archive with targets derives names")
+            .into_iter()
+            .map(|(target, asset)| (target, asset.asset_name))
+            .collect()
+    }
+
+    /// A crate whose builds split by platform packs a DIFFERENT binary on each
+    /// target, because the archive stage groups its binaries by target before
+    /// naming the asset after the first of them. Deriving one binary for the
+    /// whole crate publishes a `pkg_url` for an asset the release never
+    /// uploaded on every target but one (the 404 class).
+    #[test]
+    fn a_per_target_build_split_derives_each_targets_own_binary() {
+        let names = derived_names(&binary_named_crate(
+            vec![
+                build_for("alpha", &["aarch64-apple-darwin"]),
+                build_for("beta", &["x86_64-unknown-linux-gnu"]),
+            ],
+            None,
+            None,
+        ));
+        assert_eq!(
+            names["aarch64-apple-darwin"],
+            "alpha-1.0.0-darwin-arm64.tar.gz"
+        );
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "beta-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// An archive's `binaries:` allow-list drops every binary it does not
+    /// name, so the asset is named after the first SURVIVOR — even when no
+    /// `ids:` filter and no per-target split narrowed anything.
+    #[test]
+    fn an_archive_binaries_allow_list_narrows_the_derived_binary() {
+        let names = derived_names(&binary_named_crate(
+            vec![
+                build_for("alpha", &["x86_64-unknown-linux-gnu"]),
+                build_for("beta", &["x86_64-unknown-linux-gnu"]),
+            ],
+            None,
+            Some(vec!["beta".to_string()]),
+        ));
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "beta-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// A `skip: true` build compiles nothing, so the archive stage never packs
+    /// its binary and the derivation must not name the release after it.
+    #[test]
+    fn a_skipped_build_is_not_a_derivation_candidate() {
+        let mut alpha = build_for("alpha", &["x86_64-unknown-linux-gnu"]);
+        alpha.skip = Some(crate::config::StringOrBool::Bool(true));
+        let names = derived_names(&binary_named_crate(
+            vec![alpha, build_for("beta", &["x86_64-unknown-linux-gnu"])],
+            None,
+            None,
+        ));
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "beta-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// The common case must not move: one build packed on every target derives
+    /// the SAME binary name on each, because nothing narrowed the candidates.
+    #[test]
+    fn a_single_build_crate_derives_one_unchanged_binary_name() {
+        let names = derived_names(&binary_named_crate(
+            vec![build_for(
+                "solo",
+                &["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"],
+            )],
+            None,
+            None,
+        ));
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "solo-1.0.0-linux-amd64.tar.gz"
+        );
+        assert_eq!(
+            names["aarch64-apple-darwin"],
+            "solo-1.0.0-darwin-arm64.tar.gz"
         );
     }
 
