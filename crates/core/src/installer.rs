@@ -4,7 +4,7 @@
 //!
 //! A remote installer's whole job is to fetch the right release asset for the
 //! user's machine. The machine half (`uname -s`/`uname -m` → `os`/`arch`) must
-//! stay in shell, but the NAME of each asset is something anodize already knows
+//! stay in shell, but the NAME of each asset is something anodizer already knows
 //! exactly — it is whatever the archive stage renders from
 //! `archive.name_template` + `format_overrides`. Hand-rolling that name in shell
 //! is the same defect class as a hand-written cargo-binstall `pkg_url`: the
@@ -158,7 +158,7 @@ pub fn template_files_consume_installer_vars(ctx: &mut Context) -> bool {
 /// once a release ships both libcs on one platform the asset arms are keyed
 /// `${OS}-${ARCH}-${LIBC}`, so a template that still matches on `${OS}-${ARCH}`
 /// sends EVERY host to the unsupported-platform error. The entry cannot be
-/// updated by anodize — it lives in the user's repo — so the failure has to
+/// updated by anodizer — it lives in the user's repo — so the failure has to
 /// arrive at render time, naming the entry and the one-line edit, rather than
 /// on the machines of everyone who runs the published script.
 ///
@@ -708,7 +708,7 @@ mod tests {
     };
     use crate::context::{Context, ContextOptions};
 
-    /// The six lockstep triples anodize releases, paired with the installer
+    /// The six lockstep triples anodizer releases, paired with the installer
     /// `os-arch` key `map_target` reduces each to.
     const ANODIZE_TARGETS: &[&str] = &[
         "x86_64-unknown-linux-gnu",
@@ -719,12 +719,12 @@ mod tests {
         "aarch64-pc-windows-msvc",
     ];
 
-    /// Build a context shaped like anodize's own (lockstep) config: one crate
-    /// named after the project that builds the `anodize` binary, with a single
+    /// Build a context shaped like anodizer's own (lockstep) config: one crate
+    /// named after the project that builds the `anodizer` binary, with a single
     /// primary archive carrying `name_template` + a `windows → zip` override,
     /// plus the second `-extra` archive that must be ignored (binstallable
     /// archive selection picks the first tar.gz/zip entry).
-    fn anodize_ctx(name_template: Option<&str>) -> Context {
+    fn anodizer_ctx(name_template: Option<&str>) -> Context {
         let primary = ArchiveConfig {
             id: Some("default".to_string()),
             name_template: name_template.map(str::to_string),
@@ -823,7 +823,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         ctx.template_vars_mut()
             .set("InstallerAssetCases", "stale-from-stage");
         ctx.config.template_files = Some(vec![entry(&plain)]);
@@ -874,12 +874,12 @@ mod tests {
 
     /// Every rendered installer arm must equal `render_archive_asset_name` for
     /// the target it serves — the agreement that keeps a `curl | sh` URL from
-    /// 404ing. Exercised against anodize's real hyphen `name_template` (the
+    /// 404ing. Exercised against anodizer's real hyphen `name_template` (the
     /// current shipping config: R8 here is hardening, the names already match).
     #[test]
     fn installer_arms_match_engine_asset_names_hyphen_template() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         let table = render_installer_cases(&mut ctx).unwrap().asset_cases;
         let arms = parse_arms(&table);
 
@@ -913,7 +913,7 @@ mod tests {
     /// `name_template` change can never silently leave the installer 404ing.
     #[test]
     fn installer_arms_follow_engine_default_underscore_template() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let table = render_installer_cases(&mut ctx).unwrap().asset_cases;
         let arms = parse_arms(&table);
 
@@ -943,7 +943,7 @@ mod tests {
     /// with zero overrides. Untuned targets keep the baseline names.
     #[test]
     fn installer_arms_carry_config_declared_amd64_variant() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let mut env = std::collections::HashMap::new();
         env.insert(
             "x86_64-unknown-linux-gnu".to_string(),
@@ -972,7 +972,7 @@ mod tests {
     /// into the surrounding template_files render.
     #[test]
     fn render_restores_seed_vars() {
-        let mut ctx = anodize_ctx(Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"));
+        let mut ctx = anodizer_ctx(Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"));
         ctx.template_vars_mut().set("Os", "sentinel-os");
         let _ = render_installer_cases(&mut ctx).unwrap();
         assert_eq!(
@@ -1052,7 +1052,7 @@ mod tests {
     /// them (no released target stranded behind "unsupported platform").
     #[test]
     fn detect_cases_cover_every_asset_arm_key() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let cases = render_installer_cases(&mut ctx).unwrap();
 
         assert_eq!(
@@ -1092,7 +1092,7 @@ mod tests {
     /// precedence for their own key.
     #[test]
     fn universal_asset_fans_out_to_amd64_and_arm64_keys() {
-        let mut ctx = anodize_ctx(Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"));
+        let mut ctx = anodizer_ctx(Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "darwin-universal".to_string(),
             "aarch64-apple-darwin".to_string(),
@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn dual_libc_targets_split_arms_and_emit_libc_probe() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1150,7 +1150,7 @@ mod tests {
     /// that do not need it.
     #[test]
     fn single_libc_does_not_split_or_probe() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let cases = render_installer_cases(&mut ctx).unwrap();
         let arms = parse_arms(&cases.asset_cases);
         assert!(
@@ -1166,7 +1166,7 @@ mod tests {
     #[test]
     fn musl_only_does_not_split() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-musl".to_string(),
             "aarch64-unknown-linux-musl".to_string(),
@@ -1217,7 +1217,7 @@ mod tests {
         };
 
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1318,7 +1318,7 @@ mod tests {
     /// candidate installer templates into.
     fn dual_libc_gate_fixture() -> (Context, InstallerCases, tempfile::TempDir) {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1348,7 +1348,7 @@ mod tests {
         let stale = tmp.path().join("stale-install.sh.tera");
         std::fs::write(&stale, "{{ InstallerAssetCases }}\n").unwrap();
 
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let cases = render_installer_cases(&mut ctx).unwrap();
         cases.bind(ctx.template_vars_mut());
         ctx.config.template_files = Some(vec![TemplateFileConfig {
@@ -1367,7 +1367,7 @@ mod tests {
     #[test]
     fn same_asset_for_both_libcs_does_not_split() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1394,7 +1394,7 @@ mod tests {
     #[test]
     fn armhf_gnueabihf_musleabihf_split() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "armv7-unknown-linux-gnueabihf".to_string(),
             "armv7-unknown-linux-musleabihf".to_string(),
@@ -1415,7 +1415,7 @@ mod tests {
     #[test]
     fn unsplit_keys_glob_the_libc_segment_once_any_platform_splits() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1436,7 +1436,7 @@ mod tests {
     /// applies.
     #[test]
     fn binary_format_arm_names_the_executable_not_a_dot_binary_file() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         {
             let ArchivesConfig::Configs(configs) = &mut ctx.config.crates[0].archives else {
                 unreachable!("the fixture configures explicit archives");
@@ -1479,7 +1479,7 @@ mod tests {
     #[test]
     fn dual_libc_split_holds_under_workspaces_config() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1509,7 +1509,7 @@ mod tests {
     #[test]
     fn supported_platforms_lists_split_keys() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
-        let mut ctx = anodize_ctx(Some(name_template));
+        let mut ctx = anodizer_ctx(Some(name_template));
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
@@ -1526,7 +1526,7 @@ mod tests {
     /// arm (BTreeMap) order — the value the script's error paths print.
     #[test]
     fn supported_platforms_lists_reachable_keys() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let cases = render_installer_cases(&mut ctx).unwrap();
         assert_eq!(
             cases.supported_platforms,
@@ -1541,7 +1541,7 @@ mod tests {
     /// the single-file format that arm carries.
     #[test]
     fn formats_omit_unreachable_arms() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         {
             let ArchivesConfig::Configs(configs) = &mut ctx.config.crates[0].archives else {
                 unreachable!("the fixture configures explicit archives");
@@ -1574,7 +1574,7 @@ mod tests {
     /// target and excludes its key from `supported_platforms`.
     #[test]
     fn undetectable_mips_target_warns_and_is_not_listed_supported() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "mips64el-unknown-linux-gnuabi64".to_string(),
@@ -1607,7 +1607,7 @@ mod tests {
     /// stranded-target warning.
     #[test]
     fn detectable_targets_render_no_stranded_warning() {
-        let mut ctx = anodize_ctx(None);
+        let mut ctx = anodizer_ctx(None);
         let capture = crate::log::LogCapture::new();
         ctx.with_log_capture(capture.clone());
         let _ = render_installer_cases(&mut ctx).unwrap();

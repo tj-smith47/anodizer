@@ -1,6 +1,6 @@
 //! Emission validation — snapshot, dry-run, nightly, AND real releases.
 //!
-//! The anodize-only emission features — binstall
+//! The anodizer-only emission features — binstall
 //! `[package.metadata.binstall]`, the Nix flake + per-crate derivations, and
 //! version-sync — mutate source files or push to a remote. A BROKEN emission
 //! (a binstall `pkg_url` pointing at an asset the release never produces, a
@@ -681,13 +681,13 @@ fn asset_filename(url: &str) -> String {
 
 /// Decide whether a binstall-resolved asset filename matches a produced
 /// archive. cargo-binstall's own `{ target }` / `{ version }` / `{ name }`
-/// tokens (which anodize deliberately leaves intact) are substituted with the
+/// tokens (which anodizer deliberately leaves intact) are substituted with the
 /// produced asset's facts before comparison; the load-bearing `{ target }` is
 /// the field that distinguishes the 404 class (a `pkg_url` baking
 /// `linux-amd64` while the release produces `x86_64-unknown-linux-gnu`).
 ///
 /// `{ name }` (the crate/package name) and `{ version }` (the resolved
-/// artifact version) are substituted from the values anodize already knows, so
+/// artifact version) are substituted from the values anodizer already knows, so
 /// an exact filename match fires for a fully-tokened `pkg_url` and the loose
 /// literal-segment fallback is reached less often. `{ target-arch }` (and the
 /// soft `{ arch }` alias) is deliberately NOT substituted: cargo-binstall
@@ -698,7 +698,7 @@ fn asset_filename(url: &str) -> String {
 /// When all substituted tokens resolve, an exact filename match is required.
 /// When an unmodeled token survives, fall back to requiring every literal
 /// (non-token) segment of the candidate to appear in the produced name — this
-/// still catches a wrong asset stem while tolerating tokens anodize does not
+/// still catches a wrong asset stem while tolerating tokens anodizer does not
 /// enumerate.
 fn binstall_asset_matches(
     candidate: &str,
@@ -1675,7 +1675,7 @@ mod tests {
 
     /// Token-substitution stress: a fully cargo-binstall-tokened stem
     /// (`{ name }-{ version }-{ target }`) is resolved to an EXACT filename
-    /// match from the name/version/triple anodize knows — not left to the loose
+    /// match from the name/version/triple anodizer knows — not left to the loose
     /// literal-segment fallback. The same stem must REJECT a wrong-version and a
     /// wrong-name produced asset.
     #[test]
@@ -1743,11 +1743,11 @@ mod tests {
     }
 
     /// `{ target-arch }` (cargo-binstall derives it from
-    /// `target_lexicon::Architecture`; anodize does NOT hand-roll that mapping)
+    /// `target_lexicon::Architecture`; anodizer does NOT hand-roll that mapping)
     /// stays on the literal-segment fallback: an unsubstituted-arch stem must
     /// still ACCEPT the right produced asset and REJECT a wrong-arch one (the
     /// 404 class), proving the fallback remains the safety net for the token
-    /// anodize deliberately leaves alone.
+    /// anodizer deliberately leaves alone.
     #[test]
     fn binstall_matcher_arch_token_falls_back_correctly() {
         let candidate = "{ name }-{ version }-{ target-arch }-unknown-linux-gnu.tar.gz";

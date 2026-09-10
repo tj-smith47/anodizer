@@ -22,7 +22,7 @@ const VERSION_SENTINEL: &str = "__ANODIZE_BINSTALL_VERSION__";
 /// # Auto-derivation
 ///
 /// When `binstall.enabled` is set and the user supplied **neither** a top-level
-/// `pkg_url` **nor** any `overrides`, anodize auto-derives a per-target
+/// `pkg_url` **nor** any `overrides`, anodizer auto-derives a per-target
 /// `overrides.<rust-triple>` for every configured build target. Each derived
 /// override's `pkg_url` is the full GitHub release download URL for that
 /// target's archive — its asset name rendered through the *same*
@@ -36,10 +36,10 @@ const VERSION_SENTINEL: &str = "__ANODIZE_BINSTALL_VERSION__";
 /// A user-supplied `pkg_url` or any `overrides` entry suppresses
 /// auto-derivation entirely — manual values always win.
 ///
-/// The update is performed in place: anodize re-writes only the keys it owns
+/// The update is performed in place: anodizer re-writes only the keys it owns
 /// (`pkg-url`, `bin-dir`, `pkg-fmt`, and the `overrides` sub-table). Any other
 /// key a user added by hand — cargo-binstall's `disabled-strategies`, the
-/// `[package.metadata.binstall.signing]` sub-table, or features anodize does
+/// `[package.metadata.binstall.signing]` sub-table, or features anodizer does
 /// not yet model — is preserved verbatim. An owned key that is now unset in
 /// config is cleared, but unknown keys still survive.
 pub fn generate_binstall_metadata(
@@ -57,7 +57,7 @@ pub fn generate_binstall_metadata(
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("failed to parse {}", cargo_toml_path.display()))?;
 
-    // Render the anodize-owned values up front so a template error aborts
+    // Render the anodizer-owned values up front so a template error aborts
     // before any mutation (and before the dry-run short-circuit reports
     // success on a config that would have failed).
     let rendered_pkg_url =
@@ -70,7 +70,7 @@ pub fn generate_binstall_metadata(
 
     // Precedence: a user-supplied top-level `pkg_url` or any explicit
     // `overrides` entry takes full manual control. Auto-derivation engages only
-    // when the user supplied NEITHER — the common case where anodize already
+    // when the user supplied NEITHER — the common case where anodizer already
     // knows every fact (owner/repo, tag template, per-target asset names) the
     // metadata needs.
     let user_supplied_overrides = config.overrides.as_ref().is_some_and(|o| !o.is_empty());
@@ -176,7 +176,7 @@ pub fn generate_binstall_metadata(
 /// - **missing** — insert an empty header table.
 /// - **header table** — already correct; left untouched.
 /// - **inline table** (`binstall = { pkg-url = "…" }`) — converted to a header
-///   table, preserving every key/value (including user-authored ones anodize
+///   table, preserving every key/value (including user-authored ones anodizer
 ///   does not model) so an inline-metadata user isn't hard-blocked.
 ///
 /// Returns an error only when `binstall` is present but is neither a table nor
@@ -193,7 +193,7 @@ fn normalize_binstall_to_table(metadata: &mut toml_edit::Table) -> Result<()> {
                 "[package.metadata.binstall] is neither a table nor an inline table".to_string()
             })?;
             // Rebuild as a header table, carrying every existing key/value
-            // (anodize-owned and unknown alike) so nothing is dropped.
+            // (anodizer-owned and unknown alike) so nothing is dropped.
             let mut table = toml_edit::Table::new();
             for (k, v) in inline.iter() {
                 table.insert(k, toml_edit::Item::Value(v.clone()));
@@ -205,7 +205,7 @@ fn normalize_binstall_to_table(metadata: &mut toml_edit::Table) -> Result<()> {
 }
 
 /// Set `key` to `value` when present, or remove it when `None`. Removing a
-/// now-unset anodize-owned key keeps the merge faithful to config while
+/// now-unset anodizer-owned key keeps the merge faithful to config while
 /// leaving sibling unknown keys intact.
 fn set_or_remove_str(table: &mut toml_edit::Table, key: &str, value: Option<&str>) {
     match value {
@@ -220,7 +220,7 @@ fn set_or_remove_str(table: &mut toml_edit::Table, key: &str, value: Option<&str
 
 /// Render the per-target `overrides` sub-table from config, or `None` when no
 /// overrides are configured. Override `pkg_url` templates are rendered through
-/// the context so anodize tokens expand while cargo-binstall's own `{ ... }`
+/// the context so anodizer tokens expand while cargo-binstall's own `{ ... }`
 /// tokens survive intact.
 fn render_overrides(config: &BinstallConfig, ctx: &Context) -> Result<Option<toml_edit::Table>> {
     let Some(ref overrides) = config.overrides else {
@@ -235,7 +235,7 @@ fn render_overrides(config: &BinstallConfig, ctx: &Context) -> Result<Option<tom
 /// Render a `<triple> -> BinstallOverride` map into a TOML `overrides` table.
 /// Shared by the user-supplied path ([`render_overrides`]) and the
 /// auto-derived path so both emit identical `[…overrides.<triple>]` headers.
-/// `pkg_url` values are rendered through the context so any anodize tokens
+/// `pkg_url` values are rendered through the context so any anodizer tokens
 /// expand while cargo-binstall's own `{ ... }` tokens survive intact.
 fn render_overrides_map(
     overrides: &BTreeMap<String, BinstallOverride>,
@@ -462,7 +462,7 @@ fn release_repo(crate_cfg: &CrateConfig, ctx: &Context) -> Option<(String, Strin
     let release = crate_cfg.release.as_ref()?;
     // GitHub is the default download host; GitLab/Gitea use the same
     // `<base>/<owner>/<repo>/releases/download/<tag>/<asset>` path shape, only
-    // the host differs. anodize's own config uses GitHub.
+    // the host differs. anodizer's own config uses GitHub.
     let (repo_cfg, base) = if let Some(gh) = release.github.as_ref() {
         (gh, "https://github.com")
     } else if let Some(gl) = release.gitlab.as_ref() {
@@ -875,7 +875,7 @@ edition = "2024"
         );
         assert!(
             !linux_url.contains("{{ .Version }}"),
-            "anodize token should be rendered, got: {linux_url}"
+            "anodizer token should be rendered, got: {linux_url}"
         );
         assert_eq!(linux["pkg-fmt"].as_str().unwrap(), "tgz");
         assert_eq!(linux["bin-dir"].as_str().unwrap(), "{ bin }{ binary-ext }");
@@ -884,11 +884,11 @@ edition = "2024"
         let darwin = &overrides_item["aarch64-apple-darwin"];
         assert!(darwin.as_table().is_some());
         let darwin_url = darwin["pkg-url"].as_str().unwrap();
-        // The leading v{{ .Version }} is an anodize token (rendered) while
+        // The leading v{{ .Version }} is an anodizer token (rendered) while
         // `{ version }` is cargo-binstall's own token and must survive intact.
         assert!(
             darwin_url.contains("/v1.0.0/cfgd-{ version }-darwin-arm64.tar.gz"),
-            "darwin pkg-url should render the anodize token but leave cargo-binstall's `{{ version }}` intact, got: {darwin_url}"
+            "darwin pkg-url should render the anodizer token but leave cargo-binstall's `{{ version }}` intact, got: {darwin_url}"
         );
 
         // Triple keys contain `-` and must render as proper headers.
@@ -902,7 +902,7 @@ edition = "2024"
     fn test_generate_binstall_metadata_preserves_user_authored_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let cargo_toml = tmp.path().join("Cargo.toml");
-        // Seed a Cargo.toml whose binstall table already carries keys anodize
+        // Seed a Cargo.toml whose binstall table already carries keys anodizer
         // does NOT model: cargo-binstall's `disabled-strategies` and the
         // `[package.metadata.binstall.signing]` sub-table. The in-place merge
         // must leave both untouched while (re)writing pkg-url / overrides.
@@ -972,7 +972,7 @@ pubkey = "RWQABCDEF1234567890"
         assert_eq!(signing["algorithm"].as_str().unwrap(), "minisign");
         assert_eq!(signing["pubkey"].as_str().unwrap(), "RWQABCDEF1234567890");
 
-        // anodize-owned keys are (re)written: pkg-url rendered to the new value.
+        // anodizer-owned keys are (re)written: pkg-url rendered to the new value.
         let pkg_url = binstall["pkg-url"].as_str().unwrap();
         assert!(
             pkg_url.contains("/v1.0.0/myapp-{ target }.tar.gz"),
@@ -980,10 +980,10 @@ pubkey = "RWQABCDEF1234567890"
         );
         assert!(
             !pkg_url.contains("old.example.com"),
-            "stale anodize-owned pkg-url should be replaced, got: {pkg_url}"
+            "stale anodizer-owned pkg-url should be replaced, got: {pkg_url}"
         );
 
-        // overrides is anodize-owned and freshly written.
+        // overrides is anodizer-owned and freshly written.
         let linux = &binstall["overrides"]["x86_64-unknown-linux-gnu"];
         assert_eq!(linux["pkg-fmt"].as_str().unwrap(), "tgz");
         assert!(
@@ -1091,7 +1091,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
     // Auto-derivation
     // -----------------------------------------------------------------------
 
-    /// All six anodize triples, the matrix the auto-derivation must cover.
+    /// All six anodizer triples, the matrix the auto-derivation must cover.
     fn six_targets() -> Vec<String> {
         vec![
             "x86_64-unknown-linux-gnu".to_string(),
@@ -1103,10 +1103,10 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         ]
     }
 
-    /// A crate mirroring anodize's binary crate: an explicit
+    /// A crate mirroring anodizer's binary crate: an explicit
     /// `name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"`,
     /// `formats: [tar.gz]` with a windows→zip override, and a GitHub release.
-    fn anodize_like_crate() -> CrateConfig {
+    fn anodizer_like_crate() -> CrateConfig {
         let archive = ArchiveConfig {
             name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
             formats: Some(vec!["tar.gz".to_string()]),
@@ -1165,7 +1165,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         let targets = six_targets();
         gen_with_crate(
             tmp.path().to_str().unwrap(),
-            anodize_like_crate(),
+            anodizer_like_crate(),
             &cfg,
             &targets,
             &mut ctx,
@@ -1240,7 +1240,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
 
     #[test]
     fn auto_derive_matches_real_v091_release_assets() {
-        // Real-world guard: anodize's own crate config (owner/repo/name_template/
+        // Real-world guard: anodizer's own crate config (owner/repo/name_template/
         // tag_template from `.anodizer.yaml`) must auto-derive overrides whose
         // `pkg-url`s resolve, for a concrete version, to the EXACT asset names
         // the v0.9.1 GitHub release uploaded. A drift here is the "cargo binstall
@@ -1267,7 +1267,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         gen_with_crate(
             tmp.path().to_str().unwrap(),
-            anodize_like_crate(),
+            anodizer_like_crate(),
             &cfg,
             &six_targets(),
             &mut ctx,
@@ -1350,7 +1350,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         gen_with_crate(
             tmp.path().to_str().unwrap(),
-            anodize_like_crate(),
+            anodizer_like_crate(),
             &cfg,
             &six_targets(),
             &mut ctx,
@@ -1400,7 +1400,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         gen_with_crate(
             tmp.path().to_str().unwrap(),
-            anodize_like_crate(),
+            anodizer_like_crate(),
             &cfg,
             &six_targets(),
             &mut ctx,
@@ -1442,7 +1442,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
-        let mut crate_cfg = anodize_like_crate();
+        let mut crate_cfg = anodizer_like_crate();
         crate_cfg.name = "myapp".to_string();
         // Archive with formats but no name_template.
         crate_cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
@@ -1485,7 +1485,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         )
         .unwrap();
 
-        let mut crate_cfg = anodize_like_crate();
+        let mut crate_cfg = anodizer_like_crate();
         crate_cfg.name = "myapp".to_string();
         crate_cfg.release = None;
 
