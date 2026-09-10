@@ -572,65 +572,6 @@ mod tests {
     /// uploads — every `curl | sh` URL resolves. Pins installer↔asset-name
     /// agreement so a future `name_template` / `format_overrides` change can't
     /// silently 404 the installer.
-    /// The stage refuses to write an installer whose template still matches on
-    /// `${OS}-${ARCH}` when the release splits its arms by libc — the script
-    /// would match no platform at all on every host that runs it.
-    #[test]
-    fn dual_libc_release_refuses_a_template_that_ignores_the_case_subject() {
-        use anodizer_core::config::{
-            ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, Defaults,
-        };
-
-        let tmp = TempDir::new().unwrap();
-        let mut ctx = build_ctx(&tmp);
-        ctx.config.defaults = Some(Defaults {
-            targets: Some(vec![
-                "x86_64-unknown-linux-gnu".to_string(),
-                "x86_64-unknown-linux-musl".to_string(),
-            ]),
-            ..Default::default()
-        });
-        ctx.config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            builds: Some(vec![BuildConfig {
-                id: Some("myapp".to_string()),
-                binary: Some("myapp".to_string()),
-                ..Default::default()
-            }]),
-            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Target }}".to_string()),
-                formats: Some(vec!["tar.gz".to_string()]),
-                ids: Some(vec!["myapp".to_string()]),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        }];
-
-        let stale = tmp.path().join("stale-install.sh.tera");
-        std::fs::write(
-            &stale,
-            "case \"${OS}-${ARCH}\" in\n{{ InstallerAssetCases }}\nesac\n",
-        )
-        .unwrap();
-        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
-            id: Some("install".to_string()),
-            src: stale.to_string_lossy().into_owned(),
-            dst: "install.sh".to_string(),
-            mode: Some("0755".to_string()),
-            skip: None,
-        }]);
-
-        let err = TemplateFilesStage
-            .run(&mut ctx)
-            .expect_err("a stale case subject must fail the stage")
-            .to_string();
-        assert!(
-            err.contains("install") && err.contains("InstallerAssetCaseSubject"),
-            "the failure must name the entry and the value it must consume: {err}"
-        );
-    }
-
     #[test]
     fn test_real_install_sh_tpl_renders_engine_asset_names() {
         use anodizer_core::config::{
@@ -775,6 +716,65 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+    }
+
+    /// The stage refuses to write an installer whose template still matches on
+    /// `${OS}-${ARCH}` when the release splits its arms by libc — the script
+    /// would match no platform at all on every host that runs it.
+    #[test]
+    fn dual_libc_release_refuses_a_template_that_ignores_the_case_subject() {
+        use anodizer_core::config::{
+            ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, Defaults,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        ctx.config.defaults = Some(Defaults {
+            targets: Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-musl".to_string(),
+            ]),
+            ..Default::default()
+        });
+        ctx.config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                id: Some("myapp".to_string()),
+                binary: Some("myapp".to_string()),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Target }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                ids: Some(vec!["myapp".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let stale = tmp.path().join("stale-install.sh.tera");
+        std::fs::write(
+            &stale,
+            "case \"${OS}-${ARCH}\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("install".to_string()),
+            src: stale.to_string_lossy().into_owned(),
+            dst: "install.sh".to_string(),
+            mode: Some("0755".to_string()),
+            skip: None,
+        }]);
+
+        let err = TemplateFilesStage
+            .run(&mut ctx)
+            .expect_err("a stale case subject must fail the stage")
+            .to_string();
+        assert!(
+            err.contains("install") && err.contains("InstallerAssetCaseSubject"),
+            "the failure must name the entry and the value it must consume: {err}"
+        );
     }
 
     #[test]
