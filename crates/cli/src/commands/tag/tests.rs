@@ -369,7 +369,7 @@ fn cfg_with_pre_major(minor_pre_major: bool, patch_for_minor: bool) -> ResolvedC
         bump_patch_for_minor_pre_major: Some(patch_for_minor),
         ..Default::default()
     };
-    ResolvedConfig::from_tag_config(
+    ResolvedConfig::from_config(
         &Config {
             tag: Some(tag_cfg),
             ..Default::default()
@@ -495,7 +495,7 @@ fn detect_bump_demoted_honors_custom_tokens() {
         bump_minor_pre_major: Some(true),
         ..Default::default()
     };
-    let cfg = ResolvedConfig::from_tag_config(
+    let cfg = ResolvedConfig::from_config(
         &Config {
             tag: Some(tag_cfg),
             ..Default::default()
@@ -611,7 +611,7 @@ fn test_resolved_config_defaults() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(
+    let resolved = ResolvedConfig::from_config(
         &Config {
             tag: Some(cfg),
             ..Default::default()
@@ -659,7 +659,7 @@ fn test_resolved_config_cli_overrides() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(
+    let resolved = ResolvedConfig::from_config(
         &Config {
             tag: Some(cfg),
             ..Default::default()
@@ -718,7 +718,7 @@ fn test_resolved_config_full_config() {
         quiet: false,
         strict: false,
     };
-    let resolved = ResolvedConfig::from_tag_config(
+    let resolved = ResolvedConfig::from_config(
         &Config {
             tag: Some(cfg),
             ..Default::default()

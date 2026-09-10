@@ -54,7 +54,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         &workspace_root_path,
     )?;
 
-    let mut cfg = ResolvedConfig::from_tag_config(&loaded_config, &opts);
+    let mut cfg = ResolvedConfig::from_config(&loaded_config, &opts);
 
     // Validate + normalize the explicit `--version` override once, up front, so
     // an ill-formed value fails before any git/manifest work. The bare

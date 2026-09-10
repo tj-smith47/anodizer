@@ -138,7 +138,7 @@ pub(crate) struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    fn from_tag_config(config: &Config, opts: &TagOpts) -> Self {
+    fn from_config(config: &Config, opts: &TagOpts) -> Self {
         let default_tag = TagConfig::default();
         let cfg = config.tag.as_ref().unwrap_or(&default_tag);
         ResolvedConfig {
