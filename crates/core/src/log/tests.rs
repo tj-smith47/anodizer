@@ -916,6 +916,34 @@ fn test_kv_pads_plain_key_so_values_align() {
     );
 }
 
+/// The two child-stream tee helpers have no production caller today — every
+/// live path goes through `stream_child_chunk` — so nothing observed that they
+/// still redact, still terminate the line, and still record at their own
+/// levels. They are `pub` on a published crate, so this is the pin.
+#[test]
+fn stream_child_helpers_redact_and_record_at_their_own_level() {
+    let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (log, cap) = StageLogger::with_capture("build", Verbosity::Normal);
+    let log = log.with_env(vec![(
+        "API_TOKEN".to_string(),
+        "ghp_streamsecret".to_string(),
+    )]);
+
+    log.stream_child_stdout("out ghp_streamsecret at https://u:p@example.com/x");
+    log.stream_child_stderr("err ghp_streamsecret");
+
+    assert_eq!(
+        cap.all_messages(),
+        vec![
+            (
+                LogLevel::Verbose,
+                "out $API_TOKEN at https://<redacted>@example.com/x".to_string()
+            ),
+            (LogLevel::Error, "err $API_TOKEN".to_string()),
+        ]
+    );
+}
+
 #[test]
 fn test_retag_helpers_record_under_shared_capture() {
     // The retagged clone shares the capture sink, and the plain

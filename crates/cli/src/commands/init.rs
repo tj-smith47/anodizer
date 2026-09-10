@@ -61,21 +61,35 @@ pub fn run() -> Result<()> {
     // Update .gitignore to include dist/
     let gitignore_path = ".gitignore";
     let gitignore = std::fs::read_to_string(gitignore_path).unwrap_or_default();
-    if !gitignore_ignores_dist(&gitignore) {
+    if let Some(addition) = append_dist_entry(&gitignore) {
         let mut f = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(gitignore_path)
             .with_context(|| format!("failed to open {}", gitignore_path))?;
         use std::io::Write;
-        if !gitignore.is_empty() && !gitignore.ends_with('\n') {
-            writeln!(f)?;
-        }
-        writeln!(f, "dist/")?;
+        f.write_all(addition.as_bytes())?;
         log.status(&format!("Added 'dist/' to {}", gitignore_path));
     }
 
     Ok(())
+}
+
+/// The bytes to append to a `.gitignore` whose current content is `existing`,
+/// or `None` when it already ignores `dist/`.
+///
+/// A file that does not end in a newline needs one first, or the new pattern
+/// joins the last line and both stop matching.
+fn append_dist_entry(existing: &str) -> Option<String> {
+    if gitignore_ignores_dist(existing) {
+        return None;
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    Some(format!("{separator}dist/\n"))
 }
 
 /// Whether a `.gitignore` text already carries a root `dist/` entry.
@@ -1147,5 +1161,31 @@ path = "src/main.rs"
         // A leading space is part of the pattern in gitignore syntax, so the
         // indented line does not ignore the root `dist/`.
         assert!(!gitignore_ignores_dist("target/\n  dist/\n"));
+    }
+
+    #[test]
+    fn gitignore_append_separates_an_unterminated_last_line() {
+        // Without the separator the pattern becomes `target/dist/` and neither
+        // the old line nor the new one matches anything.
+        assert_eq!(
+            append_dist_entry("target/").as_deref(),
+            Some("\ndist/\n"),
+            "a file with no trailing newline needs one before the entry"
+        );
+        assert_eq!(
+            append_dist_entry("target/\n").as_deref(),
+            Some("dist/\n"),
+            "a terminated file gets the entry alone"
+        );
+        assert_eq!(
+            append_dist_entry("").as_deref(),
+            Some("dist/\n"),
+            "an empty or missing .gitignore starts with the entry"
+        );
+        assert_eq!(
+            append_dist_entry("dist/\n"),
+            None,
+            "an entry already present is not appended again"
+        );
     }
 }

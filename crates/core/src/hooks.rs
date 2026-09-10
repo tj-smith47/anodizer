@@ -1131,12 +1131,21 @@ mod tests {
             HookRunContext::new(false, &log, Some(&vars)),
         )
         .expect("hook must run");
-        for (_, msg) in cap.all_messages() {
+        let messages: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+        for msg in &messages {
             assert!(
                 !msg.contains(HOOK_SECRET),
                 "no logged line may carry the secret value; got: {msg:?}"
             );
         }
+        // A negative alone passes when the hook never ran, or when the line
+        // that should carry the masked command was never emitted at all.
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("$DEPLOY_TOKEN") && m.contains("true")),
+            "the verbose line must show the command with the value masked; got: {messages:?}"
+        );
     }
 
     #[cfg(feature = "test-helpers")]

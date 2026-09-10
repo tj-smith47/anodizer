@@ -3273,6 +3273,55 @@ fn test_glibc_suffixed_host_target_is_stripped_and_skipped() {
     );
 }
 
+/// The same triple prepared from two directories runs `rustup target add`
+/// twice — each directory resolves its own toolchain — but the dry-run LINE
+/// names only the triple, so printing it twice tells the operator nothing.
+#[test]
+fn dry_run_announces_each_rustup_target_once_per_triple() {
+    use crate::workspace::ensure_targets_installed;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    let other = if host.starts_with("x86_64") {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    };
+
+    let prep_in = |dir: &str| crate::workspace::TargetPrep {
+        target: other.to_string(),
+        dir: std::path::PathBuf::from(dir),
+        env: std::collections::HashMap::new(),
+    };
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let (log, capture) = StageLogger::with_capture("build", Verbosity::Normal);
+    ensure_targets_installed(
+        &ctx,
+        &[
+            prep_in("crates/a"),
+            prep_in("crates/b"),
+            prep_in("crates/c"),
+        ],
+        &log,
+        true,
+    )
+    .expect("dry-run must not error");
+
+    let would_run: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.contains("rustup target add"))
+        .collect();
+    assert_eq!(
+        would_run,
+        vec![format!("(dry-run) would run: rustup target add {other}")],
+        "three directories on one triple must announce one line"
+    );
+}
+
 /// Two glibc pins on the same *non-host* triple must de-dup to a single
 /// `rustup target add`. The pins differ only by glibc version (`.2.28` vs
 /// `.2.17`) — a cargo-zigbuild link-time concept rustup is blind to — so both

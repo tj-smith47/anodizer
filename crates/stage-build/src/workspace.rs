@@ -205,9 +205,6 @@ pub(crate) fn resolve_copy_from(
 // ensure_targets_installed — run `rustup target add` for cross-compilation targets
 // ---------------------------------------------------------------------------
 
-/// For each unique non-host target, run `rustup target add` to ensure the
-/// target toolchain is installed. If `rustup` is not available (e.g. when
-/// using cargo-cross or a pre-configured environment), this is silently skipped.
 /// One target that must exist before a build job can compile, together with
 /// the directory and environment that job compiles in.
 ///
@@ -225,6 +222,11 @@ pub(crate) struct TargetPrep {
     pub env: HashMap<String, String>,
 }
 
+/// For each unique non-host target, run `rustup target add` so the target
+/// toolchain is installed before the build job needs it.
+///
+/// If `rustup` is not available — cargo-cross, or a pre-configured environment
+/// that ships every target — this is silently skipped.
 pub(crate) fn ensure_targets_installed(
     ctx: &Context,
     preps: &[TargetPrep],
@@ -233,6 +235,7 @@ pub(crate) fn ensure_targets_installed(
 ) -> Result<()> {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
+    let mut announced = std::collections::HashSet::new();
     for prep in preps {
         // A `*-linux-gnu.<ver>` / `*-linux-musl.<ver>` glibc pin is a
         // cargo-zigbuild `--target` concept; rustup only knows the bare
@@ -248,9 +251,14 @@ pub(crate) fn ensure_targets_installed(
             continue;
         }
         if dry_run {
-            log.status(&format!(
-                "(dry-run) would run: rustup target add {rustup_target}"
-            ));
+            // The line names only the triple, so the same triple prepared from
+            // several directories would print as N identical lines with
+            // nothing to tell them apart.
+            if announced.insert(rustup_target.to_string()) {
+                log.status(&format!(
+                    "(dry-run) would run: rustup target add {rustup_target}"
+                ));
+            }
             continue;
         }
         // An empty `crate_path` names the repository root.
