@@ -1,6 +1,6 @@
 +++
 title = "Version Files"
-description = "Keep repo-committed files that embed the version in sync with the release tag"
+description = "Keep repo-committed files that embed the version in sync with the manifest version"
 weight = 11
 template = "docs.html"
 +++
@@ -8,7 +8,7 @@ template = "docs.html"
 `version_files` is a list of repo-committed files that embed the project
 version outside `Cargo.toml` — a Helm `Chart.yaml`, an install doc, a README
 badge. anodizer rewrites their version string at tag time so they never drift
-from the tag, and guards them in CI.
+from the manifest, and guards them in CI.
 
 ## Minimal config
 

@@ -50,7 +50,7 @@ flags override it per invocation.
 The same bump commit also rewrites any files enrolled under `version_files` —
 a Helm `Chart.yaml`, an install doc, a README badge — from the old release
 version to the new one, so files that embed the version outside `Cargo.toml`
-are tagged together and never drift from the tag. See
+are tagged together and never drift from the manifest. See
 [Version Files](@/docs/general/version-files.md) for enrollment and the
 `anodizer check version-files` CI guard.
 

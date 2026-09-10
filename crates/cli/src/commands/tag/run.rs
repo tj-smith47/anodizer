@@ -756,7 +756,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         )?;
 
         // Rewrite enrolled version_files in the same bump commit so a Helm
-        // Chart.yaml / install doc / README badge never drifts from the tag.
+        // Chart.yaml / install doc / README badge never drifts from the manifest.
         // Old version comes from the previous tag; absent a previous tag there
         // is nothing to rewrite from. Runs in BOTH dry-run and real modes — the
         // helper logs per-file replacement counts (and the zero-match warning)

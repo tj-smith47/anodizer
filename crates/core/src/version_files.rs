@@ -4,7 +4,7 @@
 //!
 //! The `tag` command bumps `Cargo.toml` / `Cargo.lock` and creates a bump
 //! commit; files enrolled via the `version_files` config are rewritten in
-//! that same commit so their embedded version never drifts from the tag.
+//! that same commit so their embedded version never drifts from the manifest.
 //!
 //! Rewrites are word-boundary anchored so `0.1.0` does not match inside
 //! `10.1.0`, and cover both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`)

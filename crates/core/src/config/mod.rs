@@ -240,7 +240,7 @@ pub struct Config {
     /// listed file has its occurrences of the old version rewritten to the new
     /// version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms,
     /// word-boundary anchored — and is staged into the same bump commit as
-    /// `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
+    /// `Cargo.toml` / `Cargo.lock`, so these files never drift from the manifest.
     ///
     /// An entry may instead be a `path` + `match` mapping, scoping the rewrite
     /// to the occurrences the `match` regex selects (`{version}` stands for the
