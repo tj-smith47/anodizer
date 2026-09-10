@@ -268,9 +268,8 @@ pub(crate) fn process_authenticode_config(
     // `"sign"` / `"binary-sign"` static string, so reuse it for the parallel
     // stage name rather than re-matching the same two arms.
     let static_label = label_to_static(label);
-    let verbosity = log.verbosity();
     anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, static_label, log, |job| {
-        let thread_log = anodizer_core::log::StageLogger::new(static_label, verbosity);
+        let thread_log = log.with_stage(static_label);
         execute_sign_job(job, &thread_log)
     })?;
 

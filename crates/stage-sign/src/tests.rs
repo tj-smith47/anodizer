@@ -7321,17 +7321,23 @@ mod post_sign_verification {
 }
 
 #[test]
-#[cfg(unix)]
 fn missing_signature_output_is_still_recorded_as_an_artifact() {
     use anodizer_core::artifact::Artifact;
 
+    let signer = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+    signer.tool("noop-signer").install();
     let dir = tempfile::tempdir().expect("tempdir");
     let subject = dir.path().join("myapp.tar.gz");
     std::fs::write(&subject, b"payload").expect("write subject");
 
     let signs = vec![SignConfig {
         id: Some("noop".to_string()),
-        cmd: Some("true".to_string()),
+        cmd: Some(
+            signer
+                .tool_path("noop-signer")
+                .to_string_lossy()
+                .into_owned(),
+        ),
         args: Some(vec!["{{ .Artifact }}".to_string()]),
         artifacts: Some("all".to_string()),
         ids: None,
@@ -7350,6 +7356,8 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
         .dry_run(false)
         .signs(signs)
         .build();
+    let cap = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(cap.clone());
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Archive,
         name: "myapp.tar.gz".to_string(),
@@ -7374,5 +7382,23 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
         sigs,
         vec!["myapp.tar.gz.sig".to_string()],
         "the signature stays registered so downstream stages still see it"
+    );
+
+    // Registration without the warning is the failure mode this pin exists
+    // for: a downstream stage reads an artifact that names nothing on disk and
+    // fails much later, with no line naming the signer at fault.
+    let warnings: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Warn)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| w.contains("did not write") && w.contains("myapp.tar.gz.sig"))
+            .count(),
+        1,
+        "the run must say once that the signer wrote no signature; got {warnings:?}"
     );
 }

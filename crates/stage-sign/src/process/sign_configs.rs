@@ -715,7 +715,6 @@ pub(crate) fn process_sign_configs(
         let mut all_new_artifacts: Vec<anodizer_core::artifact::Artifact> = Vec::new();
 
         let static_label = label_to_static(label);
-        let verbosity = log.verbosity();
         let stage_name: &'static str = match static_label {
             "binary-sign" => "binary-sign",
             _ => "sign",
@@ -724,7 +723,7 @@ pub(crate) fn process_sign_configs(
         // its failures are retried; local signers (gpg, osslsigncode) fail
         // deterministically and keep the single fast attempt.
         let run_job = |job: &SignJob| {
-            let thread_log = anodizer_core::log::StageLogger::new(static_label, verbosity);
+            let thread_log = log.with_stage(static_label);
             if is_cosign_cmd(&job.cmd) {
                 retry_transient(
                     &COSIGN_TRANSIENT_RETRY,

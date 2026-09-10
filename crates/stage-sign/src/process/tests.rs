@@ -219,18 +219,30 @@ mod harden_cosign_tests {
 
 /// The `signature`/`certificate` outputs a sign job registers, and whether the
 /// signer that is about to "run" actually writes them.
-#[cfg(unix)]
 mod missing_output_warning {
     use super::*;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    /// A signer that exits 0 and writes nothing, on whichever platform the
+    /// suite is running: the code under test asks `std::fs::exists`, which has
+    /// no platform behaviour to gate on.
+    fn noop_signer() -> FakeToolDir {
+        let dir = FakeToolDir::new();
+        dir.tool("noop-signer").install();
+        dir
+    }
 
     /// A sign job whose command exits 0 without writing anything, registering
     /// one artifact per path in `outputs`.
-    fn job_registering(outputs: &[std::path::PathBuf]) -> SignJob {
+    fn job_registering(signer: &FakeToolDir, outputs: &[std::path::PathBuf]) -> SignJob {
         SignJob {
-            cmd: "sh".to_string(),
-            args: vec!["-c".to_string(), "exit 0".to_string()],
+            cmd: signer
+                .tool_path("noop-signer")
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
             stdin_data: None,
             env: None,
             redact_extra: Vec::new(),
@@ -264,10 +276,11 @@ mod missing_output_warning {
 
     #[test]
     fn sign_job_warns_when_the_signer_writes_no_signature() {
+        let signer = noop_signer();
         let dir = tempfile::tempdir().expect("tempdir");
         let sig = dir.path().join("app.tar.gz.sig");
         let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
-        execute_sign_job(&job_registering(std::slice::from_ref(&sig)), &log)
+        execute_sign_job(&job_registering(&signer, std::slice::from_ref(&sig)), &log)
             .expect("a signer exiting 0 must not fail the job");
         let warnings: Vec<String> = cap
             .all_messages()
@@ -284,11 +297,12 @@ mod missing_output_warning {
 
     #[test]
     fn sign_job_is_silent_when_the_signature_exists() {
+        let signer = noop_signer();
         let dir = tempfile::tempdir().expect("tempdir");
         let sig = dir.path().join("app.tar.gz.sig");
         std::fs::write(&sig, b"signature").expect("write signature");
         let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
-        execute_sign_job(&job_registering(&[sig]), &log).expect("sign job must succeed");
+        execute_sign_job(&job_registering(&signer, &[sig]), &log).expect("sign job must succeed");
         assert_eq!(
             cap.warn_count(),
             0,
@@ -297,13 +311,19 @@ mod missing_output_warning {
     }
 
     #[test]
-    fn sign_job_warns_once_per_missing_artifact() {
+    fn sign_job_warns_exactly_once_per_missing_artifact() {
+        let signer = noop_signer();
         let dir = tempfile::tempdir().expect("tempdir");
         let sig = dir.path().join("app.tar.gz.sig");
         let cert = dir.path().join("app.tar.gz.pem");
+        let bundle = dir.path().join("app.tar.gz.bundle");
         std::fs::write(&sig, b"signature").expect("write signature");
         let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
-        execute_sign_job(&job_registering(&[sig, cert]), &log).expect("sign job must succeed");
+        execute_sign_job(
+            &job_registering(&signer, &[sig, cert.clone(), bundle.clone()]),
+            &log,
+        )
+        .expect("sign job must succeed");
         let warnings: Vec<String> = cap
             .all_messages()
             .into_iter()
@@ -312,12 +332,20 @@ mod missing_output_warning {
             .collect();
         assert_eq!(
             warnings.len(),
-            1,
-            "only the missing certificate warns; got {warnings:?}"
+            2,
+            "one warning per missing output and none for the written one; got {warnings:?}"
         );
+        for missing in [&cert, &bundle] {
+            let name = missing.file_name().unwrap().to_string_lossy().into_owned();
+            assert_eq!(
+                warnings.iter().filter(|w| w.contains(&name)).count(),
+                1,
+                "{name} must be warned about exactly once; got {warnings:?}"
+            );
+        }
         assert!(
-            warnings[0].contains("app.tar.gz.pem"),
-            "the warning must name the certificate; got {warnings:?}"
+            !warnings.iter().any(|w| w.contains("app.tar.gz.sig")),
+            "the written signature warns about nothing; got {warnings:?}"
         );
     }
 
@@ -325,8 +353,9 @@ mod missing_output_warning {
     fn sign_job_with_no_new_artifacts_never_warns() {
         // The in-place Authenticode shape registers nothing, so there is no
         // output path to miss.
+        let signer = noop_signer();
         let (log, cap) = StageLogger::with_capture("sign", Verbosity::Normal);
-        execute_sign_job(&job_registering(&[]), &log).expect("sign job must succeed");
+        execute_sign_job(&job_registering(&signer, &[]), &log).expect("sign job must succeed");
         assert_eq!(
             cap.warn_count(),
             0,
