@@ -39,8 +39,8 @@ impl Stage for TemplateFilesStage {
         // vocabulary instead of a hand-rolled shell copy that silently drifts.
         let installer_cases = anodizer_core::installer::render_installer_cases(ctx)
             .context("templatefiles: derive installer case tables")?;
-        anodizer_core::installer::require_case_subject_consumption(ctx, &installer_cases)?;
         installer_cases.bind(ctx.template_vars_mut());
+        anodizer_core::installer::require_case_subject_consumption(ctx, &installer_cases)?;
 
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");

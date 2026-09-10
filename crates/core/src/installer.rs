@@ -164,6 +164,10 @@ pub fn template_files_consume_installer_vars(ctx: &mut Context) -> bool {
 ///
 /// Only entries that already consume an installer var are checked: an ordinary
 /// `template_files:` entry has nothing to adopt.
+///
+/// `cases` must already be bound on `ctx` ([`InstallerCases::bind`]): the check
+/// reads the entry's real rendered output, since reading the subject somewhere
+/// harmless (a comment, a banner line) is not the property that matters.
 pub fn require_case_subject_consumption(ctx: &mut Context, cases: &InstallerCases) -> Result<()> {
     if cases.detect_libc.is_empty() {
         return Ok(());
@@ -175,7 +179,15 @@ pub fn require_case_subject_consumption(ctx: &mut Context, cases: &InstallerCase
         if !entry_reads_vars(ctx, entry, INSTALLER_TEMPLATE_VARS) {
             continue;
         }
-        if entry_reads_vars(ctx, entry, &["InstallerAssetCaseSubject"]) {
+        let rendered = crate::template_file_render::render_templated_file_entry(
+            ctx,
+            entry,
+            "installer case subject check",
+        )?;
+        let Some(rendered) = rendered else {
+            continue;
+        };
+        if case_matches_on(&rendered.rendered_contents, &cases.asset_case_subject) {
             continue;
         }
         let id = entry.id.as_deref().unwrap_or("default");
@@ -193,6 +205,16 @@ pub fn require_case_subject_consumption(ctx: &mut Context, cases: &InstallerCase
         );
     }
     Ok(())
+}
+
+/// Whether some `case … in` line matches on `subject`. The generated arms are
+/// reachable only through the word the engine keyed them by, so a template that
+/// prints the subject somewhere else still matches nothing.
+fn case_matches_on(contents: &str, subject: &str) -> bool {
+    contents.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("case ") && line.ends_with(" in") && line.contains(subject)
+    })
 }
 
 fn entry_reads_vars(
@@ -1104,6 +1126,12 @@ mod tests {
             "{{ InstallerDetectLibc }}\ncase \"{{ InstallerAssetCaseSubject }}\" in\n{{ InstallerAssetCases }}\nesac\n",
         )
         .unwrap();
+        let mentioned = tmp.path().join("mentions-install.sh.tera");
+        std::fs::write(
+            &mentioned,
+            "# subject: {{ InstallerAssetCaseSubject }}\ncase \"${OS}-${ARCH}\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
         let plain = tmp.path().join("notes.md.tera");
         std::fs::write(&plain, "release {{ Version }}\n").unwrap();
         let entry = |src: &std::path::Path| TemplateFileConfig {
@@ -1120,6 +1148,7 @@ mod tests {
             "x86_64-unknown-linux-musl".to_string(),
         ]);
         let cases = render_installer_cases(&mut ctx).unwrap();
+        cases.bind(ctx.template_vars_mut());
 
         ctx.config.template_files = Some(vec![entry(&stale)]);
         let err = require_case_subject_consumption(&mut ctx, &cases)
@@ -1129,6 +1158,10 @@ mod tests {
             err.contains("installer") && err.contains("InstallerAssetCaseSubject"),
             "the failure must name the entry and the value it must consume: {err}"
         );
+
+        ctx.config.template_files = Some(vec![entry(&mentioned)]);
+        require_case_subject_consumption(&mut ctx, &cases)
+            .expect_err("reading the subject in a comment leaves the case matching nothing");
 
         ctx.config.template_files = Some(vec![entry(&adopted), entry(&plain)]);
         require_case_subject_consumption(&mut ctx, &cases)
@@ -1146,6 +1179,7 @@ mod tests {
 
         let mut ctx = anodize_ctx(None);
         let cases = render_installer_cases(&mut ctx).unwrap();
+        cases.bind(ctx.template_vars_mut());
         ctx.config.template_files = Some(vec![TemplateFileConfig {
             src: stale.to_string_lossy().into_owned(),
             dst: "out.txt".to_string(),
