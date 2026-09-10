@@ -47,8 +47,9 @@ pub use mutate::{
 #[cfg(test)]
 pub(crate) use mutate::{tag_create_flag, tag_is_signed};
 pub use position::{
-    TagPosition, get_first_commit, get_first_commit_in, get_tags_at_head, get_tags_at_head_in,
-    get_tags_at_sha_in, head_is_at_tag, tag_points_at_head, tag_points_at_head_in, tag_position_in,
+    RepositoryUnreadable, TagPosition, get_first_commit, get_first_commit_in, get_tags_at_head,
+    get_tags_at_head_in, get_tags_at_sha_in, head_is_at_tag, tag_points_at_head,
+    tag_points_at_head_in, tag_position_in,
 };
 pub use previous::{
     find_previous_tag, find_previous_tag_in, find_previous_tag_in_family,

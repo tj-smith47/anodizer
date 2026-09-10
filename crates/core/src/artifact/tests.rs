@@ -1462,6 +1462,7 @@ fn upload_artifact(kind: ArtifactKind, name: &str, path: &str) -> Artifact {
 }
 
 #[test]
+#[serial_test::serial(tracing)]
 fn identical_reregistration_is_silent() {
     let captured = capture_warnings(|| {
         let mut registry = ArtifactRegistry::new();
@@ -1482,6 +1483,7 @@ fn identical_reregistration_is_silent() {
 }
 
 #[test]
+#[serial_test::serial(tracing)]
 fn conflicting_reregistration_still_warns() {
     let captured = capture_warnings(|| {
         let mut registry = ArtifactRegistry::new();
@@ -1547,6 +1549,7 @@ fn contains_path_kind_normalizes_separators_like_add() {
 }
 
 #[test]
+#[serial_test::serial(tracing)]
 fn third_registration_warns_even_when_it_matches_the_first_path() {
     let captured = capture_warnings(|| {
         let mut registry = ArtifactRegistry::new();

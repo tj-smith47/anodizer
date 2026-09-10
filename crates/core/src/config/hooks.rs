@@ -347,6 +347,7 @@ mod tests {
     /// Legacy-only spelling (post: set, hooks: unset) folds into `hooks`
     /// and emits a DEPRECATION warning that points at the canonical name.
     #[test]
+    #[serial_test::serial(tracing)]
     fn legacy_post_only_folds_and_warns() {
         let captured = capture_warnings(|| {
             let mut cfg = HooksConfig {
@@ -374,6 +375,7 @@ mod tests {
     /// Both spellings set: `hooks:` wins, `post:` is dropped, and the
     /// emitted warning explicitly calls out the conflict.
     #[test]
+    #[serial_test::serial(tracing)]
     fn both_present_keeps_hooks_drops_post_and_warns() {
         let captured = capture_warnings(|| {
             let mut cfg = HooksConfig {
@@ -406,6 +408,7 @@ mod tests {
 
     /// Canonical `hooks:`-only block emits no warning and stays as-is.
     #[test]
+    #[serial_test::serial(tracing)]
     fn canonical_hooks_only_emits_no_warning() {
         let captured = capture_warnings(|| {
             let mut cfg = HooksConfig {
@@ -578,6 +581,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tracing)]
     fn empty_block_neither_spelling_stays_empty_and_silent() {
         // (false, false) arm: empty block, nothing folds and nothing warns.
         let captured = capture_warnings(|| {
@@ -596,6 +600,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tracing)]
     fn empty_post_vec_does_not_trigger_fold_or_warn() {
         // is_some_and(|v| !v.is_empty()) means an empty post vec is treated as
         // absent — it must not fold into hooks nor warn.

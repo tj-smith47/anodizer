@@ -411,3 +411,70 @@ mod tag_family_tests {
         assert!(tag_in_family(&minted, "core-v{{ Version }}", Some("sub/")));
     }
 }
+
+mod repository_unreadable_tests {
+    use super::*;
+    use crate::git::tags::position::{RepositoryUnreadable, get_tags_at_sha_in};
+
+    /// A repository with one empty commit, so `git tag --points-at` has a
+    /// revision to answer about.
+    fn init_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "test")
+                        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                        .env("GIT_COMMITTER_NAME", "test")
+                        .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                    cmd
+                },
+                "git",
+            );
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init"]);
+        run(&["commit", "--allow-empty", "-m", "initial"]);
+    }
+
+    #[test]
+    #[serial_test::serial(tracing)]
+    fn tags_at_fails_when_git_refuses_the_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = get_tags_at_sha_in(tmp.path(), "HEAD")
+            .expect_err("a repository git cannot read is not an empty tag list");
+        let unreadable = err
+            .downcast_ref::<RepositoryUnreadable>()
+            .unwrap_or_else(|| panic!("expected RepositoryUnreadable, got {err:#}"));
+        assert!(
+            unreadable.message.contains("not a git repository"),
+            "git's own text must reach the caller: {unreadable}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(tracing)]
+    fn tags_at_surfaces_git_stderr_on_a_non_zero_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let captured = crate::git::tests::capture_tracing_warnings(|| {
+            let tags = get_tags_at_sha_in(tmp.path(), "--badflag")
+                .expect("a revision question git answered is still the empty case");
+            assert!(tags.is_empty(), "got {tags:?}");
+        });
+        assert!(
+            captured.contains("exited non-zero"),
+            "the non-zero exit must be reported: {captured}"
+        );
+        assert!(
+            captured.contains("malformed object name"),
+            "git's own stderr must reach the log: {captured}"
+        );
+    }
+}

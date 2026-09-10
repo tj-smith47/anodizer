@@ -74,7 +74,7 @@ pub use status::{
     local_git_user_email_in, local_git_user_name, local_git_user_name_in,
 };
 pub use tags::{
-    AtomicPushSpec, TagPosition, create_and_push_tag, create_and_push_tag_in,
+    AtomicPushSpec, RepositoryUnreadable, TagPosition, create_and_push_tag, create_and_push_tag_in,
     create_tag_local_only, delete_local_tag_in, delete_remote_tag_in, excluded_sibling_prefixes,
     extract_tag_prefix, filter_ignored_tags, find_latest_tag_matching, find_latest_tag_matching_in,
     find_latest_tag_matching_with_prefix, find_latest_tag_matching_with_prefix_in,

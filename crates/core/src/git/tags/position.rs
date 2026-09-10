@@ -175,11 +175,34 @@ pub fn get_tags_at_head_in(cwd: &Path) -> Result<Vec<String>> {
     get_tags_at_sha_in(cwd, "HEAD")
 }
 
+/// git refused to read the repository at all, rather than answering that a
+/// revision carries no tags.
+///
+/// The canonical cause is `detected dubious ownership in repository at
+/// '<path>'`; a path that is not a work tree and a corrupt object store report
+/// the same way. Callers that would otherwise read an empty tag list as "there
+/// is nothing to release" downcast to this to tell the two apart.
+#[derive(Debug)]
+pub struct RepositoryUnreadable {
+    /// git's own message, with any credential-bearing URL redacted.
+    pub message: String,
+}
+
+impl std::fmt::Display for RepositoryUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "git refused to read the repository: {}", self.message)
+    }
+}
+
+impl std::error::Error for RepositoryUnreadable {}
+
 /// Return all tags that point at the given commit (any revision spec).
 ///
-/// Runs `git tag --points-at <sha>`. Failures (unknown sha, not a git
-/// repo) return `Ok(vec![])` rather than an error so callers can treat
-/// "no tags at that ref" as the empty case.
+/// Runs `git tag --points-at <sha>`. A revision that simply carries no tags
+/// yields `Ok(vec![])`, so callers can treat "no tags at that ref" as the empty
+/// case; a repository git refuses to read yields a [`RepositoryUnreadable`]
+/// error instead, because an empty list would misreport it as "nothing to
+/// release".
 pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
         .current_dir(cwd)
@@ -189,14 +212,20 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {
-        // A real git failure (corrupt repo, bad sha that isn't merely
-        // "unknown") must not masquerade as "no tags here". Warn with the
-        // stderr so the empty result isn't silently misread as a clean
-        // no-tags case.
         let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail = crate::redact::redact_process_env(stderr.trim());
+        // Exit 128 is git's "I could not read this repository" code — dubious
+        // ownership, a path that is not a work tree, a corrupt object store.
+        // Every other non-zero exit is a revision question git answered.
+        if out.status.code() == Some(128) {
+            return Err(anyhow::Error::new(RepositoryUnreadable { message: detail }));
+        }
+        // A real git failure (bad sha that isn't merely "unknown") must not
+        // masquerade as "no tags here". Warn with the stderr so the empty
+        // result isn't silently misread as a clean no-tags case.
         tracing::warn!(
             sha = sha,
-            stderr = %stderr.trim(),
+            stderr = %detail,
             "git tag --points-at exited non-zero; returning no tags"
         );
         return Ok(Vec::new());

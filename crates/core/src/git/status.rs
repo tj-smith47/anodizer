@@ -75,9 +75,19 @@ pub fn is_git_repo() -> bool {
 
 /// Check whether `cwd` is inside a git repository.
 ///
-/// Path-taking sibling of [`is_git_repo`].
+/// Path-taking sibling of [`is_git_repo`]. A failed check is reported through
+/// `tracing` at `warn` before `false` is returned, so a repository git refuses
+/// to read — the canonical case being `detected dubious ownership in repository
+/// at '<path>'` — is distinguishable from a directory that is genuinely not a
+/// repository.
 pub fn is_git_repo_in(cwd: &Path) -> bool {
-    git_output_in(cwd, &["rev-parse", "--git-dir"]).is_ok()
+    match git_output_in(cwd, &["rev-parse", "--git-dir"]) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("git repository check failed: {e}");
+            false
+        }
+    }
 }
 
 /// Return the `git status --porcelain` output showing dirty files.
@@ -184,6 +194,37 @@ mod tests {
         std::fs::write(dir.join("README"), "init").unwrap();
         run(&["add", "."]);
         run(&["commit", "-m", "initial"]);
+    }
+
+    #[test]
+    #[serial_test::serial(tracing)]
+    fn is_git_repo_in_warns_when_git_refuses_the_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let captured = crate::git::tests::capture_tracing_warnings(|| {
+            assert!(!is_git_repo_in(tmp.path()));
+        });
+        assert!(
+            captured.contains("git repository check failed"),
+            "a refused repository check must be reported: {captured}"
+        );
+        assert!(
+            captured.contains("not a git repository"),
+            "git's own text must reach the log: {captured}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(tracing)]
+    fn is_git_repo_in_is_silent_for_a_real_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let captured = crate::git::tests::capture_tracing_warnings(|| {
+            assert!(is_git_repo_in(tmp.path()));
+        });
+        assert!(
+            captured.is_empty(),
+            "a readable repository warns about nothing: {captured}"
+        );
     }
 
     #[test]
