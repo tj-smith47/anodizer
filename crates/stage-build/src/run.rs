@@ -19,7 +19,7 @@ use super::targets::{
 };
 use super::validation::{strip_glibc_suffix, target_for_validation};
 use super::workspace::{
-    cargo_target_dir_with_env, check_workspace_package, ensure_targets_installed,
+    TargetPrep, cargo_target_dir_with_env, check_workspace_package, ensure_targets_installed,
 };
 
 use crate::prebuilt::{no_default_binary_reason, plan_prebuilt_build};
@@ -119,20 +119,15 @@ impl Stage for super::BuildStage {
         // -----------------------------------------------------------------
 
         {
-            let unique_targets: Vec<String> = {
-                let mut seen = std::collections::HashSet::new();
-                build_jobs
-                    .iter()
-                    .filter_map(|j| {
-                        if seen.insert(j.target.clone()) {
-                            Some(j.target.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-            ensure_targets_installed(ctx, &unique_targets, &log, dry_run)?;
+            let preps: Vec<TargetPrep> = build_jobs
+                .iter()
+                .map(|j| TargetPrep {
+                    target: j.target.clone(),
+                    dir: std::path::PathBuf::from(&j.crate_path),
+                    env: j.build_env.clone(),
+                })
+                .collect();
+            ensure_targets_installed(ctx, &preps, &log, dry_run)?;
         }
 
         // -----------------------------------------------------------------

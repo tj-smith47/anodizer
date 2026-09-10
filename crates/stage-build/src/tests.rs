@@ -3218,7 +3218,7 @@ fn test_rustup_target_add_failure_is_hard_error() {
     // strict_guard "rustup not found" branch — that's fine, the
     // hard-error contract still holds for the rustup-present case.
     let bogus_target = "definitely-not-a-real-target-zzz".to_string();
-    let result = ensure_targets_installed(&ctx, std::slice::from_ref(&bogus_target), &log, false);
+    let result = ensure_targets_installed(&ctx, &[target_prep(&bogus_target)], &log, false);
 
     // Detect rustup presence by attempting the same probe the helper uses.
     // Pin cwd: a peer test that deletes the process-global cwd would otherwise
@@ -3265,7 +3265,7 @@ fn test_glibc_suffixed_host_target_is_stripped_and_skipped() {
     let log = ctx.logger("build");
 
     let pinned_host = format!("{host}.2.28");
-    let result = ensure_targets_installed(&ctx, std::slice::from_ref(&pinned_host), &log, false);
+    let result = ensure_targets_installed(&ctx, &[target_prep(&pinned_host)], &log, false);
     assert!(
         result.is_ok(),
         "a glibc-pinned host target must be stripped, matched as host, and \
@@ -3298,8 +3298,11 @@ fn test_duplicate_glibc_pins_collapse_to_single_rustup_call() {
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let (log, capture) = StageLogger::with_capture("build", Verbosity::Normal);
 
-    let targets = vec![format!("{other}.2.28"), format!("{other}.2.17")];
-    let result = ensure_targets_installed(&ctx, &targets, &log, true);
+    let preps = vec![
+        target_prep(&format!("{other}.2.28")),
+        target_prep(&format!("{other}.2.17")),
+    ];
+    let result = ensure_targets_installed(&ctx, &preps, &log, true);
     assert!(result.is_ok(), "dry-run must not error: {result:?}");
 
     let would_run: Vec<String> = capture
@@ -3640,5 +3643,144 @@ edition = "2021"
         binaries[0].metadata.get("binary").map(String::as_str),
         Some(binary_or_crate_name(&krate, &build).as_str()),
         "the produced artifact's binary metadata must equal the shared fallback helper's answer"
+    );
+}
+
+// -----------------------------------------------------------------------
+// rustup target preparation runs in the build's own directory and env
+// -----------------------------------------------------------------------
+
+/// A [`TargetPrep`] for a target prepared from the repository root with no
+/// build env — the shape every pre-existing rustup test drove.
+fn target_prep(target: &str) -> crate::workspace::TargetPrep {
+    crate::workspace::TargetPrep {
+        target: target.to_string(),
+        dir: std::path::PathBuf::new(),
+        env: std::collections::HashMap::new(),
+    }
+}
+
+/// A non-host Linux triple, so the preparation reaches the spawn rather than
+/// the host short-circuit.
+#[cfg(unix)]
+fn non_host_triple() -> &'static str {
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    if host.starts_with("x86_64") {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    }
+}
+
+/// Install a fake `rustup` that appends its working directory to `probe` on
+/// every invocation, and return the env that puts it on the child's PATH.
+#[cfg(unix)]
+fn fake_rustup(bin_dir: &std::path::Path, probe: &std::path::Path) -> HashMap<String, String> {
+    std::fs::create_dir_all(bin_dir).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &bin_dir.join("rustup"),
+        "printf '%s\\n' \"$PWD\" >> \"$RUSTUP_PROBE_OUT\"\nexit 0\n",
+    );
+    HashMap::from([
+        ("PATH".to_string(), bin_dir.to_string_lossy().into_owned()),
+        (
+            "RUSTUP_PROBE_OUT".to_string(),
+            probe.to_string_lossy().into_owned(),
+        ),
+    ])
+}
+
+#[cfg(unix)]
+fn probe_lines(probe: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(probe)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.to_string())
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn rustup_prep_runs_in_the_build_directory() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let probe = tmp.path().join("probe.txt");
+    let env = fake_rustup(&tmp.path().join("bin"), &probe);
+    let build_dir = tmp.path().join("crates/app");
+    std::fs::create_dir_all(&build_dir).unwrap();
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let log = ctx.logger("build");
+    crate::workspace::ensure_targets_installed(
+        &ctx,
+        &[crate::workspace::TargetPrep {
+            target: non_host_triple().to_string(),
+            dir: build_dir.clone(),
+            env,
+        }],
+        &log,
+        false,
+    )
+    .expect("preparation must succeed");
+
+    let seen = probe_lines(&probe);
+    let expected = std::fs::canonicalize(&build_dir).unwrap();
+    assert_eq!(
+        seen.len(),
+        1,
+        "one preparation, one invocation; got {seen:?}"
+    );
+    assert_eq!(
+        std::fs::canonicalize(&seen[0]).unwrap(),
+        expected,
+        "rustup must resolve its toolchain from the build's own directory"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn rustup_prep_dedups_per_target_and_directory() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let probe = tmp.path().join("probe.txt");
+    let env = fake_rustup(&tmp.path().join("bin"), &probe);
+    let a = tmp.path().join("crates/a");
+    let b = tmp.path().join("crates/b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+
+    let target = non_host_triple().to_string();
+    let prep = |dir: &std::path::Path| crate::workspace::TargetPrep {
+        target: target.clone(),
+        dir: dir.to_path_buf(),
+        env: env.clone(),
+    };
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let log = ctx.logger("build");
+    crate::workspace::ensure_targets_installed(&ctx, &[prep(&a), prep(&a), prep(&b)], &log, false)
+        .expect("preparation must succeed");
+
+    let seen: std::collections::HashSet<std::path::PathBuf> = probe_lines(&probe)
+        .iter()
+        .map(|l| std::fs::canonicalize(l).unwrap())
+        .collect();
+    assert_eq!(
+        probe_lines(&probe).len(),
+        2,
+        "the repeated directory collapses, the second directory does not; got {:?}",
+        probe_lines(&probe)
+    );
+    assert_eq!(
+        seen,
+        std::collections::HashSet::from([
+            std::fs::canonicalize(&a).unwrap(),
+            std::fs::canonicalize(&b).unwrap()
+        ]),
+        "one preparation per distinct build directory"
     );
 }

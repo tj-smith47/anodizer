@@ -208,24 +208,43 @@ pub(crate) fn resolve_copy_from(
 /// For each unique non-host target, run `rustup target add` to ensure the
 /// target toolchain is installed. If `rustup` is not available (e.g. when
 /// using cargo-cross or a pre-configured environment), this is silently skipped.
+/// One target that must exist before a build job can compile, together with
+/// the directory and environment that job compiles in.
+///
+/// `rustup target add` resolves the toolchain from its working directory (a
+/// per-crate `rust-toolchain.toml`) and from `RUSTUP_TOOLCHAIN` / `RUSTUP_HOME`
+/// / `CARGO_HOME` in its environment, so preparing a target outside the build's
+/// own context can install it for the wrong toolchain — or report success while
+/// the build still fails with "no such target".
+pub(crate) struct TargetPrep {
+    /// The build job's `--target` value, glibc pin included.
+    pub target: String,
+    /// The build job's working directory.
+    pub dir: PathBuf,
+    /// The build job's fully-rendered `builds[].env` map.
+    pub env: HashMap<String, String>,
+}
+
 pub(crate) fn ensure_targets_installed(
     ctx: &Context,
-    targets: &[String],
+    preps: &[TargetPrep],
     log: &anodizer_core::log::StageLogger,
     dry_run: bool,
 ) -> Result<()> {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
-    for target in targets {
+    for prep in preps {
         // A `*-linux-gnu.<ver>` / `*-linux-musl.<ver>` glibc pin is a
         // cargo-zigbuild `--target` concept; rustup only knows the bare
         // triple. Strip the suffix before both the host-skip check and the
         // rustup arg, and de-dup so two pins on the same triple add once.
-        let rustup_target = strip_glibc_suffix(target).0;
+        let rustup_target = strip_glibc_suffix(&prep.target).0;
         if rustup_target == host {
             continue;
         }
-        if !seen.insert(rustup_target) {
+        // The same triple prepared from two directories resolves a different
+        // toolchain in each, so both preparations must run.
+        if !seen.insert((rustup_target.to_string(), prep.dir.clone())) {
             continue;
         }
         if dry_run {
@@ -234,13 +253,22 @@ pub(crate) fn ensure_targets_installed(
             ));
             continue;
         }
+        // An empty `crate_path` names the repository root.
+        let dir: &Path = if prep.dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            &prep.dir
+        };
         let output = Command::new("rustup")
             .args(["target", "add", rustup_target])
+            .current_dir(dir)
+            .envs(&prep.env)
             .output();
         match output {
             Ok(o) if o.status.success() => {
                 log.verbose(&format!(
-                    "ensured rustup target {rustup_target} is installed"
+                    "ensured rustup target {rustup_target} is installed in {}",
+                    dir.display()
                 ));
             }
             Ok(o) => {
