@@ -7145,7 +7145,15 @@ fn round_trip_archive(format: &str, path: &Path) -> HashMap<String, Vec<u8>> {
                 &mut content,
             )
             .unwrap_or_else(|e| panic!("[{format}] decode: {e}"));
-            HashMap::from([("payload".to_string(), content)])
+            // A single-file codec stores no entry table, so the name the
+            // archive stands for is the one the writer stripped the suffix
+            // from — assert on that rather than on a synthetic key.
+            let name = path
+                .file_stem()
+                .unwrap_or_else(|| panic!("[{format}] output has no stem"))
+                .to_string_lossy()
+                .into_owned();
+            HashMap::from([(name, content)])
         }
         "xz" => {
             let mut content = Vec::new();
@@ -7154,7 +7162,15 @@ fn round_trip_archive(format: &str, path: &Path) -> HashMap<String, Vec<u8>> {
                 &mut content,
             )
             .unwrap_or_else(|e| panic!("[{format}] decode: {e}"));
-            HashMap::from([("payload".to_string(), content)])
+            // A single-file codec stores no entry table, so the name the
+            // archive stands for is the one the writer stripped the suffix
+            // from — assert on that rather than on a synthetic key.
+            let name = path
+                .file_stem()
+                .unwrap_or_else(|| panic!("[{format}] output has no stem"))
+                .to_string_lossy()
+                .into_owned();
+            HashMap::from([(name, content)])
         }
         other => panic!("no round-trip decoder for {other}"),
     }
@@ -7184,6 +7200,11 @@ fn every_format_syncs_its_archive_file() {
         assert!(
             entries.values().any(|v| v == b"binary content"),
             "[{format}] archive does not round-trip its payload; got {:?}",
+            entries.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            entries.keys().any(|k| k.ends_with("myapp")),
+            "[{format}] archive does not name the file it packed; got {:?}",
             entries.keys().collect::<Vec<_>>()
         );
     }
@@ -7285,25 +7306,33 @@ fn copy_binary_keeps_the_executable_bit() {
     );
 }
 
+/// Every writer that opens an output file closes it through
+/// `finish_archive_file`, pinned as a RATIO rather than a hand-written total:
+/// a writer added with its own `File::create` and no helper call moves one side
+/// of the equality and fails here.
 #[test]
-fn every_archive_writer_finishes_through_the_helper() {
-    // Thirteen writer sites: the seven `formats.rs` codec entry points plus
-    // `copy_binary`, plus the five arms of `write_archive_in_format` that build
-    // their own writer. The `gz` and `xz` arms delegate to
-    // `formats::create_gz`/`create_xz` and must not sync a second time.
-    let mut calls = 0usize;
+fn every_archive_writer_matches_a_finish_call() {
+    let mut opens = 0usize;
+    let mut finishes = 0usize;
     for src in [include_str!("formats.rs"), include_str!("run_helpers.rs")] {
         for line in src.lines() {
             let line = line.trim_start();
             if line.starts_with("//") || line.starts_with("pub(crate) fn finish_archive_file(") {
                 continue;
             }
-            calls += line.matches("finish_archive_file(").count();
+            opens += line.matches("File::create(").count();
+            finishes += line.matches("finish_archive_file(").count();
         }
     }
     assert_eq!(
-        calls, 13,
-        "every archive writer must close through finish_archive_file"
+        opens, finishes,
+        "every File::create in the archive writers must be paired with a \
+         finish_archive_file call ({opens} opened, {finishes} finished)"
+    );
+    assert!(
+        opens >= 13,
+        "the writer population shrank to {opens}; a removed writer needs a \
+         deliberate decision, not a silently smaller pin"
     );
     assert_eq!(
         include_str!("formats.rs").matches("sync_all()").count(),
