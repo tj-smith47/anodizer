@@ -259,8 +259,9 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // Collapse target triples to the installer's `os-arch` key vocabulary,
     // keeping the libc class alongside it. `*-linux-gnu` and `*-linux-musl`
     // both reduce to `linux-amd64` but are NOT interchangeable — a glibc binary
-    // cannot run on a musl host — so each keeps its own arm and the script
-    // probes the host's libc to choose. What genuinely aliases is the `all`
+    // cannot run on a musl host — so each keeps its own arm (unless they name
+    // one asset, collapsed below) and the script probes the host's libc to
+    // choose between them. What genuinely aliases is the `all`
     // universal fanning into amd64/arm64; [`record_arm`] gives it the worst
     // rank, so it only fills a key no arch-specific build claimed, since no
     // `uname -m` can ever produce "all".
@@ -300,6 +301,35 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         }
     }
 
+    // Two libc classes on one platform only need separate arms when they name
+    // DIFFERENT assets. A `name_template` keyed on `{{ Os }}`/`{{ Arch }}`
+    // renders one filename for both triples, so splitting there would advertise
+    // a `-musl` platform the release never uploads and hand every host the same
+    // download behind a probe that decides nothing.
+    let by_key: BTreeMap<String, Vec<&'static str>> = arms.keys().fold(
+        BTreeMap::new(),
+        |mut acc: BTreeMap<String, Vec<&'static str>>, (key, libc)| {
+            acc.entry(key.clone()).or_default().push(libc);
+            acc
+        },
+    );
+    for (key, libcs) in by_key {
+        if libcs.len() < 2 {
+            continue;
+        }
+        let distinct: BTreeSet<(String, String)> = libcs
+            .iter()
+            .filter_map(|libc| arms.get(&(key.clone(), *libc)))
+            .map(|(_, asset, format)| (asset.clone(), format.clone()))
+            .collect();
+        if distinct.len() > 1 {
+            continue;
+        }
+        for libc in libcs.iter().skip(1) {
+            arms.remove(&(key.clone(), *libc));
+        }
+    }
+
     // Which released tokens the generated detect arms can actually emit. A
     // token with no row in the detection tables (the mips family, illumos)
     // makes every asset arm keyed by it unreachable — the release ships the
@@ -313,8 +343,9 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     };
 
     // A platform ships two libc classes when both a gnu-ish and a musl triple
-    // reduce to the same `os-arch` key. Only then do the arms need a libc
-    // suffix — and only then does the script need a probe to produce one.
+    // reduce to the same `os-arch` key AND upload different files. Only then do
+    // the arms need a libc suffix — and only then does the script need a probe
+    // to produce one.
     let mut per_key: BTreeMap<&str, usize> = BTreeMap::new();
     for (key, _) in arms.keys() {
         *per_key.entry(key.as_str()).or_default() += 1;
@@ -377,7 +408,14 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
             )
         })
         .collect();
-    let formats: BTreeSet<String> = arms.values().map(|(_, _, format)| format.clone()).collect();
+    // Only the arms a `uname` pair can actually select constrain the generator:
+    // a format on an unreachable key is never extracted, so it must not gate
+    // the render.
+    let formats: BTreeSet<String> = arms
+        .iter()
+        .filter(|((key, _), _)| key_is_reachable(key))
+        .map(|(_, (_, _, format))| format.clone())
+        .collect();
     Ok(InstallerCases {
         asset_cases: lines.join("\n"),
         detect_os_cases: render_uname_cases(UNAME_OS_CASES, &released_os),
@@ -998,6 +1036,36 @@ mod tests {
         assert_eq!(cases.detect_libc, "");
     }
 
+    /// Both libcs rendering the SAME asset name is not a split: an
+    /// `{{ Os }}`/`{{ Arch }}` `name_template` collapses the gnu and musl
+    /// triples onto one filename, so two arms would point at one file and the
+    /// error text would advertise a `-musl` platform the release never
+    /// uploads.
+    #[test]
+    fn same_asset_for_both_libcs_does_not_split() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+        let mut ctx = anodize_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+
+        assert_eq!(arms.len(), 1, "one asset means one arm: {arms:?}");
+        assert_eq!(
+            arms.get("linux-amd64").map(String::as_str),
+            Some("anodizer-0.13.0-linux-amd64.tar.gz"),
+            "the surviving arm keeps the plain key: {arms:?}"
+        );
+        assert_eq!(cases.asset_case_subject, "${OS}-${ARCH}");
+        assert_eq!(
+            cases.detect_libc, "",
+            "a probe that cannot change the outcome must not be emitted"
+        );
+        assert_eq!(cases.supported_platforms, "linux-amd64");
+    }
+
     /// The libc class is read from the whole triple, not a `-gnu`/`-musl`
     /// suffix: the 32-bit arm pair spells it `gnueabihf` / `musleabihf`.
     #[test]
@@ -1141,6 +1209,40 @@ mod tests {
             cases.supported_platforms,
             "darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 \
              windows-amd64 windows-arm64"
+        );
+    }
+
+    /// `formats` describes what the script will actually extract, so a format
+    /// that reaches only an unreachable arm must not appear: no `uname` pair
+    /// selects an illumos key, so a generator must not refuse the render over
+    /// the single-file format that arm carries.
+    #[test]
+    fn formats_omit_unreachable_arms() {
+        let mut ctx = anodize_ctx(None);
+        {
+            let ArchivesConfig::Configs(configs) = &mut ctx.config.crates[0].archives else {
+                unreachable!("the fixture configures explicit archives");
+            };
+            configs.truncate(1);
+            configs[0].format_overrides = Some(vec![FormatOverride {
+                os: "illumos".to_string(),
+                formats: Some(vec!["binary".to_string()]),
+            }]);
+        }
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-illumos".to_string(),
+        ]);
+
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        assert!(
+            parse_arms(&cases.asset_cases).contains_key("illumos-amd64"),
+            "the release ships the asset, so the arm is still emitted"
+        );
+        assert_eq!(
+            cases.formats,
+            BTreeSet::from(["tar.gz".to_string()]),
+            "only the formats a reachable arm selects constrain the generator"
         );
     }
 
