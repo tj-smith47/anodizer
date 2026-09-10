@@ -596,25 +596,17 @@ fn package_identifier_is_rendered_at_one_seam_only() {
     );
 
     // Structural half: the behavioural assertions above all read the seam's
-    // output, so they cannot see a SECOND render appearing elsewhere.
+    // output, so they cannot see a SECOND render appearing elsewhere. A render
+    // of this field cannot exist without naming it, and no formatting moves a
+    // string literal, so the label is counted rather than the lines around a
+    // call.
     let mut sites = Vec::new();
     let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for source in anodizer_core::test_helpers::test_sources::rust_sources(&src_root) {
         let text = std::fs::read_to_string(&source).expect("readable source");
         let prod = anodizer_core::test_helpers::test_sources::production_half(&text);
-        let code: Vec<&str> = prod
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect();
-        for (i, line) in code.iter().enumerate() {
-            let renders = line.contains("render_or_warn(") || line.contains("render_template(");
-            if renders
-                && code[i..code.len().min(i + 3)]
-                    .iter()
-                    .any(|l| l.contains("package_identifier"))
-            {
-                sites.push(format!("{}: {}", source.display(), line.trim()));
-            }
+        for _ in 0..prod.matches("\"winget.package_identifier\"").count() {
+            sites.push(source.display().to_string());
         }
     }
     assert_eq!(

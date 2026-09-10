@@ -271,8 +271,8 @@ pub(crate) fn collect_winget_target(
     // `derive_winget_config` rendered the owner onto the config above.
     let fork_owner = repo_owner;
 
-    let version = ctx.version();
     let package_id = super::identifier::package_identifier_of(cfg);
+    let version = ctx.version();
     let auto_branch = format!("{}-{}", package_id, version);
     let branch = crate::util::resolve_branch(ctx, cfg.repository.as_ref()).unwrap_or(auto_branch);
 
