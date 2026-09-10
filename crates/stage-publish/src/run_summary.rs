@@ -553,10 +553,10 @@ pub enum PublishDisposition {
 /// Output shape once rendered (operator-facing):
 ///
 /// ```text
-/// • github-release   Assets     required  succeeded
-/// • homebrew         Manager    optional  failed
-/// • cargo            Submitter  required  skipped-submitter-gated
-/// • run flags        submitter_gated=false announce_gated=true
+///      • github-release   Assets     required  succeeded
+///      • homebrew         Manager    optional  failed  (2 entries skipped)
+///      • cargo            Submitter  required  skipped-submitter-gated
+///      • run flags        submitter_gated=false announce_gated=true
 /// ```
 ///
 /// With zero publisher results a single placeholder row stands in for
@@ -566,8 +566,8 @@ pub enum PublishDisposition {
 /// configuration read very differently to an operator:
 ///
 /// ```text
-/// • publishers   none ran (publish stages did not run)
-/// • run flags    submitter_gated=false announce_gated=false
+///      • publishers   none ran (publish stages did not run)
+///      • run flags    submitter_gated=false announce_gated=false
 /// ```
 pub fn status_table_rows(
     summary: &RunSummary,

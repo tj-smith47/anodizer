@@ -547,12 +547,14 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
     );
 }
 
-/// The premise behind `is_test_file`'s name match: every `tests.rs` and
-/// `<name>_tests.rs` under `crates/*/src` is declared `mod <stem>;` under a
-/// test-only `cfg` by its parent module (`mod.rs`/`lib.rs`/`main.rs` beside
-/// it, or the 2018-layout `<dir>.rs`), with the attribute on the item's line
-/// or in the contiguous run of attribute and comment lines directly above it.
-/// A file that matches the name but is compiled into production would be
+/// The premise behind `is_test_file`'s name match: every test source the
+/// scanner names under `crates/*/src` — a `tests.rs` file, a `<name>_tests.rs`
+/// file, and a whole `tests/` module directory, which matches no name rule of
+/// its own and is claimed by its directory name — is declared `mod <stem>;`
+/// under a test-only `cfg` by its parent module (`mod.rs`/`lib.rs`/`main.rs`
+/// beside it, or the 2018-layout `<dir>.rs`), with the attribute on the item's
+/// line or in the contiguous run of attribute and comment lines directly above
+/// it. A path that matches by name but is compiled into production would be
 /// skipped by the production-only scanners and reported by the test-only
 /// ones — both wrong.
 #[test]
