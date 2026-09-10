@@ -2078,3 +2078,69 @@ fn upload_pace_spaces_successive_upload_starts() {
 // `forge::tests::upload_pace_delay_tests` (pure `upload_pace_delay`), not
 // by comparing two wall-clock runs here — that comparison was load-flaky
 // under concurrent test hosts and false-reds the release gate.
+
+// ---------------------------------------------------------------------
+// An immutable release for the tag: fail fast, upload nothing.
+// ---------------------------------------------------------------------
+#[test]
+fn immutable_release_for_the_tag_fails_before_any_upload() {
+    let tmp = TempDir::new().expect("tempdir");
+    let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+
+    // A PUBLISHED release for v1.2.3 that GitHub marks immutable: it can
+    // neither be PATCHed nor have assets replaced.
+    let mut release: serde_json::Value =
+        serde_json::from_str(&release_json(addr, 42, false, "v1.2.3")).expect("release json");
+    release["immutable"] = serde_json::Value::Bool(true);
+    let immutable = release.to_string();
+
+    let routes = vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+        response: http_ok(immutable),
+        times: None,
+    }];
+    let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+    let ctx = build_ctx(addr);
+    let crate_cfg = build_crate_cfg();
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let token = Some("test-token".to_string());
+    let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+    let anc = spec_ancillary_default();
+    // `keep-existing` (any mode but "replace") is what makes the backend look
+    // the tag up before creating — the lookup this guard reads.
+    let spec = GithubReleaseSpec {
+        mode: "keep-existing",
+        ..make_spec(&anc)
+    };
+
+    let err = run_backend(
+        &rt,
+        &ctx,
+        &token,
+        &crate_cfg,
+        &spec,
+        &base_opts(),
+        &artifacts,
+    )
+    .expect_err("an immutable release must abort the run");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("v1.2.3") && msg.contains("immutable"),
+        "the error must name the tag and why it is refused; got: {msg}"
+    );
+
+    let entries = log.lock().expect("log mutex");
+    assert!(
+        entries.iter().all(|e| e.method == "GET"),
+        "nothing may be created, patched or uploaded: {:?}",
+        entries
+            .iter()
+            .map(|e| (e.method.clone(), e.path.clone()))
+            .collect::<Vec<_>>()
+    );
+}

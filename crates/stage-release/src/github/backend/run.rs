@@ -238,6 +238,22 @@ pub(crate) fn run_github_backend(
             }
         };
 
+        // An immutable release can neither be updated nor have its assets
+        // replaced, so every PATCH and every upload this run would attempt is
+        // already refused. Fail fast naming the tag instead of uploading the
+        // whole artifact set and surfacing GitHub's error at the end.
+        if let Some(ref existing) = existing_by_tag
+            && existing.immutable == Some(true)
+        {
+            anyhow::bail!(
+                "release: '{}' already exists on {}/{} as an immutable release; \
+                 it cannot be updated",
+                tag,
+                github.owner,
+                github.name
+            );
+        }
+
         // A release found by tag that is still a draft is, by anodizer's
         // draft-then-publish invariant, debris from an incomplete prior
         // attempt: a successful run always flips draft=false, and a draft's
