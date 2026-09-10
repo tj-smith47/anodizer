@@ -537,7 +537,7 @@ Per-publisher `outcome` in the report uses this fixed set:
 
 ```
 Succeeded
-Skipped(AlreadyPublished | SubmitterGated | NotConfigured | Snapshot | DryRun | ConfigSkipped | VerifyGateBlocked)
+Skipped(AlreadyPublished | SubmitterGated | NotConfigured | Snapshot | DryRun | ConfigSkipped | AllEntriesSkipped | VerifyGateBlocked)
 Failed(<message>)
 RolledBack
 RollbackFailed(<message>)
@@ -562,6 +562,14 @@ one of those inactive entries. Distinct from `NotConfigured` (the block is
 absent entirely): a `ConfigSkipped` publisher was registered but had nothing
 active to publish, so it is recorded and never reaches `run()` — never
 reported as `Succeeded` for work it never did.
+
+`AllEntriesSkipped` (`skipped-all-entries-skipped` in the run summary and
+`--summary-json` output) fires when `run()` did execute but every entry it
+iterated disqualified itself — a missing `name:`/`target:`, a half-set
+username/password pair, a half-set `client_x509_cert`/`client_x509_key` pair.
+Each entry's own reason is listed in the intentional-skip block. Distinct from
+`ConfigSkipped`, which is decided before `run()` from `skip:`/`if:` alone; here
+the defects are per-entry and only the run itself can see them.
 
 `VerifyGateBlocked` (`skipped-verify-gate-blocked` in the run summary and
 `--summary-json` output) fires when the pre-submitter verify-release gate

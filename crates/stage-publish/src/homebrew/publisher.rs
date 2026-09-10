@@ -574,8 +574,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             selected.len(),
         ));
         // `processed` counts crates whose configured predicate passed and
-        // whose `publish_to_homebrew` invocation was reached — NOT crates
-        // that pushed. The dry-run / skip_upload paths inside
+        // whose `publish_to_homebrew` invocation reached its work WITHOUT
+        // disqualifying the entry — NOT crates that pushed. The dry-run / skip_upload paths inside
         // `publish_to_homebrew` return Ok(false) without pushing; that's
         // still a successful run of the correct code path, so it must
         // not trigger the no-eligible-crates warning. `any_pushed` (below)
@@ -593,8 +593,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 );
                 continue;
             }
-            processed += 1;
             log.verbose(&run_per_crate_start_message(crate_name));
+            let skips_before = crate::publisher_helpers::entry_skips_recorded(ctx, "homebrew");
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered formula carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
@@ -604,6 +604,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_homebrew(ctx, crate_name, &log),
             )?;
+            if crate::publisher_helpers::entry_skips_recorded(ctx, "homebrew") == skips_before {
+                processed += 1;
+            }
             if pushed {
                 any_pushed = true;
             }
@@ -615,6 +618,12 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
+        crate::publisher_helpers::record_all_entries_skipped(
+            ctx,
+            &log,
+            "homebrew",
+            processed + cask_result.applicable,
+        );
         if should_warn_no_eligible(processed, selected.len(), cask_result.total) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {

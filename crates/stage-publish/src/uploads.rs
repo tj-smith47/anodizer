@@ -29,6 +29,10 @@ pub struct UploadsSummary {
     pub uploaded: usize,
     /// Artifacts skipped because an identical copy already existed.
     pub already_present: usize,
+    /// Entries that reached their upload work — every entry the run did NOT
+    /// disqualify. Zero alongside a recorded skip means the publisher itself
+    /// was skipped, not run.
+    pub entries_run: usize,
 }
 
 impl UploadsSummary {
@@ -142,17 +146,26 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
         // artifactory + uploads share one implementation. `anonymous_ok = true`
         // because generic endpoints (public mirrors, pre-signed URLs) may not
         // need basic-auth; only the half-set state is refused.
-        let (username, password) = crate::http_upload::resolve_http_credentials(
+        let Some((username, password)) = crate::publisher_helpers::absorb_entry_skip(
             ctx,
-            &crate::http_upload::CredentialResolveSpec {
-                publisher: "uploads",
-                entry_name: name,
-                config_username: entry.username.as_deref(),
-                config_password: entry.password.as_deref(),
-                env_prefix: "UPLOAD",
-                anonymous_ok: true,
-            },
-        )?;
+            log,
+            "uploads",
+            name,
+            crate::http_upload::resolve_http_credentials(
+                ctx,
+                &crate::http_upload::CredentialResolveSpec {
+                    publisher: "uploads",
+                    entry_name: name,
+                    config_username: entry.username.as_deref(),
+                    config_password: entry.password.as_deref(),
+                    env_prefix: "UPLOAD",
+                    anonymous_ok: true,
+                },
+            ),
+        )?
+        else {
+            continue;
+        };
         let name_upper = name.to_uppercase().replace('-', "_");
         let named_env_var = format!("UPLOAD_{}_SECRET", name_upper);
 
@@ -262,16 +275,27 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                     url
                 ));
             }
+            summary.entries_run += 1;
             continue;
         }
 
         // --- Live mode ---
-        crate::http_upload::validate_mtls_pair(
+        if crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
             "uploads",
             name,
-            entry.client_x509_cert.as_deref(),
-            entry.client_x509_key.as_deref(),
-        )?;
+            crate::http_upload::validate_mtls_pair(
+                "uploads",
+                name,
+                entry.client_x509_cert.as_deref(),
+                entry.client_x509_key.as_deref(),
+            ),
+        )?
+        .is_none()
+        {
+            continue;
+        }
 
         let client = build_reqwest_client(
             entry.client_x509_cert.as_deref(),
@@ -279,6 +303,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             entry.trusted_certificates.as_deref(),
         )?;
 
+        summary.entries_run += 1;
         let artifacts = collect_upload_artifacts_owned(
             ctx,
             "uploads",
@@ -617,6 +642,12 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 anodizer_core::SkipReason::AlreadyPublished,
             ));
         }
+        crate::publisher_helpers::record_all_entries_skipped(
+            ctx,
+            &log,
+            "uploads",
+            summary.entries_run,
+        );
         let mut evidence = anodizer_core::PublishEvidence::new("uploads");
         let targets = collect_upload_targets(ctx);
         if let Some(first) = targets.first() {
@@ -1010,6 +1041,156 @@ mod tests {
         );
     }
 
+    /// Build a live (non-dry-run) context over the given entries with the env
+    /// sealed empty, so credential resolution sees only what the config sets.
+    fn live_entries_ctx(entries: Vec<UploadConfig>) -> Context {
+        let mut config = Config::default();
+        config.uploads = Some(entries);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.set_env_source(MapEnvSource::new());
+        ctx
+    }
+
+    fn captured(capture: &LogCapture) -> String {
+        capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A username with no password disqualifies its own entry only: the entry
+    /// after it still reaches its artifact scan.
+    #[test]
+    fn a_half_configured_credential_does_not_stop_the_next_entry() {
+        let ctx = live_entries_ctx(vec![
+            UploadConfig {
+                name: Some("half".to_string()),
+                target: "https://uploads.example.com/half/".to_string(),
+                username: Some("deployer".to_string()),
+                ..Default::default()
+            },
+            UploadConfig {
+                name: Some("named".to_string()),
+                target: "https://uploads.example.com/named/".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let (log, capture) =
+            StageLogger::with_capture("uploads", anodizer_core::log::Verbosity::Normal);
+        publish_uploads(&ctx, &log).expect("a half-configured entry must not fail the publisher");
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].label, "half");
+        assert!(
+            events[0].reason.contains("username set but no password"),
+            "unexpected reason: {}",
+            events[0].reason
+        );
+        let logged = captured(&capture);
+        assert!(
+            logged.contains("no matching upload artifacts for 'named'"),
+            "the entry after the skipped one must still run; got: {logged}"
+        );
+    }
+
+    /// A client certificate with no key disqualifies its own entry only.
+    #[test]
+    fn a_half_configured_mtls_pair_does_not_stop_the_next_entry() {
+        let ctx = live_entries_ctx(vec![
+            UploadConfig {
+                name: Some("half".to_string()),
+                target: "https://uploads.example.com/half/".to_string(),
+                client_x509_cert: Some("/nonexistent/client.pem".to_string()),
+                ..Default::default()
+            },
+            UploadConfig {
+                name: Some("named".to_string()),
+                target: "https://uploads.example.com/named/".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let (log, capture) =
+            StageLogger::with_capture("uploads", anodizer_core::log::Verbosity::Normal);
+        publish_uploads(&ctx, &log).expect("a half-set mTLS pair must not fail the publisher");
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].label, "half");
+        assert!(
+            events[0]
+                .reason
+                .contains("only one of client_x509_cert / client_x509_key"),
+            "unexpected reason: {}",
+            events[0].reason
+        );
+        let logged = captured(&capture);
+        assert!(
+            logged.contains("no matching upload artifacts for 'named'"),
+            "the entry after the skipped one must still run; got: {logged}"
+        );
+    }
+
+    /// Every entry disqualified itself, so the publisher reports itself
+    /// skipped rather than as a run that happened to publish nothing.
+    #[test]
+    fn every_entry_skipped_reports_the_publisher_as_skipped() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: String::new(),
+            ..Default::default()
+        }]);
+        let mut ctx = dry_run_ctx(config);
+        UploadsPublisher::new()
+            .run(&mut ctx)
+            .expect("an all-skipped publisher must not fail the run");
+        assert!(
+            matches!(
+                ctx.pending_outcome,
+                Some(anodizer_core::PublisherOutcome::Skipped(
+                    anodizer_core::SkipReason::AllEntriesSkipped
+                ))
+            ),
+            "unexpected outcome: {:?}",
+            ctx.pending_outcome
+        );
+    }
+
+    /// One entry skipped while another reached its work is NOT an all-skipped
+    /// publisher — the run must stay a run so its evidence is kept.
+    #[test]
+    fn one_skipped_entry_alongside_a_live_one_still_reports_a_run() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![
+            UploadConfig {
+                name: Some("mirror".to_string()),
+                target: String::new(),
+                ..Default::default()
+            },
+            UploadConfig {
+                name: Some("named".to_string()),
+                target: "https://uploads.example.com/named/".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let mut ctx = dry_run_ctx(config);
+        UploadsPublisher::new().run(&mut ctx).expect("Ok");
+        assert!(
+            ctx.pending_outcome.is_none(),
+            "unexpected outcome: {:?}",
+            ctx.pending_outcome
+        );
+    }
+
     #[test]
     fn missing_name_skips_the_entry() {
         let mut config = Config::default();
@@ -1082,22 +1263,23 @@ mod tests {
     /// mode only; dry-run skips credential validation. No artifacts are
     /// registered so the loop reaches credential resolution and bails there.
     #[test]
-    fn half_set_credentials_error_in_live_mode() {
-        let mut config = Config::default();
-        config.uploads = Some(vec![UploadConfig {
+    fn half_set_credentials_skip_the_entry_in_live_mode() {
+        // NOT dry-run: credential resolution enforces the pair invariant.
+        let ctx = live_entries_ctx(vec![UploadConfig {
             name: Some("mirror".to_string()),
             target: "https://uploads.example.com/".to_string(),
             password: Some("s3cr3t".to_string()),
             ..Default::default()
         }]);
-        // NOT dry-run: credential resolution enforces the pair invariant.
-        let ctx = Context::new(config, ContextOptions::default());
         let log = ctx.logger("uploads");
-        let err = publish_uploads(&ctx, &log).unwrap_err();
-        let msg = err.to_string();
+        publish_uploads(&ctx, &log).expect("a half-set credential must skip, not fail");
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].label, "mirror");
         assert!(
-            msg.contains("username set") || msg.contains("password set"),
-            "expected half-set credential error, got: {msg}"
+            events[0].reason.contains("password set but no username"),
+            "expected half-set credential reason, got: {}",
+            events[0].reason
         );
     }
 
@@ -1615,11 +1797,13 @@ mod tests {
         let s = UploadsSummary {
             uploaded: 0,
             already_present: 3,
+            ..Default::default()
         };
         assert!(s.is_fully_idempotent_skip());
         let s2 = UploadsSummary {
             uploaded: 1,
             already_present: 2,
+            ..Default::default()
         };
         assert!(!s2.is_fully_idempotent_skip());
     }

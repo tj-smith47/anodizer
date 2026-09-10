@@ -147,6 +147,63 @@ pub(crate) fn record_entry_skip(
     ctx.remember_skip(publisher, label, reason);
 }
 
+/// Count the entry skips recorded so far for `publisher`.
+///
+/// Skips land under the publisher's own name or under a `<publisher>-<sub>`
+/// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
+/// spellings are counted. Callers sample this either side of one entry's work
+/// to learn whether that entry disqualified itself.
+pub(crate) fn entry_skips_recorded(
+    ctx: &anodizer_core::context::Context,
+    publisher: &str,
+) -> usize {
+    let sub_prefix = format!("{publisher}-");
+    ctx.skip_memento
+        .snapshot()
+        .iter()
+        .filter(|e| e.stage == publisher || e.stage.starts_with(&sub_prefix))
+        .count()
+}
+
+/// Report a publisher whose every entry disqualified itself as skipped.
+///
+/// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
+/// (`internal/pipe/pipe.go`): a loop that reached no real work, having skipped
+/// each entry it had, reports the pipe as skipped rather than as run —
+/// otherwise a wholly misconfigured publisher is indistinguishable in the run
+/// summary from one that published everything.
+///
+/// `ran` counts entries whose publish work was reached. A publisher that
+/// already recorded its own terminal outcome keeps it.
+pub(crate) fn record_all_entries_skipped(
+    ctx: &mut anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+    publisher: &str,
+    ran: usize,
+) {
+    if ran > 0 || ctx.pending_outcome.is_some() {
+        return;
+    }
+    let sub_prefix = format!("{publisher}-");
+    let reasons: Vec<String> = ctx
+        .skip_memento
+        .snapshot()
+        .into_iter()
+        .filter(|e| e.stage == publisher || e.stage.starts_with(&sub_prefix))
+        .map(|e| e.reason)
+        .collect();
+    if reasons.is_empty() {
+        return;
+    }
+    log.status(&format!(
+        "skipping {publisher} — every configured entry was skipped: {}",
+        reasons.join(", ")
+    ));
+    ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+        anodizer_core::SkipReason::AllEntriesSkipped,
+    ));
+}
+
 /// Resolve the effective list of crates a per-crate publisher should
 /// iterate over.
 ///
@@ -719,6 +776,96 @@ pub(crate) fn targets_allowlist_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Walk the crate's production sources and pair the two halves of the
+    /// entry-skip contract: a publisher that can disqualify one entry must
+    /// also be able to report itself skipped when every entry disqualified,
+    /// or a wholly misconfigured publisher reads as a successful one in the
+    /// run summary. A new entry-skipping publisher fails this until its
+    /// `run()` calls `record_all_entries_skipped`.
+    #[test]
+    fn every_entry_skipping_publisher_evaluates_its_skips() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n == "tests") {
+                        continue;
+                    }
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains("tests"))
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+
+        // The publisher/stage label is the first string literal argument of
+        // each call, on its own line in every call site's formatting.
+        fn labels(sources: &[(std::path::PathBuf, String)], call: &str) -> Vec<String> {
+            let mut out = Vec::new();
+            for (_, text) in sources {
+                for (idx, _) in text.match_indices(call) {
+                    let tail = &text[idx + call.len()..];
+                    let mut lit = None;
+                    for line in tail.lines().take(6) {
+                        if let Some(start) = line.find('"') {
+                            let rest = &line[start + 1..];
+                            if let Some(end) = rest.find('"') {
+                                lit = Some(rest[..end].to_string());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(lit) = lit {
+                        out.push(lit);
+                    }
+                }
+            }
+            out.sort();
+            out.dedup();
+            out
+        }
+
+        // Inline `#[cfg(test)]` modules are cut so this test's own mentions of
+        // the call names are not read as call sites.
+        let sources: Vec<(std::path::PathBuf, String)> = files
+            .into_iter()
+            .map(|p| {
+                let text = std::fs::read_to_string(&p).expect("readable source");
+                let prod =
+                    anodizer_core::test_helpers::test_sources::production_half(&text).to_string();
+                (p, prod)
+            })
+            .collect();
+        let mut skipping = labels(&sources, "absorb_entry_skip(");
+        skipping.extend(labels(&sources, "record_entry_skip("));
+        skipping.sort();
+        skipping.dedup();
+        skipping.retain(|l| l != "publisher" && l != "label");
+        let evaluated = labels(&sources, "record_all_entries_skipped(");
+
+        assert!(
+            !skipping.is_empty() && !evaluated.is_empty(),
+            "the walk found no call sites: skipping={skipping:?} evaluated={evaluated:?}"
+        );
+        for stage in &skipping {
+            assert!(
+                evaluated
+                    .iter()
+                    .any(|p| stage == p || stage.starts_with(&format!("{p}-"))),
+                "publisher '{stage}' records entry skips but never calls                  record_all_entries_skipped; evaluated={evaluated:?}"
+            );
+        }
+    }
 
     #[test]
     fn rollback_empty_warning_msg_contains_publisher_and_target() {

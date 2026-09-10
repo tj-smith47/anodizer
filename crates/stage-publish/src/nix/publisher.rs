@@ -384,11 +384,13 @@ impl anodizer_core::Publisher for NixPublisher {
             selected.len(),
         ));
         // `processed` counts crates whose configured predicate passed and
-        // whose `publish_to_nix` invocation was reached — NOT crates that
-        // pushed. The dry-run / skip_upload paths inside `publish_to_nix`
-        // return Ok(false) without pushing; that's still a successful run
-        // of the correct code path, so it must not trigger the
-        // no-eligible-crates warning. `any_pushed` (below) tracks the
+        // whose `publish_to_nix` invocation reached its work WITHOUT
+        // disqualifying the entry — NOT crates that pushed. The dry-run /
+        // skip_upload paths inside `publish_to_nix` return Ok(false) without
+        // pushing; that's still a successful run of the correct code path, so
+        // it must not trigger the no-eligible-crates warning. An entry the
+        // call skipped does not count, so a run that skipped every crate is
+        // distinguishable from one that published them all. `any_pushed` (below) tracks the
         // orthogonal "did we mutate an overlay" question used to gate
         // evidence recording.
         let mut processed = 0usize;
@@ -403,8 +405,8 @@ impl anodizer_core::Publisher for NixPublisher {
                 );
                 continue;
             }
-            processed += 1;
             log.verbose(&run_per_crate_start_message(crate_name));
+            let skips_before = crate::publisher_helpers::entry_skips_recorded(ctx, "nix");
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered derivation carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
@@ -414,10 +416,14 @@ impl anodizer_core::Publisher for NixPublisher {
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_nix(ctx, crate_name, &log),
             )?;
+            if crate::publisher_helpers::entry_skips_recorded(ctx, "nix") == skips_before {
+                processed += 1;
+            }
             if pushed {
                 any_pushed = true;
             }
         }
+        crate::publisher_helpers::record_all_entries_skipped(ctx, &log, "nix", processed);
         if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {

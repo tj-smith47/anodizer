@@ -9,11 +9,13 @@ use std::collections::HashMap;
 use std::fs;
 
 mod client;
+mod collect;
 mod publisher;
 mod rollback;
 mod upload;
 
 pub use client::*;
+pub use collect::*;
 pub(crate) use publisher::*;
 pub(crate) use rollback::*;
 pub use upload::*;

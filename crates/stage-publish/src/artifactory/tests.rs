@@ -103,6 +103,143 @@ fn test_artifactory_missing_target_skips_the_entry() {
     );
 }
 
+/// Build a live (non-dry-run) context over the given entries with the env
+/// sealed empty, so credential resolution sees only what the config sets.
+fn live_entries_ctx(entries: Vec<ArtifactoryConfig>) -> Context {
+    let mut config = Config::default();
+    config.artifactories = Some(entries);
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    ctx
+}
+
+/// A username with no password disqualifies its own entry only: the entry
+/// after it still reaches its artifact scan.
+#[test]
+fn a_half_configured_credential_does_not_stop_the_next_entry() {
+    let ctx = live_entries_ctx(vec![
+        ArtifactoryConfig {
+            name: Some("half".to_string()),
+            target: Some("https://art.example.com/half/".to_string()),
+            username: Some("deployer".to_string()),
+            ..Default::default()
+        },
+        ArtifactoryConfig {
+            name: Some("named".to_string()),
+            target: Some("https://art.example.com/named/".to_string()),
+            username: Some("deployer".to_string()),
+            password: Some("s3cret".to_string()),
+            ..Default::default()
+        },
+    ]);
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "artifactory",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    publish_to_artifactory(&ctx, &log)
+        .expect("a half-configured entry must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "half");
+    assert!(
+        events[0].reason.contains("username set but no password"),
+        "unexpected reason: {}",
+        events[0].reason
+    );
+    let logged = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("'named'"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
+}
+
+/// A client certificate with no key disqualifies its own entry only.
+#[test]
+fn a_half_configured_mtls_pair_does_not_stop_the_next_entry() {
+    let ctx = live_entries_ctx(vec![
+        ArtifactoryConfig {
+            name: Some("half".to_string()),
+            target: Some("https://art.example.com/half/".to_string()),
+            username: Some("deployer".to_string()),
+            password: Some("s3cret".to_string()),
+            client_x509_cert: Some("/nonexistent/client.pem".to_string()),
+            ..Default::default()
+        },
+        ArtifactoryConfig {
+            name: Some("named".to_string()),
+            target: Some("https://art.example.com/named/".to_string()),
+            username: Some("deployer".to_string()),
+            password: Some("s3cret".to_string()),
+            ..Default::default()
+        },
+    ]);
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "artifactory",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    publish_to_artifactory(&ctx, &log).expect("a half-set mTLS pair must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "half");
+    assert!(
+        events[0]
+            .reason
+            .contains("only one of client_x509_cert / client_x509_key"),
+        "unexpected reason: {}",
+        events[0].reason
+    );
+    let logged = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("'named'"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
+}
+
+/// Every entry disqualified itself, so the publisher reports itself skipped
+/// rather than as a run that happened to publish nothing.
+#[test]
+fn every_entry_skipped_reports_the_publisher_as_skipped() {
+    use anodizer_core::Publisher;
+    let mut config = Config::default();
+    config.artifactories = Some(vec![ArtifactoryConfig {
+        name: Some("prod".to_string()),
+        target: None,
+        ..Default::default()
+    }]);
+    let mut ctx = dry_run_ctx(config);
+    super::ArtifactoryPublisher::new()
+        .run(&mut ctx)
+        .expect("an all-skipped publisher must not fail the run");
+    assert!(
+        matches!(
+            ctx.pending_outcome,
+            Some(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::AllEntriesSkipped
+            ))
+        ),
+        "unexpected outcome: {:?}",
+        ctx.pending_outcome
+    );
+}
+
 #[test]
 fn test_artifactory_empty_target_skips_the_entry() {
     let mut config = Config::default();
@@ -397,29 +534,28 @@ fn test_artifactory_trusted_certificates_in_dry_run() {
     assert!(publish_to_artifactory(&ctx, &log).is_ok());
 }
 
+/// A username with no password disqualifies the entry rather than failing the
+/// publisher: the reason is recorded, and every sibling entry still runs.
 #[test]
-fn test_artifactory_username_without_password_errors_in_live_mode() {
-    let mut config = Config::default();
-    config.artifactories = Some(vec![ArtifactoryConfig {
+fn test_artifactory_username_without_password_skips_the_entry_in_live_mode() {
+    let ctx = live_entries_ctx(vec![ArtifactoryConfig {
         name: Some("test".to_string()),
         target: Some("https://art.example.com/repo/".to_string()),
         username: Some("deployer".to_string()),
         password: None,
         ..Default::default()
     }]);
-    let ctx = Context::new(
-        config,
-        ContextOptions {
-            dry_run: false,
-            ..Default::default()
-        },
-    );
     let log = ctx.logger("artifactory");
-    let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+    publish_to_artifactory(&ctx, &log).expect("a half-set credential must skip, not fail");
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "test");
     assert!(
-        err.to_string().contains("has username set but no password"),
-        "unexpected error: {}",
-        err
+        events[0]
+            .reason
+            .contains("has username set but no password"),
+        "unexpected reason: {}",
+        events[0].reason
     );
 }
 
