@@ -1161,8 +1161,9 @@ mod tests {
         );
     }
 
-    /// The counterpart: when EVERY entry disqualified itself the publisher
-    /// really is skipped, and a skipped publisher has nothing to roll back.
+    /// A publisher that landed NOTHING is skipped, and a skipped publisher
+    /// has nothing to roll back: it is absent from the rollback candidates
+    /// the dispatched report yields.
     #[test]
     fn a_publisher_whose_every_entry_skipped_is_skipped_and_is_no_rollback_candidate() {
         let mut config = Config::default();

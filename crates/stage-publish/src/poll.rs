@@ -330,9 +330,8 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
             jobs.len()
         ));
     }
-    // `run_post_publish_polls` returns its results in input order
-    // (`run_post_publish_polls_returns_results_in_input_order`), so zipping
-    // the job ordinals back on is sound.
+    // The runner returns its results in input order, so zipping the job
+    // ordinals back on is sound.
     let mut rows: Vec<(usize, post_publish::PostPublishResult)> = job_ord
         .into_iter()
         .zip(post_publish::run_post_publish_polls(jobs, log))
