@@ -166,9 +166,18 @@ pub fn find_latest_tag_matching_with_prefix_in(
     )
     .into_iter()
     .filter(|(_, t)| {
-        let tag_for_match = monorepo_prefix
-            .map(|pfx| strip_monorepo_prefix(t, pfx))
-            .unwrap_or(t);
+        // The regex is compiled from the RAW template, so the candidate must be
+        // spelled the way the template spells it. A template that already opens
+        // with the monorepo namespace (`sub/v{{ Version }}` under
+        // `monorepo.tag_prefix: "sub/"`) matches the full tag; only a template
+        // that leaves the namespace implicit matches the stripped one. This is
+        // the same rule `compose_prefix` applies when the family scope is
+        // built, so the latest-tag probe and the previous-tag probe bound one
+        // range instead of disagreeing.
+        let tag_for_match = match monorepo_prefix {
+            Some(pfx) if !tag_template.starts_with(pfx) => strip_monorepo_prefix(t, pfx),
+            _ => t,
+        };
         re.is_match(tag_for_match)
     })
     .collect();

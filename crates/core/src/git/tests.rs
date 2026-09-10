@@ -1063,6 +1063,88 @@ fn previous_tag_in_family_skips_a_nested_sibling_track() {
     assert_eq!(prev, Some("v1.0.0".to_string()));
 }
 
+/// `compose_prefix` supports an operator spelling the monorepo namespace out
+/// in the template, so the latest-tag probe must match the candidate the way
+/// the template spells it: stripping the namespace off a tag whose template
+/// still carries it left the regex matching nothing.
+#[test]
+#[serial(path_env)]
+fn latest_tag_matches_a_template_that_spells_the_monorepo_namespace_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["sub/v1.0.0", "sub/v1.2.0"]);
+
+    let latest = crate::git::find_latest_tag_matching_with_prefix_in(
+        dir,
+        "sub/v{{ Version }}",
+        None,
+        None,
+        Some("sub/"),
+    )
+    .unwrap();
+    assert_eq!(latest, Some("sub/v1.2.0".to_string()));
+}
+
+/// The other spelling of the same family: a template that leaves the
+/// namespace implicit still matches, because the candidate is stripped first.
+#[test]
+#[serial(path_env)]
+fn latest_tag_matches_a_template_that_leaves_the_monorepo_namespace_implicit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["sub/v1.0.0", "sub/v1.2.0"]);
+
+    let latest = crate::git::find_latest_tag_matching_with_prefix_in(
+        dir,
+        "v{{ Version }}",
+        None,
+        None,
+        Some("sub/"),
+    )
+    .unwrap();
+    assert_eq!(latest, Some("sub/v1.2.0".to_string()));
+}
+
+/// The two probes that bound one changelog range must agree on the family.
+/// When the latest-tag probe returned None for a spelled-out template while
+/// the previous-tag probe resolved it, the range silently widened to the
+/// whole history.
+#[test]
+#[serial(path_env)]
+fn both_tag_probes_resolve_the_same_spelled_out_monorepo_family() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["sub/v1.0.0", "sub/v1.2.0"]);
+
+    let latest = crate::git::find_latest_tag_matching_with_prefix_in(
+        dir,
+        "sub/v{{ Version }}",
+        None,
+        None,
+        Some("sub/"),
+    )
+    .unwrap();
+    let previous = crate::git::find_previous_tag_in_family_in(
+        dir,
+        "sub/v1.2.0",
+        "sub/v{{ Version }}",
+        None,
+        None,
+        Some("sub/"),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        (latest, previous),
+        (
+            Some("sub/v1.2.0".to_string()),
+            Some("sub/v1.0.0".to_string())
+        ),
+        "one probe finding nothing where the other finds the family is the \
+         disagreement that widens a changelog range"
+    );
+}
+
 /// The same fixture on the flat-list path: the sibling is dropped by rule,
 /// not because a stripped `ault-v1.5.0` happens to fail the SemVer parse.
 #[test]
