@@ -383,50 +383,51 @@ fn msi_installer_manifest_emits_silent_switch() {
     assert!(!inst.contains("NestedInstallerType"), "msi is not nested");
 }
 
-/// `package_identifier` is rendered in exactly one place — the derive seam.
-/// A second render site would let one consumer resolve the field differently
-/// from the rest, which is the divergence the seam exists to prevent.
+/// `package_identifier` is rendered in exactly one place — the derive seam —
+/// and every consumer reads the field the seam wrote. A raw `{{ … }}` reaching
+/// the publish branch, the PR target or a manifest is the failure the seam
+/// exists to prevent; the sibling pins
+/// `winget_preflight_probes_the_rendered_package_identifier` (the one-way-door
+/// probe) and `package_identifier_is_templated` (the manifest bodies, which
+/// the emission-validate pass renders through the same call) cover the other
+/// two consumers.
 #[test]
 fn package_identifier_is_rendered_at_one_seam_only() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("readable source dir") {
-            let path = entry.expect("readable dir entry").path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n == "tests") {
-                    continue;
-                }
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().contains("tests"))
-            {
-                out.push(path);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut files,
-    );
-    let sites: Vec<String> = files
-        .iter()
-        .filter(|p| {
-            let text = std::fs::read_to_string(p).expect("readable source");
-            anodizer_core::test_helpers::test_sources::production_half(&text)
-                .contains("\"winget.package_identifier\"")
-        })
-        .map(|p| p.display().to_string())
-        .collect();
+    let crate_cfg = winget_crate_with("demo", "v{{ .Version }}", "{{ .Env.WINGET_OWNER }}.tool");
+
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set_env("WINGET_OWNER", "Acme");
+    add_windows_zip(&mut ctx, "demo");
+
+    let log = ctx.logger("publish");
+    let cfg = ctx.config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .winget
+        .clone()
+        .unwrap();
+    let derived =
+        crate::winget::derive_winget_config(&ctx, &log, &cfg).expect("the seam renders the field");
     assert_eq!(
-        sites.len(),
-        1,
-        "winget.package_identifier must be rendered once, at the derive seam; found: {sites:?}"
+        derived.package_identifier.as_deref(),
+        Some("Acme.tool"),
+        "the seam must render the template into the config it returns"
     );
-    assert!(
-        sites[0].ends_with("winget/identifier.rs"),
-        "the render seam moved: {sites:?}"
+
+    let target = collect_winget_target(&ctx, "demo", &log)
+        .expect("target ok")
+        .expect("demo is winget-configured");
+    assert_eq!(
+        target.package_id, "Acme.tool",
+        "the PR target reads the derived field, not the raw template"
+    );
+    assert_eq!(
+        target.branch, "Acme.tool-1.0.0",
+        "the publish branch is built from the rendered identifier"
     );
 }
 

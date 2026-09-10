@@ -138,6 +138,10 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     // triples are collected in dispatch order to match the result vec
     // ordering invariant.
     let mut skipped: Vec<(&'static str, String, String)> = Vec::new();
+    // Candidates that could not be resolved into a poll job at all. Recorded
+    // as `Error` rows so a resolution failure is visible in the release
+    // summary instead of silently narrowing the polled set.
+    let mut errors: Vec<post_publish::PostPublishResult> = Vec::new();
     let skip_via_cli = ctx.options.skip_post_publish_poll;
 
     // Chocolatey eligibility — `poll_eligibility` owns the shared ladder
@@ -189,9 +193,24 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         // PackageIdentifier resolution: prefer explicit `package_identifier`,
         // fall back to `<publisher>.<name>` (the upstream convention enforced
         // by winget validation), then to the crate name as a last resort.
-        // Polling is non-fatal, so a render failure keeps the unrendered
-        // config rather than aborting the publish stage.
-        let cfg = winget::derive_winget_config(ctx, log, &cfg).unwrap_or(cfg);
+        // Under `--strict` the render is an error, and an identifier that did
+        // not render must never reach the poll listing (or the GitHub search
+        // it drives) as a literal `{{ … }}`: the candidate becomes an `Error`
+        // row instead, keyed on the crate name, which is never a template.
+        let cfg = match winget::derive_winget_config(ctx, log, &cfg) {
+            Ok(derived) => derived,
+            Err(e) => {
+                errors.push(post_publish::PostPublishResult {
+                    publisher: "winget".to_string(),
+                    package: crate_name.clone(),
+                    version: version.clone(),
+                    status: post_publish::PostPublishStatus::Error {
+                        reason: e.to_string(),
+                    },
+                });
+                continue;
+            }
+        };
         let auto_pkg_id = {
             let publisher = cfg.publisher.as_deref().unwrap_or("");
             let name = cfg
@@ -258,7 +277,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     // from "no eligible publishers". Short-circuits without running any
     // pollers.
     if skip_via_cli {
-        if skipped.is_empty() {
+        if skipped.is_empty() && errors.is_empty() {
             log.verbose(
                 "skipped post-publish polling — --no-post-publish-poll (no eligible publishers)",
             );
@@ -268,7 +287,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
             "skipped post-publish polling — --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
             skipped.len()
         ));
-        let not_polled: Vec<post_publish::PostPublishResult> = skipped
+        let mut not_polled: Vec<post_publish::PostPublishResult> = skipped
             .into_iter()
             .map(
                 |(publisher, package, version)| post_publish::PostPublishResult {
@@ -279,6 +298,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
                 },
             )
             .collect();
+        not_polled.extend(errors);
         ctx.stage_outputs.post_publish_results = not_polled
             .iter()
             .map(|r| {
@@ -290,15 +310,18 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         return;
     }
 
-    if jobs.is_empty() {
+    if jobs.is_empty() && errors.is_empty() {
         log.verbose("no eligible publishers for post-publish polling");
         return;
     }
-    log.status(&format!(
-        "starting {} parallel post-publish poller(s)",
-        jobs.len()
-    ));
-    let results = post_publish::run_post_publish_polls(jobs, log);
+    if !jobs.is_empty() {
+        log.status(&format!(
+            "starting {} parallel post-publish poller(s)",
+            jobs.len()
+        ));
+    }
+    let mut results = post_publish::run_post_publish_polls(jobs, log);
+    results.extend(errors);
     for r in &results {
         match &r.status {
             post_publish::PostPublishStatus::Approved { detail } => log.status(&format!(

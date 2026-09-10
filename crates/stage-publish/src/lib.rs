@@ -1248,6 +1248,95 @@ mod tests {
         assert_eq!(results[1]["status"]["kind"], "not_polled");
     }
 
+    /// Build the one-crate config both `package_identifier` render pins use:
+    /// a winget block whose identifier is a template that cannot parse.
+    fn winget_crate_with_unrenderable_identifier() -> Config {
+        use anodizer_core::config::{PostPublishPollConfig, WingetConfig};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    publisher: Some("TJSmith".to_string()),
+                    name: Some("MyLib".to_string()),
+                    package_identifier: Some("{{ TJSmith.MyLib".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        config
+    }
+
+    /// Under `--strict` an unrenderable `package_identifier` is an error, and
+    /// the poll listing must never carry the raw `{{ … }}` in its place — the
+    /// identifier is what the GitHub PR search is built from, so a literal
+    /// template would silently poll for a package that cannot exist.
+    #[test]
+    fn strict_unrenderable_package_identifier_errors_instead_of_polling_the_template() {
+        let mut ctx = Context::new(
+            winget_crate_with_unrenderable_identifier(),
+            ContextOptions {
+                skip_post_publish_poll: true,
+                strict: true,
+                ..Default::default()
+            },
+        );
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        let results = &ctx.stage_outputs.post_publish_results;
+        assert_eq!(results.len(), 1, "got {results:?}");
+        assert_eq!(results[0]["publisher"], "winget");
+        assert_eq!(
+            results[0]["status"]["kind"], "error",
+            "a render error under --strict must be reported, not swallowed: {results:?}"
+        );
+        assert_eq!(
+            results[0]["package"], "mylib",
+            "the row is keyed on the crate name, never on the template: {results:?}"
+        );
+        assert!(
+            !results
+                .iter()
+                .any(|r| r["package"].as_str().is_some_and(|p| p.contains("{{"))),
+            "no raw template may be listed as a package: {results:?}"
+        );
+    }
+
+    /// Without `--strict` the shared render fallback stays: the run warns and
+    /// carries on polling rather than turning a template into a hard failure.
+    #[test]
+    fn non_strict_unrenderable_package_identifier_keeps_the_render_fallback() {
+        let mut ctx = Context::new(
+            winget_crate_with_unrenderable_identifier(),
+            ContextOptions {
+                skip_post_publish_poll: true,
+                ..Default::default()
+            },
+        );
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        let results = &ctx.stage_outputs.post_publish_results;
+        assert_eq!(results.len(), 1, "got {results:?}");
+        assert_eq!(results[0]["publisher"], "winget");
+        assert_eq!(
+            results[0]["status"]["kind"], "not_polled",
+            "the non-strict fallback keeps the candidate eligible: {results:?}"
+        );
+    }
+
     /// A publisher deselected via the `--publishers` ALLOWLIST (not via a
     /// stage-skip token) is not polled. The allowlist contains only winget,
     /// so chocolatey — though configured with polling enabled — must be
