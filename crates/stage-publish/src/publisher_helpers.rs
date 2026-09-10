@@ -152,16 +152,23 @@ pub(crate) fn record_entry_skip(
 ///
 /// Skips land under the publisher's own name or under a `<publisher>-<sub>`
 /// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
-/// spellings count.
+/// spellings count. A stage that is itself a publisher token never counts as
+/// another publisher's sub-label: `homebrew-core` is its own publisher, and
+/// its skips belong to its own outcome and skip line.
 pub(crate) fn entry_skip_reasons(
     ctx: &anodizer_core::context::Context,
     publisher: &str,
 ) -> Vec<String> {
     let sub_prefix = format!("{publisher}-");
+    let is_own_publisher =
+        |stage: &str| anodizer_core::PublisherKind::all().any(|k| k.token() == stage);
     ctx.skip_memento
         .snapshot()
         .into_iter()
-        .filter(|e| e.stage == publisher || e.stage.starts_with(&sub_prefix))
+        .filter(|e| {
+            e.stage == publisher
+                || (e.stage.starts_with(&sub_prefix) && !is_own_publisher(&e.stage))
+        })
         .map(|e| e.reason)
         .collect()
 }
@@ -790,6 +797,32 @@ pub(crate) fn targets_allowlist_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stage that is itself a publisher is not a sub-label of the
+    /// publisher whose name prefixes it. `homebrew-cask` is homebrew's own
+    /// sub-label, but `homebrew-core` is a separate publisher, so its entry
+    /// skips must stay in its own skip line, count and outcome.
+    #[test]
+    fn an_entry_skip_stays_with_the_publisher_whose_name_it_carries() {
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+        ctx.remember_skip("homebrew-cask", "widget", "no cask repository");
+        ctx.remember_skip("homebrew-core", "widget", "no formula path");
+        ctx.remember_skip("homebrew", "gadget", "no tap repository");
+
+        assert_eq!(
+            entry_skip_reasons(&ctx, "homebrew"),
+            vec![
+                "no cask repository".to_string(),
+                "no tap repository".to_string()
+            ],
+            "homebrew-core is a publisher, not a homebrew sub-label"
+        );
+        assert_eq!(
+            entry_skip_reasons(&ctx, "homebrew-core"),
+            vec!["no formula path".to_string()],
+            "a publisher keeps the skips recorded under its own name"
+        );
+    }
 
     /// Walk the crate's production sources and pair the two halves of the
     /// entry-skip contract: a publisher that can disqualify one entry must
