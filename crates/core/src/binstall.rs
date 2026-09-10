@@ -435,8 +435,14 @@ pub fn crate_archive_asset_names(
     // the derived installer arms and `pkg_url` fail on a template the producer
     // accepts — the same drift class this module exists to close.
     let prior = ctx.template_vars().get("Binary").cloned();
-    ctx.template_vars_mut()
-        .set("Binary", primary_binary.as_deref().unwrap_or_default());
+    // A `builds:` entry that omits `binary:` compiles the crate's own
+    // `[[bin]]`, which is what `planned_builds` synthesizes for a crate with no
+    // `builds:` block at all — one rule, so a name derived here cannot disagree
+    // with the name the build and archive stages use.
+    ctx.template_vars_mut().set(
+        "Binary",
+        primary_binary.as_deref().unwrap_or(&crate_cfg.name),
+    );
     let rendered = render_all(ctx);
     match prior {
         Some(v) => ctx.template_vars_mut().set("Binary", &v),
@@ -1638,6 +1644,46 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
             }]),
             ..Default::default()
         }
+    }
+
+    /// A `builds:` entry that declares no `binary:` still compiles the crate's
+    /// own `[[bin]]`, so a `{{ .Binary }}` name_template must derive the name
+    /// the archive stage writes. An empty binding renders an asset the release
+    /// never uploads — the derived-`pkg_url` 404 class.
+    #[test]
+    fn binary_defaults_to_the_crate_name_when_no_build_declares_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: tmp.path().to_string_lossy().into_owned(),
+            builds: Some(vec![BuildConfig {
+                id: Some("only".to_string()),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                name_template: Some("{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("binstallable archive with targets derives names");
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name,
+            "myapp-1.0.0-linux-amd64.tar.gz"
+        );
     }
 
     /// A v3-tuned build (`RUSTFLAGS -Ctarget-cpu=x86-64-v3` in the per-target
