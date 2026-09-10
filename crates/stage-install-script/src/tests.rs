@@ -747,6 +747,7 @@ fn extraction_case_covers_every_archive_stage_format() {
 #[test]
 fn tar_xz_asset_extracts_end_to_end() {
     if !which("xz") {
+        eprintln!("skipping tar_xz_asset_extracts_end_to_end: xz not on PATH");
         return;
     }
     single_format_install_roundtrip("tar.xz", |release, asset, binaries| {
@@ -760,6 +761,7 @@ fn tar_xz_asset_extracts_end_to_end() {
 #[test]
 fn gz_asset_installs_the_single_file_it_holds() {
     if !which("gzip") {
+        eprintln!("skipping gz_asset_installs_the_single_file_it_holds: gzip not on PATH");
         return;
     }
     single_format_install_roundtrip("gz", |release, asset, _binaries| {
@@ -772,6 +774,7 @@ fn gz_asset_installs_the_single_file_it_holds() {
 #[test]
 fn xz_asset_installs_the_single_file_it_holds() {
     if !which("xz") {
+        eprintln!("skipping xz_asset_installs_the_single_file_it_holds: xz not on PATH");
         return;
     }
     single_format_install_roundtrip("xz", |release, asset, _binaries| {
@@ -786,6 +789,18 @@ fn xz_asset_installs_the_single_file_it_holds() {
 #[test]
 fn binary_asset_installs_the_executable_it_names() {
     single_format_install_roundtrip("binary", |release, asset, _binaries| {
+        std::fs::write(release.join(asset), "#!/bin/sh\necho fake-myapp\n").unwrap();
+    });
+}
+
+/// The most natural `format: binary` config names the asset after the binary
+/// itself, so the downloaded file and the install target are one path. Copying
+/// a file onto itself fails, and under `set -eu` that aborts the install after
+/// the download and the checksum have already passed.
+#[cfg(unix)]
+#[test]
+fn binary_asset_named_after_the_binary_installs() {
+    single_format_install_roundtrip_with("binary", Some("{{ .Binary }}"), |release, asset, _| {
         std::fs::write(release.join(asset), "#!/bin/sh\necho fake-myapp\n").unwrap();
     });
 }
@@ -845,7 +860,8 @@ fn dual_libc_ctx(dist: &Path, cfg: InstallScriptConfig) -> Context {
 
 /// A single-libc release must keep the exact script it had before the arms
 /// learned about libc: no probe, no suffix, not one byte of drift. The golden
-/// is the rendered output captured before the split was built.
+/// carries the rendered output captured before the split was built, and moves
+/// only for a deliberate edit to the template itself.
 #[test]
 fn single_libc_output_byte_identical_to_previous() {
     let tmp = tempfile::tempdir().unwrap();
@@ -935,6 +951,18 @@ fn libc_probe_selects_the_matching_asset_on_each_host() {
 /// fixture asset built by `make_asset`, and assert the binary installs.
 #[cfg(unix)]
 fn single_format_install_roundtrip(format: &str, make_asset: impl Fn(&Path, &str, &[&str])) {
+    single_format_install_roundtrip_with(format, None, make_asset);
+}
+
+/// [`single_format_install_roundtrip`] with an overridable archive
+/// `name_template`, so a config whose asset name collides with the binary name
+/// can be driven end to end.
+#[cfg(unix)]
+fn single_format_install_roundtrip_with(
+    format: &str,
+    name_template: Option<&str>,
+    make_asset: impl Fn(&Path, &str, &[&str]),
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist = tmp.path().join("dist");
     std::fs::create_dir_all(&dist).unwrap();
@@ -942,7 +970,7 @@ fn single_format_install_roundtrip(format: &str, make_asset: impl Fn(&Path, &str
         &dist,
         default_cfg(),
         "v{{ Version }}",
-        None,
+        name_template,
         Some(&[format]),
     );
     InstallScriptStage.run(&mut ctx).expect("stage run");

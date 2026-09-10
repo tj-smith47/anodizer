@@ -390,8 +390,7 @@ pub fn crate_archive_asset_names(
 
     // `format: binary` names each asset after the BINARY it holds rather than
     // the project, so its default template differs — the same rule the archive
-    // stage applies (an explicit `name_template:` still wins). `{{ .Binary }}`
-    // is bound from the crate's own build plan for the duration.
+    // stage applies (an explicit `name_template:` still wins).
     let binary_name_template = archive
         .name_template
         .clone()
@@ -399,46 +398,53 @@ pub fn crate_archive_asset_names(
     let primary_binary = crate::build_plan::planned_builds(crate_cfg)
         .and_then(|builds| builds.iter().find_map(|b| b.binary.clone()));
 
-    let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
-    for target in &targets {
-        let format = archive_format_for_target(&archive, target, &global_default_format);
-        // The archive stage names a v2/v3-tuned group's asset with the amd64
-        // micro-arch level detected from the build env; derive the same level
-        // from config so the derived name cannot silently fall to the
-        // baseline (the binstall/installer 404 class).
-        let amd64_variant =
-            crate::build_env::config_time_amd64_variant(crate_cfg, target, default_targets, ctx)?;
-        let asset_name = if format == "binary" {
-            let prior = ctx.template_vars().get("Binary").cloned();
-            if let Some(bin) = primary_binary.as_deref() {
-                ctx.template_vars_mut().set("Binary", bin);
-            }
-            let rendered = render_archive_asset_name_with_variant(
+    let render_all = |ctx: &mut Context| -> Result<BTreeMap<String, ArchiveAssetName>> {
+        let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
+        for target in &targets {
+            let format = archive_format_for_target(&archive, target, &global_default_format);
+            // The archive stage names a v2/v3-tuned group's asset with the
+            // amd64 micro-arch level detected from the build env; derive the
+            // same level from config so the derived name cannot silently fall
+            // to the baseline (the binstall/installer 404 class).
+            let amd64_variant = crate::build_env::config_time_amd64_variant(
+                crate_cfg,
+                target,
+                default_targets,
                 ctx,
-                &binary_name_template,
+            )?;
+            let template = if format == "binary" {
+                &binary_name_template
+            } else {
+                &name_template
+            };
+            let asset_name = render_archive_asset_name_with_variant(
+                ctx,
+                template,
                 target,
                 &format,
                 amd64_variant.as_deref(),
-            );
-            match prior {
-                Some(v) => ctx.template_vars_mut().set("Binary", &v),
-                None => {
-                    ctx.template_vars_mut().unset("Binary");
-                }
-            }
-            rendered?
-        } else {
-            render_archive_asset_name_with_variant(
-                ctx,
-                &name_template,
-                target,
-                &format,
-                amd64_variant.as_deref(),
-            )?
-        };
-        map.insert(target.clone(), ArchiveAssetName { format, asset_name });
+            )?;
+            map.insert(target.clone(), ArchiveAssetName { format, asset_name });
+        }
+        Ok(map)
+    };
+
+    // The archive stage seeds `Binary` for every format (its
+    // `seed_target_context`), so a `name_template` naming the binary renders
+    // there whatever the format. Binding it only for `format: binary` here made
+    // the derived installer arms and `pkg_url` fail on a template the producer
+    // accepts — the same drift class this module exists to close.
+    let prior = ctx.template_vars().get("Binary").cloned();
+    ctx.template_vars_mut()
+        .set("Binary", primary_binary.as_deref().unwrap_or_default());
+    let rendered = render_all(ctx);
+    match prior {
+        Some(v) => ctx.template_vars_mut().set("Binary", &v),
+        None => {
+            ctx.template_vars_mut().unset("Binary");
+        }
     }
-    Ok(Some(map))
+    Ok(Some(rendered?))
 }
 
 /// Resolve the release repo `(owner, repo, download_base)` for `crate_cfg`,

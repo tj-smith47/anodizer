@@ -241,7 +241,9 @@ case "$FORMAT" in
 		have xz || die "need xz to extract $ARCHIVE"
 		xz -dc "$tmp/$ARCHIVE" > "$tmp/$BINARIES"
 		;;
-	binary) cp "$tmp/$ARCHIVE" "$tmp/$BINARIES" ;;
+	# A name_template that names the binary makes the downloaded asset and the
+	# install source one path, and cp refuses to copy a file onto itself.
+	binary) [ "$ARCHIVE" = "$BINARIES" ] || cp "$tmp/$ARCHIVE" "$tmp/$BINARIES" ;;
 	*) die "unknown archive format: $FORMAT ($ARCHIVE)" ;;
 esac
 
