@@ -243,8 +243,21 @@ fn hoisted_subject_name<'a>(line: &'a str, subject: &str) -> Option<&'a str> {
 }
 
 /// Whether `word` expands the shell variable `name` (`$name` or `${name}`).
+///
+/// The bare form has to end on a non-identifier character: `$key` expands
+/// `key`, never a hoisted `k`, so a script matching on an unrelated variable
+/// is not mistaken for one that adopted the subject.
 fn expands(word: &str, name: &str) -> bool {
-    word.contains(&format!("${name}")) || word.contains(&format!("${{{name}}}"))
+    if word.contains(&format!("${{{name}}}")) {
+        return true;
+    }
+    let bare = format!("${name}");
+    word.match_indices(&bare).any(|(at, _)| {
+        word[at + bare.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
 }
 
 /// The line with any trailing `#` comment removed. A `#` inside quotes, or one
@@ -1245,6 +1258,29 @@ mod tests {
         ctx.config.template_files = Some(vec![gate_entry(&src)]);
         require_case_subject_consumption(&mut ctx, &cases)
             .expect("a case on the hoisted subject matches the engine arms");
+    }
+
+    /// Hoisting the subject into `k` and then matching a `case` on `$key`
+    /// reaches no arm at all: the script tests an unrelated variable. The gate
+    /// exists to refuse exactly that, so a name that is merely a PREFIX of the
+    /// expanded one must not satisfy it.
+    #[test]
+    fn a_case_on_a_different_variable_is_refused() {
+        let (mut ctx, cases, tmp) = dual_libc_gate_fixture();
+        let src = tmp.path().join("prefix-install.sh.tera");
+        std::fs::write(
+            &src,
+            "{{ InstallerDetectLibc }}\nk=\"{{ InstallerAssetCaseSubject }}\"\ncase \"$key\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+        .unwrap();
+        ctx.config.template_files = Some(vec![gate_entry(&src)]);
+        let err = require_case_subject_consumption(&mut ctx, &cases)
+            .expect_err("a case on an unrelated variable matches none of the arms")
+            .to_string();
+        assert!(
+            err.contains("InstallerAssetCaseSubject"),
+            "the failure must name the value the case has to consume: {err}"
+        );
     }
 
     /// A dual-libc context with the case tables bound, plus a tempdir to write
