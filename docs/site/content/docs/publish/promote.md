@@ -120,10 +120,19 @@ specific artifact exists and it does not. The default `Newest` selector against
 an empty source track is the opposite: a skip with exit 0, because "nothing is
 soaking this week" is a normal state for a scheduled promotion job.
 
+`--dry-run` names the selector it resolved without contacting the store, so it
+reports the plan for a version whether or not that version exists:
+
 ```console
-$ anodizer promote --to stable --version 9.9.9 --publishers snapcraft
-error: 1 publisher(s) failed to promote: snapcraft
+$ anodizer promote --to stable --version 9.9.9 --publishers snapcraft --dry-run
+   • (dry-run) would promote snapcraft myapp version 9.9.9 candidate→stable
+   • snapcraft: 9.9.9→stable (dry-run)
 ```
+
+The miss therefore surfaces on the live run, in the same two-part shape as the
+rejected-channel example above: a `• snapcraft: … (failed: …)` result line
+naming the version that matched no revision, then the aggregate
+`1 publisher(s) failed to promote: snapcraft` and a non-zero exit.
 
 ```bash
 $ anodizer promote --to stable --version 1.4.0
