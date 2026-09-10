@@ -1602,3 +1602,14 @@ fn binary_name_is_metadata_only_for_non_binary_kinds() {
     );
     assert_eq!(tagged.binary_name().as_deref(), Some("myapp"));
 }
+
+#[test]
+fn id_filter_keeps_a_source_rpm_that_carries_no_build_id() {
+    // `srpms:` is a single top-level block with no `id:` field, so the stage
+    // registers the artifact with format/ext metadata only. An `ids:` filter
+    // on an upload target selects source RPMs through the mode list, and
+    // judging them by the absent id would drop every one of them.
+    let srpm = derived(ArtifactKind::SourceRpm, &[("format", "srpm")]);
+    let ids = vec!["keep".to_string()];
+    assert!(matches_id_filter(&srpm, Some(&ids)));
+}

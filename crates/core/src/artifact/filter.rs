@@ -91,12 +91,18 @@ pub fn is_directory_bundle_artifact(artifact: &Artifact) -> bool {
 /// Artifact kinds the `ids:` filter always keeps — these are emitted for
 /// every release, not per-build, so a build-id filter has nothing to say
 /// about them.
-const ID_FILTER_ALWAYS_PASS: [ArtifactKind; 5] = [
+///
+/// The membership criterion is that the producing stage registers the kind
+/// with no `id` metadata, because its config block has no build id to carry:
+/// judging such an artifact by the `id` filter compares a non-empty list
+/// against the empty string and drops it, however the filter is spelled.
+const ID_FILTER_ALWAYS_PASS: [ArtifactKind; 6] = [
     ArtifactKind::Checksum,
     ArtifactKind::SourceArchive,
     ArtifactKind::UploadableFile,
     ArtifactKind::InstallScript,
     ArtifactKind::Metadata,
+    ArtifactKind::SourceRpm,
 ];
 
 /// `true` when `kind` is a DERIVED artifact kind — one produced FROM another
