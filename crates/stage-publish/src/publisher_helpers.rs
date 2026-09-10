@@ -147,28 +147,36 @@ pub(crate) fn record_entry_skip(
     ctx.remember_skip(publisher, label, reason);
 }
 
-/// Every reason an entry of `publisher` recorded when it disqualified
-/// itself this run, in first-seen order.
+/// Whether an entry skip recorded under the stage label `stage` belongs to
+/// `publisher`.
 ///
-/// Skips land under the publisher's own name or under a `<publisher>-<sub>`
+/// A skip lands under the publisher's own name or under a `<publisher>-<sub>`
 /// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
-/// spellings count. A stage that is itself a publisher token never counts as
-/// another publisher's sub-label: `homebrew-core` is its own publisher, and
-/// its skips belong to its own outcome and skip line.
+/// spellings count. A stage that is itself a publisher token is never another
+/// publisher's sub-label: `homebrew-core` is its own publisher, and its skips
+/// belong to its own outcome and skip line.
+///
+/// One rule for both directions — which publisher COLLECTS a label in
+/// [`entry_skip_reasons`], and which publisher's `evaluate_entry_skips` call
+/// COVERS it. A label the two answered differently would be collected by
+/// nobody while looking covered.
+pub(crate) fn skip_label_belongs_to(stage: &str, publisher: &str) -> bool {
+    stage == publisher
+        || (stage.starts_with(&format!("{publisher}-"))
+            && !anodizer_core::PublisherKind::all().any(|k| k.token() == stage))
+}
+
+/// Every reason an entry of `publisher` recorded when it disqualified
+/// itself this run, in first-seen order — the labels
+/// [`skip_label_belongs_to`] pairs with it.
 pub(crate) fn entry_skip_reasons(
     ctx: &anodizer_core::context::Context,
     publisher: &str,
 ) -> Vec<String> {
-    let sub_prefix = format!("{publisher}-");
-    let is_own_publisher =
-        |stage: &str| anodizer_core::PublisherKind::all().any(|k| k.token() == stage);
     ctx.skip_memento
         .snapshot()
         .into_iter()
-        .filter(|e| {
-            e.stage == publisher
-                || (e.stage.starts_with(&sub_prefix) && !is_own_publisher(&e.stage))
-        })
+        .filter(|e| skip_label_belongs_to(&e.stage, publisher))
         .map(|e| e.reason)
         .collect()
 }
@@ -831,6 +839,43 @@ pub(crate) fn targets_allowlist_check(
 mod tests {
     use super::*;
 
+    /// A publisher whose own name is prefixed by a neighbour's is not
+    /// covered by that neighbour: the rule that pairs a label to an evaluator
+    /// is the rule that collects it, so `homebrew-core` skips reaching no
+    /// `evaluate_entry_skips` call of their own are reported by nobody rather
+    /// than looking covered by homebrew's.
+    #[test]
+    fn a_publisher_named_like_a_sub_label_is_not_covered_by_its_neighbours_evaluator() {
+        assert!(
+            !skip_label_belongs_to("homebrew-core", "homebrew"),
+            "homebrew-core is a publisher token, not a homebrew sub-label"
+        );
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+        ctx.remember_skip("homebrew-core", "widget", "no formula path");
+        assert!(
+            entry_skip_reasons(&ctx, "homebrew").is_empty(),
+            "homebrew must not collect a neighbouring publisher's skips"
+        );
+    }
+
+    /// The exclusion is scoped to publisher tokens: a genuine sub-label still
+    /// resolves to the publisher that owns it, so an over-broad rule drops
+    /// `homebrew-cask` skips instead of reporting them.
+    #[test]
+    fn a_genuine_sub_label_still_resolves_to_its_publisher() {
+        assert!(
+            skip_label_belongs_to("homebrew-cask", "homebrew"),
+            "homebrew-cask is homebrew's own sub-label"
+        );
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+        ctx.remember_skip("homebrew-cask", "widget", "no cask repository");
+        assert_eq!(
+            entry_skip_reasons(&ctx, "homebrew"),
+            vec!["no cask repository".to_string()],
+            "a sub-label's skips belong to the publisher that owns it"
+        );
+    }
+
     /// A stage that is itself a publisher is not a sub-label of the
     /// publisher whose name prefixes it. `homebrew-cask` is homebrew's own
     /// sub-label, but `homebrew-core` is a separate publisher, so its entry
@@ -863,6 +908,10 @@ mod tests {
     /// entry reads as a successful publisher in the run summary. A new
     /// entry-skipping publisher fails this until its `run()` calls
     /// `evaluate_entry_skips`.
+    ///
+    /// The pairing is [`skip_label_belongs_to`] — the same rule
+    /// [`entry_skip_reasons`] collects by, so a label this accepts as covered
+    /// really is the label that publisher collects.
     #[test]
     fn every_entry_skipping_publisher_evaluates_its_skips() {
         let files = anodizer_core::test_helpers::test_sources::rust_sources(
@@ -920,9 +969,7 @@ mod tests {
         );
         for stage in &skipping {
             assert!(
-                evaluated
-                    .iter()
-                    .any(|p| stage == p || stage.starts_with(&format!("{p}-"))),
+                evaluated.iter().any(|p| skip_label_belongs_to(stage, p)),
                 "publisher '{stage}' records entry skips but never calls \
                  evaluate_entry_skips; evaluated={evaluated:?}"
             );
