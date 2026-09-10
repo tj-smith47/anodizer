@@ -33,9 +33,10 @@ pub use discover::{
 };
 pub(crate) use family::nightly_exclude_describe_args;
 pub use family::{
-    excluded_sibling_prefixes, extract_tag_prefix, filter_ignored_tags, has_version_placeholder,
-    is_nightly_tag, per_crate_tag_prefix, render_ignore_patterns, strip_monorepo_prefix,
-    tag_family_glob, tag_family_prefix, tag_in_family, tag_in_family_excluding_siblings,
+    compose_prefix, excluded_sibling_prefixes, extract_tag_prefix, filter_ignored_tags,
+    has_version_placeholder, is_nightly_tag, per_crate_tag_prefix, render_ignore_patterns,
+    strip_monorepo_prefix, tag_family_glob, tag_family_prefix, tag_in_family,
+    tag_in_family_excluding_siblings,
 };
 pub use mutate::{
     AtomicPushSpec, create_and_push_tag, create_and_push_tag_in, create_tag_local_only,

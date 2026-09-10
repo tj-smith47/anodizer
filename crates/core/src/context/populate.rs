@@ -126,26 +126,30 @@ impl Context {
                 let stripped_summary = crate::git::strip_monorepo_prefix(&info.summary, prefix);
                 self.template_vars.set("Summary", stripped_summary);
             } else {
-                // Non-monorepo: prepend tag.tag_prefix to construct PrefixedTag.
+                // Non-monorepo: compose tag.tag_prefix onto the tag git reported. The
+                // composition is idempotent: a `tag_prefix: "v"` beside a `v1.2.3`
+                // tag names `v1.2.3`, not `vv1.2.3`.
                 let tag_prefix = self
                     .config
                     .tag
                     .as_ref()
                     .and_then(|t| t.tag_prefix.as_deref())
                     .unwrap_or("");
-                self.template_vars
-                    .set("PrefixedTag", &format!("{}{}", tag_prefix, info.tag));
+                self.template_vars.set(
+                    "PrefixedTag",
+                    &crate::git::compose_prefix(tag_prefix, &info.tag),
+                );
                 let prev_tag = info.previous_tag.as_deref().unwrap_or("");
                 let prefixed_prev = if prev_tag.is_empty() {
                     String::new()
                 } else {
-                    format!("{}{}", tag_prefix, prev_tag)
+                    crate::git::compose_prefix(tag_prefix, prev_tag)
                 };
                 self.template_vars
                     .set("PrefixedPreviousTag", &prefixed_prev);
                 self.template_vars.set(
                     "PrefixedSummary",
-                    &format!("{}{}", tag_prefix, info.summary),
+                    &crate::git::compose_prefix(tag_prefix, &info.summary),
                 );
             }
         }

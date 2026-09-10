@@ -74,12 +74,12 @@ pub use status::{
     local_git_user_email_in, local_git_user_name, local_git_user_name_in,
 };
 pub use tags::{
-    AtomicPushSpec, RepositoryUnreadable, TagPosition, create_and_push_tag, create_and_push_tag_in,
-    create_tag_local_only, delete_local_tag_in, delete_remote_tag_in, excluded_sibling_prefixes,
-    extract_tag_prefix, filter_ignored_tags, find_latest_tag_matching, find_latest_tag_matching_in,
-    find_latest_tag_matching_with_prefix, find_latest_tag_matching_with_prefix_in,
-    find_previous_tag, find_previous_tag_in, find_previous_tag_in_family,
-    find_previous_tag_in_family_in, find_previous_tag_with_prefix,
+    AtomicPushSpec, RepositoryUnreadable, TagPosition, compose_prefix, create_and_push_tag,
+    create_and_push_tag_in, create_tag_local_only, delete_local_tag_in, delete_remote_tag_in,
+    excluded_sibling_prefixes, extract_tag_prefix, filter_ignored_tags, find_latest_tag_matching,
+    find_latest_tag_matching_in, find_latest_tag_matching_with_prefix,
+    find_latest_tag_matching_with_prefix_in, find_previous_tag, find_previous_tag_in,
+    find_previous_tag_in_family, find_previous_tag_in_family_in, find_previous_tag_with_prefix,
     find_previous_tag_with_prefix_in, get_all_semver_tags, get_all_semver_tags_in,
     get_branch_semver_tags, get_branch_semver_tags_in, get_first_commit, get_first_commit_in,
     get_tags_at_head, get_tags_at_head_in, get_tags_at_sha_in, has_version_placeholder,

@@ -389,12 +389,19 @@ pub(super) fn tag_family_scope(
     }
 }
 
-/// Glue a monorepo namespace onto a template prefix without doubling it.
-fn compose_prefix(namespace: &str, prefix: &str) -> String {
-    if namespace.is_empty() || prefix.starts_with(namespace) {
-        prefix.to_string()
+/// Glue `prefix` onto `value` without doubling it: a `value` that already
+/// spells the prefix out comes back unchanged.
+///
+/// Two coordinates of one tag compose this way — a monorepo namespace onto a
+/// per-crate track (`subproject1/` + `core-v`), and `tag.tag_prefix` onto the
+/// tag name git reported (`v` + `v1.2.3`). Both are idempotent because the
+/// operator may already have written the composed form, and prepending
+/// blindly turns `v1.2.3` into `vv1.2.3`.
+pub fn compose_prefix(prefix: &str, value: &str) -> String {
+    if prefix.is_empty() || value.starts_with(prefix) {
+        value.to_string()
     } else {
-        format!("{namespace}{prefix}")
+        format!("{prefix}{value}")
     }
 }
 

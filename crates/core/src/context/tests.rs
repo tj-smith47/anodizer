@@ -1812,6 +1812,30 @@ fn test_no_monorepo_falls_back_to_tag_prefix() {
 }
 
 #[test]
+fn an_explicit_v_tag_prefix_is_not_doubled_onto_a_v_tag() {
+    // `tag.tag_prefix: "v"` beside the tags it already describes is the
+    // common spelling; prepending it blindly rendered `vv1.2.3` into every
+    // template that reads PrefixedTag.
+    let mut config = Config::default();
+    config.tag = Some(crate::config::TagConfig {
+        tag_prefix: Some("v".to_string()),
+        ..Default::default()
+    });
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.git_info = Some(make_git_info(false, None));
+    ctx.populate_git_vars();
+
+    let v = ctx.template_vars();
+    assert_eq!(v.get("PrefixedTag"), Some(&"v1.2.3".to_string()));
+    assert_eq!(v.get("PrefixedPreviousTag"), Some(&"v1.2.2".to_string()));
+    assert_eq!(
+        v.get("PrefixedSummary"),
+        Some(&"v1.2.3-0-gabc123d".to_string()),
+        "the summary already opens with the tag, so the prefix is already there"
+    );
+}
+
+#[test]
 fn test_monorepo_overrides_tag_prefix_for_prefixed_vars() {
     // When both monorepo.tag_prefix and tag.tag_prefix are set,
     // monorepo should take precedence for PrefixedTag.
