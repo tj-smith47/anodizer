@@ -422,6 +422,21 @@ Examples below use the Tera-native no-dot idiom.
 | `dir` | filter / fn | `{{ ArtifactPath \| dir }}` | parent directory |
 | `base` | filter / fn | `{{ ArtifactPath \| base }}` | final path component |
 | `abs` | filter / fn | `{{ "./dist" \| abs }}` | absolute path |
+| `join` | fn | `{{ join(elems=["sub", "..", "checksums"]) }}` | `checksums` — joins path elements and resolves `.`/`..` |
+
+`join` is a **path** join and exists only in function form. It is unrelated to
+Tera's built-in `join` **filter**, which concatenates a list with a separator —
+both keep working:
+
+```yaml
+checksum:
+  name_template: '{{ join(elems=["sub", "..", "checksums"]) }}.txt'   # → checksums.txt
+archives:
+  - name_template: '{{ list(items=[Os, Arch]) | join(sep="-") }}'      # → linux-amd64
+```
+
+The GoReleaser positional form auto-translates:
+`{{ join "sub" ".." "checksums" }}` → `{{ join(elems=["sub", "..", "checksums"]) }}`.
 
 ### List and map
 

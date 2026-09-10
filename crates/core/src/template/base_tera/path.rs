@@ -122,6 +122,25 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
+    // join(elems=[...]) — Go `filepath.Join`: join the non-empty elements and
+    // clean the result, so `join "sub" ".." "checksums"` yields `checksums`.
+    // Registered as a FUNCTION only: Tera's builtin `join` FILTER is a
+    // list-to-string join with different semantics and must keep working.
+    tera.register_json_function(
+        "join",
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
+            let elems = args
+                .get("elems")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| tera::Error::message("join requires `elems` argument"))?;
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|v| super::value_to_string(v).into_owned())
+                .collect();
+            Ok(Value::String(filepath_join(&parts)))
+        },
+    );
+
     // urlPathEscape(s="...") — function form of urlPathEscape filter
     tera.register_json_function(
         "urlPathEscape",
@@ -144,4 +163,45 @@ pub(super) fn register(tera: &mut tera::Tera) {
             Ok(Value::String(encoded))
         },
     );
+}
+
+/// Go `path/filepath.Join` semantics with `/` as the separator: drop empty
+/// elements, join the rest, then clean the result lexically — collapse `//`,
+/// drop `.`, and resolve `..` against the preceding element without touching
+/// the filesystem.
+///
+/// `/` is emitted on every platform, not the host separator Go would use, so a
+/// `name_template` that calls `join` produces the same artifact name on every
+/// build shard.
+fn filepath_join(parts: &[String]) -> String {
+    let joined = parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("/");
+    if joined.is_empty() {
+        return String::new();
+    }
+    let rooted = joined.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in joined.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if matches!(out.last(), Some(&last) if last != "..") {
+                    out.pop();
+                } else if !rooted {
+                    out.push("..");
+                }
+            }
+            s => out.push(s),
+        }
+    }
+    let body = out.join("/");
+    match (rooted, body.is_empty()) {
+        (true, _) => format!("/{body}"),
+        (false, true) => ".".to_string(),
+        (false, false) => body,
+    }
 }

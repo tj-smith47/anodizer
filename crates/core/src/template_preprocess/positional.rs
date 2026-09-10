@@ -395,13 +395,13 @@ fn lookup_positional(name: &str) -> Option<PositionalSyntax> {
 }
 
 /// Builtins the preprocessor rewrites outside [`lookup_positional`], each named
-/// with the pass that owns it: `list` and `map` are variadic constructors
+/// with the pass that owns it: `list`, `join` and `map` are variadic constructors
 /// ([`try_rewrite_variadic`] / [`preprocess_map_syntax`]), `printf` / `print` /
 /// `println` are variadic formatters ([`try_rewrite_variadic`]), and `slice`
 /// becomes a piped filter ([`try_rewrite_slice`]).
 #[cfg(test)]
 pub(super) const PREPROCESSED_ELSEWHERE: &[&str] =
-    &["list", "map", "print", "printf", "println", "slice"];
+    &["join", "list", "map", "print", "printf", "println", "slice"];
 
 /// Builtins that have no Go positional form to rewrite, each with its reason:
 ///
@@ -510,13 +510,15 @@ const VARIADIC_FUNCTIONS: &[(&str, &str)] = &[
     ("print", "args"),
     ("println", "args"),
     ("list", "items"),
+    ("join", "elems"),
 ];
 
 /// Rewrite the variadic Go builtins to their named-arg forms:
 /// `printf "fmt" a b …` → `printf(format="fmt", args=[a, b, …])`,
 /// `print a b …` → `print(args=[a, b, …])`,
 /// `println a b …` → `println(args=[a, b, …])`, and
-/// `list a b …` → `list(items=[a, b, …])`.
+/// `list a b …` → `list(items=[a, b, …])`, and
+/// `join a b …` → `join(elems=[a, b, …])`.
 ///
 /// Trailing positional args collect into one array parameter, mirroring the
 /// `map(pairs=[…])` rewrite. `(list …)` used as a subexpression is already an
@@ -538,11 +540,12 @@ fn try_rewrite_variadic(tokens: &[Token], depth: usize) -> Option<String> {
         .find(|(name, _)| *name == func_name)
         .map(|(_, param)| *param)?;
 
-    // A bare `{{ list }}` is far likelier to be a variable reference than an
-    // empty constructor — `list` is the canonical stand-in name, and `list.0`
-    // indexing is a supported compat form. Require an actual argument before
-    // claiming the name. The printf family carries no such ambiguity.
-    if func_name == "list" && sig.len() < 2 {
+    // A bare `{{ list }}` / `{{ join }}` is far likelier to be a variable
+    // reference than an empty constructor — `list` is the canonical stand-in
+    // name, `list.0` indexing is a supported compat form, and `join` is as
+    // plausible a variable name. Require an actual argument before claiming
+    // either name. The printf family carries no such ambiguity.
+    if matches!(func_name, "list" | "join") && sig.len() < 2 {
         return None;
     }
 

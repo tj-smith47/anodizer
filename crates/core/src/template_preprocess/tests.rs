@@ -1810,3 +1810,30 @@ fn test_preprocess_stops_descending_past_the_cap() {
         "the tail past the cap must stay verbatim"
     );
 }
+
+// ---- join: the positional path builtin, and the untouched Tera filter ----
+
+#[test]
+fn preprocess_positional_join() {
+    assert_eq!(
+        preprocess(r#"{{ join "sub" ".." "checksums" }}"#),
+        r#"{{ join(elems=["sub", "..", "checksums"]) }}"#
+    );
+}
+
+#[test]
+fn preprocess_leaves_bare_join_alone() {
+    // A bare `join` is far likelier to name a variable than an empty
+    // constructor.
+    assert_eq!(preprocess("{{ join }}"), "{{ join }}");
+}
+
+#[test]
+fn preprocess_leaves_piped_join_filter_alone() {
+    for template in [
+        r#"{{ list(items=[Os, Arch]) | join(sep="-") }}"#,
+        r#"{{ Names | join(sep=", ") }}"#,
+    ] {
+        assert_eq!(preprocess(template), template, "template {template}");
+    }
+}

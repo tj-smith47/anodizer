@@ -4647,3 +4647,77 @@ fn test_over_nested_expression_is_rejected_by_name() {
     assert!(err.contains("over-nested expression in template"), "{err}");
     assert!(err.contains("parentheses nest 200 deep"), "{err}");
 }
+
+// ---- join (path) function ----
+
+#[test]
+fn filepath_join_matches_go_semantics() {
+    let vars = test_vars();
+    for (template, expected) in [
+        (
+            r#"{{ join(elems=["sub", "..", "checksums"]) }}"#,
+            "checksums",
+        ),
+        (r#"{{ join(elems=["a", "b", "..", "c"]) }}"#, "a/c"),
+        (r#"{{ join(elems=["a", "", "b"]) }}"#, "a/b"),
+        (r#"{{ join(elems=["a/", "/b"]) }}"#, "a/b"),
+        (r#"{{ join(elems=[".", "a"]) }}"#, "a"),
+        (r#"{{ join(elems=["..", "a"]) }}"#, "../a"),
+        (r#"{{ join(elems=["/a", "..", "..", "b"]) }}"#, "/b"),
+        (r#"{{ join(elems=["a", ".."]) }}"#, "."),
+        (r#"{{ join(elems=[]) }}"#, ""),
+        (
+            r#"{{ join(elems=["dist", "checksums.txt"]) }}"#,
+            "dist/checksums.txt",
+        ),
+    ] {
+        let result = render(template, &vars).unwrap_or_else(|e| panic!("render {template}: {e:#}"));
+        assert_eq!(result, expected, "template {template}");
+    }
+}
+
+#[test]
+fn join_function_resolves_dotdot() {
+    let vars = test_vars();
+    assert_eq!(
+        render(
+            r#"{{ join(elems=["dist", "sub", "..", "checksums"]) }}"#,
+            &vars
+        )
+        .unwrap(),
+        "dist/checksums"
+    );
+}
+
+#[test]
+fn join_function_errors_without_elems() {
+    let vars = test_vars();
+    let err = render("{{ join() }}", &vars).expect_err("join needs its elements");
+    assert!(
+        format!("{err:#}").contains("join requires `elems` argument"),
+        "got {err:#}"
+    );
+}
+
+#[test]
+fn join_emits_forward_slashes_on_every_platform() {
+    // The separator is fixed so one artifact name renders identically on every
+    // build shard, unlike Go's host-dependent `filepath.Join`.
+    let vars = test_vars();
+    let result = render(r#"{{ join(elems=["dist", "linux", "app"]) }}"#, &vars).unwrap();
+    assert_eq!(result, "dist/linux/app");
+    assert!(!result.contains('\\'), "got {result}");
+}
+
+#[test]
+fn tera_list_join_filter_still_works() {
+    let vars = test_vars();
+    assert_eq!(
+        render(
+            r#"{{ list(items=["linux", "amd64"]) | join(sep="-") }}"#,
+            &vars
+        )
+        .unwrap(),
+        "linux-amd64"
+    );
+}
