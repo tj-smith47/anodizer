@@ -661,7 +661,7 @@ pub(crate) fn publish_to_cargo_with_guard(
         // downstream's publish starts. The wait_for_workspace_deps block,
         // when enabled, polls crates.io for every workspace-internal dep at
         // its pinned version and blocks until each appears. Disabled by
-        // default — anodize's own workspace publishes lockstep within one
+        // default — anodizer's own workspace publishes lockstep within one
         // Release.yml run, where in-loop topological order + the post-
         // publish poll_crates_io_index call below already cover the race.
         let wait_cfg = cargo_cfg
@@ -674,7 +674,7 @@ pub(crate) fn publish_to_cargo_with_guard(
                 .cloned()
                 .unwrap_or_else(|| ".".to_string());
             let manifest_path = std::path::Path::new(&crate_path).join("Cargo.toml");
-            // Workspace-internal dep set: every crate in the same anodize
+            // Workspace-internal dep set: every crate in the same anodizer
             // config (top-level + workspaces overlay). External crates.io
             // deps (serde, tokio, ...) get filtered out by the name check.
             let workspace_names: HashSet<&str> =

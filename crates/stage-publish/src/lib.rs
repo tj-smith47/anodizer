@@ -165,8 +165,8 @@ fn validate_runtime_allowlist(ctx: &Context) -> Result<()> {
     // patterns), but `artifact.name` is whatever the build stage
     // recorded and is not always the on-disk filename. Matching both
     // surfaces means a `*.crate` glob hits whichever of
-    // `artifact.name` ("anodize-v0.2.1") or
-    // `basename(artifact.path)` ("anodize-v0.2.1.crate") satisfies
+    // `artifact.name` ("anodizer-v0.2.1") or
+    // `basename(artifact.path)` ("anodizer-v0.2.1.crate") satisfies
     // the pattern.
     let artifact_pathnames: Vec<String> = ctx
         .artifacts
@@ -206,7 +206,7 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
     pattern == artifact
 }
 
-/// Validates the anodize-only emissions (binstall, nix, version-sync) in
+/// Validates the anodizer-only emissions (binstall, nix, version-sync) in
 /// every mode — snapshot, dry-run, nightly, and real releases.
 ///
 /// Each emission is rendered in-memory (milliseconds, no side effects) and
@@ -647,12 +647,12 @@ mod tests {
 
     #[test]
     fn allow_nondeterministic_matches_file_extension_against_path_basename() {
-        // Build stage recorded `artifact.name = "anodize-v0.2.1"` (no
+        // Build stage recorded `artifact.name = "anodizer-v0.2.1"` (no
         // extension), while the actual file on disk is
-        // `dist/anodize-v0.2.1.crate`. A `*.crate` glob must match via
+        // `dist/anodizer-v0.2.1.crate`. A `*.crate` glob must match via
         // the path-basename surface even though the name alone won't.
         let mut ctx = Context::test_fixture();
-        add_artifact_with_path(&mut ctx, "anodize-v0.2.1", "dist/anodize-v0.2.1.crate");
+        add_artifact_with_path(&mut ctx, "anodizer-v0.2.1", "dist/anodizer-v0.2.1.crate");
         ctx.options.runtime_nondeterministic_allowlist =
             vec![("*.crate".to_string(), "cargo embeds mtime".to_string())];
         validate_runtime_allowlist(&ctx)

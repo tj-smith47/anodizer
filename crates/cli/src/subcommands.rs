@@ -23,16 +23,16 @@ pub enum ChangelogFormat {
     Json,
 }
 
-/// `anodize tag` parent subcommand.
+/// `anodizer tag` parent subcommand.
 ///
-/// Bare `anodize tag` keeps its existing autotag behavior (handled
-/// by the `Tag` variant directly). `anodize tag rollback` opts into
+/// Bare `anodizer tag` keeps its existing autotag behavior (handled
+/// by the `Tag` variant directly). `anodizer tag rollback` opts into
 /// the failure-recovery flow described in
 /// `commands::tag::rollback` (binary-only module, so not linkable from here).
 #[derive(Subcommand)]
 pub enum TagSub {
     /// Withdraw a release: unwind the publishers the run recorded, delete
-    /// the anodize-managed tags at a SHA, then revert (or reset past) the
+    /// the anodizer-managed tags at a SHA, then revert (or reset past) the
     /// bump commit they point at.
     ///
     /// The publisher unwind reads the run state the release left under
@@ -78,14 +78,14 @@ pub enum TagSub {
     },
 }
 
-/// `anodize check` parent subcommand.
+/// `anodizer check` parent subcommand.
 ///
 /// `Config` is the historic `check` body (validate `.anodizer.yaml`); the
 /// determinism harness is plumbed here so the flag set ships with this
 /// commit, but the body lands in a follow-up task.
 #[derive(Subcommand)]
 pub enum CheckCmd {
-    /// Validate the workspace's anodize config.
+    /// Validate the workspace's anodizer config.
     Config {
         #[arg(long, help = "Validate a specific workspace in a monorepo config")]
         workspace: Option<String>,
@@ -133,7 +133,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "csv",
-        help = "Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess."
+        help = "Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodizer release --snapshot` subprocess."
     )]
     pub targets: Option<String>,
     #[arg(

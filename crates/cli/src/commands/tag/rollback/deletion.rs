@@ -89,7 +89,7 @@ pub(super) enum ReleaseCleanup {
 ///
 /// `attributed` is true when a run summary ties this tag to the attempt being
 /// rolled back (or `--force` overrode the guard): only then is the release
-/// deleted, because only then does anodize know the release belongs to the
+/// deleted, because only then does anodizer know the release belongs to the
 /// aborted attempt. For an UNATTRIBUTED tag any release is left in place — it
 /// may be a human's draft notes or a prior reversible release, and rollback
 /// must never destroy state it cannot attribute.

@@ -8,7 +8,7 @@ pub fn get_current_branch() -> Result<String> {
     get_current_branch_in(&cwd_or_dot())
 }
 
-/// Return `true` when `name` looks like a branch (NOT an anodize-shaped
+/// Return `true` when `name` looks like a branch (NOT an anodizer-shaped
 /// release tag). Tag shapes: `^v\d+\.\d+\.\d+` (lockstep
 /// `v1.2.3[-pre][+build]`) or `^<crate>-v\d+\.\d+\.\d+`
 /// (per-crate `mycrate-v1.2.3[...]`).
@@ -27,7 +27,7 @@ pub fn get_current_branch() -> Result<String> {
 /// from detached HEAD silently create a branch named after the tag.
 ///
 /// Drift-risk pair with `cli::commands::tag::rollback`'s `LOCKSTEP_TAG_RE` /
-/// `PER_CRATE_TAG_RE`: those classify the same two anodize tag shapes but
+/// `PER_CRATE_TAG_RE`: those classify the same two anodizer tag shapes but
 /// are fully anchored and strict (a rollback must touch only real tags).
 /// The patterns here are deliberately looser and prefix-only (branch-vs-tag
 /// disambiguation, not classification). Keep both in sync when the tag

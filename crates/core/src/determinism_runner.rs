@@ -3,7 +3,7 @@
 //! Allow-listed entry-point for `Command::new` in core. The determinism
 //! harness in `crates/cli/src/determinism_harness.rs` is forbidden
 //! from spawning processes directly per the module-boundary rule, so
-//! this module owns the `anodize release --snapshot --skip=...`
+//! this module owns the `anodizer release --snapshot --skip=...`
 //! invocation that drives each from-clean rebuild.
 //!
 //! Why a separate module: `Command::new` is an authorization boundary
@@ -20,7 +20,7 @@ use std::time::Duration;
 /// Stage names the determinism harness must NOT run.
 ///
 /// Single source of truth for the `--skip=...` list passed to the child
-/// `anodize release --snapshot` invocation: every stage in
+/// `anodizer release --snapshot` invocation: every stage in
 /// [`crate::stages::UPSTREAM_STAGES`] (uploads, API calls, push, announce)
 /// plus the harness-only extras below — stages that don't reach upstream
 /// but still have no place in a hermetic byte-reproducibility rebuild.
@@ -52,7 +52,7 @@ pub static SIDE_EFFECT_STAGES: std::sync::LazyLock<Vec<&'static str>> =
 /// the operator did NOT request via `--stages=` AND that doesn't belong
 /// to the preamble preserve set (`validate` / `before` / `changelog` /
 /// `templatefiles`). Skipping them in the child release subprocess
-/// matches the spec's promise that `anodize check determinism
+/// matches the spec's promise that `anodizer check determinism
 /// --stages=<list>` only exercises (and validates) the named stages —
 /// previously the child still ran the full pipeline, attempting nfpm /
 /// nsis / dmg / etc. on shards that have no business running them.
@@ -71,7 +71,7 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
     format!("--skip={}", merged.join(","))
 }
 
-/// Invoke the running `anodize` binary against `worktree_path` with the
+/// Invoke the running `anodizer` binary against `worktree_path` with the
 /// supplied isolated env.
 ///
 /// Pinning args:
@@ -109,12 +109,12 @@ pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
     tracing::debug!(
         args = ?cmd.get_args(),
         worktree = %spec.worktree_path.display(),
-        "spawning anodize release child for determinism harness",
+        "spawning anodizer release child for determinism harness",
     );
     cmd.stdin(std::process::Stdio::null());
     let status = cmd
         .status()
-        .context("spawning anodize release for determinism harness")?;
+        .context("spawning anodizer release for determinism harness")?;
     anyhow::ensure!(
         status.success(),
         "harness build pipeline failed in worktree {} (exit {:?})",
@@ -124,13 +124,13 @@ pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Invocation knobs for the child `anodize release` subprocess, grouped
+/// Invocation knobs for the child `anodizer release` subprocess, grouped
 /// so the spawn surface takes one spec instead of a positional argument
 /// list that grows with every new knob.
 pub struct ChildInvocation<'a> {
-    /// Path to the running `anodize` binary (see
-    /// [`current_anodize_binary`]).
-    pub anodize_binary: &'a Path,
+    /// Path to the running `anodizer` binary (see
+    /// [`current_anodizer_binary`]).
+    pub anodizer_binary: &'a Path,
     /// Hermetic worktree the child builds in (`current_dir`).
     pub worktree_path: &'a Path,
     /// Fully-replacing child env map (`env_clear` + re-populate);
@@ -158,10 +158,10 @@ pub struct ChildInvocation<'a> {
 /// Build the [`Command`] the harness will spawn. Split out from
 /// [`run_build_pipeline_subprocess`] so unit tests can inspect the
 /// constructed argv (`cmd.get_args()`) without shelling out — the
-/// alternative is to ship a real `anodize` binary into the test harness.
+/// alternative is to ship a real `anodizer` binary into the test harness.
 fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     let ChildInvocation {
-        anodize_binary,
+        anodizer_binary,
         worktree_path,
         env,
         targets,
@@ -170,7 +170,7 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
         crate_name,
         verbosity,
     } = *spec;
-    let mut cmd = Command::new(anodize_binary);
+    let mut cmd = Command::new(anodizer_binary);
     let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
     cmd.arg("release");
     if snapshot {
@@ -243,11 +243,11 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     cmd
 }
 
-/// Resolve the path of the currently-running `anodize` binary. Thin
+/// Resolve the path of the currently-running `anodizer` binary. Thin
 /// wrapper over [`std::env::current_exe`] kept here so the harness side
 /// doesn't have to touch `std::env` for binary resolution.
-pub fn current_anodize_binary() -> Result<PathBuf> {
-    std::env::current_exe().context("locating the currently-running anodize binary")
+pub fn current_anodizer_binary() -> Result<PathBuf> {
+    std::env::current_exe().context("locating the currently-running anodizer binary")
 }
 
 /// Number of `cargo fetch` attempts [`prefetch_deps`] makes before failing.
@@ -281,7 +281,7 @@ const PREFETCH_BACKOFF: Duration = Duration::from_secs(3);
 /// Linux host). That all-platform superset is exactly what a hermetic offline
 /// rebuild needs, on any shard: the explicit-target Windows shards, the
 /// multi-arch `targets:''` macOS/Ubuntu shards, and the host-side man-page
-/// `before:` hook (`cargo run --bin anodize`) alike. See
+/// `before:` hook (`cargo run --bin anodizer`) alike. See
 /// `build_fetch_command` for why an explicit `--target` is the bug this
 /// guards against.
 ///
@@ -324,7 +324,7 @@ pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path) -> Result<()> {
 /// graph (host + all cross targets in one shot). Passing an explicit
 /// `--target X` is the bug this guards against — it NARROWS the fetch to X's
 /// resolve graph, dropping host-target deps the offline rebuild still needs
-/// for host-side work (the man-page `before:` hook's `cargo run --bin anodize`
+/// for host-side work (the man-page `before:` hook's `cargo run --bin anodizer`
 /// host build, proc-macros, build scripts). On a cross shard (host x86_64 ≠
 /// target aarch64) that surfaces as `failed to download <crate>: --offline was
 /// specified` the instant the offline seal bites.
@@ -401,7 +401,7 @@ mod tests {
     fn current_binary_resolves_to_a_real_file() {
         // In test context, `current_exe` returns the test runner; the
         // path is just expected to be readable.
-        let p = current_anodize_binary().unwrap();
+        let p = current_anodizer_binary().unwrap();
         assert!(p.exists(), "current_exe should point at a real file");
     }
 
@@ -409,9 +409,9 @@ mod tests {
     fn run_build_pipeline_subprocess_fails_when_binary_missing() {
         let env = HashMap::new();
         let worktree = std::env::temp_dir();
-        let bogus = PathBuf::from("/nonexistent/anodize-binary-for-tests");
+        let bogus = PathBuf::from("/nonexistent/anodizer-binary-for-tests");
         let res = run_build_pipeline_subprocess(&ChildInvocation {
-            anodize_binary: &bogus,
+            anodizer_binary: &bogus,
             worktree_path: &worktree,
             env: &env,
             targets: None,
@@ -433,7 +433,7 @@ mod tests {
     fn subprocess_command_omits_targets_when_none() {
         let env = HashMap::new();
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: None,
@@ -470,7 +470,7 @@ mod tests {
             "aarch64-apple-darwin".to_string(),
         ];
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: Some(&triples),
@@ -500,7 +500,7 @@ mod tests {
         let env = HashMap::new();
         let empty: Vec<String> = Vec::new();
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: Some(&empty),
@@ -531,7 +531,7 @@ mod tests {
         let env = HashMap::new();
         for snapshot in [true, false] {
             let cmd = build_subprocess_command(&ChildInvocation {
-                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
                 worktree_path: &std::env::temp_dir(),
                 env: &env,
                 targets: None,
@@ -558,7 +558,7 @@ mod tests {
         let env = HashMap::new();
         for snapshot in [true, false] {
             let cmd = build_subprocess_command(&ChildInvocation {
-                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
                 worktree_path: &std::env::temp_dir(),
                 env: &env,
                 targets: None,
@@ -591,7 +591,7 @@ mod tests {
         env.insert(crate::log::LOG_DEPTH_ENV.to_string(), "99".to_string());
         for snapshot in [true, false] {
             let cmd = build_subprocess_command(&ChildInvocation {
-                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
                 worktree_path: &std::env::temp_dir(),
                 env: &env,
                 targets: None,
@@ -635,7 +635,7 @@ mod tests {
     fn subprocess_command_drops_snapshot_when_disabled() {
         let env = HashMap::new();
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: None,
@@ -665,7 +665,7 @@ mod tests {
     fn subprocess_command_scopes_to_crate_when_named() {
         let env = HashMap::new();
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: None,
@@ -690,7 +690,7 @@ mod tests {
     fn subprocess_command_omits_crate_when_none() {
         let env = HashMap::new();
         let cmd = build_subprocess_command(&ChildInvocation {
-            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
             worktree_path: &std::env::temp_dir(),
             env: &env,
             targets: None,
@@ -719,7 +719,7 @@ mod tests {
         let env = HashMap::new();
         let argv_for = |verbosity: crate::log::Verbosity| -> Vec<String> {
             let cmd = build_subprocess_command(&ChildInvocation {
-                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                anodizer_binary: &PathBuf::from("/usr/bin/anodizer"),
                 worktree_path: &std::env::temp_dir(),
                 env: &env,
                 targets: None,
@@ -830,7 +830,7 @@ mod tests {
     /// dependency superset (host + every cross target); `cargo fetch --target X`
     /// NARROWS to X's `CompileKind` and drops the host-target deps the offline
     /// rebuild still needs for host-side work (the man-page `before:` hook's
-    /// `cargo run --bin anodize` host build) — which then dies with `failed to
+    /// `cargo run --bin anodizer` host build) — which then dies with `failed to
     /// download <crate>: --offline was specified` on a cross shard.
     #[test]
     fn fetch_command_never_narrows_to_a_target() {
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn prefetch_fails_after_exhausting_attempts() {
         let res = prefetch_deps_with(
-            &PathBuf::from("/nonexistent/anodize-prefetch-test-dir"),
+            &PathBuf::from("/nonexistent/anodizer-prefetch-test-dir"),
             &PathBuf::from("/nonexistent/cargo-home"),
             1,
             Duration::ZERO,
@@ -1004,7 +1004,7 @@ mod tests {
             assert!(
                 VALID_RELEASE_SKIPS.contains(&name),
                 "SIDE_EFFECT_STAGES contains `{name}` but VALID_RELEASE_SKIPS does not — \
-                 the harness would fail at `anodize release --skip=<list>` invocation. \
+                 the harness would fail at `anodizer release --skip=<list>` invocation. \
                  Add `{name}` to VALID_RELEASE_SKIPS in crates/core/src/context.rs."
             );
         }

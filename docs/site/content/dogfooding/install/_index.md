@@ -1,6 +1,6 @@
 +++
 title = "Where you install it"
-description = "Distribution channels users get the anodize and cfgd binaries from, with a link to each live registry entry."
+description = "Distribution channels users get the anodizer and cfgd binaries from, with a link to each live registry entry."
 weight = 10
 template = "section.html"
 +++

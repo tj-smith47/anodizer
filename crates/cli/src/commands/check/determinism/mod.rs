@@ -1,4 +1,4 @@
-//! `anodize check determinism` CLI dispatcher.
+//! `anodizer check determinism` CLI dispatcher.
 //!
 //! Body of the harness lives in [`crate::determinism_harness`]; this
 //! module is responsible for:

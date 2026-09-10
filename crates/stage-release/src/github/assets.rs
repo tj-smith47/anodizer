@@ -266,12 +266,12 @@ mod tests {
 
     #[tokio::test]
     async fn find_returns_some_when_asset_matches_first_page() {
-        let body = format!("[{}]", asset_json("anodize-v1.tar.gz", 4242, 42));
+        let body = format!("[{}]", asset_json("anodizer-v1.tar.gz", 4242, 42));
         let (addr, calls) = spawn_oneshot_http_responder(vec![ok_json(body)]);
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
 
-        let got = find_release_asset_probe(&octo, "o", "r", 1, "anodize-v1.tar.gz", &policy, None)
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "anodizer-v1.tar.gz", &policy, None)
             .await
             .expect("call succeeds");
 

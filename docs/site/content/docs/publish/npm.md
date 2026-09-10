@@ -154,12 +154,12 @@ A listed triple that no selected build produces is a config error naming the off
 ```yaml
 npms:
   - mode: postinstall
-    name: "@anodize/demo"
+    name: "@anodizer/demo"
     access: public
     format: tgz           # archive format the shim downloads
 ```
 
-In this mode anodizer collects the release **archive** artifacts, renders a `package.json` whose `anodize.binaries` table maps `process.platform`/`process.arch` to the per-platform download URL + sha256, and a `postinstall.js` shim that selects the matching entry, downloads it, sha256-verifies, and extracts the binary into `bin/`.
+In this mode anodizer collects the release **archive** artifacts, renders a `package.json` whose `anodizer.binaries` table maps `process.platform`/`process.arch` to the per-platform download URL + sha256, and a `postinstall.js` shim that selects the matching entry, downloads it, sha256-verifies, and extracts the binary into `bin/`.
 
 ```
 package/
@@ -227,7 +227,7 @@ In `optional-deps` mode a single `npms[]` entry publishes a **metapackage plus o
 
 ```yaml
 npms:
-  - scope: "@anodize"
+  - scope: "@anodizer"
     metapackage: demo
     auth: auto      # default — per-package selection
 ```
@@ -239,7 +239,7 @@ Keep `NPM_TOKEN` set in the workflow; `auto` exercises Trusted Publishing wherev
 In `auto` mode only, when OIDC is chosen for an existing package and the `npm publish` **fails**, and a token is available, anodizer **retries that package with the token** and emits a loud warning naming the package:
 
 ```
-WARN  OIDC / Trusted Publishing publish FAILED for '@anodize/demo'; falling back to
+WARN  OIDC / Trusted Publishing publish FAILED for '@anodizer/demo'; falling back to
       NPM_TOKEN — Trusted Publishing was NOT exercised for this package. Verify the
       package's Trusted Publisher config (registry, repository, workflow).
 ```
@@ -351,7 +351,7 @@ For a private registry (e.g. GitHub Packages):
 
 ```yaml
 npms:
-  - scope: "@anodize"
+  - scope: "@anodizer"
     metapackage: demo
     registry: "https://npm.pkg.github.com"
     access: restricted
@@ -384,7 +384,7 @@ Use `if` to gate publishing on a templated condition:
 
 ```yaml
 npms:
-  - scope: "@anodize"
+  - scope: "@anodizer"
     metapackage: demo
     if: "{{ Prerelease != \"\" }}"  # only on prereleases
 ```
@@ -394,15 +394,15 @@ npms:
 ```yaml
 npms:
   - id: primary
-    scope: "@anodize"
-    metapackage: anodize-demo
+    scope: "@anodizer"
+    metapackage: anodizer-demo
     bin: demo
     description: "A fast Rust CLI shipped via npm"
     homepage: "https://example.com/demo"
     license: MIT
-    author: "Anodize Team"
-    repository: "https://github.com/anodize/demo"
-    bugs: "https://github.com/anodize/demo/issues"
+    author: "Anodizer Team"
+    repository: "https://github.com/anodizer/demo"
+    bugs: "https://github.com/anodizer/demo/issues"
     access: public
     tag: latest
     keywords:

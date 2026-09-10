@@ -1,4 +1,4 @@
-//! Preserved-dist support for `anodize check determinism --preserve-dist=<path>`.
+//! Preserved-dist support for `anodizer check determinism --preserve-dist=<path>`.
 //!
 //! When the harness greens, this module:
 //!
@@ -45,7 +45,7 @@ use std::path::Path;
 /// they are when written by this module.
 ///
 /// We deliberately do NOT reuse `SplitArtifact` directly: the harness
-/// runs as a subprocess of `anodize release` and never instantiates the
+/// runs as a subprocess of `anodizer release` and never instantiates the
 /// in-process `Context::artifacts` registry, so it has no `ArtifactKind`
 /// / `crate_name` / `metadata` to populate. Replicating just the fields
 /// we can populate keeps `context.json` honest about what the harness

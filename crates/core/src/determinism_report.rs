@@ -1,7 +1,7 @@
 //! Determinism Harness report types.
 //!
 //! `DeterminismReport` is the canonical JSON shape emitted by
-//! `anodize check determinism` at
+//! `anodizer check determinism` at
 //! `dist/run-<commit>/determinism.json`. The shape is fixed by the
 //! release-resilience spec ([determinism harness report]) — every
 //! field is consumed by downstream CI parsers, so the serde contract is
@@ -30,7 +30,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// Top-level determinism report shape.
 ///
 /// Emitted at `dist/run-<commit>/determinism.json` after every
-/// `anodize check determinism` run. Non-zero exit accompanies a non-empty
+/// `anodizer check determinism` run. Non-zero exit accompanies a non-empty
 /// `drift` list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -79,7 +79,7 @@ pub struct DeterminismReport {
 pub struct AllowList {
     /// Compile-time entries seeded by [`crate::DeterminismState::seed_from_commit`].
     pub compile_time: Vec<AllowListEntry>,
-    /// Runtime entries added via `anodize release --allow-nondeterministic`.
+    /// Runtime entries added via `anodizer release --allow-nondeterministic`.
     pub runtime: Vec<AllowListEntry>,
 }
 

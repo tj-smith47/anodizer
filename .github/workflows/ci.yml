@@ -279,7 +279,7 @@ jobs:
         with:
           sccache: "true"
 
-      - name: Build anodize CLI
+      - name: Build anodizer CLI
         run: cargo build --release -p anodizer
 
       - name: Validate .anodizer.yaml

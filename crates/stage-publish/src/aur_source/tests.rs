@@ -1185,7 +1185,7 @@ fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -
     cfg_mut(&mut cfg);
     let mut config = Config::default();
     config.dist = std::env::temp_dir().join(format!(
-        "anodize-aursrc-{}",
+        "anodizer-aursrc-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1348,7 +1348,7 @@ fn aur_source_publisher_run_pushes_top_level_entry() {
     let mut config = Config::default();
     config.project_name = "widget".to_string();
     config.dist = std::env::temp_dir().join(format!(
-        "anodize-aursrc-top-{}",
+        "anodizer-aursrc-top-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

@@ -51,7 +51,7 @@ fn demo_crate() -> CrateConfig {
 fn npm_cfg() -> NpmConfig {
     NpmConfig {
         mode: NpmMode::Postinstall,
-        name: Some("anodize-demo".into()),
+        name: Some("anodizer-demo".into()),
         ..Default::default()
     }
 }
@@ -59,7 +59,7 @@ fn npm_cfg() -> NpmConfig {
 fn scoped_cfg() -> NpmConfig {
     NpmConfig {
         mode: NpmMode::Postinstall,
-        name: Some("@anodize/demo".into()),
+        name: Some("@anodizer/demo".into()),
         access: Some("public".into()),
         ..Default::default()
     }
@@ -122,7 +122,7 @@ crates:
     path: .
     tag_template: "v{{ .Version }}"
 npms:
-  - scope: "@anodize"
+  - scope: "@anodizer"
     metapackage: demo
 "#;
     let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse minimal npms");
@@ -134,7 +134,7 @@ npms:
         "default is optional-deps"
     );
     assert!(entries[0].libc_aware, "libc_aware defaults true");
-    assert_eq!(entries[0].scope.as_deref(), Some("@anodize"));
+    assert_eq!(entries[0].scope.as_deref(), Some("@anodizer"));
 }
 
 #[test]
@@ -148,13 +148,13 @@ crates:
 npms:
   - id: primary
     mode: postinstall
-    name: "@anodize/demo"
+    name: "@anodizer/demo"
     description: "A demo"
     homepage: "https://example.com"
     license: MIT
-    author: "Anodize"
-    repository: "https://github.com/anodize/demo"
-    bugs: "https://github.com/anodize/demo/issues"
+    author: "Anodizer"
+    repository: "https://github.com/anodizer/demo"
+    bugs: "https://github.com/anodizer/demo/issues"
     keywords: [cli, demo]
     access: public
     tag: next
@@ -339,14 +339,14 @@ fn render_package_json_emits_canonical_fields() {
     let ctx = TestContextBuilder::new().project_name("demo").build();
     let cfg = npm_cfg();
     let bins = vec![one_binary("linux", "x64")];
-    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.2.3", &bins, None)
+    let body = render_package_json(&ctx, &cfg, "anodizer-demo", "demo", "1.2.3", &bins, None)
         .expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
-    assert_eq!(parsed["name"], "anodize-demo");
+    assert_eq!(parsed["name"], "anodizer-demo");
     assert_eq!(parsed["version"], "1.2.3");
     assert_eq!(parsed["scripts"]["postinstall"], "node ./postinstall.js");
-    assert_eq!(parsed["anodize"]["binaries"][0]["os"], "linux");
-    assert_eq!(parsed["bin"]["anodize-demo"], "bin/anodize-demo.js");
+    assert_eq!(parsed["anodizer"]["binaries"][0]["os"], "linux");
+    assert_eq!(parsed["bin"]["anodizer-demo"], "bin/anodizer-demo.js");
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn assemble_postinstall_tarball_is_reproducible() {
     let ctx = ctx_with_archives();
     let cfg = npm_cfg();
     let bins =
-        collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
+        collect_platform_binaries(&ctx, &cfg, "anodizer-demo", "1.2.3", &ctx.logger("publish"))
             .expect("collect");
     let log = ctx.logger("publish");
     let t1 = assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None)
@@ -501,7 +501,7 @@ fn assemble_postinstall_tarball_scoped_package_basename() {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
-    assert_eq!(fname, "anodize-demo-1.2.3.tgz");
+    assert_eq!(fname, "anodizer-demo-1.2.3.tgz");
 }
 
 /// A `description` template that fails to render (undefined field) falls
@@ -560,7 +560,7 @@ fn optional_deps_ctx() -> (tempfile::TempDir, anodizer_core::context::Context) {
 
 fn opt_cfg() -> NpmConfig {
     NpmConfig {
-        scope: Some("@anodize".into()),
+        scope: Some("@anodizer".into()),
         metapackage: Some("demo".into()),
         bin: Some("demo".into()),
         ..Default::default()
@@ -582,19 +582,22 @@ fn optional_deps_emits_per_platform_packages_with_derived_triples() {
 
     // 4 distinct platform packages (musl + gnu are separate under libc_aware).
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
-    assert!(names.contains(&"@anodize/demo-linux-x64-musl"), "{names:?}");
     assert!(
-        names.contains(&"@anodize/demo-linux-x64-glibc"),
+        names.contains(&"@anodizer/demo-linux-x64-musl"),
         "{names:?}"
     );
-    assert!(names.contains(&"@anodize/demo-darwin-x64"), "{names:?}");
-    assert!(names.contains(&"@anodize/demo-win32-x64"), "{names:?}");
+    assert!(
+        names.contains(&"@anodizer/demo-linux-x64-glibc"),
+        "{names:?}"
+    );
+    assert!(names.contains(&"@anodizer/demo-darwin-x64"), "{names:?}");
+    assert!(names.contains(&"@anodizer/demo-win32-x64"), "{names:?}");
 
     // linux-x64-musl package.json carries os/cpu/libc selectors.
     let musl = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-linux-x64-musl")
+        .find(|p| p.name == "@anodizer/demo-linux-x64-musl")
         .expect("musl pkg");
     let j: serde_json::Value = serde_json::from_str(&musl.package_json).expect("json");
     assert_eq!(j["os"], serde_json::json!(["linux"]));
@@ -605,7 +608,7 @@ fn optional_deps_emits_per_platform_packages_with_derived_triples() {
     let darwin = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-darwin-x64")
+        .find(|p| p.name == "@anodizer/demo-darwin-x64")
         .expect("darwin pkg");
     let j: serde_json::Value = serde_json::from_str(&darwin.package_json).expect("json");
     assert_eq!(j["os"], serde_json::json!(["darwin"]));
@@ -615,7 +618,7 @@ fn optional_deps_emits_per_platform_packages_with_derived_triples() {
     let gnu = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-linux-x64-glibc")
+        .find(|p| p.name == "@anodizer/demo-linux-x64-glibc")
         .expect("glibc pkg");
     let j: serde_json::Value = serde_json::from_str(&gnu.package_json).expect("json");
     assert_eq!(j["libc"], serde_json::json!(["glibc"]));
@@ -650,7 +653,7 @@ fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     assert!(shim.contains("require.resolve"));
     assert!(shim.contains("BINARY_OVERRIDE"));
     assert!(shim.contains("musl"));
-    assert!(shim.contains("@anodize/demo-linux-x64-musl"));
+    assert!(shim.contains("@anodizer/demo-linux-x64-musl"));
 }
 
 #[test]
@@ -664,14 +667,14 @@ fn optional_deps_libc_aware_false_collapses_linux() {
         generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
     // musl + gnu collapse to one linux-x64 package (no libc suffix).
-    assert!(names.contains(&"@anodize/demo-linux-x64"), "{names:?}");
+    assert!(names.contains(&"@anodizer/demo-linux-x64"), "{names:?}");
     assert!(!names.iter().any(|n| n.contains("musl")), "{names:?}");
     assert!(!names.iter().any(|n| n.contains("glibc")), "{names:?}");
     // The collapsed linux package emits no libc selector.
     let linux = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-linux-x64")
+        .find(|p| p.name == "@anodizer/demo-linux-x64")
         .expect("linux pkg");
     let j: serde_json::Value = serde_json::from_str(&linux.package_json).expect("json");
     assert!(j.get("libc").is_none());
@@ -702,7 +705,7 @@ fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
     let linux = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-linux-x64")
+        .find(|p| p.name == "@anodizer/demo-linux-x64")
         .expect("collapsed linux pkg");
     let src = linux.binaries[0].src.to_string_lossy();
     assert!(
@@ -795,7 +798,7 @@ fn optional_deps_libc_aware_false_both_shards_present_satisfies_gate() {
     let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
         .expect("both shards present must satisfy the collapsed linux-x64 identity");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, vec!["@anodize/demo-linux-x64"], "{names:?}");
+    assert_eq!(names, vec!["@anodizer/demo-linux-x64"], "{names:?}");
 }
 
 /// Regression guard: when only musl is CONFIGURED (glibc was never a target
@@ -827,7 +830,7 @@ fn optional_deps_libc_aware_false_musl_only_configured_satisfied_by_musl_artifac
     let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
         .expect("a musl-only configured target must be satisfied by its own artifact");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, vec!["@anodize/demo-linux-x64"], "{names:?}");
+    assert_eq!(names, vec!["@anodizer/demo-linux-x64"], "{names:?}");
 }
 
 #[test]
@@ -871,7 +874,7 @@ fn optional_deps_bins_map_co_locates_all_command_binaries_per_platform() {
     let linux = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-linux-x64-glibc")
+        .find(|p| p.name == "@anodizer/demo-linux-x64-glibc")
         .expect("linux pkg");
     let mut subpaths: Vec<&str> = linux.binaries.iter().map(|b| b.subpath.as_str()).collect();
     subpaths.sort_unstable();
@@ -1652,7 +1655,7 @@ crates:
     path: .
     tag_template: "v{{ .Version }}"
 npms:
-  - scope: "@anodize"
+  - scope: "@anodizer"
     skip_metapackage: "{{ .IsSnapshot }}"
 "#;
     let cfg: Config = serde_yaml_ng::from_str(yaml_tmpl).expect("parse templated");
@@ -1711,8 +1714,8 @@ fn platform_name_template_scope_prefixes_unscoped_render() {
     let layout =
         generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
-    assert!(names.contains(&"@anodize/cli-linux-x64"), "{names:?}");
-    assert!(names.contains(&"@anodize/cli-win32-x64"), "{names:?}");
+    assert!(names.contains(&"@anodizer/cli-linux-x64"), "{names:?}");
+    assert!(names.contains(&"@anodizer/cli-win32-x64"), "{names:?}");
 }
 
 #[test]
@@ -2043,7 +2046,7 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
         1,
         "only the demo binary is selected"
     );
-    assert_eq!(layout.platforms[0].name, "@anodize/demo-linux-x64-musl");
+    assert_eq!(layout.platforms[0].name, "@anodizer/demo-linux-x64-musl");
 }
 
 // -----------------------------------------------------------------------------
@@ -2245,7 +2248,7 @@ fn targets_allowlist_filters_postinstall_binaries() {
         ..npm_cfg()
     };
     let bins =
-        collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
+        collect_platform_binaries(&ctx, &cfg, "anodizer-demo", "1.2.3", &ctx.logger("publish"))
             .expect("collect");
     assert_eq!(bins.len(), 1, "only the listed target survives");
     assert_eq!(bins[0].os, "linux");
@@ -2481,7 +2484,7 @@ fn preflight_skip_metapackage_without_artifacts_does_not_block() {
         .build();
     let cfg = NpmConfig {
         mode: NpmMode::OptionalDeps,
-        scope: Some("@anodize".into()),
+        scope: Some("@anodizer".into()),
         metapackage: Some("demo".into()),
         bin: Some("demo".into()),
         skip_metapackage: Some(StringOrBool::Bool(true)),
@@ -3813,7 +3816,7 @@ fn optional_deps_warns_on_unsupported_target_and_skips_it() {
     let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", None, &log).expect("layout");
     // Only the linux package is emitted; the universal target is excluded.
     assert_eq!(layout.platforms.len(), 1);
-    assert_eq!(layout.platforms[0].name, "@anodize/demo-linux-x64-musl");
+    assert_eq!(layout.platforms[0].name, "@anodizer/demo-linux-x64-musl");
     assert!(
         cap.warn_count() >= 1,
         "excluded target must produce a warning"
@@ -3861,14 +3864,14 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
         .crates(vec![demo_crate()])
         .build();
     let cfg = opt_cfg();
-    let pkg_json = r#"{"name":"@anodize/demo-linux-x64-musl","version":"1.2.3","os":["linux"],"cpu":["x64"],"libc":["musl"]}"#;
+    let pkg_json = r#"{"name":"@anodizer/demo-linux-x64-musl","version":"1.2.3","os":["linux"],"cpu":["x64"],"libc":["musl"]}"#;
     let binary = b"ELF-fake-binary".to_vec();
     let embedded = vec![("demo".to_string(), binary, 0o755u32)];
 
     let t1 = assemble_optional_deps_tarball(
         &ctx,
         &cfg,
-        "@anodize/demo-linux-x64-musl",
+        "@anodizer/demo-linux-x64-musl",
         "1.2.3",
         pkg_json,
         &embedded,
@@ -3877,7 +3880,7 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
     let t2 = assemble_optional_deps_tarball(
         &ctx,
         &cfg,
-        "@anodize/demo-linux-x64-musl",
+        "@anodizer/demo-linux-x64-musl",
         "1.2.3",
         pkg_json,
         &embedded,
@@ -3993,7 +3996,7 @@ esac
         "exactly the one already-live package must survive in evidence"
     );
     assert!(
-        targets[0].package.starts_with("@anodize/demo-"),
+        targets[0].package.starts_with("@anodizer/demo-"),
         "recorded target is a per-platform package: {}",
         targets[0].package
     );
@@ -4442,10 +4445,10 @@ fn provenance_emitted_true_when_runner_supports() {
         "publish",
         anodizer_core::log::Verbosity::Normal,
     );
-    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodizer-demo", &log);
     assert_eq!(override_, None, "supported runner emits configured value");
 
-    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+    let body = render_package_json(&ctx, &cfg, "anodizer-demo", "demo", "1.0.0", &[], override_)
         .expect("render");
     let j: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(
@@ -4471,14 +4474,14 @@ fn provenance_degraded_false_with_warning_on_self_hosted_runner() {
         "publish",
         anodizer_core::log::Verbosity::Normal,
     );
-    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodizer-demo", &log);
     assert_eq!(
         override_,
         Some(false),
         "self-hosted runner forces provenance off"
     );
 
-    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+    let body = render_package_json(&ctx, &cfg, "anodizer-demo", "demo", "1.0.0", &[], override_)
         .expect("render");
     let j: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(
@@ -4490,7 +4493,7 @@ fn provenance_degraded_false_with_warning_on_self_hosted_runner() {
     assert!(
         warns.contains("RUNNER_ENVIRONMENT=self-hosted")
             && warns.contains("WITHOUT provenance")
-            && warns.contains("anodize-demo")
+            && warns.contains("anodizer-demo")
             && warns.contains("GitHub-hosted runner"),
         "warning must be actionable and name the package + the constraint: {warns}"
     );
@@ -4512,10 +4515,10 @@ fn provenance_explicit_false_stays_false_without_spurious_warning() {
         "publish",
         anodizer_core::log::Verbosity::Normal,
     );
-    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodizer-demo", &log);
     assert_eq!(override_, None, "explicit false needs no override");
 
-    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+    let body = render_package_json(&ctx, &cfg, "anodizer-demo", "demo", "1.0.0", &[], override_)
         .expect("render");
     let j: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(
@@ -4595,7 +4598,7 @@ fn files_allowlist_derived_per_package() {
     let win = layout
         .platforms
         .iter()
-        .find(|p| p.name == "@anodize/demo-win32-x64")
+        .find(|p| p.name == "@anodizer/demo-win32-x64")
         .expect("win pkg");
     let j: serde_json::Value = serde_json::from_str(&win.package_json).expect("json");
     let wfiles: Vec<&str> = j["files"]
@@ -4706,7 +4709,7 @@ const scriptPath = {script_path:?};
 const dir = path.dirname(scriptPath);
 
 // Fake package.json with one binary entry matching this runtime.
-const fakePkg = {{ anodize: {{ binaries: [
+const fakePkg = {{ anodizer: {{ binaries: [
   {{ os: process.platform, cpu: process.arch,
      url: 'https://example.invalid/a.bin', sha256: '', format: 'binary' }}
 ] }} }};
@@ -5202,7 +5205,7 @@ exit 0
     );
     let recorded = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
-        recorded.contains("anodize-demo@1.2.3 latest"),
+        recorded.contains("anodizer-demo@1.2.3 latest"),
         "the metapackage must be re-tagged to the target dist-tag; got {recorded:?}"
     );
 }

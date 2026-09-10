@@ -196,7 +196,7 @@ mod tests {
         let nonexistent = tmp.path().join("does-not-exist");
         let env: HashMap<String, String> = HashMap::new();
         let (log, _cap) = StageLogger::with_capture("test", crate::log::Verbosity::Normal);
-        let res = oci_build_fixture(&nonexistent, "anodize/det:test", &[], &env, &log);
+        let res = oci_build_fixture(&nonexistent, "anodizer/det:test", &[], &env, &log);
         assert!(
             res.is_err(),
             "buildx against a nonexistent context dir must error"

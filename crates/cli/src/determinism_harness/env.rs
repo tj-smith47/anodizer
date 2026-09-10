@@ -88,7 +88,7 @@ const WINDOWS_ENV_DENYLIST: &[&str] = &[
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GCP_SERVICE_ACCOUNT_KEY",
     "AZURE_CLIENT_SECRET",
-    // Anodize-publisher credentials.
+    // Anodizer-publisher credentials.
     "CHOCOLATEY_API_KEY",
     "DOCKER_TOKEN",
     "DOCKERHUB_TOKEN",
@@ -205,12 +205,12 @@ pub(crate) struct BuildSubprocessEnv<'a> {
     pub home_dir: &'a Path,
     pub sde: i64,
     /// Absolute path to the per-run worktree root. Used to inject
-    /// `RUSTFLAGS=--remap-path-prefix=<worktree>=/anodize` into the child
+    /// `RUSTFLAGS=--remap-path-prefix=<worktree>=/anodizer` into the child
     /// build subprocess so two harness runs (at different worktree paths)
     /// produce a byte-identical anodizer binary.
     pub worktree: &'a Path,
     /// Resolved per-shard build targets — the `--targets <csv>` list handed
-    /// to the child `anodize release --snapshot` (empty = host-only build,
+    /// to the child `anodizer release --snapshot` (empty = host-only build,
     /// no explicit `--target`).
     ///
     /// Gates the MSVC determinism-flag merge into the GLOBAL `RUSTFLAGS`
@@ -398,7 +398,7 @@ pub(crate) fn build_subprocess_env_with_env(
         }
     }
     for (from, to) in [
-        (worktree_str.as_ref(), "/anodize"),
+        (worktree_str.as_ref(), "/anodizer"),
         (cargo_home_str.as_ref(), "/cargo"),
         (cargo_target_str.as_ref(), "/target"),
     ] {
@@ -557,7 +557,7 @@ pub(crate) fn build_subprocess_env_with_env(
     env.insert("ANODIZER_IN_DETERMINISM_HARNESS".into(), "1".into());
 
     // Redirect LLVM coverage profile output OUTSIDE the worktree so an
-    // instrumented anodize child (built via `cargo llvm-cov`) doesn't
+    // instrumented anodizer child (built via `cargo llvm-cov`) doesn't
     // drop `default_*.profraw` files into the source tree on process
     // exit. The LLVM coverage runtime defaults to a relative path
     // resolved against the process's CWD, which the harness sets to the
@@ -576,7 +576,7 @@ pub(crate) fn build_subprocess_env_with_env(
     // concurrent coverage from multiple subprocesses doesn't collide.
     // Unconditional — non-instrumented binaries ignore the var.
     let llvm_profraw = std::env::temp_dir()
-        .join("anodize-harness-llvm")
+        .join("anodizer-harness-llvm")
         .join("default_%m_%p.profraw");
     env.insert(
         "LLVM_PROFILE_FILE".into(),
@@ -1140,7 +1140,7 @@ mod tests {
             .get("RUSTFLAGS")
             .expect("RUSTFLAGS must be injected so worktree paths don't leak into the binary");
         let needle = format!(
-            "--remap-path-prefix={}=/anodize",
+            "--remap-path-prefix={}=/anodizer",
             tmp.path().to_string_lossy()
         );
         assert!(

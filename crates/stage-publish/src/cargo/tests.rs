@@ -2634,7 +2634,7 @@ lib.workspace = true
 }
 
 /// Disabled gate is a no-op even when deps are present — the master
-/// switch protects single-crate workspaces (anodize itself) from the
+/// switch protects single-crate workspaces (anodizer itself) from the
 /// always-on polling cost.
 #[test]
 fn wait_for_workspace_deps_no_op_when_disabled() {

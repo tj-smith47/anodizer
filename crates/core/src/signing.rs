@@ -264,15 +264,15 @@ impl SignConfig {
 
     /// Default `artifacts` filter for `binary_signs:[]`. The binary-only
     /// driver always restricts the artifact-kind filter to binaries even
-    /// when the user leaves `artifacts:` unset. Anodize-specific helper
+    /// when the user leaves `artifacts:` unset. Anodizer-specific helper
     /// (anodizer-specific — distinct config type for
-    /// binary signing) but kept on `SignConfig` because anodize unifies
+    /// binary signing) but kept on `SignConfig` because anodizer unifies
     /// `signs[]` and `binary_signs[]` into one struct.
     pub const DEFAULT_ARTIFACTS_BINARY: &'static str = "binary";
 
     /// Default `signature` template for top-level `signs:[]`. Mirrors
     /// the canonical `signature = "${artifact}.sig"`.
-    /// Anodize uses Tera-style `{{ .Artifact }}` placeholders that the
+    /// Anodizer uses Tera-style `{{ .Artifact }}` placeholders that the
     /// arg-resolver rewrites to the same path at execution time.
     pub const DEFAULT_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}.sig";
 
@@ -281,13 +281,13 @@ impl SignConfig {
     /// Intentional **divergence** from the binary-sign default: the upstream
     /// stores binaries under per-target subdirectories
     /// (`dist/linux_amd64/binname`), so its template appends `_{{ .Os }}_{{ .Arch }}`
-    /// to the bare binary name without collision. Anodize uses a flat `dist/`
+    /// to the bare binary name without collision. Anodizer uses a flat `dist/`
     /// layout where stage-build already names binaries with the platform
     /// suffix (`myapp_linux_amd64`, `myapp_darwin_arm64`, etc.). Appending
     /// Os/Arch again would produce `myapp_linux_amd64_linux_amd64` with no
     /// `.sig` extension — a double-suffix bug.
     ///
-    /// The correct default for anodize's layout is `{{ .Artifact }}.sig` —
+    /// The correct default for anodizer's layout is `{{ .Artifact }}.sig` —
     /// identical to `DEFAULT_SIGNATURE_TEMPLATE`. Binary names are already
     /// unique per target, so no collision risk exists. Users who want an
     /// explicit per-target suffix can set `signature:` in `binary_signs:`.
@@ -295,7 +295,7 @@ impl SignConfig {
 
     /// Default `args` for top-level `signs:[]`
     /// (`["--output", "$signature", "--detach-sig", "$artifact"]`).
-    /// Anodize substitutes `$signature` / `$artifact` for `{{ .Signature }}`
+    /// Anodizer substitutes `$signature` / `$artifact` for `{{ .Signature }}`
     /// / `{{ .Artifact }}` Tera placeholders that the arg-resolver
     /// rewrites; the wire-level invocation is unchanged.
     pub const DEFAULT_ARGS: &[&'static str] = &[
@@ -438,7 +438,7 @@ impl DockerSignConfig {
 
     /// Default `args` for `docker_signs:[]`
     /// (`["sign", "--key=cosign.key",
-    /// "${artifact}@${digest}", "--yes"]`). Anodize substitutes
+    /// "${artifact}@${digest}", "--yes"]`). Anodizer substitutes
     /// `${artifact}@${digest}` for the Tera-rewritten
     /// `{{ .Artifact }}@{{ .Digest }}` placeholders.
     pub const DEFAULT_ARGS: &[&'static str] = &[

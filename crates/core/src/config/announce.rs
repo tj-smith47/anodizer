@@ -378,9 +378,9 @@ pub struct EmailAnnounce {
     pub host: Option<String>,
     /// SMTP server port (default: 587 for STARTTLS).
     ///
-    /// Anodize-additive UX win (locked 2026-04-28): an unset SMTP
+    /// Anodizer-additive UX win (locked 2026-04-28): an unset SMTP
     /// `port` would otherwise be an error when it is
-    /// unset (zero value). Anodize defaults to 587 — the IETF submission
+    /// unset (zero value). Anodizer defaults to 587 — the IETF submission
     /// port — so the common case (corporate / SaaS SMTP relays exposing
     /// STARTTLS on 587) works out of the box without a config knob. The
     /// `auto` encryption mode then resolves to STARTTLS for 587, which is

@@ -1,4 +1,4 @@
-//! `anodize check` parent subcommand body.
+//! `anodizer check` parent subcommand body.
 //!
 //! The clap `CheckCmd` enum + `CheckDeterminismArgs` live in
 //! `anodizer_cli::lib` (so they participate in `Cli` parsing). The bodies

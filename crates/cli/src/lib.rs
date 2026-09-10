@@ -262,7 +262,7 @@ pub enum Commands {
         #[arg(
             long = "publish-only",
             conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "clean"],
-            help = "Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
+            help = "Load artifacts from dist/ (preserved by `anodizer check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
         )]
         publish_only: bool,
         #[arg(
@@ -595,10 +595,10 @@ pub enum Commands {
             help = "Refresh CHANGELOG.md as part of this tag (requires a `changelog:` config block)"
         )]
         changelog: bool,
-        /// `anodize tag rollback [...]` — failure-recovery counterpart.
+        /// `anodizer tag rollback [...]` — failure-recovery counterpart.
         ///
-        /// Subcommand is optional: bare `anodize tag` keeps its
-        /// existing autotag behavior; only `anodize tag rollback`
+        /// Subcommand is optional: bare `anodizer tag` keeps its
+        /// existing autotag behavior; only `anodizer tag rollback`
         /// invokes the rollback flow.
         #[command(subcommand)]
         sub: Option<TagSub>,

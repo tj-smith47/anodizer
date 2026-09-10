@@ -444,12 +444,12 @@ mod tests {
     #[test]
     fn summarize_drift_emits_text_diff_for_json_artifacts() {
         let run0 = br#"{
-  "name": "anodize",
+  "name": "anodizer",
   "size": 119,
   "kind": "Signature"
 }"#;
         let run1 = br#"{
-  "name": "anodize",
+  "name": "anodizer",
   "size": 120,
   "kind": "Signature"
 }"#;
@@ -478,8 +478,8 @@ mod tests {
         let mut run1 = run0.clone();
         run0[100] = 0x11;
         run1[100] = 0x22;
-        let samples = samples_from_bytes("anodize.exe", &[&run0, &run1]);
-        let summary = summarize_drift("anodize.exe", &samples).unwrap();
+        let samples = samples_from_bytes("anodizer.exe", &[&run0, &run1]);
+        let summary = summarize_drift("anodizer.exe", &samples).unwrap();
         assert!(
             !summary.contains("text drift detected"),
             "binary artifact must not trigger text diff; got: {summary}"

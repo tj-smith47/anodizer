@@ -332,7 +332,7 @@ pub(crate) fn sign_ids_match(
 ///
 /// Caller passes `SignConfig::DEFAULT_SIGNATURE_TEMPLATE` for normal signs
 /// (`{{ .Artifact }}.sig`) or `SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE`
-/// for binary_signs (also `{{ .Artifact }}.sig` — anodize's flat dist layout
+/// for binary_signs (also `{{ .Artifact }}.sig` — anodizer's flat dist layout
 /// means binary names already carry the platform suffix; no duplication needed).
 pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
@@ -411,7 +411,7 @@ pub(crate) fn expand_shell_vars(s: &str, vars: &HashMap<&str, &str>) -> String {
 ///
 /// Signing a bare `<repo>:<tag>` is a TOCTOU integrity hole: the tag can
 /// move between build and sign, so a tag-signature may certify a different
-/// image than the one anodize built (cosign warns and is removing tag
+/// image than the one anodizer built (cosign warns and is removing tag
 /// signing). The build stage records the digest it produced; signing the
 /// digest-pinned reference certifies exactly that image.
 ///

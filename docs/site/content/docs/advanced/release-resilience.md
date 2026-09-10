@@ -31,7 +31,7 @@ section explains why each one is safe.
 | Situation | What you type | Why it works |
 |---|---|---|
 | A release failed partway | the **identical** `anodizer release` command — same tag, same flags | publishers that already landed this exact version `reconcile()` to `Complete` and skip themselves; the failed ones retry |
-| This version should not exist at all | `anodizer tag rollback` | deletes the anodize-managed tag(s), reverts the bump commit, and unwinds every publisher recorded `Succeeded` |
+| This version should not exist at all | `anodizer tag rollback` | deletes the anodizer-managed tag(s), reverts the bump commit, and unwinds every publisher recorded `Succeeded` |
 | A publisher reports `Diverged` | bump the version, then release again | the version is already published upstream with *different* bytes, and that registry slot is immutable — no re-run and no rollback can overwrite it |
 
 > **Re-running is for a failed PUBLISHER; `anodizer continue` is for a failed
@@ -726,7 +726,7 @@ amount of re-running can overwrite an immutable release.
 `anodizer tag rollback` is the inverse of `anodizer tag`: when a downstream
 release fails (publish error, mcp 422, an irreversible Submitter blows up),
 the operator is left with a tag pointing at a bumped-but-broken commit. The
-subcommand deletes the anodize-managed tag(s) at that SHA, reverts the bump
+subcommand deletes the anodizer-managed tag(s) at that SHA, reverts the bump
 commit, and pushes the revert — restoring the branch to a clean state so the
 next `anodizer tag` invocation can re-cut from the fixed commit.
 
@@ -794,8 +794,8 @@ one-way-door publisher, by evidence strength:
 
 `--force` overrides the whole guard for genuinely-offline recovery.
 
-**Safety check:** under the default `--mode=revert`, anodize hard-fails when
-non-bump commits sit between HEAD and the target SHA. (Anodize's own prior
+**Safety check:** under the default `--mode=revert`, anodizer hard-fails when
+non-bump commits sit between HEAD and the target SHA. (Anodizer's own prior
 revert commits — those with the `Revert "chore(release): ` prefix — are
 recognised so re-runs of the same rollback are idempotent.) Use
 `--mode=reset` to force history rewrite when you genuinely want the

@@ -361,7 +361,7 @@ impl ArtifactRegistry {
 ///
 /// Relativization keeps `dist/artifacts.json` byte-identical across determinism
 /// runs in different worktrees — raw cargo binaries otherwise register paths
-/// like `/tmp/anodize-determinism-<pid>-<idx>/.det-tmp/target/.../<bin>` whose
+/// like `/tmp/anodizer-determinism-<pid>-<idx>/.det-tmp/target/.../<bin>` whose
 /// leading prefix differs every run. The cwd-is-root guard (`parent().is_none()`,
 /// cross-platform) skips relativization in the degenerate case where every
 /// absolute path "starts with" `/` (or `C:\`) but stripping the separator

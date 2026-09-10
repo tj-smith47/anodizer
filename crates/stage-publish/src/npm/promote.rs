@@ -662,10 +662,10 @@ mod tests {
         // postinstall: the `name:` names the family.
         let post = NpmConfig {
             mode: NpmMode::Postinstall,
-            name: Some("anodize-demo".into()),
+            name: Some("anodizer-demo".into()),
             ..Default::default()
         };
-        assert_eq!(family_label(&ctx, &post), "anodize-demo");
+        assert_eq!(family_label(&ctx, &post), "anodizer-demo");
 
         // Neither set ⇒ both modes fall back to the resolved crate/project name.
         let bare = NpmConfig::default();

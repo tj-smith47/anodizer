@@ -426,7 +426,7 @@ fn string_or_bool_eq(a: &StringOrBool, b: Option<&StringOrBool>) -> bool {
 }
 
 impl MacOSNativeSignNotarizeConfig {
-    /// Default `use:` selector. Anodize-original — no native
+    /// Default `use:` selector. Anodizer-original — no native
     /// notarize. DMG is the canonical signed-app distribution format
     /// for macOS releases; PKG opt-in handles installers.
     pub const DEFAULT_USE: MacOSNativeArtifactKind = MacOSNativeArtifactKind::Dmg;

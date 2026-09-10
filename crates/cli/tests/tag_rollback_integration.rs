@@ -1,4 +1,4 @@
-//! Integration test for `anodize tag rollback`.
+//! Integration test for `anodizer tag rollback`.
 //!
 //! Fixture: bare-bones repo with an initial commit + a "bump" commit
 //! that lands a tag. Run `anodizer tag rollback --no-push` against
@@ -163,7 +163,7 @@ fn tag_rollback_local_deletes_tag_and_creates_revert_commit() {
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "initial"]);
 
-    // Simulate an anodize-style bump commit + tag.
+    // Simulate an anodizer-style bump commit + tag.
     fs::write(
         dir.join("Cargo.toml"),
         "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n",
@@ -249,7 +249,7 @@ fn tag_rollback_dry_run_makes_no_mutations() {
 /// B-R1: simulate a bare-CI host. The repo's git config has neither
 /// `user.email` nor `user.name`, and the anodizer subprocess is
 /// spawned without inherited `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env.
-/// `anodize tag rollback` must still land the revert commit by
+/// `anodizer tag rollback` must still land the revert commit by
 /// injecting a synthetic identity for the spawn — without that
 /// fallback the CI rollback step would die with "Author identity
 /// unknown".

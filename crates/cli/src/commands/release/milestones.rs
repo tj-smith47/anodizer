@@ -649,7 +649,7 @@ mod tests {
                 release: Some(ReleaseConfig {
                     github: Some(ScmRepoConfig {
                         owner: "toss45".into(),
-                        name: "anodize".into(),
+                        name: "anodizer".into(),
                         token: None,
                     }),
                     ..Default::default()
@@ -881,7 +881,7 @@ mod tests {
             .expect("close: true + resolvable repo must return Some(target)");
         assert_eq!(target.name, "v1.0.0");
         assert_eq!(target.owner, "toss45");
-        assert_eq!(target.repo_name, "anodize");
+        assert_eq!(target.repo_name, "anodizer");
     }
 
     #[test]

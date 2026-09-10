@@ -3105,7 +3105,7 @@ fn test_title_three_state_matrix() {
     //   - None        → emits the default `## Changelog` heading (matches
     //                   the unconditional emission).
     //   - Some("foo") → emits `## foo`.
-    //   - Some("")    → suppresses the heading (anodize-additive carve-out).
+    //   - Some("")    → suppresses the heading (anodizer-additive carve-out).
     let grouped = vec![GroupedCommits::new(
         "",
         vec![ci("feat: add X", "feat", "add X", "abc1234")],

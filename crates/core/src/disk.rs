@@ -246,7 +246,7 @@ pub fn dir_size_bytes(dir: &Path) -> u64 {
     total
 }
 
-/// Names of `anodize`-related mounts under `/Volumes` (macOS only).
+/// Names of `anodizer`-related mounts under `/Volumes` (macOS only).
 ///
 /// **Diagnostic only.** `hdiutil` mounts the dmg's transient r/w image at
 /// `/Volumes/<volname>` while copying the staging tree in; the `stage-dmg`

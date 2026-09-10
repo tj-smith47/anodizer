@@ -32,7 +32,7 @@ pub struct ContextOptions {
     /// When true, running with `--merge` flag (merging artifacts from split builds).
     pub merge: bool,
     /// `--publish-only`: load artifacts from a preserved dist (written
-    /// by `anodize check determinism --preserve-dist=...`) and run
+    /// by `anodizer check determinism --preserve-dist=...`) and run
     /// only the sign + publish pipeline. The CLI dispatcher uses this
     /// flag in `setup_env` to defer the GitHub-token check to the
     /// config-derived environment preflight (the github-release

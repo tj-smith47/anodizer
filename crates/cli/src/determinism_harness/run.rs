@@ -151,7 +151,7 @@ impl Harness {
         // a 2-byte path diff). Across invocations the path must be
         // unique because git worktree add refuses a populated target.
         let worktree_path =
-            worktree_root.join(format!("anodize-determinism-{}", std::process::id()));
+            worktree_root.join(format!("anodizer-determinism-{}", std::process::id()));
 
         // Shared, lock-pinned CARGO_HOME for the WHOLE invocation, hoisted
         // OUT of the per-run worktree (which the loop wipes each iteration).
@@ -164,7 +164,7 @@ impl Harness {
         // output must stay per-run-fresh, and it does: `CARGO_TARGET_DIR`
         // lives inside the worktree and is wiped with it every iteration.
         let shared_cargo_home =
-            worktree_root.join(format!("anodize-determinism-cargo-{}", std::process::id()));
+            worktree_root.join(format!("anodizer-determinism-cargo-{}", std::process::id()));
         std::fs::create_dir_all(&shared_cargo_home)?;
 
         // When crate_name is set, anchor the preserved dist into a
@@ -565,7 +565,7 @@ impl Harness {
         }))
     }
 
-    /// Shell to the running `anodize` binary inside the worktree.
+    /// Shell to the running `anodizer` binary inside the worktree.
     ///
     /// Delegates to [`anodizer_core::determinism_runner`] — `crates/cli/**`
     /// is on the forbid-list for direct subprocess spawn, so the actual
@@ -583,11 +583,11 @@ impl Harness {
         env: &HashMap<String, String>,
         effective_stages: &[StageId],
     ) -> Result<()> {
-        let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
+        let exe = anodizer_core::determinism_runner::current_anodizer_binary()?;
         let extra_skip = compute_extra_skip(effective_stages);
         anodizer_core::determinism_runner::run_build_pipeline_subprocess(
             &anodizer_core::determinism_runner::ChildInvocation {
-                anodize_binary: &exe,
+                anodizer_binary: &exe,
                 worktree_path,
                 env,
                 targets: self.targets.as_deref(),

@@ -153,7 +153,7 @@ pub(crate) async fn gitlab_create_release(
                  empty `ref`. This means the git stage did not populate \
                  `ctx.git_info.commit` — re-run `task release` from inside the \
                  git working tree so git porcelain can resolve HEAD, or supply \
-                 the SHA via the upstream pipeline (anodize-action ships it via \
+                 the SHA via the upstream pipeline (anodizer-action ships it via \
                  `GITHUB_SHA`).",
                 project_id,
                 tag

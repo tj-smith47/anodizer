@@ -1,4 +1,4 @@
-//! Integration tests for `anodize check determinism --preserve-dist=<path>`.
+//! Integration tests for `anodizer check determinism --preserve-dist=<path>`.
 //!
 //! The harness must, on a green run, copy `<worktree>/dist/**` from
 //! run-0 to the operator-supplied destination and emit a `context.json`
@@ -26,7 +26,7 @@ use common::{bootstrap_minimal_cargo_repo, sha256_file, tool_on_path, walk_files
 /// Crate name for the preserve_dist tests' fixture workspace —
 /// distinct from check_determinism's so the per-test cargo target dirs
 /// don't share lock state.
-const FIXTURE_CRATE_NAME: &str = "anodize-det-fixture-preserve";
+const FIXTURE_CRATE_NAME: &str = "anodizer-det-fixture-preserve";
 
 /// `--preserve-dist=<tmp>` copies the dist tree AND emits a
 /// `context.json` that round-trips through serde.
@@ -61,7 +61,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
         .arg(&preserved)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --preserve-dist");
+        .expect("invoking anodizer check determinism --preserve-dist");
 
     assert!(
         output.status.success(),
@@ -204,7 +204,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
         .arg(&preserved)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --preserve-dist");
+        .expect("invoking anodizer check determinism --preserve-dist");
 
     assert!(
         output.status.success(),
@@ -362,7 +362,7 @@ fn preserve_dist_removed_on_drift_detection() {
         .current_dir(repo)
         .env("ANODIZE_TEST_HARNESS", "1")
         .output()
-        .expect("invoking anodize check determinism --preserve-dist --inject-drift");
+        .expect("invoking anodizer check determinism --preserve-dist --inject-drift");
 
     // Drift → non-zero exit.
     assert!(
@@ -427,7 +427,7 @@ fn preserve_dist_context_json_has_non_empty_targets_and_version() {
         .arg(&preserved)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --preserve-dist");
+        .expect("invoking anodizer check determinism --preserve-dist");
 
     assert!(
         output.status.success(),

@@ -2614,14 +2614,14 @@ fn run_records_failed_outcome_and_still_returns_evidence_on_publish_error() {
 #[test]
 fn upload_carries_optional_author_project_url_and_content_type_fields() {
     let mut s = spec("musllinux_1_2_x86_64");
-    s.author = Some("Anodize Team".to_string());
+    s.author = Some("Anodizer Team".to_string());
     s.author_email = Some("team@example.com".to_string());
     s.description_content_type = Some("text/markdown".to_string());
     s.project_urls = vec![
         ("Homepage".to_string(), "https://example.com".to_string()),
         (
             "Source".to_string(),
-            "https://github.com/anodize/tool".to_string(),
+            "https://github.com/anodizer/tool".to_string(),
         ),
     ];
 
@@ -2655,11 +2655,11 @@ fn upload_carries_optional_author_project_url_and_content_type_fields() {
     let entries = log.lock().unwrap();
     let body = &entries[0].body;
     for needle in [
-        "name=\"author\"\r\n\r\nAnodize Team",
+        "name=\"author\"\r\n\r\nAnodizer Team",
         "name=\"author_email\"\r\n\r\nteam@example.com",
         "name=\"description_content_type\"\r\n\r\ntext/markdown",
         "name=\"project_urls\"\r\n\r\nHomepage, https://example.com",
-        "name=\"project_urls\"\r\n\r\nSource, https://github.com/anodize/tool",
+        "name=\"project_urls\"\r\n\r\nSource, https://github.com/anodizer/tool",
     ] {
         assert!(
             body.contains(needle),

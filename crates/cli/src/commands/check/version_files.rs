@@ -1,4 +1,4 @@
-//! `anodize check version-files` — read-only drift guard for the repo-committed
+//! `anodizer check version-files` — read-only drift guard for the repo-committed
 //! files enrolled under `version_files`.
 //!
 //! For every configured crate the guard resolves that crate's CURRENT declared

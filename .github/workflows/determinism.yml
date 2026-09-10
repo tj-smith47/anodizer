@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         # The per-OS stage partition is no longer named here: the harness owns
-        # it. `anodize check determinism` with no `--stages` builds the
+        # it. `anodizer check determinism` with no `--stages` builds the
         # OS-native partition via `default_stages_for_host()`
         # (crates/cli/src/commands/check/determinism.rs) — the single source of
         # truth for which producers each shard byte-verifies and WHY (the

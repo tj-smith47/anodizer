@@ -104,7 +104,7 @@ where
     anyhow::bail!(
         "artifacts manifest references file(s) not present under {}: {summary}. \
          The preserved dist is incomplete; re-run \
-         `anodize check determinism --preserve-dist=<dist>` to repopulate, or \
+         `anodizer check determinism --preserve-dist=<dist>` to repopulate, or \
          remove the stale manifest entries before retrying.",
         dist.display(),
     );

@@ -187,7 +187,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     // containing any of those would either escape the literal (yielding
     // malformed Nix) or trigger antiquotation. Apply the Nix string-escape
     // rules before insertion. The value is not escaped at
-    // `internal/pipe/nix/tmpl.nix:135`; anodize escapes for robustness so
+    // `internal/pipe/nix/tmpl.nix:135`; anodizer escapes for robustness so
     // legitimate user-input main_program values (e.g. containing apostrophes
     // turned into curly-quote analogs, or interpolation-like substrings)
     // render as a valid Nix string rather than failing at `nix-build`.

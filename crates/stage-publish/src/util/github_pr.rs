@@ -488,8 +488,8 @@ mod tests {
         let env = anodizer_core::MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1");
         let result = find_open_pr_numbers_for_head_with_env(
-            "this-org-does-not-exist-anodize",
-            "neither-does-this-repo-anodize",
+            "this-org-does-not-exist-anodizer",
+            "neither-does-this-repo-anodizer",
             "ghost",
             "branch",
             None,
@@ -515,8 +515,8 @@ mod tests {
         let env = anodizer_core::MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1");
         let result = close_pr_via_api_with_env(
-            "this-org-does-not-exist-anodize",
-            "neither-does-this-repo-anodize",
+            "this-org-does-not-exist-anodizer",
+            "neither-does-this-repo-anodizer",
             999,
             "ghs_invalidtoken",
             &env,

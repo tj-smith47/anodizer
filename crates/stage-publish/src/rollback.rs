@@ -311,7 +311,7 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
     if run_id.is_empty() {
         return Err(anyhow!("run id cannot be empty {}", HINT));
     }
-    // `+` is here because a run id is normally the release tag, and anodize's
+    // `+` is here because a run id is normally the release tag, and anodizer's
     // tag grammar admits a semver build metadata suffix (`v1.2.3+build.1`).
     // Without it the writer would silently fall back to the short commit for
     // exactly those tags while every reader still probes `run-<tag>/`.

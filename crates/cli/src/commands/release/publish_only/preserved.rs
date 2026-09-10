@@ -108,8 +108,8 @@ pub(super) fn discover_preserved_contexts(
     if found.is_empty() {
         anyhow::bail!(
             "publish-only: no context.json (or context-<shard>.json) found at {}. \
-             Run `anodize check determinism --preserve-dist=<dist-dir>` on a green \
-             determinism check first, or use `anodize publish` (no sign step) if \
+             Run `anodizer check determinism --preserve-dist=<dist-dir>` on a green \
+             determinism check first, or use `anodizer publish` (no sign step) if \
              you only need the publisher pass.",
             dist.display()
         );
@@ -251,7 +251,7 @@ pub(super) fn merge_preserved_contexts(
         anyhow::bail!(
             "publish-only: no context manifest carried a `commit` field. Cannot verify the \
              preserved bytes match the current release; re-run \
-             `anodize check determinism --preserve-dist=...` with a producer that \
+             `anodizer check determinism --preserve-dist=...` with a producer that \
              records the commit SHA."
         );
     }
@@ -299,9 +299,9 @@ pub(super) fn load_preserved_context(path: &Path) -> Result<PreservedDistContext
         // producing the misleading "--preserve-dist=." in the error.
         // A literal placeholder is unambiguous.
         anyhow::bail!(
-            "publish-only: missing {}. Run `anodize check determinism \
+            "publish-only: missing {}. Run `anodizer check determinism \
              --preserve-dist=<dist-dir>` on a green determinism check first, or use \
-             `anodize publish` (no sign step) if you only need the publisher pass.",
+             `anodizer publish` (no sign step) if you only need the publisher pass.",
             path.display(),
         );
     }

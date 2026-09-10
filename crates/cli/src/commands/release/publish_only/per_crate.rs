@@ -435,7 +435,7 @@ pub(super) fn run_one_crate_dist(
     // Two manifest families live in `<dist>/`:
     //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
     //     in-process registry shape (`kind` / `target` / `metadata`),
-    //     same as `anodize publish` consumes. Each shard emits its own.
+    //     same as `anodizer publish` consumes. Each shard emits its own.
     //   - `context.json` / `context-<shard>.json`: the harness's
     //     `PreservedDistContext` summary with per-artifact `sha256` +
     //     `size` recorded at preserve time. Each shard emits its own.
@@ -503,7 +503,7 @@ pub(super) fn run_one_crate_dist(
     }
 
     // ── Rehydrate ctx.artifacts ────────────────────────────────────────
-    // Delegates to the same loader `anodize publish` uses so the two
+    // Delegates to the same loader `anodizer publish` uses so the two
     // entry points stay in lockstep (one parser to maintain). Each
     // shard's manifest contributes its artifacts to the registry.
     let artifact_manifests = discover_artifacts_manifests(&dist)?;
@@ -630,10 +630,10 @@ pub(super) fn run_one_crate_dist(
     // usual release / blob / publish / snapcraft-publish chain — the
     // head SignStage is the production-keys re-sign pass that overlays
     // shippable signatures on the byte-stable preserved archives.
-    // Distinct from `build_publish_pipeline` (consumed by `anodize
+    // Distinct from `build_publish_pipeline` (consumed by `anodizer
     // publish`) which does NOT prepend SignStage; conflating them
     // would silently introduce a new credential requirement to
-    // `anodize publish`.
+    // `anodizer publish`.
     let p = pipeline::build_publish_only_pipeline();
     let result = p.run(ctx, log);
 

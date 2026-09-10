@@ -149,9 +149,9 @@ before:
     # Generate the release-time man page artifact. CI gates fmt + clippy
     # + cargo test on every push; running them again at release time was
     # double-running (~5 min wasted per release) AND caused nested-harness
-    # recursion when `anodize check determinism` ran the release pipeline,
+    # recursion when `anodizer check determinism` ran the release pipeline,
     # which ran `cargo test`, which ran integration tests that themselves
-    # spawn `anodize check determinism`. The validation gate stays in CI;
+    # spawn `anodizer check determinism`. The validation gate stays in CI;
     # this hook stays focused on artifact generation.
     - mkdir -p dist && cargo run --release --bin anodizer -- man > dist/anodizer.1
 
@@ -379,7 +379,7 @@ crates:
     # one checksums file + one signature; scoop autoupdate auto-resolves to
     # `ChecksumsRegex` (see resolve_autoupdate_hash) so nothing downstream breaks.
     binstall:
-      # Auto-derived: anodize renders a per-target `overrides.<triple>` for every
+      # Auto-derived: anodizer renders a per-target `overrides.<triple>` for every
       # build target from this crate's own archive `name_template` + release repo,
       # so the cargo-binstall `pkg_url` always matches the asset the release
       # uploads. No hand-written `pkg_url`/`overrides` needed (supply either to

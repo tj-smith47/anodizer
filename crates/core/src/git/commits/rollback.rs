@@ -35,8 +35,8 @@ impl CommitterIdentity {
             .filter(|h| !h.is_empty())
             .unwrap_or_else(|| "localhost".to_string());
         Self {
-            name: Some("anodize-rollback".to_string()),
-            email: Some(format!("anodize-rollback@{host}")),
+            name: Some("anodizer-rollback".to_string()),
+            email: Some(format!("anodizer-rollback@{host}")),
         }
     }
 

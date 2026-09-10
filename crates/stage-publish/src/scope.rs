@@ -9,7 +9,7 @@
 //! strings against the actual token's permissions without an API
 //! round-trip.
 //!
-//! Special-case: `GITHUB_TOKEN` also accepts the anodize-specific
+//! Special-case: `GITHUB_TOKEN` also accepts the anodizer-specific
 //! override `ANODIZER_GITHUB_TOKEN` (the same fallback pattern that
 //! publish / rollback paths use for GitHub-credentialed publishers).
 //!

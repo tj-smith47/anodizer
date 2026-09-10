@@ -36,7 +36,7 @@ use common::{bootstrap_minimal_cargo_repo, tool_on_path};
 
 /// End-to-end byte-stability assertion for the `cargo-package` stage.
 ///
-/// Bootstraps a minimal binary crate, drives `anodize check
+/// Bootstraps a minimal binary crate, drives `anodizer check
 /// determinism --runs=2 --stages=cargo-package` against it, and
 /// asserts:
 /// - The harness exit is zero (byte-stable across runs).
@@ -58,7 +58,7 @@ fn cargo_package_stage_is_byte_stable_on_minimal_repo() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-cargo-package-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-cargo-package-fixture");
 
     let report_path = repo.join("det.json");
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -74,7 +74,7 @@ fn cargo_package_stage_is_byte_stable_on_minimal_repo() {
         .arg(&report_path)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --stages=cargo-package");
+        .expect("invoking anodizer check determinism --stages=cargo-package");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

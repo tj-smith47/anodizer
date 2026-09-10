@@ -406,11 +406,11 @@ pub enum CargoAuthMode {
 
 /// Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo
 /// publisher reads its crate's manifest, identifies every dep that points
-/// at another crate in the same anodize workspace, and polls
+/// at another crate in the same anodizer workspace, and polls
 /// `https://index.crates.io/<prefix>/<name>` until each `(name, version)`
 /// pair is queryable. Only then does `cargo publish` run.
 ///
-/// Default: disabled. Anodize's own workspaces publish lockstep with one
+/// Default: disabled. Anodizer's own workspaces publish lockstep with one
 /// tag; this feature only kicks in for multi-tag-multi-crate workspaces
 /// like cfgd where downstream crates can otherwise race the sparse-index
 /// propagation of their upstream deps.

@@ -196,7 +196,7 @@ fn release_job_runs_publish_only() {
 
     assert!(
         publish_only_present,
-        "release.yml: `release:` job must invoke `anodize release --publish-only`. \
+        "release.yml: `release:` job must invoke `anodizer release --publish-only`. \
          Found args: {args:?}"
     );
     assert!(

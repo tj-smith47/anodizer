@@ -1,4 +1,4 @@
-//! Publisher-unwind step for `anodize tag rollback`.
+//! Publisher-unwind step for `anodizer tag rollback`.
 //!
 //! Withdrawing a release has two halves. The git half — revert the bump
 //! commit, delete the tags, delete the tag's GitHub release — lives in

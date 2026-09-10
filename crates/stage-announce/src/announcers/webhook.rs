@@ -72,7 +72,7 @@ impl Announcer for WebhookAnnouncer {
         // user-supplied `headers.Authorization` wins (case-insensitive,
         // per RFC 7230). Basic auth takes priority over bearer token.
         //
-        // Anodize-additive UX win: a `User-Agent: anodizer/<version>`
+        // Anodizer-additive UX win: a `User-Agent: anodizer/<version>`
         // header is appended (unless the user overrides) so operators
         // can attribute incoming webhooks to anodizer for routing,
         // rate-limiting, and audit-log tagging. A static user-agent with

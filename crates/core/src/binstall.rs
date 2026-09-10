@@ -12,7 +12,7 @@ use crate::target::map_target;
 /// release version, then swapped for cargo-binstall's own `{ version }` token.
 /// Picked to be vanishingly unlikely to appear in a real project/version string
 /// so the post-render substitution is unambiguous.
-const VERSION_SENTINEL: &str = "__ANODIZE_BINSTALL_VERSION__";
+const VERSION_SENTINEL: &str = "__ANODIZER_BINSTALL_VERSION__";
 
 /// Generate or update `[package.metadata.binstall]` in a crate's Cargo.toml
 /// based on the provided BinstallConfig.  The `pkg_url` field is rendered

@@ -1,4 +1,4 @@
-//! `anodize release --announce-only`: re-fire the announce stage
+//! `anodizer release --announce-only`: re-fire the announce stage
 //! against a `<dist>/run-<id>/report.json` written by a prior
 //! end-to-end release run.
 //!

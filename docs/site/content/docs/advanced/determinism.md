@@ -30,8 +30,8 @@ harness that audits it.
 
 ## The contract
 
-Every artifact emitted by an anodize stage MUST be byte-stable across
-rebuilds of the same commit at the same anodize version. Exceptions live on
+Every artifact emitted by an anodizer stage MUST be byte-stable across
+rebuilds of the same commit at the same anodizer version. Exceptions live on
 a documented allow-list. Allow-listed artifacts carry an opt-out reason that
 consumers can audit.
 
@@ -141,7 +141,7 @@ Each run executes inside a freshly-constructed environment:
 | `SOURCE_DATE_EPOCH` | Computed once per harness invocation; exported into every run. |
 | `TMPDIR`, `HOME` | Per-run tmpdirs under the worktree to neutralize dot-file influence on build scripts. |
 | `PATH` | Inherited from host verbatim. Two harness runs from the same host process see identical PATH, so determinism is preserved without per-platform allow-list maintenance. |
-| `RUSTFLAGS` | `--remap-path-prefix=<worktree>=/anodize` is appended (plus `<cargo_home>=/cargo` and `<cargo_target>=/target`) so absolute paths don't leak into the binary. Host-supplied RUSTFLAGS are preserved. |
+| `RUSTFLAGS` | `--remap-path-prefix=<worktree>=/anodizer` is appended (plus `<cargo_home>=/cargo` and `<cargo_target>=/target`) so absolute paths don't leak into the binary. Host-supplied RUSTFLAGS are preserved. |
 | `CARGO_TARGET_<MSVC_TRIPLE>_RUSTFLAGS` | Injects MSVC determinism flags (`/Brepro`, `/OPT:NOICF`, `/INCREMENTAL:NO`, `/DEBUG:NONE`, `-C strip=symbols`, `-C codegen-units=1`) for the two `*-pc-windows-msvc` targets. On Windows, also appended to global `RUSTFLAGS` so the host build (e.g. a `before:` hook's `cargo run`) is reproducible too. |
 | Linux / macOS env | Everything else stripped except an identity-only allow-list: `CI`, `RUSTUP_HOME`, plus the named identity vars `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITHUB_RUN_ID`, `GITHUB_RUN_NUMBER`, `GITHUB_WORKFLOW`, `GITHUB_ACTOR`, `RUNNER_OS`, `RUNNER_ARCH`, `RUNNER_NAME`. |
 | Windows env | Inverse: inherits the full host env (MSVC's `VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` / `WindowsSdk*` / `UCRT*` plus `PROGRAMFILES*` / `WINDIR` / `SystemRoot` / `USERPROFILE` / `APPDATA` / `LOCALAPPDATA` / `TEMP` / `TMP` / `PATHEXT`) then drops a credential deny-list (`GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `AWS_*`, `COSIGN_*`, `GPG_*`, ...), a suffix sweep (`_TOKEN` / `_KEY` / `_SECRET` / `_PASSWORD` / `_PASSPHRASE` / `_CREDENTIALS`), `ACTIONS_*`, and any `GITHUB_*` / `RUNNER_*` not on the identity allow-list (e.g. `RUNNER_TEMP`, `GITHUB_WORKSPACE` — host workflow state, not identity). |
@@ -324,7 +324,7 @@ unknown fields per JSON convention.
 ## Snapshot-mode SDE resolution
 
 `anodizer release --snapshot` must produce byte-identical artifacts across
-runs of the same commit at the same anodize version. SDE source for snapshot
+runs of the same commit at the same anodizer version. SDE source for snapshot
 mode (first match wins):
 
 1. `ANODIZE_SOURCE_DATE_EPOCH` env var, if set.

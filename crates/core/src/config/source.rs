@@ -77,7 +77,7 @@ impl SourceConfig {
     /// renders the (now-Some) field needs no behavioral change.
     ///
     /// Defaults to
-    /// empty; this is anodize-additive (more ergonomic default), aligning
+    /// empty; this is anodizer-additive (more ergonomic default), aligning
     /// behavior with the long-standing doc.
     pub fn apply_prefix_template_default(&mut self) {
         if self.prefix_template.is_none()

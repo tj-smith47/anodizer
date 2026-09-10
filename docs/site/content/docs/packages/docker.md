@@ -259,7 +259,7 @@ addition to the standard template surface, hooks see:
 ## Dockerfile pattern (distroless + dist-tree binary)
 
 The recommended pattern: a multi-stage-free Dockerfile that copies the
-pre-built release binary from anodize's dist tree. The `BIN` build-arg names
+pre-built release binary from anodizer's dist tree. The `BIN` build-arg names
 the per-arch binary path.
 
 ```dockerfile

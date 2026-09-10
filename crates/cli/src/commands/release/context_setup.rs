@@ -309,7 +309,7 @@ pub(crate) fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(St
 /// Precedence:
 ///   1. The parent directory of the resolved config file (authoritative
 ///      — the operator may have invoked anodizer from a subdirectory
-///      with `--config=../anodize.yaml`).
+///      with `--config=../anodizer.yaml`).
 ///   2. Process CWD (`current_dir`), as a fallback when the config path
 ///      lacks a parent component (e.g. a bare filename in `/`).
 ///
@@ -317,7 +317,7 @@ pub(crate) fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(St
 /// join repo-relative paths (snapcraft icons, extra-file globs, ...) hit
 /// the real tree even when called from a symlinked checkout.
 ///
-/// When the CWD fallback fires (bare-filename `--config=anodize.yaml`)
+/// When the CWD fallback fires (bare-filename `--config=anodizer.yaml`)
 /// and `log` is `Some`, a warn surfaces because the resulting CWD
 /// anchor is almost certainly NOT what the operator meant when they
 /// passed a bare filename: repo-relative file lookups (snapcraft icon
@@ -347,7 +347,7 @@ pub(crate) fn resolve_project_root(
                 log.warn(
                     "repo-relative file lookups (snapcraft icons, extra-file globs, ...) \
                      will resolve against the process CWD — pass --config with a parent \
-                     directory (e.g. `--config=./anodize.yaml`) if this is incorrect",
+                     directory (e.g. `--config=./anodizer.yaml`) if this is incorrect",
                 );
             }
             cwd
@@ -438,7 +438,7 @@ pub(crate) fn apply_host_targets_filter(
 /// `project_root` resolves from the parent directory of the resolved
 /// config file when available, falling back to the process CWD. The
 /// resolved config path is authoritative because the operator may have
-/// invoked anodizer from a subdirectory with `--config=../anodize.yaml`;
+/// invoked anodizer from a subdirectory with `--config=../anodizer.yaml`;
 /// CWD alone would point repo-relative consumers at the wrong tree.
 /// Stage modules that need to read repo-relative files (snapcraft
 /// icons, extra-file globs, the cargo publisher's `target/`

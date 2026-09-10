@@ -3294,7 +3294,7 @@ fn test_output_capture_with_real_command() {
 // -----------------------------------------------------------------------
 
 /// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
-/// for anodize's flat layout where binaries are already named with the platform
+/// for anodizer's flat layout where binaries are already named with the platform
 /// suffix (e.g. `myapp_linux_amd64`). The old template appended Os/Arch
 /// again, producing `myapp_linux_amd64_linux_amd64` with no `.sig` extension.
 #[test]
@@ -3310,7 +3310,7 @@ fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
     let sign_cfg = SignConfig::default();
     let _log = ctx.logger("test");
 
-    // The artifact path already contains the platform suffix (anodize flat layout).
+    // The artifact path already contains the platform suffix (anodizer flat layout).
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
@@ -3336,7 +3336,7 @@ fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
 #[test]
 fn test_default_binary_signature_template_is_simple_dot_sig() {
     // The default template for binary_signs must be identical to the plain
-    // DEFAULT_SIGNATURE_TEMPLATE because anodize's binary names already
+    // DEFAULT_SIGNATURE_TEMPLATE because anodizer's binary names already
     // encode the platform suffix — no Os/Arch duplication needed.
     assert_eq!(
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
@@ -3347,7 +3347,7 @@ fn test_default_binary_signature_template_is_simple_dot_sig() {
 
 #[test]
 fn test_binary_signs_signature_default_adds_dot_sig() {
-    // With anodize's flat layout the binary name already contains the platform
+    // With anodizer's flat layout the binary name already contains the platform
     // suffix. The default template must append only ".sig".
     let mut ctx = TestContextBuilder::new().dry_run(true).build();
     ctx.template_vars_mut().set("Os", "linux");
@@ -3373,7 +3373,7 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
         if_condition: None,
     };
     let _log = ctx.logger("test");
-    // artifact_path already contains the platform suffix (anodize flat layout)
+    // artifact_path already contains the platform suffix (anodizer flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
@@ -3411,7 +3411,7 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
         if_condition: None,
     };
     let _log = ctx.logger("test");
-    // artifact_path already contains the platform suffix (anodize flat layout)
+    // artifact_path already contains the platform suffix (anodizer flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_armv6",
@@ -3449,7 +3449,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
         if_condition: None,
     };
     let _log = ctx.logger("test");
-    // artifact_path already contains the platform+level suffix (anodize flat layout)
+    // artifact_path already contains the platform+level suffix (anodizer flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64v2",

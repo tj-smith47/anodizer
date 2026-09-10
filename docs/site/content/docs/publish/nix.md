@@ -286,7 +286,7 @@ The flake pins `nixpkgs` (`nixos-unstable`) and exposes, for every published pac
 
 ```nix
 {
-  description = "Nix flake for release artifacts published by anodize";
+  description = "Nix flake for release artifacts published by anodizer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

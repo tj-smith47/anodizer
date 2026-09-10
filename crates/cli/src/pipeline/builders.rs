@@ -210,12 +210,12 @@ pub fn build_split_pipeline() -> Pipeline {
 
 /// Build a publish-only pipeline: release, blob, publish, snapcraft-publish stages.
 ///
-/// **Note**: this is the pipeline consumed by the LEGACY `anodize
+/// **Note**: this is the pipeline consumed by the LEGACY `anodizer
 /// publish` subcommand, which assumes the input dist was produced by
-/// a full `anodize release` whose own SignStage already fired. Adding
+/// a full `anodizer release` whose own SignStage already fired. Adding
 /// a head SignStage here would silently introduce a new credential
 /// requirement to the existing surface. The
-/// `anodize release --publish-only` path uses
+/// `anodizer release --publish-only` path uses
 /// [`build_publish_only_pipeline`] instead, which DOES prepend
 /// SignStage for the determinism-preserved-dist re-sign pass.
 pub fn build_publish_pipeline() -> Pipeline {
@@ -248,7 +248,7 @@ pub fn build_publish_pipeline() -> Pipeline {
     p
 }
 
-/// Build the pipeline for `anodize release --publish-only`:
+/// Build the pipeline for `anodizer release --publish-only`:
 /// `[ChangelogStage, SignStage, ReleaseStage, BlobStage,
 /// PublishStage, SnapcraftPublishStage, AnnounceStage]`. The head
 /// `SignStage` is the production-keys re-sign pass — the preserved

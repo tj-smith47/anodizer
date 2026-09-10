@@ -54,8 +54,8 @@ fn init_clean_repo(dir: &std::path::Path) {
     run(&["commit", "-qm", "fixture"]);
 }
 
-/// An anodize-style archive: explicit name_template, tar.gz default, windows→zip.
-fn anodize_archive() -> ArchiveConfig {
+/// An anodizer-style archive: explicit name_template, tar.gz default, windows→zip.
+fn anodizer_archive() -> ArchiveConfig {
     ArchiveConfig {
         name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
         formats: Some(vec!["tar.gz".to_string()]),
@@ -68,13 +68,13 @@ fn anodize_archive() -> ArchiveConfig {
 }
 
 /// A binstall-enabled crate rooted at `path`, owning `name`, with a GitHub
-/// release at `tj-smith47/<repo>` and the anodize-style archive.
+/// release at `tj-smith47/<repo>` and the anodizer-style archive.
 fn binstall_crate(name: &str, repo: &str, path: &str) -> CrateConfig {
     CrateConfig {
         name: name.to_string(),
         path: path.to_string(),
         tag_template: Some("v{{ Version }}".to_string()),
-        archives: ArchivesConfig::Configs(vec![anodize_archive()]),
+        archives: ArchivesConfig::Configs(vec![anodizer_archive()]),
         release: Some(ReleaseConfig {
             github: Some(GitHubConfig {
                 owner: "tj-smith47".to_string(),
@@ -204,7 +204,7 @@ fn dry_run_does_not_mutate_manifest() {
 /// Workspace per-crate mode: two crates with DIFFERENT versions, repos, and
 /// (via the fixed-tag closure) tags. Each crate's emitted overrides must
 /// carry its OWN version/repo — never a shared/global value — proving the
-/// per-crate re-scope. This is the canonical anodize-only bug family the
+/// per-crate re-scope. This is the canonical anodizer-only bug family the
 /// all-config-modes rule guards against.
 #[test]
 fn workspace_per_crate_emits_each_crates_own_version_and_repo() {

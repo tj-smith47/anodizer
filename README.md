@@ -160,7 +160,7 @@ anodizer tag --push --changelog                # tag + refresh changelog + push 
 anodizer tag --sign --push                     # signed annotated tag (uses git user.signingkey)
 anodizer tag --custom-tag v0.1.0               # force a tag value, bypassing bump derivation
 anodizer tag --version 1.2.3 --crate mycrate   # pin an exact version for recovery (per-crate mode)
-anodizer tag rollback "$GITHUB_SHA"            # delete anodize-managed tags at a SHA + revert the bump
+anodizer tag rollback "$GITHUB_SHA"            # delete anodizer-managed tags at a SHA + revert the bump
 
 # Resume a stalled release from a populated dist/ — no rebuild
 anodizer continue                              # resume the publish-only pipeline after a transient failure
@@ -336,7 +336,7 @@ stream progress, and cancel a running release.
 ```
 anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only)
 anodizer tag           Auto-tag from commit directives
-anodizer tag rollback  Delete anodize-managed tags at a SHA and revert the bump commit
+anodizer tag rollback  Delete anodizer-managed tags at a SHA and revert the bump commit
 anodizer bump          Bump crate versions (Conventional Commits → semver level) without tagging
 anodizer promote       Promote a published artifact to a stable track without rebuilding
 anodizer continue      Resume a stalled or split release from a populated dist/ (--merge to fan-in)

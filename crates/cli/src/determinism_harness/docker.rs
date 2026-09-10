@@ -41,7 +41,7 @@ impl Harness {
     ///   that provisioning regressed.
     /// - `false` (host-default, not operator-typed): a warning through the
     ///   harness logger (so `-q` silences it). `docker` IS in the Linux host
-    ///   default, so a bare `anodize check determinism` on a Linux box without
+    ///   default, so a bare `anodizer check determinism` on a Linux box without
     ///   `docker buildx` reaches this branch and warn-skips rather than failing
     ///   the whole harness — the harness also runs on minimal images (e.g. the
     ///   docs build container) that legitimately lack Docker, where failing
@@ -202,7 +202,7 @@ impl Harness {
         // itself drift between runs based on time-derived names.
         let output = anodizer_core::docker_build::oci_build_fixture(
             &context_dir,
-            &format!("anodize/det:harness-{idx}"),
+            &format!("anodizer/det:harness-{idx}"),
             &docker_cfg.build_args,
             env,
             log,

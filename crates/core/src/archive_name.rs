@@ -279,7 +279,7 @@ pub fn render_archive_asset_name_with_variant(
 /// Map an archive `format` string to cargo-binstall's `pkg_fmt` value.
 ///
 /// cargo-binstall enumerates a fixed set of package formats; the archive
-/// `format` strings anodize produces map onto them as follows. `None` is
+/// `format` strings anodizer produces map onto them as follows. `None` is
 /// returned for formats cargo-binstall cannot binstall (e.g. `binary`, `none`),
 /// letting the caller skip emitting an override it could never resolve.
 pub fn binstall_pkg_fmt(format: &str) -> Option<&'static str> {

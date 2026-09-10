@@ -157,8 +157,8 @@ mod tests {
     fn passes_through_non_tilde_path() {
         let env = MapEnvSource::new().with("HOME", "/home/tester");
         assert_eq!(
-            expand_tilde_with_env("/etc/anodize.yaml", &env),
-            "/etc/anodize.yaml"
+            expand_tilde_with_env("/etc/anodizer.yaml", &env),
+            "/etc/anodizer.yaml"
         );
         assert_eq!(
             expand_tilde_with_env("./safe~backup.yaml", &env),

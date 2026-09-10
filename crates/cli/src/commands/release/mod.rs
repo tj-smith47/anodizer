@@ -79,7 +79,7 @@ pub struct ReleaseOpts {
     pub split: bool,
     pub merge: bool,
     /// `--publish-only`: load `dist/context.json` (preserved by
-    /// `anodize check determinism --preserve-dist=...`) and run only
+    /// `anodizer check determinism --preserve-dist=...`) and run only
     /// the sign + publish pipeline. Mutually exclusive with `split` /
     /// `merge` at the clap level.
     pub publish_only: bool,

@@ -137,7 +137,7 @@ pub(crate) fn render_changelog_with_provider(
     // Title heading. Three states:
     //   - title == None        → emits `## Changelog` (default).
     //   - title == Some("foo") → emits `## foo`.
-    //   - title == Some("")    → suppresses the heading entirely (anodize-additive
+    //   - title == Some("")    → suppresses the heading entirely (anodizer-additive
     //                            UX win — see divergence note below).
     //
     // Intentional carve-out: the upstream convention emits the

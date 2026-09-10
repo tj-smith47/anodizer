@@ -711,7 +711,7 @@ fn test_to_artifacts_json_with_artifacts() {
 
 /// Regression for the determinism harness drift on `dist/artifacts.json`.
 /// Two harness runs use different worktrees (e.g.
-/// `/tmp/anodize-determinism-11193-0` vs `…-22847-0`) and CARGO_TARGET_DIR
+/// `/tmp/anodizer-determinism-11193-0` vs `…-22847-0`) and CARGO_TARGET_DIR
 /// is an absolute per-worktree path; `Artifact.path` for raw cargo binaries
 /// is therefore absolute. Without the `add()`-time relativization, the
 /// worktree prefix would land in `artifacts.json` and the two runs would
@@ -729,7 +729,7 @@ fn to_artifacts_json_strips_absolute_worktree_prefix() {
     let canonical_cwd = std::env::current_dir().unwrap();
     let abs = canonical_cwd
         .join("dist")
-        .join("anodize-1.0.0-linux-amd64.tar.gz");
+        .join("anodizer-1.0.0-linux-amd64.tar.gz");
 
     let mut registry = ArtifactRegistry::new();
     registry.add(Artifact {
@@ -737,7 +737,7 @@ fn to_artifacts_json_strips_absolute_worktree_prefix() {
         name: String::new(),
         path: abs,
         target: Some("x86_64-unknown-linux-gnu".to_string()),
-        crate_name: "anodize".to_string(),
+        crate_name: "anodizer".to_string(),
         metadata: Default::default(),
         size: None,
     });
@@ -745,7 +745,7 @@ fn to_artifacts_json_strips_absolute_worktree_prefix() {
     let json = registry.to_artifacts_json().unwrap();
     let arr = json.as_array().unwrap();
     assert_eq!(
-        arr[0]["path"], "dist/anodize-1.0.0-linux-amd64.tar.gz",
+        arr[0]["path"], "dist/anodizer-1.0.0-linux-amd64.tar.gz",
         "absolute worktree prefix must be stripped at add() time so two \
          determinism-harness runs at different worktree paths produce \
          byte-identical artifacts.json"
@@ -770,18 +770,18 @@ fn to_artifacts_json_output_is_order_insensitive() {
     reg_a.add(Artifact {
         kind: ArtifactKind::Archive,
         name: String::new(),
-        path: PathBuf::from("dist/anodize-1.0.0-linux-arm64.tar.gz"),
+        path: PathBuf::from("dist/anodizer-1.0.0-linux-arm64.tar.gz"),
         target: Some("aarch64-unknown-linux-gnu".to_string()),
-        crate_name: "anodize".to_string(),
+        crate_name: "anodizer".to_string(),
         metadata: Default::default(),
         size: Some(15_000_000),
     });
     reg_a.add(Artifact {
         kind: ArtifactKind::Archive,
         name: String::new(),
-        path: PathBuf::from("dist/anodize-1.0.0-linux-amd64.tar.gz"),
+        path: PathBuf::from("dist/anodizer-1.0.0-linux-amd64.tar.gz"),
         target: Some("x86_64-unknown-linux-gnu".to_string()),
-        crate_name: "anodize".to_string(),
+        crate_name: "anodizer".to_string(),
         metadata: Default::default(),
         size: Some(18_000_000),
     });
@@ -791,18 +791,18 @@ fn to_artifacts_json_output_is_order_insensitive() {
     reg_b.add(Artifact {
         kind: ArtifactKind::Archive,
         name: String::new(),
-        path: PathBuf::from("dist/anodize-1.0.0-linux-amd64.tar.gz"),
+        path: PathBuf::from("dist/anodizer-1.0.0-linux-amd64.tar.gz"),
         target: Some("x86_64-unknown-linux-gnu".to_string()),
-        crate_name: "anodize".to_string(),
+        crate_name: "anodizer".to_string(),
         metadata: Default::default(),
         size: Some(18_000_000),
     });
     reg_b.add(Artifact {
         kind: ArtifactKind::Archive,
         name: String::new(),
-        path: PathBuf::from("dist/anodize-1.0.0-linux-arm64.tar.gz"),
+        path: PathBuf::from("dist/anodizer-1.0.0-linux-arm64.tar.gz"),
         target: Some("aarch64-unknown-linux-gnu".to_string()),
-        crate_name: "anodize".to_string(),
+        crate_name: "anodizer".to_string(),
         metadata: Default::default(),
         size: Some(15_000_000),
     });

@@ -361,7 +361,7 @@ fn is_branchlike_rejects_lockstep_tag_shapes() {
 fn is_branchlike_rejects_per_crate_tag_shapes() {
     assert!(!is_branchlike("mycrate-v1.2.3"));
     assert!(!is_branchlike("cfgd-operator-v0.4.0"));
-    assert!(!is_branchlike("anodize-core-v1.2.3-rc.1"));
+    assert!(!is_branchlike("anodizer-core-v1.2.3-rc.1"));
 }
 
 #[test]
@@ -591,11 +591,11 @@ fn git_output_in_error_falls_back_to_stdout_when_stderr_empty() {
 #[test]
 fn default_for_rollback_populates_both_name_and_email() {
     let id = CommitterIdentity::default_for_rollback();
-    assert_eq!(id.name.as_deref(), Some("anodize-rollback"));
+    assert_eq!(id.name.as_deref(), Some("anodizer-rollback"));
     let email = id.email.expect("email must be Some");
     assert!(
-        email.starts_with("anodize-rollback@"),
-        "email must use the anodize-rollback@<host> shape; got {email}"
+        email.starts_with("anodizer-rollback@"),
+        "email must use the anodizer-rollback@<host> shape; got {email}"
     );
     assert!(!email.ends_with('@'), "host portion must not be empty");
 }
@@ -647,7 +647,7 @@ fn revert_commit_in_uses_injected_identity_envs() {
     // commits used a different identity above).
     let identity = CommitterIdentity {
         name: Some("rollback-bot".to_string()),
-        email: Some("rollback-bot@anodize.test".to_string()),
+        email: Some("rollback-bot@anodizer.test".to_string()),
     };
     revert_commit_in(dir, &bump_sha, Some("chore(release): rollback"), &identity)
         .expect("revert with injected identity must succeed");
@@ -667,7 +667,7 @@ fn revert_commit_in_uses_injected_identity_envs() {
     );
     let author_email = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert_eq!(
-        author_email, "rollback-bot@anodize.test",
+        author_email, "rollback-bot@anodizer.test",
         "revert commit must carry the injected committer identity"
     );
 
@@ -1593,12 +1593,12 @@ fn resolve_rollback_identity_synthesizes_when_no_identity_anywhere() {
     let (n, e) = read_git_identity(dir);
     if n.is_none() || e.is_none() {
         let id = resolve_rollback_identity(dir);
-        assert_eq!(id.name.as_deref(), Some("anodize-rollback"));
+        assert_eq!(id.name.as_deref(), Some("anodizer-rollback"));
         assert!(
             id.email
                 .as_deref()
                 .unwrap_or("")
-                .starts_with("anodize-rollback@"),
+                .starts_with("anodizer-rollback@"),
             "synthetic identity required when no config present: {id:?}"
         );
     }

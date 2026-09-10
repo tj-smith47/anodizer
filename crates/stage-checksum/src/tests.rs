@@ -47,7 +47,7 @@ fn test_combined_sort_doublespace_divergence() {
 /// fed a line that lacks the canonical `<hash>  <name>` double-space
 /// separator. Upstream's prior `strings.Split(a, "  ")[1]` panicked
 /// with index-out-of-range; the fix uses `strings.Cut` with a fallback
-/// to the whole line. Anodize's port already uses `split_once("  ")`
+/// to the whole line. Anodizer's port already uses `split_once("  ")`
 /// + `unwrap_or(a)`, so this test pins that contract — a future
 ///   "simplification" to `split.unwrap()` would regress and panic here.
 #[test]

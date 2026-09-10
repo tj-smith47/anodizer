@@ -3,7 +3,7 @@ use super::guard::{
     BurnProbes, WingetProbeSpec, check_not_irreversibly_published, winget_probe_token,
 };
 use super::tags::{
-    ANODIZE_REVERT_SUBJECT_PREFIX, build_revert_message, classify_tag, rollback_subject_prefix,
+    ANODIZER_REVERT_SUBJECT_PREFIX, build_revert_message, classify_tag, rollback_subject_prefix,
     scope_includes,
 };
 use super::types::{Mode, RollbackOpts};
@@ -63,7 +63,7 @@ pub(super) fn run_with_logger(
     let mut deletable: Vec<String> = Vec::new();
     for tag in &all_tags_at_sha {
         match classify_tag(tag) {
-            None => log.status(&format!("skipped {tag} (not anodize-shaped)")),
+            None => log.status(&format!("skipped {tag} (not anodizer-shaped)")),
             Some(kind) if !scope_includes(opts.scope, kind) => log.status(&format!(
                 "skipped {tag} (scope filter --scope={:?})",
                 opts.scope
@@ -74,7 +74,7 @@ pub(super) fn run_with_logger(
 
     if deletable.is_empty() {
         log.warn(&format!(
-            "no anodize-managed tags at {} match --scope={:?}",
+            "no anodizer-managed tags at {} match --scope={:?}",
             short(&target_sha),
             opts.scope
         ));
@@ -217,7 +217,7 @@ pub(super) fn run_with_logger(
 
     // Safety check (--mode=revert only). Non-bump commits on top of
     // the target SHA mean someone landed unrelated work since the
-    // bump; reverting blindly would lose it. Tolerate only anodize's
+    // bump; reverting blindly would lose it. Tolerate only anodizer's
     // OWN prior revert commit so re-runs are idempotent — a generic
     // `"Revert "<...>"` prefix would silently absorb GitHub's
     // "Revert this PR" button output (e.g. an unrelated feature
@@ -230,7 +230,7 @@ pub(super) fn run_with_logger(
         let intervening = git::commits_with_subjects_in(&cwd, &target_sha)?;
         let mut suspicious: Vec<(String, String)> = Vec::new();
         for (sha, subject) in &intervening {
-            if subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str())
+            if subject.starts_with(ANODIZER_REVERT_SUBJECT_PREFIX.as_str())
                 || subject.starts_with(&rollback_subject_prefix())
             {
                 continue;

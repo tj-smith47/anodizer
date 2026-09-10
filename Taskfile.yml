@@ -77,7 +77,7 @@ tasks:
       # host-native producer HARD-FAILS instead of warn-skipping (the false
       # coverage that once hid installer formats), and the host's own target
       # subset (a Linux box cannot cross-build the darwin/windows partitions).
-      # The CSV is derived from `anodize targets` — the same source
+      # The CSV is derived from `anodizer targets` — the same source
       # resolve-targets.sh filters — so it never drifts from the release matrix.
       - |
         set -eu
@@ -110,7 +110,7 @@ tasks:
         bash scripts/native-object-determinism.sh
 
   check:config:
-    desc: "Validate this repo's anodize config (single-crate, post-restructure form)."
+    desc: "Validate this repo's anodizer config (single-crate, post-restructure form)."
     deps: [_check:tmp-headroom]
     cmds:
       # No --workspace: this repo is single-crate (no `workspaces:` block), so

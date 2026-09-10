@@ -65,7 +65,7 @@ Run the full release pipeline. Re-running the identical command converges on alr
 | `--allow-snapshot-publish` | — | — | DANGEROUS: allow publishing a non-release version (snapshot / dirty / 0.0.0-sentinel, e.g. 0.0.0~SNAPSHOT-<sha>) to external publishers. By default the publish, blob, and announce stages refuse such versions — several indexes (crates.io, Cloudsmith, Chocolatey, winget, AUR) are one-way doors. Use ONLY for a private/test channel. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
-| `--publish-only` | — | — | Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/. |
+| `--publish-only` | — | — | Load artifacts from dist/ (preserved by `anodizer check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/. |
 | `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip every upstream-reaching stage (release, docker, docker-sign, blob, publish, snapcraft-publish, announce, verify-release) — GoReleaser Pro parity. Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts. |
 | `--announce-only` | — | — | Re-fire announcers only. Loads `<dist>/run-<id>/report.json` written by a prior run, skips every pipeline stage except announce (which itself short-circuits on nightly), then runs after-hooks. Use this to retry a transient announcer failure (Slack 502, Discord 5xx) without re-creating the GitHub release or re-publishing to package managers. Fails fast when no `<dist>/run-<id>/report.json` is present. |
 | `--resume-release` | — | — | Resume into an existing release left over from a prior failed attempt; bypasses the safety check that bails on partial assets. |
@@ -96,7 +96,7 @@ Validate configuration and run determinism checks
 
 ### `anodizer check config`
 
-Validate the workspace's anodize config
+Validate the workspace's anodizer config
 
 
 | Flag | Short | Default | Description |
@@ -115,7 +115,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 |------|-------|---------|-------------|
 | `--runs` | — | `2` | Number of from-clean rebuilds to diff |
 | `--stages` | — | — | Optional stage subset (build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,cargo-package,docker,msi,nsis,dmg,pkg,srpm,appbundle,appimage,flatpak, plus the `installers` family selector expanding to nfpm,makeself,srpm,msi,nsis,dmg,pkg). Omit the flag to byte-verify the full OS-native partition for this host (Linux adds nfpm/makeself/snapcraft/srpm/docker/appimage/flatpak; macOS adds appbundle/dmg/pkg; Windows adds msi/nsis). The list is also the build filter: stages NOT named here are added to the child release's `--skip=` set, so a stage must be requested (or in the host default) to be byte-verified. `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry; it is NOT in the host default and stays opt-in. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against each configured `dockers_v2` entry's rendered dockerfile (with its `extra_files` and `build_args`, mirroring the production `docker` stage) to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or the crate configures no `dockers_v2`. Installer stages (msi/nsis/dmg/pkg/srpm) plus appimage (needs `linuxdeploy`) and flatpak (needs `flatpak-builder`) are skipped at the gate when their backing tool is absent — a host-default stage warn-skips, an explicitly typed one hard-fails; `appbundle` is pure file assembly and always runs when requested. |
-| `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
+| `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodizer release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
 | `--snapshot` | — | — | Force snapshot mode on the child release subprocess (artifacts get a `-SNAPSHOT-<sha>` suffix). Default: auto — snapshot off when HEAD is at a tag, on otherwise. |
 | `--no-snapshot` | — | — | Force snapshot mode OFF on the child release subprocess (artifacts emit the actual release version). Default: auto — see --snapshot. |
@@ -263,7 +263,7 @@ Auto-tag based on commit message directives
 
 ### `anodizer tag rollback`
 
-Withdraw a release: unwind the publishers the run recorded, delete the anodize-managed tags at a SHA, then revert (or reset past) the bump commit they point at
+Withdraw a release: unwind the publishers the run recorded, delete the anodizer-managed tags at a SHA, then revert (or reset past) the bump commit they point at
 
 
 | Flag | Short | Default | Description |

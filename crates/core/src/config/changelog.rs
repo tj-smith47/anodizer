@@ -124,7 +124,7 @@ impl ChangelogConfig {
     pub const DEFAULT_USE_SOURCE: &'static str = "git";
 
     /// Valid `use:` values. github-native delegates to GitHub's
-    /// auto-generated notes; the others control which API anodize hits
+    /// auto-generated notes; the others control which API anodizer hits
     /// for commit metadata.
     pub const VALID_USE_SOURCE: &[&'static str] =
         &["git", "github", "gitlab", "gitea", "github-native"];

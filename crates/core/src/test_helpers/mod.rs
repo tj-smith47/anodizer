@@ -741,7 +741,7 @@ pub fn create_config(dir: &Path, content: &str) {
 /// sidecar extension. A hypothetical primary literally named `foo.sig` would
 /// be misclassified: its legitimate checksum `foo.sig.sha256` parses as the
 /// forbidden `sig → sha256` adjacency even though no recursion occurred.
-/// anodize produces no such fixture, so there is no live bug — but a caller
+/// anodizer produces no such fixture, so there is no live bug — but a caller
 /// that needs kind-aware classification (distinguishing a primary that merely
 /// ends in `.sig` from a real signature sidecar) must pass the artifact KIND
 /// rather than rely on this name-only heuristic.

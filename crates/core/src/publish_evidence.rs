@@ -872,7 +872,7 @@ mod tests {
                 homebrew_targets: vec![HomebrewTargetSnapshot {
                     target: "demo".into(),
                     repo_url: "https://github.com/owner/tap".into(),
-                    branch: Some("anodize-update".into()),
+                    branch: Some("anodizer-update".into()),
                     token_env_var: Some("ANODIZER_GITHUB_TOKEN".into()),
                 }],
             }),
@@ -883,7 +883,7 @@ mod tests {
         let t = &v["extra"]["homebrew_targets"][0];
         assert_eq!(t["target"], "demo");
         assert_eq!(t["repo_url"], "https://github.com/owner/tap");
-        assert_eq!(t["branch"], "anodize-update");
+        assert_eq!(t["branch"], "anodizer-update");
         assert_eq!(t["token_env_var"], "ANODIZER_GITHUB_TOKEN");
         // Defense-in-depth: no credential-shaped keys in the rendered
         // form (matches the per-publisher `*_extra_carries_no_secret_material`

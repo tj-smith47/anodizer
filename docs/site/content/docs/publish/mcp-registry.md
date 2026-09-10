@@ -53,7 +53,7 @@ This publishes anonymously (`auth.type: none`) to the default registry. For serv
 ## Wiring the OCI image
 
 When `packages[].registry_type: oci`, the MCP manifest *references* an image
-but does not build one — anodize publishes the manifest, then MCP clients
+but does not build one — anodizer publishes the manifest, then MCP clients
 `docker pull` the image at the referenced coordinate (`ghcr.io/myorg/myapp:<ver>`).
 The image itself comes from `dockers_v2:`:
 

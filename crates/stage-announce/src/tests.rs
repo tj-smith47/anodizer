@@ -2232,10 +2232,10 @@ fn test_discourse_empty_env_var_errors() {
 }
 
 // ----------------------------------------------------------------
-// Anodize-additive UX behaviours
+// Anodizer-additive UX behaviours
 // ----------------------------------------------------------------
 
-/// Pins the webhook User-Agent as `anodizer/<crate-version>` (anodize-
+/// Pins the webhook User-Agent as `anodizer/<crate-version>` (anodizer-
 /// additive UX win documented in lib.rs near the User-Agent header
 /// fallback). A static user-agent is the baseline; the
 /// version-suffixed variant is debuggable on the receiving end without
@@ -2245,7 +2245,7 @@ fn test_webhook_user_agent_is_anodizer_versioned() {
     let ua = anodizer_core::http::USER_AGENT;
     assert!(
         ua.starts_with("anodizer/"),
-        "webhook User-Agent must start with 'anodizer/' (anodize-additive UX divergence \
+        "webhook User-Agent must start with 'anodizer/' (anodizer-additive UX divergence \
              from GoReleaser's static 'goreleaser' UA), got: {ua:?}"
     );
     let suffix = ua.trim_start_matches("anodizer/");
@@ -2255,7 +2255,7 @@ fn test_webhook_user_agent_is_anodizer_versioned() {
     );
 }
 
-/// Pins the SMTP port default at 587 (anodize-additive UX win
+/// Pins the SMTP port default at 587 (anodizer-additive UX win
 /// documented on `EmailAnnounce::port`). When both the config field
 /// and the SMTP_PORT env var are unset, the announcer defaults to the
 /// IETF submission port instead of bailing on a missing port.
@@ -2270,9 +2270,9 @@ fn test_email_smtp_port_defaults_to_587() {
     assert_eq!(resolve_smtp_port(None, Some(465)), 465);
 }
 
-/// Pins Mattermost `channel` as template-rendered (anodize-additive UX
+/// Pins Mattermost `channel` as template-rendered (anodizer-additive UX
 /// win documented near the mattermost render block). The renderer passes
-/// `channel` raw — no template substitution. Anodize renders it through
+/// `channel` raw — no template substitution. Anodizer renders it through
 /// the engine, unlocking per-tag channel routing like
 /// `channel: "release-{{ Tag }}"`. We pin this by feeding a malformed
 /// template that would only error if rendering is invoked.

@@ -67,7 +67,7 @@ fn every_classified_tag_is_a_valid_run_id() {
 }
 
 #[test]
-fn rejects_non_anodize_shaped_tags() {
+fn rejects_non_anodizer_shaped_tags() {
     assert_eq!(classify_tag("foo-bar"), None);
     assert_eq!(classify_tag("v1.2"), None);
     assert_eq!(classify_tag("v1"), None);
@@ -161,18 +161,18 @@ fn per_crate_regex_rejects_leading_digit() {
 }
 
 #[test]
-fn safety_check_prefix_admits_anodize_revert_only() {
-    // anodize's own prior revert subject — admissible.
-    let anodize_subject = "Revert \"chore(release): rollback v1.2.3 [skip ci]\"";
+fn safety_check_prefix_admits_anodizer_revert_only() {
+    // anodizer's own prior revert subject — admissible.
+    let anodizer_subject = "Revert \"chore(release): rollback v1.2.3 [skip ci]\"";
     assert!(
-        anodize_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str()),
-        "anodize-generated revert must be recognised"
+        anodizer_subject.starts_with(ANODIZER_REVERT_SUBJECT_PREFIX.as_str()),
+        "anodizer-generated revert must be recognised"
     );
     // GitHub's "Revert this PR" button subject — must NOT be admitted.
     let github_subject = "Revert \"feat: add new flag\"";
     assert!(
-        !github_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str()),
-        "unrelated revert PR subjects must NOT be admitted as anodize-shaped"
+        !github_subject.starts_with(ANODIZER_REVERT_SUBJECT_PREFIX.as_str()),
+        "unrelated revert PR subjects must NOT be admitted as anodizer-shaped"
     );
 }
 
@@ -423,13 +423,13 @@ fn no_push_skips_remote_ops_but_does_local_revert() {
 
 #[test]
 #[serial(cwd)]
-fn skips_tags_not_matching_anodize_shape() {
+fn skips_tags_not_matching_anodizer_shape() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let bump_sha = init_bump_repo(dir, 0);
     add_non_github_origin(dir);
     write_minimal_config(dir);
-    // Add a non-anodize tag at the same SHA.
+    // Add a non-anodizer tag at the same SHA.
     run_git(dir, &["tag", "internal-release"]);
 
     let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
@@ -446,9 +446,9 @@ fn skips_tags_not_matching_anodize_shape() {
         debug: false,
         quiet: true,
     };
-    run(opts).expect("rollback should ignore non-anodize tag");
+    run(opts).expect("rollback should ignore non-anodizer tag");
 
-    // Non-anodize tag survived; anodize tag is gone.
+    // Non-anodizer tag survived; anodizer tag is gone.
     let surviving = git::get_tags_at_sha_in(dir, &bump_sha).unwrap();
     assert_eq!(surviving, vec!["internal-release".to_string()]);
 }

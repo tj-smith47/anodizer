@@ -1,4 +1,4 @@
-//! Integration tests for `anodize check determinism`.
+//! Integration tests for `anodizer check determinism`.
 //!
 //! The fast tests below cover the CLI surface and the harness error
 //! paths that don't require a real `cargo build`. The drift-injection
@@ -17,14 +17,14 @@
 //!
 //! ```text
 //! cd <fixture-workspace>
-//! anodize check determinism --runs=1 --report=det.json
+//! anodizer check determinism --runs=1 --report=det.json
 //! test -f det.json && jq .schema_version det.json == 1
 //! ```
 //!
 //! ### Drift-injection round-trip (production binary)
 //!
 //! ```text
-//! ANODIZE_TEST_HARNESS=1 anodize check determinism \
+//! ANODIZE_TEST_HARNESS=1 anodizer check determinism \
 //!   --runs=2 --inject-drift=archive
 //! # Expected: exit code 1, report's drift_count > 0.
 //! ```
@@ -40,7 +40,7 @@ use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
 
-/// `anodize check determinism --help` must list every flag from the
+/// `anodizer check determinism --help` must list every flag from the
 /// spec (`--runs`, `--stages`, `--report`, `--snapshot`). A regression
 /// in clap surface drops this signal silently otherwise.
 #[test]
@@ -48,7 +48,7 @@ fn check_determinism_help_lists_every_flag() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "determinism", "--help"])
         .output()
-        .expect("invoking anodize check determinism --help");
+        .expect("invoking anodizer check determinism --help");
 
     assert!(
         output.status.success(),
@@ -86,7 +86,7 @@ fn check_determinism_errors_cleanly_outside_git_repo() {
         .args(["check", "determinism", "--runs", "2"])
         .current_dir(tmp.path())
         .output()
-        .expect("invoking anodize check determinism");
+        .expect("invoking anodizer check determinism");
 
     assert!(
         !output.status.success(),
@@ -114,7 +114,7 @@ fn check_determinism_respects_report_flag_in_error_path() {
         .arg(&report)
         .current_dir(tmp.path())
         .output()
-        .expect("invoking anodize check determinism");
+        .expect("invoking anodizer check determinism");
 
     // Non-git-repo path: must fail with a useful message, no panic.
     assert!(!output.status.success());
@@ -145,7 +145,7 @@ fn inject_drift_rejected_without_test_harness_env() {
         .current_dir(tmp.path())
         .env_remove("ANODIZE_TEST_HARNESS")
         .output()
-        .expect("invoking anodize check determinism --inject-drift");
+        .expect("invoking anodizer check determinism --inject-drift");
 
     assert!(
         !output.status.success(),
@@ -167,7 +167,7 @@ fn inject_drift_hidden_from_help() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "determinism", "--help"])
         .output()
-        .expect("invoking anodize check determinism --help");
+        .expect("invoking anodizer check determinism --help");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !stdout.contains("--inject-drift"),
@@ -213,7 +213,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-det-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-det-fixture");
 
     // RUSTUP_HOME / PATH propagation is the harness's responsibility —
     // `build_subprocess_env` defaults RUSTUP_HOME from the host's
@@ -237,7 +237,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
         .current_dir(repo)
         .env("ANODIZE_TEST_HARNESS", "1")
         .output()
-        .expect("invoking anodize check determinism");
+        .expect("invoking anodizer check determinism");
 
     // Non-zero exit when drift is detected (the dispatcher calls
     // `process::exit(1)` after writing the report).
@@ -325,17 +325,17 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-preflight-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-preflight-fixture");
 
     let host = host_triple();
     let yaml = format!(
         r#"crates:
-  - name: anodize-preflight-fixture
+  - name: anodizer-preflight-fixture
     path: .
     tag_template: "v{{{{ Version }}}}"
     builds:
-      - id: anodize-preflight-fixture
-        binary: anodize-preflight-fixture
+      - id: anodizer-preflight-fixture
+        binary: anodizer-preflight-fixture
         targets:
           - {host}
     nfpms:
@@ -384,7 +384,7 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         // NO_COLOR wins over every color override.
         .env("NO_COLOR", "1")
         .output()
-        .expect("invoking anodize check determinism");
+        .expect("invoking anodizer check determinism");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
@@ -413,7 +413,7 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     // command echo is verbose-only). The fixture declares a single binary,
     // so a non-vacuous run contributes exactly one such line per child run.
     let builds = stderr
-        .matches("built anodize-preflight-fixture/anodize-preflight-fixture for ")
+        .matches("built anodizer-preflight-fixture/anodizer-preflight-fixture for ")
         .count();
     assert_eq!(
         builds, 2,
@@ -491,7 +491,7 @@ workspaces:
         .current_dir(repo)
         .env("NO_COLOR", "1")
         .output()
-        .expect("invoking anodize check determinism");
+        .expect("invoking anodizer check determinism");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
@@ -532,7 +532,7 @@ fn quiet_flag_silences_harness_run_bullets_and_children() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-quiet-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-quiet-fixture");
 
     let report_path = repo.join("det.json");
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -552,7 +552,7 @@ fn quiet_flag_silences_harness_run_bullets_and_children() {
         // styling inserted under CI-forced color.
         .env("NO_COLOR", "1")
         .output()
-        .expect("invoking anodize -q check determinism");
+        .expect("invoking anodizer -q check determinism");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(

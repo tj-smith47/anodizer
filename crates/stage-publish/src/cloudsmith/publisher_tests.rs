@@ -112,7 +112,7 @@ fn cloudsmith_target_extra_roundtrips() {
 
 // Slug captured at upload time round-trips through evidence so
 // rollback can issue real DELETEs. Also pins the wire-format key
-// for older anodize binaries decoding this evidence.
+// for older anodizer binaries decoding this evidence.
 #[test]
 fn cloudsmith_target_serde_roundtrip_with_slug() {
     let targets = vec![

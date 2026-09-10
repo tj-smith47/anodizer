@@ -3,7 +3,7 @@
 //! shape is "create a revert commit on the publisher-owned repo, push
 //! it to the same branch".
 //!
-//! Why re-clone instead of reuse a `target/anodize/<publisher>/` clone?
+//! Why re-clone instead of reuse a `target/anodizer/<publisher>/` clone?
 //! All four git-revert publishers clone into a `tempfile::tempdir()` that
 //! is dropped at the end of `publish_to_X`. Persisting the clone would
 //! change the publish path's working-tree footprint (each publisher's

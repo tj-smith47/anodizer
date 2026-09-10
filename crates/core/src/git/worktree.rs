@@ -39,7 +39,7 @@ impl Worktree {
     ///
     /// Returns an error if `path` contains ASCII whitespace. The
     /// determinism harness composes `path` into RUSTFLAGS via
-    /// `--remap-path-prefix=<path>=/anodize`, and RUSTFLAGS is a
+    /// `--remap-path-prefix=<path>=/anodizer`, and RUSTFLAGS is a
     /// space-delimited token list with no quoting mechanism — a path
     /// containing whitespace would be parsed as multiple arguments by
     /// rustc and either silently misremap or hard-fail the build. Reject

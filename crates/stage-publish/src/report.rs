@@ -16,7 +16,7 @@ use crate::rollback;
 ///
 /// Priority order:
 /// 1. `ctx.git_info.tag` — what the operator typed (e.g. `v0.2.1`).
-///    Every tag shape anodize cuts — including a semver build-metadata
+///    Every tag shape anodizer cuts — including a semver build-metadata
 ///    suffix like `v1.2.3+build.1` — fits the `[A-Za-z0-9._+-]` charset
 ///    [`rollback::validate_run_id`] enforces, so the tag branch is what
 ///    real releases take. That matters beyond tidiness: `anodizer tag
@@ -270,7 +270,7 @@ mod tests {
     use anodizer_core::context::{Context, ContextOptions};
 
     /// The recovery hint must name the binary the operator actually has on
-    /// PATH. `anodize` is the tool's former name and resolves to nothing.
+    /// PATH. `anodizer` is the tool's former name and resolves to nothing.
     #[test]
     fn missing_prior_report_names_the_real_binary() {
         let tmp = tempfile::tempdir().unwrap();

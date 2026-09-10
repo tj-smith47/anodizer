@@ -92,9 +92,9 @@ pub fn git_test_output(dir: &Path, args: &[&str]) -> std::process::Output {
             let mut cmd = Command::new("git");
             cmd.args([
                 "-c",
-                "user.name=Anodize Test",
+                "user.name=Anodizer Test",
                 "-c",
-                "user.email=test@anodize.local",
+                "user.email=test@anodizer.local",
                 "-c",
                 "commit.gpgsign=false",
             ])

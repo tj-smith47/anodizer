@@ -66,7 +66,7 @@ impl PackageType {
 /// The classifier matches the marker only when it occupies its own line (the
 /// position our `printf '%s\n'` writes it), so a package that happened to echo
 /// the token mid-line during a failing install cannot forge an install-success
-/// signal. The token is also unique and emitted by anodize, not by any known
+/// signal. The token is also unique and emitted by anodizer, not by any known
 /// package manager — but the own-line anchor is the actual guarantee.
 const SMOKE_STEP_MARKER: &str = "__ANODIZER_SMOKE_INSTALLED__";
 

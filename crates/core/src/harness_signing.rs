@@ -29,7 +29,7 @@ use tempfile::TempDir;
 /// in memory while the harness drives a hermetic rebuild. The cosign
 /// signature itself is non-deterministic regardless (ECDSA random-k),
 /// so verifying the harness output downstream is the real gate.
-const HARNESS_COSIGN_PASSWORD: &str = "anodize-harness";
+const HARNESS_COSIGN_PASSWORD: &str = "anodizer-harness";
 
 /// EdDSA ed25519 keypair config template for `gpg --batch --gen-key`.
 /// `%no-protection` skips the passphrase prompt; ed25519 + an SDE-pinned
@@ -44,8 +44,8 @@ Key-Type: EDDSA
 Key-Curve: ed25519
 Subkey-Type: EDDSA
 Subkey-Curve: ed25519
-Name-Real: Anodize Harness
-Name-Email: harness@anodize.invalid
+Name-Real: Anodizer Harness
+Name-Email: harness@anodizer.invalid
 Creation-Date: {creation}
 Expire-Date: 0
 %commit
@@ -93,7 +93,7 @@ impl EphemeralSigningKeys {
             cosign_password: HARNESS_COSIGN_PASSWORD.into(),
             gnupg_home: tmpdir.path().join("gnupg"),
             gpg_fingerprint: "TESTFPR0000000000".into(),
-            gpg_key_path: tmpdir.path().join("anodize-harness.asc"),
+            gpg_key_path: tmpdir.path().join("anodizer-harness.asc"),
             apk_key_path,
             _tmpdir: tmpdir,
         }
@@ -440,7 +440,7 @@ fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> 
         )
     })?;
 
-    let gpg_key_path = tmpdir.join("anodize-harness.asc");
+    let gpg_key_path = tmpdir.join("anodizer-harness.asc");
     let export_out = Command::new("gpg")
         .args(["--batch", "--armor", "--export-secret-keys", &fingerprint])
         .env("GNUPGHOME", path_for_subprocess_env(&gnupg_home))
@@ -595,7 +595,7 @@ mod provision_tests {
         let keys = provision_ephemeral_keys(1735689600).expect("provision succeeds");
 
         assert_eq!(keys.cosign_key_contents, "FAKE-ENCRYPTED-COSIGN-PEM");
-        assert_eq!(keys.cosign_password, "anodize-harness");
+        assert_eq!(keys.cosign_password, "anodizer-harness");
         assert_eq!(keys.gpg_fingerprint, FAKE_FPR);
         let apk_key = keys
             .apk_key_path

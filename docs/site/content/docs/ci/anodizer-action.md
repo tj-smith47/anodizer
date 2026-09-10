@@ -83,7 +83,7 @@ When a tag-triggered workflow runs, the action can resolve the triggering tag to
 
 ### Determinism Harness
 
-The action can run `anodize check determinism` directly (and preserve its
+The action can run `anodizer check determinism` directly (and preserve its
 hermetic dist tree for a downstream `release --publish-only` job) without
 the caller needing to know the harness CLI. See
 [Determinism](@/docs/advanced/determinism.md) for the harness semantics.

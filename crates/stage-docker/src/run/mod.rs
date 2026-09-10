@@ -130,7 +130,7 @@ impl Stage for super::DockerStage {
             std::collections::BTreeMap::new();
         // Pre-hook failures for individual docker_v2 configs are isolated:
         // parallel-per-config error semantic: a failed config
-        // does not cancel sibling configs already in flight. anodize collects
+        // does not cancel sibling configs already in flight. anodizer collects
         // the errors and surfaces them after all parallel jobs finish — an
         // early-return past a failed pre-hook skips that config's build +
         // post-hook queueing.
@@ -454,7 +454,7 @@ fn execute_jobs_and_register(
         // Capture the first digest produced for this docker_v2 config so the
         // per-config post-hook (fired by the caller, after all jobs
         // complete) can render `{{ .Digest }}`. In snapshot multi-platform
-        // mode anodize emits one job per platform — any platform's digest
+        // mode anodizer emits one job per platform — any platform's digest
         // is representative since the post-hook lifecycle has only one
         // digest variable per config.
         if !config_first_digest.contains_key(&job.idx)

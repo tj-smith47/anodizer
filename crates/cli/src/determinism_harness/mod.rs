@@ -17,7 +17,7 @@
 //! 2. Builds an isolated env: per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
 //!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` inherited
 //!    from the host; plus an identity-only allow-list — see [`mod@env`].
-//! 3. Invokes the build-side pipeline (`anodize release --snapshot
+//! 3. Invokes the build-side pipeline (`anodizer release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`) inside the worktree with that env.
 //! 4. Walks `<worktree>/dist` AND `<worktree>/.det-tmp/target/`,
 //!    SHA256s every file, returns a `BTreeMap<artifact_name, info>`
@@ -430,7 +430,7 @@ pub struct Harness {
     /// dispatcher).
     pub inject_drift: Option<String>,
     /// `--targets=<csv>`: restrict the harness to a subset of configured
-    /// target triples. Forwarded to the child `anodize release
+    /// target triples. Forwarded to the child `anodizer release
     /// --snapshot` subprocess as `--targets=<csv>` so the rebuild only
     /// touches buildable targets on this runner. `None` validates every
     /// configured target.
@@ -458,19 +458,19 @@ pub struct Harness {
     ///
     /// Unused when `preserve_dist` is `None`.
     pub version_hint: String,
-    /// Whether to pass `--snapshot` to the child `anodize release ...`
+    /// Whether to pass `--snapshot` to the child `anodizer release ...`
     /// subprocess. `true` (the default / legacy behaviour) emits
     /// artifacts named with the snapshot version suffix
     /// (`-SNAPSHOT-<sha>`); `false` drops the flag so produce-stages
     /// emit artifacts named with the actual release version. The
     /// release workflow flips this off on tag-push runs so the bytes
     /// preserved by `--preserve-dist` are immediately shippable via
-    /// `anodize release --publish-only`.
+    /// `anodizer release --publish-only`.
     pub child_snapshot: bool,
     /// Operator-selected output verbosity (global `--quiet` /
     /// `--verbose` / `--debug` flags). Drives the harness's own logger
     /// (the `run N of M` bullets) and is forwarded to each child
-    /// `anodize release` subprocess so the whole interleaved stream
+    /// `anodizer release` subprocess so the whole interleaved stream
     /// honors one verbosity contract.
     pub verbosity: Verbosity,
     /// Backend hint forwarded from the CLI dispatcher's reading of the

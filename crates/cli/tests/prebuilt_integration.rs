@@ -65,7 +65,7 @@ crates:
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "anodize build should succeed.\nstderr:\n{stderr}\nstdout:\n{stdout}"
+        "anodizer build should succeed.\nstderr:\n{stderr}\nstdout:\n{stdout}"
     );
 
     let metadata_path = tmp.path().join("dist/metadata.json");

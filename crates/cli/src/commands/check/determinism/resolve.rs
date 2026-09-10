@@ -196,7 +196,7 @@ pub(super) fn crate_declares_docker(
 /// production's `return Ok(())`) and drops the entry; `extra_files` pass through
 /// verbatim (production does not template them).
 ///
-/// The `Context` is seeded the SAME way the child `anodize release --snapshot`
+/// The `Context` is seeded the SAME way the child `anodizer release --snapshot`
 /// builds its config-resolution surface for this crate — snapshot/nightly
 /// options, process + config `env` (`helpers::setup_env`), git + version vars
 /// (`helpers::resolve_git_context`), the snapshot version suffix

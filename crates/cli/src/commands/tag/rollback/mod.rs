@@ -1,8 +1,8 @@
-//! `anodize tag rollback` — delete anodize-managed tags at a SHA and
+//! `anodizer tag rollback` — delete anodizer-managed tags at a SHA and
 //! revert (or reset to) the bump commit they point at.
 //!
-//! Failure-recovery counterpart to `anodize tag`: when a downstream
-//! `anodize release` poisons a tag (publish failure, mcp 422, etc.) the
+//! Failure-recovery counterpart to `anodizer tag`: when a downstream
+//! `anodizer release` poisons a tag (publish failure, mcp 422, etc.) the
 //! operator is left with a tag pointing at a bumped-but-broken commit.
 //! This subcommand deletes the tag locally + on origin, then either
 //! `git revert`s the bump commit (default, history-preserving) or
@@ -15,10 +15,10 @@
 //! pointing at a tag that no longer exists.
 //!
 //! Safety rails:
-//! - Tag name regex filter — only anodize-shaped tags are touched
+//! - Tag name regex filter — only anodizer-shaped tags are touched
 //!   (`vX.Y.Z[-pre][+build]` for lockstep, `<crate>-vX.Y.Z[...]` for
 //!   per-crate). Non-matching tags are skipped with a reason printed.
-//! - Hard-fail when non-anodize commits sit between the target SHA and
+//! - Hard-fail when non-anodizer commits sit between the target SHA and
 //!   HEAD in `--mode=revert` (protects against rolling back a bump
 //!   after unrelated work landed on top). Use `--mode=reset` to force.
 

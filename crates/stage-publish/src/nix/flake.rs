@@ -27,7 +27,7 @@ use super::generate::nix_escape_string;
 
 /// The standard Nix systems every published package is exposed for.
 ///
-/// These are Nix system doubles (`<arch>-<os>`), NOT anodize's go-arch
+/// These are Nix system doubles (`<arch>-<os>`), NOT anodizer's go-arch
 /// asset names. The arch/os → asset mapping lives inside each package's
 /// derivation (`urlMap`/`shaMap` keyed by these same doubles), so the
 /// flake only ever speaks in doubles and the derivation resolves the
@@ -45,7 +45,7 @@ pub(crate) const FLAKE_SYSTEMS: &[&str] = &[
 /// published last, so a multi-crate publish commits a byte-stable
 /// top-level value regardless of order. Per-package descriptions still
 /// live inside each derivation's `meta.description`.
-const FLAKE_DESCRIPTION: &str = "Nix flake for release artifacts published by anodize";
+const FLAKE_DESCRIPTION: &str = "Nix flake for release artifacts published by anodizer";
 
 /// Indent prefix on each overlay `callPackage` line in the generated
 /// flake. The line shape is fixed by this module, so re-parsing it to

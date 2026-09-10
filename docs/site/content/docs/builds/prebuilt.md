@@ -305,7 +305,7 @@ the archive template can't express — supplying a top-level `pkg_url` **or** an
 target triple to a specific asset name, map it under `binstall.overrides`.
 Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and is
 emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
-anodize templates (`{{ Version }}`) are rendered; cargo-binstall's own
+anodizer templates (`{{ Version }}`) are rendered; cargo-binstall's own
 `{ ... }` tokens are left intact.
 
 ```yaml

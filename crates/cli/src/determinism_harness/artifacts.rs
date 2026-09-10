@@ -102,7 +102,7 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 /// archive (`.tar.gz`, `.tar.xz`, `.zip`, ...). Hashing them directly
 /// lets the report point a finger at the raw binary instead of the
 /// operator having to peel six layers of containers to find that the
-/// underlying `target/release/anodize` was nondeterministic.
+/// underlying `target/release/anodizer` was nondeterministic.
 /// Path-remapping (`--remap-path-prefix`) is already applied via the env
 /// block, so on a healthy run these hashes will match; if they ever
 /// drift, the diagnostic chain starts here.
@@ -122,8 +122,8 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 ///
 /// The function only walks the immediate `release/` directory (not
 /// `deps/`, `build/`, `.fingerprint/`, etc.) and filters to files
-/// without an extension or with `.exe` — anodize ships single-binary
-/// crates, so this surfaces the actual `anodize` / `anodize.exe`
+/// without an extension or with `.exe` — anodizer ships single-binary
+/// crates, so this surfaces the actual `anodizer` / `anodizer.exe`
 /// without dragging in cargo's incremental-build scratch.
 pub(super) fn discover_artifacts(worktree_path: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
@@ -179,8 +179,8 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// `release/deps`, `release/build`, `release/.fingerprint`, etc. are
 /// cargo's internal scratch and not fingerprinted for drift detection.
 ///
-/// File filter: regular files whose extension is empty (`anodize`) or
-/// `.exe` (`anodize.exe`). Excludes `.d` (depfiles), `.pdb` (debug
+/// File filter: regular files whose extension is empty (`anodizer`) or
+/// `.exe` (`anodizer.exe`). Excludes `.d` (depfiles), `.pdb` (debug
 /// symbols), `.rlib`, etc. — those are tooling byproducts, not the
 /// shippable binary that lands in archives.
 fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -658,7 +658,9 @@ mod tests {
         assert_eq!(infer_stage_from_path("dist/mystery.bin"), "unknown");
         // Windows-native separators must still classify correctly.
         assert_eq!(
-            infer_stage_from_path(".det-tmp\\target\\x86_64-pc-windows-msvc\\release\\anodize.exe"),
+            infer_stage_from_path(
+                ".det-tmp\\target\\x86_64-pc-windows-msvc\\release\\anodizer.exe"
+            ),
             "build"
         );
         assert_eq!(infer_stage_from_path("dist\\foo.tar.gz"), "archive");
@@ -668,7 +670,7 @@ mod tests {
     /// `dist/<stage>/` subdirectory; the `infer_stage_from_path`
     /// classifier must pick those up so the report's per-stage drift
     /// counts attribute correctly. Without this, e.g. an MSI installer
-    /// at `dist/msi/anodize-0.4.0.msi` would have shown up under
+    /// at `dist/msi/anodizer-0.4.0.msi` would have shown up under
     /// `unknown` and the report's `drift` row would not have named
     /// the responsible stage.
     /// Man pages from a `before:` hook (`dist/anodizer.1`) and the contents
@@ -706,30 +708,30 @@ mod tests {
     #[test]
     fn stage_inference_classifies_installer_directory_prefixes() {
         assert_eq!(
-            infer_stage_from_path("dist/nfpm/anodize_0.4.0_amd64.deb"),
+            infer_stage_from_path("dist/nfpm/anodizer_0.4.0_amd64.deb"),
             "nfpm"
         );
         assert_eq!(
-            infer_stage_from_path("dist/nfpm/anodize-0.4.0-1.x86_64.rpm"),
+            infer_stage_from_path("dist/nfpm/anodizer-0.4.0-1.x86_64.rpm"),
             "nfpm"
         );
-        assert_eq!(infer_stage_from_path("dist/msi/anodize-0.4.0.msi"), "msi");
+        assert_eq!(infer_stage_from_path("dist/msi/anodizer-0.4.0.msi"), "msi");
         assert_eq!(
-            infer_stage_from_path("dist/nsis/anodize-setup-0.4.0.exe"),
+            infer_stage_from_path("dist/nsis/anodizer-setup-0.4.0.exe"),
             "nsis"
         );
-        assert_eq!(infer_stage_from_path("dist/dmg/anodize-0.4.0.dmg"), "dmg");
-        assert_eq!(infer_stage_from_path("dist/pkg/anodize-0.4.0.pkg"), "pkg");
+        assert_eq!(infer_stage_from_path("dist/dmg/anodizer-0.4.0.dmg"), "dmg");
+        assert_eq!(infer_stage_from_path("dist/pkg/anodizer-0.4.0.pkg"), "pkg");
         assert_eq!(
-            infer_stage_from_path("dist/srpm/anodize-0.4.0-1.src.rpm"),
+            infer_stage_from_path("dist/srpm/anodizer-0.4.0-1.src.rpm"),
             "srpm"
         );
         assert_eq!(
-            infer_stage_from_path("dist/makeself/anodize-0.4.0.run"),
+            infer_stage_from_path("dist/makeself/anodizer-0.4.0.run"),
             "makeself"
         );
         assert_eq!(
-            infer_stage_from_path("dist/snapcraft/anodize_0.4.0_amd64.snap"),
+            infer_stage_from_path("dist/snapcraft/anodizer_0.4.0_amd64.snap"),
             "snapcraft"
         );
     }
@@ -740,28 +742,28 @@ mod tests {
     /// trailing-fallback branch of `infer_stage_from_path`.
     #[test]
     fn stage_inference_classifies_installer_extensions_outside_prefix() {
-        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.msi"), "msi");
-        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.dmg"), "dmg");
-        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.pkg"), "pkg");
-        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.run"), "makeself");
+        assert_eq!(infer_stage_from_path("dist/anodizer-0.4.0.msi"), "msi");
+        assert_eq!(infer_stage_from_path("dist/anodizer-0.4.0.dmg"), "dmg");
+        assert_eq!(infer_stage_from_path("dist/anodizer-0.4.0.pkg"), "pkg");
+        assert_eq!(infer_stage_from_path("dist/anodizer-0.4.0.run"), "makeself");
         assert_eq!(
-            infer_stage_from_path("dist/anodize-0.4.0-1.src.rpm"),
+            infer_stage_from_path("dist/anodizer-0.4.0-1.src.rpm"),
             "srpm"
         );
         assert_eq!(
-            infer_stage_from_path("dist/anodize-0.4.0-1.x86_64.rpm"),
+            infer_stage_from_path("dist/anodizer-0.4.0-1.x86_64.rpm"),
             "nfpm"
         );
         assert_eq!(
-            infer_stage_from_path("dist/anodize_0.4.0_amd64.deb"),
+            infer_stage_from_path("dist/anodizer_0.4.0_amd64.deb"),
             "nfpm"
         );
-        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.apk"), "nfpm");
+        assert_eq!(infer_stage_from_path("dist/anodizer-0.4.0.apk"), "nfpm");
     }
 
     /// The loose-`.exe` collision: stage-nsis writes its installer into
     /// `dist/windows/` as a plain `*.exe` (no `dist/nsis/` prefix), and the
-    /// raw windows binary `anodize.exe` lives under the cargo target dir. Both
+    /// raw windows binary `anodizer.exe` lives under the cargo target dir. Both
     /// are `.exe`, so the classifier must tell them apart by the installer's
     /// `setup.exe` name tail — never sweep a raw binary into an installer
     /// class, never leave the installer in `unknown` (which would drop it from
@@ -784,7 +786,7 @@ mod tests {
         );
         // The raw windows binary must NOT be misclassified as an installer.
         // Under the cargo target dir it attributes to `build`; a bare loose
-        // `anodize.exe` with no installer tail is `unknown`, never `nsis`.
+        // `anodizer.exe` with no installer tail is `unknown`, never `nsis`.
         assert_eq!(
             infer_stage_from_path(".det-tmp/target/x86_64-pc-windows-msvc/release/anodizer.exe"),
             "build"
@@ -807,11 +809,11 @@ mod tests {
     #[test]
     fn stage_inference_distinguishes_src_rpm_from_binary_rpm() {
         assert_eq!(
-            infer_stage_from_path("dist/anodize-0.4.0-1.src.rpm"),
+            infer_stage_from_path("dist/anodizer-0.4.0-1.src.rpm"),
             "srpm"
         );
         assert_eq!(
-            infer_stage_from_path("dist/anodize-0.4.0-1.x86_64.rpm"),
+            infer_stage_from_path("dist/anodizer-0.4.0-1.x86_64.rpm"),
             "nfpm"
         );
     }
@@ -837,7 +839,7 @@ mod tests {
         // dist artifact (existing surface)
         let dist = wt.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
-        std::fs::write(dist.join("anodize_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
+        std::fs::write(dist.join("anodizer_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
 
         // Cross-target build outputs
         let triple_release = wt
@@ -846,9 +848,9 @@ mod tests {
             .join("x86_64-unknown-linux-gnu")
             .join("release");
         std::fs::create_dir_all(&triple_release).unwrap();
-        std::fs::write(triple_release.join("anodize"), b"raw-bin-linux").unwrap();
+        std::fs::write(triple_release.join("anodizer"), b"raw-bin-linux").unwrap();
         // depfile must NOT be surfaced (cargo scratch).
-        std::fs::write(triple_release.join("anodize.d"), b"depfile").unwrap();
+        std::fs::write(triple_release.join("anodizer.d"), b"depfile").unwrap();
         // `deps/` subdirectory must NOT be recursed (cargo scratch).
         std::fs::create_dir_all(triple_release.join("deps")).unwrap();
         std::fs::write(triple_release.join("deps").join("libfoo.rlib"), b"rlib").unwrap();
@@ -860,16 +862,16 @@ mod tests {
             .join("x86_64-pc-windows-msvc")
             .join("release");
         std::fs::create_dir_all(&win_release).unwrap();
-        std::fs::write(win_release.join("anodize.exe"), b"raw-bin-windows").unwrap();
+        std::fs::write(win_release.join("anodizer.exe"), b"raw-bin-windows").unwrap();
         // .pdb debug symbols must NOT be surfaced.
-        std::fs::write(win_release.join("anodize.pdb"), b"pdb").unwrap();
+        std::fs::write(win_release.join("anodizer.pdb"), b"pdb").unwrap();
 
-        // Host build (no triple): target/release/anodize. With per-triple
+        // Host build (no triple): target/release/anodizer. With per-triple
         // builds present this is the non-shipped man-page-hook byproduct
         // and MUST be excluded.
         let host_release = wt.join(".det-tmp").join("target").join("release");
         std::fs::create_dir_all(&host_release).unwrap();
-        std::fs::write(host_release.join("anodize"), b"raw-bin-host").unwrap();
+        std::fs::write(host_release.join("anodizer"), b"raw-bin-host").unwrap();
 
         let artifacts = discover_artifacts(wt).expect("discover");
         let names: Vec<String> = artifacts
@@ -880,24 +882,24 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|n| n == "anodize_0.3.0_linux_amd64.tar.gz"),
+                .any(|n| n == "anodizer_0.3.0_linux_amd64.tar.gz"),
             "dist artifact missing: {names:?}"
         );
-        // Only the per-triple `anodize` (linux) is shipped; the bare host
-        // `target/release/anodize` is the man-page-hook byproduct and is
+        // Only the per-triple `anodizer` (linux) is shipped; the bare host
+        // `target/release/anodizer` is the man-page-hook byproduct and is
         // excluded when any per-triple build exists.
         assert_eq!(
-            names.iter().filter(|n| n.as_str() == "anodize").count(),
+            names.iter().filter(|n| n.as_str() == "anodizer").count(),
             1,
-            "expected 1 `anodize` raw binary (linux triple only; host excluded), got: {names:?}"
+            "expected 1 `anodizer` raw binary (linux triple only; host excluded), got: {names:?}"
         );
         assert!(
-            names.iter().any(|n| n == "anodize.exe"),
+            names.iter().any(|n| n == "anodizer.exe"),
             "windows raw binary missing: {names:?}"
         );
 
         // Scratch files must NOT be surfaced.
-        for forbidden in ["anodize.d", "anodize.pdb", "libfoo.rlib"] {
+        for forbidden in ["anodizer.d", "anodizer.pdb", "libfoo.rlib"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "cargo scratch `{forbidden}` leaked into discovery: {names:?}"
@@ -915,10 +917,10 @@ mod tests {
             "expected 2 `target/...`-prefixed map keys (per-triple only), got: {:?}",
             map.keys().collect::<Vec<_>>()
         );
-        // The bare host `target/release/anodize` byproduct must NOT appear.
+        // The bare host `target/release/anodizer` byproduct must NOT appear.
         assert!(
-            !map.contains_key("target/release/anodize"),
-            "non-shipped host byproduct `target/release/anodize` leaked into the comparison set: {:?}",
+            !map.contains_key("target/release/anodizer"),
+            "non-shipped host byproduct `target/release/anodizer` leaked into the comparison set: {:?}",
             map.keys().collect::<Vec<_>>()
         );
         // Forward slashes regardless of host platform.
@@ -932,8 +934,8 @@ mod tests {
         assert!(
             target_keys
                 .iter()
-                .any(|k| { k.as_str() == "target/x86_64-unknown-linux-gnu/release/anodize" }),
-            "expected `target/x86_64-unknown-linux-gnu/release/anodize` key, got: {target_keys:?}"
+                .any(|k| { k.as_str() == "target/x86_64-unknown-linux-gnu/release/anodizer" }),
+            "expected `target/x86_64-unknown-linux-gnu/release/anodizer` key, got: {target_keys:?}"
         );
         // Raw binaries get `build` stage attribution so the diagnostic
         // chain reads build → archive → checksum → sign.
@@ -960,14 +962,14 @@ mod tests {
         // dist artifact (existing surface)
         let dist = wt.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
-        std::fs::write(dist.join("anodize_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
+        std::fs::write(dist.join("anodizer_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
 
         // Host build only — no `<triple>/release/` directory anywhere.
         let host_release = wt.join(".det-tmp").join("target").join("release");
         std::fs::create_dir_all(&host_release).unwrap();
-        std::fs::write(host_release.join("anodize"), b"raw-bin-host").unwrap();
+        std::fs::write(host_release.join("anodizer"), b"raw-bin-host").unwrap();
         // Scratch beside it must still be excluded.
-        std::fs::write(host_release.join("anodize.d"), b"depfile").unwrap();
+        std::fs::write(host_release.join("anodizer.d"), b"depfile").unwrap();
         std::fs::create_dir_all(host_release.join("deps")).unwrap();
         std::fs::write(host_release.join("deps").join("libfoo.rlib"), b"rlib").unwrap();
 
@@ -980,16 +982,16 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|n| n == "anodize_0.3.0_linux_amd64.tar.gz"),
+                .any(|n| n == "anodizer_0.3.0_linux_amd64.tar.gz"),
             "dist artifact missing: {names:?}"
         );
         // The host binary is the shipped deliverable here and must appear.
         assert_eq!(
-            names.iter().filter(|n| n.as_str() == "anodize").count(),
+            names.iter().filter(|n| n.as_str() == "anodizer").count(),
             1,
-            "host-native `target/release/anodize` must be surfaced when no triple build exists, got: {names:?}"
+            "host-native `target/release/anodizer` must be surfaced when no triple build exists, got: {names:?}"
         );
-        for forbidden in ["anodize.d", "libfoo.rlib"] {
+        for forbidden in ["anodizer.d", "libfoo.rlib"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "cargo scratch `{forbidden}` leaked into discovery: {names:?}"
@@ -998,8 +1000,8 @@ mod tests {
 
         let map = hash_artifacts(wt, &artifacts).expect("hash");
         assert!(
-            map.contains_key("target/release/anodize"),
-            "expected `target/release/anodize` key (host-native deliverable), got: {:?}",
+            map.contains_key("target/release/anodizer"),
+            "expected `target/release/anodizer` key (host-native deliverable), got: {:?}",
             map.keys().collect::<Vec<_>>()
         );
     }
@@ -1034,7 +1036,7 @@ mod tests {
                 .join("x86_64-unknown-linux-gnu")
                 .join("release");
             std::fs::create_dir_all(&raw).unwrap();
-            std::fs::write(raw.join("anodize"), b"binary").unwrap();
+            std::fs::write(raw.join("anodizer"), b"binary").unwrap();
         }
 
         let report = DeterminismReport {
@@ -1053,7 +1055,7 @@ mod tests {
                     differing_bytes_summary: None,
                 },
                 DriftRow {
-                    artifact: "target/x86_64-unknown-linux-gnu/release/anodize".into(),
+                    artifact: "target/x86_64-unknown-linux-gnu/release/anodizer".into(),
                     hashes: vec!["sha256:c".into(), "sha256:d".into()],
                     differing_bytes_summary: None,
                 },
@@ -1081,7 +1083,7 @@ mod tests {
                 "drifted dist artifact must survive prune (basename match)"
             );
             assert!(
-                run.join("target/x86_64-unknown-linux-gnu/release/anodize")
+                run.join("target/x86_64-unknown-linux-gnu/release/anodizer")
                     .is_file(),
                 "drifted raw binary must survive prune (rel-path match)"
             );

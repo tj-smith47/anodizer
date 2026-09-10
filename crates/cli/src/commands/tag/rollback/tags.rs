@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 /// The crate-name portion accepts ASCII letters, `_` and `-` as the
 /// first char (cargo crate names must start with a letter — digits are
 /// rejected), then letters/digits/`_`/`-` for the remainder; the
-/// suffix is then asserted to be anodize's `v<semver>` form so a tag like
+/// suffix is then asserted to be anodizer's `v<semver>` form so a tag like
 /// `foo-bar` (no `-v` suffix) doesn't accidentally match.
 ///
 /// Compiled once at first use (the pattern is a compile-time literal) so
@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 /// `is_branchlike` in `core/git/commits.rs`.
 ///
 /// Drift-risk pair with `core::git::is_branchlike`: that predicate matches
-/// the same two anodize tag shapes but with deliberately looser, prefix-only
+/// the same two anodizer tag shapes but with deliberately looser, prefix-only
 /// regexes (it answers "is this NOT a tag?" for branch fallback, so it must
 /// not over-strict). These rollback patterns are fully anchored and strict
 /// on purpose. Keep the two shape definitions in sync when the tag grammar
@@ -39,7 +39,7 @@ pub(super) enum TagKind {
     PerCrate,
 }
 
-/// Classify a tag against anodize's naming conventions. Returns `None`
+/// Classify a tag against anodizer's naming conventions. Returns `None`
 /// when the tag doesn't match either shape (in which case the rollback
 /// command leaves it alone).
 pub(super) fn classify_tag(tag: &str) -> Option<TagKind> {
@@ -106,7 +106,7 @@ pub(super) fn build_revert_message(
     body
 }
 
-/// Subject prefix of anodize's own rollback commits
+/// Subject prefix of anodizer's own rollback commits
 /// (`chore(release): rollback …`), composed from the shared
 /// release-machinery prefix so the writer ([`build_revert_message`]) and
 /// the safety-check matcher below can never drift apart.
@@ -114,12 +114,12 @@ pub(super) fn rollback_subject_prefix() -> String {
     format!("{}rollback", git::RELEASE_COMMIT_PREFIX)
 }
 
-/// Prefix that a plain `git revert` of an anodize release-machinery commit
+/// Prefix that a plain `git revert` of an anodizer release-machinery commit
 /// produces (the amend-failure window, where the custom rollback subject
 /// was never applied). Used by the rollback safety check to recognise its
 /// own prior revert commit (so re-runs are idempotent) without absorbing
 /// unrelated `Revert "<...>"` commits that GitHub's "Revert this PR"
 /// button emits with arbitrary upstream subjects. Composed from the shared
 /// prefix the bump/rollback writers stamp.
-pub(super) static ANODIZE_REVERT_SUBJECT_PREFIX: LazyLock<String> =
+pub(super) static ANODIZER_REVERT_SUBJECT_PREFIX: LazyLock<String> =
     LazyLock::new(|| format!("Revert \"{}", git::RELEASE_COMMIT_PREFIX));

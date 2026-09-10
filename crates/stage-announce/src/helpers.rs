@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result};
 /// (Discord embed `author`, Slack/Mattermost webhook `username`).
 ///
 /// **Brand-default policy**: anodizer keeps its own attribution. The
-/// message *is* from anodize, and impersonating a different release tool in
+/// message *is* from anodizer, and impersonating a different release tool in
 /// someone's release channels is wrong UX.
 ///
 /// Companion decision: discord/teams `icon_url` defaults stay `None` rather
@@ -188,7 +188,7 @@ pub(crate) fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<St
 
 /// Resolve the effective SMTP port from (config, SMTP_PORT env, default).
 ///
-/// Anodize-additive UX win (locked 2026-04-28): when both `cfg.port` and
+/// Anodizer-additive UX win (locked 2026-04-28): when both `cfg.port` and
 /// `SMTP_PORT` are unset we default to **587** — the IETF submission port,
 /// the conventional STARTTLS endpoint exposed by virtually every modern
 /// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …). The

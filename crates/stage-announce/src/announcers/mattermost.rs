@@ -48,7 +48,7 @@ impl Announcer for MattermostAnnouncer {
             },
         };
         let message = render_message(ctx, cfg.message_template.as_deref())?;
-        // Anodize-additive UX win (locked 2026-04-28): channel,
+        // Anodizer-additive UX win (locked 2026-04-28): channel,
         // username, icon_url, and icon_emoji all run through the
         // template engine. The conventional behaviour passes these
         // fields raw — no template substitution. Rendering is

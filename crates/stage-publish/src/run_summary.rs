@@ -7,7 +7,7 @@
 //! per-publisher result at a glance).
 //!
 //! The schema is `deny_unknown_fields` so a downstream consumer
-//! fails loudly if a future anodize version adds a field they don't
+//! fails loudly if a future anodizer version adds a field they don't
 //! understand — preferable to silent shape drift.
 
 use anodizer_core::context::Context;
@@ -46,7 +46,7 @@ pub struct RunSummary {
     /// live). The counting is intentionally conservative: when in
     /// doubt, an outcome counts as published.
     ///
-    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// `#[serde(default)]` keeps summaries written by older anodizer
     /// versions parseable by newer readers.
     #[serde(default)]
     pub publishers_succeeded: u32,
@@ -64,7 +64,7 @@ pub struct RunSummary {
     /// version slot. Reversible groups (Assets, Manager) never set
     /// this; their state can be deleted and the same version re-cut.
     ///
-    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// `#[serde(default)]` keeps summaries written by older anodizer
     /// versions parseable by newer readers.
     #[serde(default)]
     pub irreversibly_published: bool,
@@ -76,7 +76,7 @@ pub struct RunSummary {
     /// did not run (disabled / skipped / dry-run / snapshot) and on
     /// summaries written before the gate executed.
     ///
-    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// `#[serde(default)]` keeps summaries written by older anodizer
     /// versions parseable by newer readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_release: Option<VerifyReleaseRecord>,
@@ -89,7 +89,7 @@ pub struct RunSummary {
     /// after a failure. A high value flags a flaky remote worth investigating
     /// even when the run ultimately succeeded.
     ///
-    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// `#[serde(default)]` keeps summaries written by older anodizer
     /// versions parseable by newer readers; `skip_serializing_if` omits it
     /// from the JSON on runs that never backed off.
     #[serde(default, skip_serializing_if = "is_zero_f64")]

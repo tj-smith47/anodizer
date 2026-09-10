@@ -566,8 +566,8 @@ mod tests {
         assert!(ctx.artifacts.all().is_empty());
     }
 
-    /// End-to-end proof: rendering anodize's OWN `scripts/install.sh.tpl`
-    /// against an anodize-shaped (lockstep) config materializes a `case` table
+    /// End-to-end proof: rendering anodizer's OWN `scripts/install.sh.tpl`
+    /// against an anodizer-shaped (lockstep) config materializes a `case` table
     /// whose `ARCHIVE` values are the byte-exact asset names the archive stage
     /// uploads — every `curl | sh` URL resolves. Pins installer↔asset-name
     /// agreement so a future `name_template` / `format_overrides` change can't
@@ -580,7 +580,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let mut ctx = build_ctx(&tmp);
-        // Re-key to anodize's own identity (build_ctx seeds "myapp"/"1.0.0").
+        // Re-key to anodizer's own identity (build_ctx seeds "myapp"/"1.0.0").
         ctx.config.project_name = "anodizer".to_string();
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         ctx.template_vars_mut().set("Version", "0.13.0");

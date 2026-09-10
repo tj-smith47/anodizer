@@ -1,4 +1,4 @@
-//! Integration tests for `anodize release --publish-only`.
+//! Integration tests for `anodizer release --publish-only`.
 //!
 //! - **Dry-run** — `--publish-only` loads context.json + artifacts.json
 //!   from a pre-populated dist, then runs the publish pipeline
@@ -24,14 +24,14 @@ use tempfile::TempDir;
 mod common;
 use common::{bootstrap_minimal_cargo_repo, run_git, tool_on_path};
 
-const FIXTURE_CRATE_NAME: &str = "anodize-publish-only-fixture";
+const FIXTURE_CRATE_NAME: &str = "anodizer-publish-only-fixture";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
 /// Synthesize a `dist/` whose contents look like what
-/// `anodize check determinism --preserve-dist=<dist>` would have
+/// `anodizer check determinism --preserve-dist=<dist>` would have
 /// written: at least one archive + sidecar `artifacts.json` +
 /// `metadata.json` + `context.json` + a sha256 sidecar.
 ///
@@ -130,7 +130,7 @@ fn bootstrap_preserved_dist(
 /// re-render config.yaml; a run that overwrote them changes the sha256
 /// and trips hash-verify.
 const SENTINEL_CONFIG_YAML: &[u8] =
-    b"# SENTINEL preserved config.yaml \xe2\x80\x94 must survive publish-only untouched\nproject_name: anodize-publish-only-fixture\n__sentinel__: do-not-regenerate\n";
+    b"# SENTINEL preserved config.yaml \xe2\x80\x94 must survive publish-only untouched\nproject_name: anodizer-publish-only-fixture\n__sentinel__: do-not-regenerate\n";
 
 /// Drop a sentinel `dist/config.yaml` into the preserved tree and append
 /// its `config.yaml` entry (with the matching sha256) to the existing
@@ -144,7 +144,7 @@ fn inject_preserved_config_yaml(repo: &Path) -> Vec<u8> {
 
     // sha256 of SENTINEL_CONFIG_YAML (pinned literal; recomputing in-test
     // would mask a divergence between the bytes and the recorded hash).
-    let config_sha256 = "76874b4862b3be0bfcb23289f4c6dc68a0d425e5f687207ce9eedb58a1b82278";
+    let config_sha256 = "19a5da57ecdd13111317203615779cddafda16e93d71761d2fe1ff682ad2b79b";
 
     let context_path = dist.join("context.json");
     let raw = fs::read_to_string(&context_path).unwrap();
@@ -205,7 +205,7 @@ crates:
     );
     fs::write(repo.join(".anodizer.yaml"), yaml).unwrap();
     // Gitignore dist/ so the preserved-dist files bootstrapped later
-    // don't trip anodize's `git is in a dirty state` check
+    // don't trip anodizer's `git is in a dirty state` check
     // (release-resolver bails dirty unless --snapshot).
     fs::write(repo.join(".gitignore"), "dist/\n").unwrap();
     run_git(repo, &["add", "-A"]);
@@ -229,7 +229,7 @@ fn head_commit(repo: &Path) -> String {
 
 /// Tag the fixture repo at HEAD so `release` resolves a Git.Tag /
 /// version triplet without needing `--snapshot`. Annotated tag —
-/// `git describe` (which anodize's tag resolver uses) ignores
+/// `git describe` (which anodizer's tag resolver uses) ignores
 /// lightweight tags by default.
 fn tag_head(repo: &Path, version: &str) -> String {
     let tag = format!("v{version}");
@@ -246,7 +246,7 @@ fn tag_head(repo: &Path, version: &str) -> String {
 /// / PublishStage emit log lines), and does NOT exercise the build /
 /// archive / nfpm stages.
 ///
-/// Drives `anodize release --publish-only --dry-run`
+/// Drives `anodizer release --publish-only --dry-run`
 /// against a pre-bootstrapped dist. Asserts on stdout markers that pin
 /// the pipeline composition end-to-end.
 #[test]
@@ -288,7 +288,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only --dry-run");
+        .expect("invoking anodizer release --publish-only --dry-run");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -405,7 +405,7 @@ fn publish_only_does_not_overwrite_preserved_config_yaml() {
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only --dry-run");
+        .expect("invoking anodizer release --publish-only --dry-run");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -461,7 +461,7 @@ fn publish_only_missing_context_json_errors_clearly() {
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only");
+        .expect("invoking anodizer release --publish-only");
 
     assert!(
         !output.status.success(),
@@ -487,7 +487,7 @@ fn publish_only_conflicts_with_split_at_clap_level() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--publish-only", "--split"])
         .output()
-        .expect("invoking anodize release --publish-only --split");
+        .expect("invoking anodizer release --publish-only --split");
 
     assert!(
         !output.status.success(),
@@ -506,7 +506,7 @@ fn publish_only_conflicts_with_merge_at_clap_level() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--publish-only", "--merge"])
         .output()
-        .expect("invoking anodize release --publish-only --merge");
+        .expect("invoking anodizer release --publish-only --merge");
 
     assert!(
         !output.status.success(),
@@ -559,7 +559,7 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only (no creds)");
+        .expect("invoking anodizer release --publish-only (no creds)");
 
     assert!(
         !output.status.success(),
@@ -645,7 +645,7 @@ fn publish_only_runs_publisher_state_preflight_by_default() {
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only --verbose");
+        .expect("invoking anodizer release --publish-only --verbose");
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -687,7 +687,7 @@ fn publish_only_rejects_commit_mismatch() {
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only --dry-run");
+        .expect("invoking anodizer release --publish-only --dry-run");
 
     assert!(
         !output.status.success(),
@@ -769,7 +769,7 @@ signs:
     );
     fs::write(repo.join(".anodizer.yaml"), yaml).unwrap();
     // gitignore dist/ + the gpg keyring/batch scratch this test stages
-    // inside the repo dir — otherwise anodize's git-dirty check bails
+    // inside the repo dir — otherwise anodizer's git-dirty check bails
     // before reaching the publish-only branch.
     fs::write(repo.join(".gitignore"), "dist/\ngnupg/\nkeygen.batch\n").unwrap();
     run_git(repo, &["add", "-A"]);
@@ -1049,7 +1049,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
         .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
-        .expect("invoking anodize release --publish-only --dry-run");
+        .expect("invoking anodizer release --publish-only --dry-run");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1072,7 +1072,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
 
     // Post-pipeline-rewritten artifacts.json is the load-bearing
     // assertion: it's what the next consumer of `dist/` (a re-run, a
-    // downstream `anodize publish` invocation, or operator inspection)
+    // downstream `anodizer publish` invocation, or operator inspection)
     // sees, and a regression that dropped a shard would surface here
     // as a missing entry.
     // The union is asserted on the dry-run's own output rather than on a

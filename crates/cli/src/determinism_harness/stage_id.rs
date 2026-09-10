@@ -4,7 +4,7 @@ use super::*;
 ///
 /// Currently informational: every variant maps to "run the build-side
 /// pipeline and look at the artifacts that stage produces". The harness
-/// shells to `anodize release --snapshot --skip=...` which runs the full
+/// shells to `anodizer release --snapshot --skip=...` which runs the full
 /// build-side pipeline; finer-grained per-stage gating is a follow-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, EnumIter)]
 pub enum StageId {

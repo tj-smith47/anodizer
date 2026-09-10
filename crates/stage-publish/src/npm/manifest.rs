@@ -809,15 +809,15 @@ pub(crate) fn render_package_json(
             })
             .collect(),
     );
-    let mut anodize = serde_json::Map::new();
-    anodize.insert("binaries".into(), bins_obj);
-    root.insert("anodize".into(), serde_json::Value::Object(anodize));
+    let mut anodizer = serde_json::Map::new();
+    anodizer.insert("binaries".into(), bins_obj);
+    root.insert("anodizer".into(), serde_json::Value::Object(anodizer));
 
     finalize_package_json(root, cfg)
 }
 
 /// Render the `postinstall.js` shim (postinstall mode). The script reads the
-/// embedded `anodize.binaries` table, selects the `process.platform` +
+/// embedded `anodizer.binaries` table, selects the `process.platform` +
 /// `process.arch` entry, downloads + sha256-verifies the archive, and extracts
 /// every command binary in `targets` into `bin/<target>{,.exe}` so each
 /// `npx <command>` works. `targets` is the set of binary basenames the package
@@ -850,11 +850,11 @@ const TARGETS = [{targets_js}];
 const exeSuffix = process.platform === 'win32' ? '.exe' : '';
 
 const pkg = require('./package.json');
-const binaries = (pkg.anodize && pkg.anodize.binaries) || [];
+const binaries = (pkg.anodizer && pkg.anodizer.binaries) || [];
 const target = binaries.find(b => b.os === process.platform && b.cpu === process.arch);
 if (!target) {{
   console.error(
-    `[anodize/npm] unsupported platform ${{process.platform}}/${{process.arch}}; ` +
+    `[anodizer/npm] unsupported platform ${{process.platform}}/${{process.arch}}; ` +
     `supported: ${{binaries.map(b => `${{b.os}}/${{b.cpu}}`).join(', ')}}`
   );
   process.exit(1);
@@ -863,7 +863,7 @@ if (!target) {{
 const binDir = path.join(__dirname, 'bin');
 fs.mkdirSync(binDir, {{ recursive: true }});
 
-const archivePath = path.join(__dirname, `__anodize_${{target.os}}_${{target.cpu}}.${{target.format}}`);
+const archivePath = path.join(__dirname, `__anodizer_${{target.os}}_${{target.cpu}}.${{target.format}}`);
 
 function download(url, dest) {{
   return new Promise((resolve, reject) => {{
@@ -892,7 +892,7 @@ function download(url, dest) {{
   const buf = fs.readFileSync(archivePath);
   const got = crypto.createHash('sha256').update(buf).digest('hex');
   if (target.sha256 && got !== target.sha256) {{
-    console.error(`[anodize/npm] sha256 mismatch: expected ${{target.sha256}}, got ${{got}}`);
+    console.error(`[anodizer/npm] sha256 mismatch: expected ${{target.sha256}}, got ${{got}}`);
     process.exit(1);
   }}
   // A `binary`-format archive IS a single binary → name it after the first
@@ -913,7 +913,7 @@ function download(url, dest) {{
     }}
   }}
 }})().catch(err => {{
-  console.error(`[anodize/npm] postinstall failed: ${{err.message}}`);
+  console.error(`[anodizer/npm] postinstall failed: ${{err.message}}`);
   process.exit(1);
 }});
 "#,

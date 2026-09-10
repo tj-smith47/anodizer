@@ -199,7 +199,7 @@ pub struct ReleaseConfig {
 
 impl ReleaseConfig {
     /// Default release-name template (`"{{Tag}}"`).
-    /// Anodize uses Tera-style `{{ Tag }}` (no dot prefix); the rendered
+    /// Anodizer uses Tera-style `{{ Tag }}` (no dot prefix); the rendered
     /// value is identical for any tag the project produces.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";
 

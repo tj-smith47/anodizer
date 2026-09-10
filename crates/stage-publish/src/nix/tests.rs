@@ -1112,16 +1112,16 @@ fn test_publish_to_nix_repo_name_template_rendered_in_dry_run() {
         ..Default::default()
     };
     let mut ctx = nix_ctx(cfg, true);
-    ctx.template_vars_mut().set("ProjectName", "anodize");
+    ctx.template_vars_mut().set("ProjectName", "anodizer");
     let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
     assert!(!publish_to_nix(&mut ctx, "mytool", &log).unwrap());
     let msgs = capture.all_messages();
     let dry_run_logged = msgs.iter().any(|(_, m)| {
-        m.contains("(dry-run) would publish") && m.contains("static-owner/anodize-pkgs")
+        m.contains("(dry-run) would publish") && m.contains("static-owner/anodizer-pkgs")
     });
     assert!(
         dry_run_logged,
-        "rendered owner/repo 'static-owner/anodize-pkgs' must appear in dry-run log; captured: {msgs:?}"
+        "rendered owner/repo 'static-owner/anodizer-pkgs' must appear in dry-run log; captured: {msgs:?}"
     );
     let raw_leaked = msgs.iter().any(|(_, m)| m.contains("{{ .ProjectName }}"));
     assert!(

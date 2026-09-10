@@ -848,7 +848,7 @@ fn resolve_file_include_value(
     let include_path = if Path::new(&expanded).is_absolute() {
         // Absolute paths are still rejected for plain-string / from_file
         // entries — but only AFTER expansion, so a config that ships
-        // `~/.config/anodize/defaults.yaml` is treated as the resolved
+        // `~/.config/anodizer/defaults.yaml` is treated as the resolved
         // absolute home path and rejected with an actionable error.
         bail!(
             "includes: absolute paths are not allowed (got '{}' in {})",

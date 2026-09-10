@@ -1539,13 +1539,13 @@ mod tests {
 
     #[test]
     fn bare_check_prints_help_or_errors() {
-        // Bare `anodize check` (no subcommand) should fail to parse — clap's
+        // Bare `anodizer check` (no subcommand) should fail to parse — clap's
         // default for a required subcommand. Either prints help or errors;
         // both are acceptable as long as no Commands::Check is produced.
         let result = Cli::try_parse_from(["anodizer", "check"]);
         assert!(
             result.is_err(),
-            "bare `anodize check` should error (subcommand required), got: {:?}",
+            "bare `anodizer check` should error (subcommand required), got: {:?}",
             result.ok().and_then(|c| c.command.map(|_| "parsed"))
         );
     }

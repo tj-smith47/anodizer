@@ -16,7 +16,7 @@ pub struct BinstallConfig {
     /// # Auto-derivation
     ///
     /// With `enabled: true` and **no** `pkg_url` and **no** `overrides`,
-    /// anodize fills in correct per-target metadata automatically: for every
+    /// anodizer fills in correct per-target metadata automatically: for every
     /// configured build target it emits an
     /// `overrides.<rust-triple>` whose `pkg_url` is the GitHub release download
     /// URL for that target's archive, with the asset name rendered through the
@@ -33,7 +33,7 @@ pub struct BinstallConfig {
     /// Custom download URL template for cargo-binstall (supports templates).
     ///
     /// Setting this (or any [`overrides`](Self::overrides) entry) **disables
-    /// auto-derivation** — anodize writes your value verbatim and computes
+    /// auto-derivation** — anodizer writes your value verbatim and computes
     /// nothing. Use it only when the auto-derived per-target URLs don't fit
     /// (manual values always win).
     pub pkg_url: Option<String>,
@@ -47,7 +47,7 @@ pub struct BinstallConfig {
     /// `[package.metadata.binstall.overrides.<triple>]` sub-table.
     ///
     /// You rarely need to set this by hand: with `enabled: true` and no
-    /// `pkg_url`/`overrides`, anodize auto-derives a correct per-target
+    /// `pkg_url`/`overrides`, anodizer auto-derives a correct per-target
     /// override for every build target (see [`enabled`](Self::enabled)).
     /// Supplying any override here (like supplying [`pkg_url`](Self::pkg_url))
     /// **disables auto-derivation** and takes full manual control of the table.

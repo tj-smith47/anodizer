@@ -239,7 +239,7 @@ impl DeterminismState {
     ///   Windows determinism shard (it builds the windows-msvc payload
     ///   binary), so the harness DOES see and byte-compare it. The classifier
     ///   keys on the `setup.exe` name tail so the installer is attributed to
-    ///   `nsis` while the raw `anodize.exe` binary is not (see
+    ///   `nsis` while the raw `anodizer.exe` binary is not (see
     ///   `determinism_harness::artifacts::infer_stage_from_path`). A real
     ///   drift here is a regression, not an excused non-determinism.
     /// - The macOS `.app` bundle is GATED, not allow-listed. It is pure

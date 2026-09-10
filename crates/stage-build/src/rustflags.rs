@@ -99,10 +99,10 @@ mod reproducible_rustflags_tests {
 
     #[test]
     fn does_not_double_remap_when_cwd_already_remapped() {
-        // The harness already remaps the worktree (== cwd) to /anodize.
+        // The harness already remaps the worktree (== cwd) to /anodizer.
         // A second rule for the same prefix is shadowed (rustc first-match-
         // wins) and only misleads, so it must not be appended.
-        let inherited = "-C link-arg=/Brepro --remap-path-prefix=/work=/anodize";
+        let inherited = "-C link-arg=/Brepro --remap-path-prefix=/work=/anodizer";
         let merged = merge_reproducible_rustflags(None, Some(inherited), CWD, LINUX);
         assert!(
             merged.starts_with(inherited),

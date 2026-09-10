@@ -21,7 +21,7 @@ use anyhow::{Context as _, Result};
 use crate::config::CrateConfig;
 use crate::context::Context;
 
-/// Template variables anodize re-scopes per crate.
+/// Template variables anodizer re-scopes per crate.
 const PER_CRATE_SCOPED_VARS: &[&str] = &["Version", "RawVersion", "Tag", "ProjectName", "Name"];
 
 /// Per-crate template-variable overrides derived the same way

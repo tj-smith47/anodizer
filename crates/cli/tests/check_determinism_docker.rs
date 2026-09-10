@@ -69,7 +69,7 @@ fn docker_stage_token_parses_and_runs_to_completion() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-docker-parse-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-docker-parse-fixture");
 
     let report_path = repo.join("det.json");
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -85,7 +85,7 @@ fn docker_stage_token_parses_and_runs_to_completion() {
         .arg(&report_path)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --stages=docker");
+        .expect("invoking anodizer check determinism --stages=docker");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -140,7 +140,7 @@ fn docker_stage_token_parses_and_runs_to_completion() {
 /// End-to-end byte-stability assertion for the `docker` stage.
 ///
 /// Bootstraps a minimal binary crate plus a one-line Dockerfile,
-/// drives `anodize check determinism --runs=2 --stages=docker` against
+/// drives `anodizer check determinism --runs=2 --stages=docker` against
 /// it, and asserts:
 /// - The harness exit is zero (byte-stable across runs).
 /// - The JSON report's `stages_under_test` lists `docker`.
@@ -205,7 +205,7 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
             probe_tar.to_string_lossy()
         ))
         .arg("--tag")
-        .arg("anodize/det:probe")
+        .arg("anodizer/det:probe")
         .arg(probe_dir.path())
         .env_clear()
         .env("HOME", &probe_home)
@@ -229,7 +229,7 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo, "anodize-docker-fixture");
+    bootstrap_minimal_cargo_repo(repo, "anodizer-docker-fixture");
     // A minimal scratch-based Dockerfile: no FROM that requires a pull
     // (which would fail in air-gapped CI), no COPY of build artifacts
     // (the harness drives docker BEFORE the build stage in this stage
@@ -237,7 +237,7 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
     // no network reach required.
     fs::write(
         repo.join("Dockerfile"),
-        "FROM scratch\nLABEL anodize.fixture=det-harness\n",
+        "FROM scratch\nLABEL anodizer.fixture=det-harness\n",
     )
     .unwrap();
     let _ = anodizer_core::test_helpers::output_with_spawn_retry(
@@ -272,7 +272,7 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
         .arg(&report_path)
         .current_dir(repo)
         .output()
-        .expect("invoking anodize check determinism --stages=docker");
+        .expect("invoking anodizer check determinism --stages=docker");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

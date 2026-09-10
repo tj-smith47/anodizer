@@ -48,7 +48,7 @@ pub(crate) fn expand_with_transitive_deps(
 
 /// Parse a crate's `Cargo.toml` for workspace-internal deps that resolve
 /// to a literal version pin, filtered to the set of crate names known to
-/// the anodize workspace.
+/// the anodizer workspace.
 ///
 /// Scans `[dependencies]`, `[dev-dependencies]`, and `[build-dependencies]`
 /// (plus their target-specific variants under `[target.*.dependencies]`,
@@ -143,7 +143,7 @@ pub(crate) fn extract_version_pin(item: &toml_edit::Item) -> Option<String> {
 ///
 /// `crate_name` is the crate about to be published (used purely for log
 /// context); `deps` is the `(name, version)` set returned by
-/// [`workspace_deps_for_crate`] filtered to the anodize workspace.
+/// [`workspace_deps_for_crate`] filtered to the anodizer workspace.
 ///
 /// No-op when `cfg.resolved_enabled()` is false or `deps` is empty.
 pub(crate) fn wait_for_workspace_deps_to_appear(
@@ -525,7 +525,7 @@ pub(crate) fn check_publish_set_completeness(
     log: &StageLogger,
 ) -> Result<()> {
     // The publish set (names actually being published this run) and the full
-    // workspace-internal name set (every crate anodize knows about).
+    // workspace-internal name set (every crate anodizer knows about).
     let in_set: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
     let workspace_names: HashSet<&str> = all_crates.iter().map(|c| c.name.as_str()).collect();
     let crate_paths: HashMap<&str, &str> = all_crates

@@ -1705,13 +1705,13 @@ fn make_crate_with_template(name: &str, path: &str, template: &str) -> CrateConf
 /// `resolve_project_root` must return the parent of a normal config
 /// path so repo-relative file lookups resolve against the repo root
 /// even when anodizer is invoked from a sibling directory with
-/// `--config=<repo>/anodize.yaml`.
+/// `--config=<repo>/anodizer.yaml`.
 #[test]
 fn resolve_project_root_uses_config_parent() {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let repo_dir = tmp.path().join("repo");
     std::fs::create_dir_all(&repo_dir).expect("create repo dir");
-    let cfg_path = repo_dir.join("anodize.yaml");
+    let cfg_path = repo_dir.join("anodizer.yaml");
     std::fs::write(&cfg_path, "project_name: x\n").expect("write config");
 
     let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -1732,7 +1732,7 @@ fn resolve_project_root_uses_config_parent() {
 /// specific path.
 #[test]
 fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
-    let bare = std::path::Path::new("anodize.yaml");
+    let bare = std::path::Path::new("anodizer.yaml");
     let resolved = resolve_project_root(bare, None);
     assert!(
         resolved.is_some(),
@@ -1740,7 +1740,7 @@ fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
     );
 }
 
-/// Bare-filename `--config=anodize.yaml` is almost always a
+/// Bare-filename `--config=anodizer.yaml` is almost always a
 /// misconfiguration: every repo-relative consumer (snapcraft icon
 /// lookup, extra-file globs, ...) will resolve against the process
 /// CWD rather than the repo root. The resolver must surface a `warn`
@@ -1749,7 +1749,7 @@ fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
 /// CWD == project-root case).
 #[test]
 fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
-    let bare = std::path::Path::new("anodize.yaml");
+    let bare = std::path::Path::new("anodizer.yaml");
     let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
     let resolved = resolve_project_root(bare, Some(&log));
     assert!(resolved.is_some(), "fallback path still resolved");

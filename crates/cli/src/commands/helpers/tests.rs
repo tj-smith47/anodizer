@@ -30,7 +30,7 @@ fn write_effective_config_emits_sorted_keys() {
     variables.insert("beta".to_string(), "4".to_string());
     variables.insert("nu".to_string(), "5".to_string());
     let config = Config {
-        project_name: "anodize".to_string(),
+        project_name: "anodizer".to_string(),
         dist: tmp.path().to_path_buf(),
         variables: Some(variables),
         ..Default::default()

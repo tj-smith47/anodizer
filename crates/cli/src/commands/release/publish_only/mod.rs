@@ -1,5 +1,5 @@
-//! `anodize release --publish-only`: consume a `dist/` populated by
-//! `anodize check determinism --preserve-dist=<path>` and run only the
+//! `anodizer release --publish-only`: consume a `dist/` populated by
+//! `anodizer check determinism --preserve-dist=<path>` and run only the
 //! sign + publish pipeline.
 //!
 //! The harness writes:
