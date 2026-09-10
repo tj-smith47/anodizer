@@ -553,10 +553,10 @@ pub enum PublishDisposition {
 /// Output shape once rendered (operator-facing):
 ///
 /// ```text
-///      • github-release   Assets     required  succeeded
-///      • homebrew         Manager    optional  failed  (2 entries skipped)
-///      • cargo            Submitter  required  skipped-submitter-gated
-///      • run flags        submitter_gated=false announce_gated=true
+///      • github-release  Assets     required  succeeded
+///      • homebrew        Manager    optional  failed  (2 entries skipped)
+///      • cargo           Submitter  required  skipped-submitter-gated
+///      • run flags       submitter_gated=false announce_gated=true
 /// ```
 ///
 /// With zero publisher results a single placeholder row stands in for
@@ -566,8 +566,8 @@ pub enum PublishDisposition {
 /// configuration read very differently to an operator:
 ///
 /// ```text
-///      • publishers   none ran (publish stages did not run)
-///      • run flags    submitter_gated=false announce_gated=false
+///      • publishers  none ran (publish stages did not run)
+///      • run flags   submitter_gated=false announce_gated=false
 /// ```
 pub fn status_table_rows(
     summary: &RunSummary,
@@ -1071,6 +1071,77 @@ mod tests {
             "{} must quote the rendered section exactly once:\n{block}",
             doc.display()
         );
+    }
+
+    /// The two rendered blocks in [`status_table_rows`]' own rustdoc are the
+    /// operator-facing shape this function promises, and nothing held them to
+    /// the renderer — both shipped a key column one space too wide. They are
+    /// produced here through the renderer a run uses and looked up in the
+    /// source, so a column width, an indent constant or a marker that changes
+    /// fails here instead of teaching a consumer a shape the tool never emits.
+    #[test]
+    fn the_documented_status_table_blocks_match_the_renderer() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/run_summary.rs");
+        let text =
+            std::fs::read_to_string(&src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+        let documented = RunSummary {
+            submitter_gated: false,
+            announce_gated: true,
+            results: vec![
+                RunSummaryResult {
+                    name: "github-release".to_string(),
+                    group: PublisherGroup::Assets,
+                    required: true,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                    entry_skips: vec![],
+                },
+                RunSummaryResult {
+                    name: "homebrew".to_string(),
+                    group: PublisherGroup::Manager,
+                    required: false,
+                    status: "failed".to_string(),
+                    evidence: None,
+                    entry_skips: vec!["one".to_string(), "two".to_string()],
+                },
+                RunSummaryResult {
+                    name: "cargo".to_string(),
+                    group: PublisherGroup::Submitter,
+                    required: true,
+                    status: "skipped-submitter-gated".to_string(),
+                    evidence: None,
+                    entry_skips: vec![],
+                },
+            ],
+            ..populated_summary()
+        };
+        let empty = RunSummary {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![],
+            ..populated_summary()
+        };
+        for (summary, disposition) in [
+            (&documented, PublishDisposition::Ran),
+            (&empty, PublishDisposition::Skipped),
+        ] {
+            let rows = status_table_rows(summary, disposition);
+            let width = key_width(&rows);
+            let block = rows
+                .iter()
+                .map(|(key, value)| {
+                    let row = anodizer_core::log::render_kv_row(1, key, value, width);
+                    format!("/// {}", anodizer_core::log::strip_ansi(&row))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(
+                text.matches(&block).count(),
+                1,
+                "{} must quote the rendered block exactly once:\n{block}",
+                src.display()
+            );
+        }
     }
 
     /// The document's `summary.json` shape block is the document CI consumers
