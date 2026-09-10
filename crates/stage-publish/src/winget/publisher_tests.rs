@@ -1388,7 +1388,7 @@ fn run_no_eligible_crates_warning_handles_empty_selection() {
 /// than silently skipped. A dry run stores no rollback evidence, so the
 /// log is what says the crate was reached.
 #[test]
-fn winget_publisher_run_dry_run_records_target() {
+fn winget_publisher_run_dry_run_announces_the_submission() {
     let repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![winget_crate("demo")])
