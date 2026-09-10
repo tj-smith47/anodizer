@@ -1704,10 +1704,13 @@ fn zip_source_inputs<'a>(
     }
 }
 
+/// The uncommitted `extra.txt` `executable_source_repo` writes, named the way
+/// glob expansion hands it to the stage: an absolute path, so `src.exists()`
+/// holds from any working directory and the entry is really appended.
 #[cfg(unix)]
-fn extra_txt_entry() -> anodizer_core::config::SourceFileEntry {
+fn extra_txt_entry(tmp: &std::path::Path) -> anodizer_core::config::SourceFileEntry {
     anodizer_core::config::SourceFileEntry {
-        src: "extra.txt".to_string(),
+        src: tmp.join("extra.txt").to_string_lossy().into_owned(),
         dst: None,
         strip_parent: None,
         info: None,
@@ -1723,7 +1726,7 @@ fn source_zip_rewrite_preserves_executable_mode() {
     executable_source_repo(tmp.path());
 
     let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
-    let extras = vec![extra_txt_entry()];
+    let extras = vec![extra_txt_entry(tmp.path())];
     let out = create_source_archive(&zip_source_inputs(tmp.path(), &dist, &extras, &log, None))
         .expect("zip source archive");
 
@@ -1761,7 +1764,7 @@ fn source_zip_rewrite_keeps_the_source_date_epoch_pin() {
     executable_source_repo(tmp.path());
 
     let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
-    let extras = vec![extra_txt_entry()];
+    let extras = vec![extra_txt_entry(tmp.path())];
     let sde = 1_600_000_000u64;
     let a = create_source_archive(&zip_source_inputs(
         tmp.path(),
@@ -1809,48 +1812,150 @@ fn source_zip_rewrite_keeps_the_source_date_epoch_pin() {
 
 #[test]
 #[cfg(unix)]
-fn source_zip_extra_files_appear_once_under_their_relative_path() {
-    let tmp = TempDir::new().unwrap();
-    let dist = tmp.path().join("dist");
-    std::fs::create_dir_all(&dist).unwrap();
-    anodizer_core::test_helpers::create_test_project(tmp.path());
-    std::fs::write(tmp.path().join("extra.txt"), b"extra\n").unwrap();
-    anodizer_core::test_helpers::init_git_repo(tmp.path());
+fn extra_files_appear_once_under_one_path_rule_in_every_format() {
+    for format in ["zip", "tar.gz"] {
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        anodizer_core::test_helpers::create_test_project(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::write(tmp.path().join("docs/GUIDE.md"), b"guide\n").unwrap();
+        anodizer_core::test_helpers::init_git_repo(tmp.path());
 
-    // Glob expansion hands the stage an absolute `src`, which is what used to
-    // reach the archive verbatim.
-    let extras = vec![anodizer_core::config::SourceFileEntry {
-        src: tmp.path().join("extra.txt").to_string_lossy().into_owned(),
-        dst: None,
-        strip_parent: None,
-        info: None,
-    }];
-    let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Normal);
-    let out = create_source_archive(&zip_source_inputs(tmp.path(), &dist, &extras, &log, None))
-        .expect("zip source archive");
+        // Glob expansion hands the stage absolute paths. `Cargo.toml` is
+        // already in the git archive, so naming it again must not append a
+        // second entry under the same name.
+        let extras: Vec<anodizer_core::config::SourceFileEntry> = ["docs/GUIDE.md", "Cargo.toml"]
+            .iter()
+            .map(|rel| anodizer_core::config::SourceFileEntry {
+                src: tmp.path().join(rel).to_string_lossy().into_owned(),
+                dst: None,
+                strip_parent: None,
+                info: None,
+            })
+            .collect();
 
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
-    let names: Vec<String> = (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
-        .collect();
-    assert_eq!(
-        names
-            .iter()
-            .filter(|n| n.as_str() == "test-project-1.2.3/extra.txt")
-            .count(),
-        1,
-        "the extra file belongs in the archive exactly once under its relative path; got {names:?}"
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|n| n.contains(&tmp.path().to_string_lossy().into_owned())),
-        "no entry may carry the machine's absolute path; got {names:?}"
-    );
-    assert_eq!(
-        names.iter().filter(|n| n.ends_with("extra.txt")).count(),
-        1,
-        "the extra file must not be appended beside the copy git archive already made; \
-         got {names:?}"
-    );
+        let log =
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
+        let out = create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format,
+            name: "test-project-1.2.3",
+            prefix: "test-project-1.2.3/",
+            extra_files: &extras,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+            sde_mtime: None,
+        })
+        .unwrap_or_else(|e| panic!("[{format}] source archive: {e}"));
+
+        let names = archive_entry_names(format, &out);
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.as_str() == "test-project-1.2.3/docs/GUIDE.md")
+                .count(),
+            1,
+            "[{format}] the extra file belongs in the archive exactly once under its \
+             repo-relative path; got {names:?}"
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.as_str() == "test-project-1.2.3/Cargo.toml")
+                .count(),
+            1,
+            "[{format}] an extra that names a file git archive already carried must not be \
+             appended a second time; got {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains(&tmp.path().to_string_lossy().into_owned())),
+            "[{format}] no entry may carry the machine's absolute path; got {names:?}"
+        );
+    }
+}
+
+/// Every entry name in a source archive, for either format the stage writes.
+#[cfg(unix)]
+fn archive_entry_names(format: &str, path: &std::path::Path) -> Vec<String> {
+    match format {
+        "zip" => {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+            (0..zip.len())
+                .map(|i| zip.by_index(i).unwrap().name().to_string())
+                .collect()
+        }
+        "tar.gz" => {
+            let tar = flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap());
+            tar::Archive::new(tar)
+                .entries()
+                .unwrap()
+                .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+                .collect()
+        }
+        other => panic!("unhandled source archive format {other}"),
+    }
+}
+
+/// Changing the destination rule must not reach a config that has no extras:
+/// with `source.files` empty the stage writes `git archive`'s own bytes, so two
+/// runs stay byte-identical and the entry layout is the repository's.
+#[test]
+#[cfg(unix)]
+fn a_source_archive_without_extras_keeps_the_git_archive_layout() {
+    for format in ["zip", "tar.gz"] {
+        let tmp = TempDir::new().unwrap();
+        let dist_a = tmp.path().join("dist-a");
+        let dist_b = tmp.path().join("dist-b");
+        std::fs::create_dir_all(&dist_a).unwrap();
+        std::fs::create_dir_all(&dist_b).unwrap();
+        anodizer_core::test_helpers::create_test_project(tmp.path());
+        anodizer_core::test_helpers::init_git_repo(tmp.path());
+
+        let log =
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
+        fn inputs<'a>(
+            dist: &'a std::path::Path,
+            format: &'a str,
+            repo_root: &'a std::path::Path,
+            log: &'a anodizer_core::log::StageLogger,
+        ) -> SourceArchiveInputs<'a> {
+            SourceArchiveInputs {
+                dist,
+                format,
+                name: "test-project-1.2.3",
+                prefix: "test-project-1.2.3/",
+                extra_files: &[],
+                repo_root,
+                commit: "HEAD",
+                log,
+                strict: false,
+                sde_mtime: Some(1_600_000_000),
+            }
+        }
+        let a = create_source_archive(&inputs(&dist_a, format, tmp.path(), &log))
+            .unwrap_or_else(|e| panic!("[{format}] first archive: {e}"));
+        let b = create_source_archive(&inputs(&dist_b, format, tmp.path(), &log))
+            .unwrap_or_else(|e| panic!("[{format}] second archive: {e}"));
+        assert_eq!(
+            std::fs::read(&a).unwrap(),
+            std::fs::read(&b).unwrap(),
+            "[{format}] a config with no extras must stay byte-identical across runs"
+        );
+
+        let names = archive_entry_names(format, &a);
+        for expected in [
+            "test-project-1.2.3/Cargo.toml",
+            "test-project-1.2.3/src/main.rs",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "[{format}] {expected} left the archive; got {names:?}"
+            );
+        }
+    }
 }

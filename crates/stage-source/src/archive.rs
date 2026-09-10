@@ -36,6 +36,42 @@ fn zip_datetime_from_epoch(epoch_secs: u64) -> Option<zip::DateTime> {
     zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).ok()
 }
 
+/// The destination an extra file takes inside the archive prefix, in whichever
+/// format the stage is writing.
+///
+/// One rule for every format: a `dst` renames literally, a `dst` under
+/// `strip_parent` names the directory the basename lands in, and an absent
+/// `dst` preserves the file's layout relative to the repository root. An
+/// absolute path outside the repository has no relative form, so its basename
+/// is the only destination that does not write the machine's own directory
+/// tree into the archive.
+fn extra_dest_rel(entry: &SourceFileEntry, repo_root: &Path) -> String {
+    let src = Path::new(&entry.src);
+    let basename = || {
+        src.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.src.clone())
+    };
+    match (&entry.dst, entry.strip_parent.unwrap_or(false)) {
+        (Some(dst), true) => format!("{}/{}", dst.trim_end_matches('/'), basename()),
+        (Some(dst), false) => dst.replace('\\', "/"),
+        (None, true) => basename(),
+        (None, false) => src
+            .strip_prefix(repo_root)
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| {
+                if src.is_absolute() {
+                    basename()
+                } else {
+                    src.strip_prefix("./")
+                        .unwrap_or(src)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                }
+            }),
+    }
+}
+
 /// Extra files are placed under the prefix directory
 /// by creating a temporary staging directory and using `tar --append` to
 /// insert them into the archive after creation.
@@ -196,22 +232,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // Append extra files under prefix
             for file_entry in sorted_extras {
                 let src = std::path::Path::new(&file_entry.src);
-                let do_strip = file_entry.strip_parent.unwrap_or(false);
-                let dest_rel = if let Some(ref dst) = file_entry.dst {
-                    dst.clone()
-                } else if do_strip {
-                    src.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| file_entry.src.clone())
-                } else {
-                    // Glob expansion yields absolute paths, which would land
-                    // the file under the machine's own directory tree inside
-                    // the archive instead of beside the sources it belongs to.
-                    src.strip_prefix(repo_root)
-                        .unwrap_or(src)
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                };
+                let dest_rel = extra_dest_rel(file_entry, repo_root);
 
                 let archive_path = if prefix.is_empty() {
                     dest_rel
@@ -277,11 +298,18 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         {
             let mut builder = tar::Builder::new(&mut new_tar_data);
 
+            // Names the git archive already carries, so an extra file that
+            // names one of them is not appended a second time.
+            let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
+
             // Copy all entries from the git archive
             let mut archive = tar::Archive::new(&existing_tar_data[..]);
             for tar_entry in archive.entries().context("source: read tar entries")? {
                 let mut tar_entry = tar_entry.context("source: read tar entry")?;
                 let header = tar_entry.header().clone();
+                if let Ok(name) = tar_entry.path() {
+                    written.insert(name.to_string_lossy().replace('\\', "/"));
+                }
                 let mut data = Vec::new();
                 tar_entry
                     .read_to_end(&mut data)
@@ -301,7 +329,6 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // Add extra files with metadata
             for entry in sorted_extras {
                 let src = Path::new(&entry.src);
-                let do_strip = entry.strip_parent.unwrap_or(false);
 
                 // Mirror the zip-branch behavior: missing extras
                 // hard-fail under strict mode, warn-and-skip otherwise.
@@ -318,43 +345,19 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     continue;
                 }
 
-                // Compute destination name inside the prefix.
-                // When Destination is empty,
-                // the full (relative) path is used; strip_parent reduces to
-                // basename only.
-                let dest_rel: PathBuf = if let Some(ref dst) = entry.dst {
-                    if do_strip {
-                        let fname = src.file_name().ok_or_else(|| {
-                            anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
-                        })?;
-                        PathBuf::from(dst).join(fname)
-                    } else {
-                        PathBuf::from(dst)
-                    }
-                } else if do_strip {
-                    let fname = src.file_name().ok_or_else(|| {
-                        anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
-                    })?;
-                    PathBuf::from(fname)
-                } else {
-                    // Preserve the full (relative) path — strip any leading
-                    // "./" / root prefix so the tar entry is a clean relative
-                    // path inside the prefix directory.
-                    let src_path = Path::new(&entry.src);
-                    if src_path.is_absolute() {
-                        src_path
-                            .file_name()
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| PathBuf::from(&entry.src))
-                    } else {
-                        src_path
-                            .strip_prefix("./")
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|_| src_path.to_path_buf())
-                    }
-                };
-
+                let dest_rel = extra_dest_rel(entry, repo_root);
                 let archive_path = Path::new(prefix).join(&dest_rel);
+                // tar accepts duplicate member names silently, so an extra that
+                // names an entry `git archive` already wrote would ship twice
+                // and unpack in append order.
+                if !written.insert(archive_path.to_string_lossy().replace('\\', "/")) {
+                    log.warn(&format!(
+                        "skipped extra file '{}' — '{}' is already in the archive",
+                        entry.src,
+                        archive_path.display()
+                    ));
+                    continue;
+                }
 
                 // Read file content
                 let mut file_data = Vec::new();
