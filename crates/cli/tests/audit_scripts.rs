@@ -28,7 +28,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anodizer_core::test_helpers::test_sources::{
-    declared_under_test_cfg, is_test_only_cfg, is_test_source_path,
+    declared_under_test_cfg, is_test_only_cfg, is_test_source_path, test_sources,
 };
 
 use tempfile::TempDir;
@@ -565,7 +565,7 @@ fn every_named_test_file_is_declared_cfg_test() {
         .map(|e| e.expect("crate entry").path().join("src"))
         .filter(|src| src.is_dir())
     {
-        for file in test_source_files(&src) {
+        for file in test_sources(&src) {
             seen += 1;
             if let Err(why) = declared_under_test_cfg(&file) {
                 undeclared.push(why);
@@ -1050,22 +1050,6 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
         mirror.contains(r#"[rustdoc]="doc""#),
         "the gate mirror must map ci.yml's rustdoc job to the local `doc` target"
     );
-}
-
-/// Every whole test source file under `dir`, recursively — whatever
-/// `is_test_source_path` (and so `lib/test-regions.awk`'s `is_test_file`)
-/// names.
-fn test_source_files(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir).expect("read dir") {
-        let path = entry.expect("dir entry").path();
-        if path.is_dir() {
-            found.extend(test_source_files(&path));
-        } else if is_test_source_path(&path) {
-            found.push(path);
-        }
-    }
-    found
 }
 
 /// Every `audit-*.sh` under `.claude/scripts`.

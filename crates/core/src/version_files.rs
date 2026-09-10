@@ -323,9 +323,33 @@ pub fn check_version_present(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::test_sources::{is_test_source_path, production_half};
+    use crate::test_helpers::test_sources::{production_half, rust_sources};
     use std::fs;
     use tempfile::TempDir;
+
+    /// The version-matcher walk skips a `tests/` module directory, not only a
+    /// `tests.rs` sibling. A test module scanned as production would report a
+    /// version literal inside a fixture as a matcher the population declares.
+    #[test]
+    fn collect_rust_sources_skips_a_gated_tests_directory() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mod.rs"),
+            "#[cfg(test)]\nmod tests;\npub fn build() {}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("engine.rs"), "pub fn run() {}\n").unwrap();
+        fs::create_dir(dir.path().join("tests")).unwrap();
+        fs::write(dir.path().join("tests/mod.rs"), "fn fixture() {}\n").unwrap();
+
+        let mut found = rust_sources(dir.path());
+        found.sort();
+        assert_eq!(
+            found,
+            vec![dir.path().join("engine.rs"), dir.path().join("mod.rs")],
+            "a gated `tests/` module directory is not production source"
+        );
+    }
 
     /// Every regex over a VERSION in the version_files population is built by
     /// one of two functions here. A second builder is exactly the drift that
@@ -355,7 +379,7 @@ mod tests {
         for entry in population {
             let path = repo_root.join(entry);
             if path.is_dir() {
-                collect_rust_sources(&path, &mut sources);
+                sources.extend(rust_sources(&path));
             } else {
                 assert!(
                     path.is_file(),
@@ -448,19 +472,6 @@ mod tests {
             }
         }
         None
-    }
-
-    /// Every production `.rs` file under `dir`, recursively — test sources
-    /// excluded by name, exactly as the audit scanners decide it.
-    fn collect_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).expect("read dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                collect_rust_sources(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") && !is_test_source_path(&path) {
-                out.push(path);
-            }
-        }
     }
 
     /// Writes `name` under `dir` and returns the ROOT-RELATIVE name — the

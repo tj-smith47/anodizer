@@ -16,7 +16,8 @@
 //!   starts, so a walk over production code stops before it.
 //! - [`rust_sources`] is the walk itself: every production `.rs` file under a
 //!   directory, with test sources skipped by name once their declaration has
-//!   been checked.
+//!   been checked. [`test_sources`] is that walk's other half — the sources it
+//!   skipped, unchecked, for the caller that checks them.
 
 use std::path::{Path, PathBuf};
 
@@ -29,24 +30,49 @@ use std::path::{Path, PathBuf};
 /// checked against its parent module's declaration and an ungated one panics
 /// rather than silently dropping production code from the walk.
 pub fn rust_sources(dir: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
+    let (production, tests) = partition_sources(dir);
+    for path in &tests {
+        declared_under_test_cfg(path).unwrap_or_else(|why| panic!("{why}"));
+    }
+    production
+}
+
+/// The other half of [`rust_sources`]'s walk: every test source it skips — a
+/// whole test source file by name, and a `tests/` module directory itself,
+/// which is the unit a parent module declares.
+///
+/// Returned without checking the declarations, for the caller whose job is to
+/// check them: the two directions come from one walk, so a rule either learns
+/// cannot leave the other behind.
+pub fn test_sources(dir: &Path) -> Vec<PathBuf> {
+    partition_sources(dir).1
+}
+
+/// Split every `.rs` file under `dir` into (production, test sources) by the
+/// name rules above, descending into every directory but a `tests/` module
+/// directory, which is itself one test source.
+fn partition_sources(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut production = Vec::new();
+    let mut tests = Vec::new();
     for entry in std::fs::read_dir(dir).expect("read source dir") {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
             if path.file_name().is_some_and(|n| n == "tests") {
-                declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
+                tests.push(path);
                 continue;
             }
-            found.extend(rust_sources(&path));
+            let (nested_production, nested_tests) = partition_sources(&path);
+            production.extend(nested_production);
+            tests.extend(nested_tests);
         } else if path.extension().is_some_and(|e| e == "rs") {
             if is_test_source_path(&path) {
-                declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
+                tests.push(path);
             } else {
-                found.push(path);
+                production.push(path);
             }
         }
     }
-    found
+    (production, tests)
 }
 
 /// Whether `path` is a whole test source file by name, exactly as
