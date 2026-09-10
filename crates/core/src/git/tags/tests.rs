@@ -463,7 +463,7 @@ mod repository_unreadable_tests {
     fn tags_at_surfaces_git_stderr_on_a_non_zero_exit() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
-        let captured = crate::git::tests::capture_tracing_warnings(|| {
+        let captured = crate::test_helpers::tracing_capture::capture_tracing_warnings(|| {
             let tags = get_tags_at_sha_in(tmp.path(), "--badflag")
                 .expect("a revision question git answered is still the empty case");
             assert!(tags.is_empty(), "got {tags:?}");

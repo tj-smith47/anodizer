@@ -200,7 +200,7 @@ mod tests {
     #[serial_test::serial(tracing)]
     fn is_git_repo_in_warns_when_git_refuses_the_repository() {
         let tmp = tempfile::tempdir().unwrap();
-        let captured = crate::git::tests::capture_tracing_warnings(|| {
+        let captured = crate::test_helpers::tracing_capture::capture_tracing_warnings(|| {
             assert!(!is_git_repo_in(tmp.path()));
         });
         assert!(
@@ -218,7 +218,7 @@ mod tests {
     fn is_git_repo_in_is_silent_for_a_real_repository() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
-        let captured = crate::git::tests::capture_tracing_warnings(|| {
+        let captured = crate::test_helpers::tracing_capture::capture_tracing_warnings(|| {
             assert!(is_git_repo_in(tmp.path()));
         });
         assert!(

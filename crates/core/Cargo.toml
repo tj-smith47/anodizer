@@ -14,12 +14,11 @@ documentation.workspace = true
 readme = "README.md"
 
 [features]
-test-helpers = ["dep:rcgen"]
+test-helpers = ["dep:rcgen", "dep:tracing-subscriber"]
 
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
-tracing-subscriber.workspace = true
 # Test-only: redirect the process stderr fd (dup/dup2) so the section-header
 # regression guard can capture the EXACT bytes `flush_pending`/`step` emit via
 # `eprintln!` and prove both real paths delegate to `render_header`. Never
@@ -65,6 +64,10 @@ tracing.workspace = true
 # Optional dep for the `test-helpers` feature (self-signed certs for the
 # in-process HTTPS responder). `rustls` is now an always-on dependency above.
 rcgen = { workspace = true, optional = true }
+
+# Optional dep for the `test-helpers` feature: the capturing subscriber in
+# `test_helpers::tracing_capture`. Never linked without that feature.
+tracing-subscriber = { workspace = true, optional = true }
 
 # Process-group SIGKILL for the bounded-subprocess watchdog (run.rs) so a hung,
 # timeout-bounded child's whole subtree is reaped, not just the direct child.

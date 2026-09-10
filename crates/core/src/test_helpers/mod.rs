@@ -32,6 +32,7 @@ pub mod responder;
 pub mod scripted_responder;
 pub mod spawn;
 pub mod test_sources;
+pub mod tracing_capture;
 
 pub use spawn::{
     git_test_ok, git_test_output, git_test_stdout, is_transient_spawn_failure,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_helpers::tracing_capture::capture_tracing_warnings;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -1407,48 +1408,6 @@ fn release_uploadable_kinds_excludes_snap_store_and_raw_build_outputs() {
     }
 }
 
-/// Shared buffer writer that captures `tracing` output into a `Vec<u8>`.
-#[derive(Clone, Default)]
-struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl BufferWriter {
-    fn captured(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
-    type Writer = BufferWriterGuard<'a>;
-    fn make_writer(&'a self) -> Self::Writer {
-        BufferWriterGuard(self.0.lock().unwrap())
-    }
-}
-
-struct BufferWriterGuard<'a>(std::sync::MutexGuard<'a, Vec<u8>>);
-impl std::io::Write for BufferWriterGuard<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Run `body` under a WARN-level capturing subscriber and return the
-/// emitted text so assertions can inspect duplicate-registration warnings.
-fn capture_warnings<F: FnOnce()>(body: F) -> String {
-    let buf = BufferWriter::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(buf.clone())
-        .with_max_level(tracing::Level::WARN)
-        .without_time()
-        .with_ansi(false)
-        .finish();
-    tracing::subscriber::with_default(subscriber, body);
-    buf.captured()
-}
-
 fn upload_artifact(kind: ArtifactKind, name: &str, path: &str) -> Artifact {
     Artifact {
         kind,
@@ -1464,7 +1423,7 @@ fn upload_artifact(kind: ArtifactKind, name: &str, path: &str) -> Artifact {
 #[test]
 #[serial_test::serial(tracing)]
 fn identical_reregistration_is_silent() {
-    let captured = capture_warnings(|| {
+    let captured = capture_tracing_warnings(|| {
         let mut registry = ArtifactRegistry::new();
         // Same name AND same resolved path, registered four times — the
         // benign cross-shard `install.sh.sha256` case.
@@ -1485,7 +1444,7 @@ fn identical_reregistration_is_silent() {
 #[test]
 #[serial_test::serial(tracing)]
 fn conflicting_reregistration_still_warns() {
-    let captured = capture_warnings(|| {
+    let captured = capture_tracing_warnings(|| {
         let mut registry = ArtifactRegistry::new();
         // Same name but a DIFFERENT path — a genuine upload-collision risk.
         registry.add(upload_artifact(
@@ -1551,7 +1510,7 @@ fn contains_path_kind_normalizes_separators_like_add() {
 #[test]
 #[serial_test::serial(tracing)]
 fn third_registration_warns_even_when_it_matches_the_first_path() {
-    let captured = capture_warnings(|| {
+    let captured = capture_tracing_warnings(|| {
         let mut registry = ArtifactRegistry::new();
         // Path A, then a conflicting path B, then path A again. The
         // third add re-uses A — a first-match-only check would compare

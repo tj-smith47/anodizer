@@ -284,72 +284,14 @@ impl<'de> Deserialize<'de> for HookEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
-    use std::sync::{Arc, Mutex, MutexGuard};
-    use tracing::subscriber::with_default;
-    use tracing_subscriber::fmt::MakeWriter;
-
-    /// Shared buffer writer that captures `tracing` output into a `Vec<u8>`.
-    #[derive(Clone, Default)]
-    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl BufferWriter {
-        fn captured(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
-        }
-    }
-
-    impl io::Write for BufferWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// `BufferWriterHandle` matches the `MakeWriter` contract: each
-    /// `make_writer` call returns a cheap clone that writes into the
-    /// same `Arc<Mutex<Vec<u8>>>` as every other clone.
-    impl<'a> MakeWriter<'a> for BufferWriter {
-        type Writer = BufferWriterGuard<'a>;
-        fn make_writer(&'a self) -> Self::Writer {
-            BufferWriterGuard(self.0.lock().unwrap())
-        }
-    }
-
-    struct BufferWriterGuard<'a>(MutexGuard<'a, Vec<u8>>);
-    impl io::Write for BufferWriterGuard<'_> {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Run `body` with a tracing subscriber that captures every event into
-    /// the returned buffer; assertions then inspect the captured text.
-    fn capture_warnings<F: FnOnce()>(body: F) -> String {
-        let buf = BufferWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(buf.clone())
-            .with_max_level(tracing::Level::WARN)
-            .without_time()
-            .with_ansi(false)
-            .finish();
-        with_default(subscriber, body);
-        buf.captured()
-    }
+    use crate::test_helpers::tracing_capture::capture_tracing_warnings;
 
     /// Legacy-only spelling (post: set, hooks: unset) folds into `hooks`
     /// and emits a DEPRECATION warning that points at the canonical name.
     #[test]
     #[serial_test::serial(tracing)]
     fn legacy_post_only_folds_and_warns() {
-        let captured = capture_warnings(|| {
+        let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: None,
                 post: Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
@@ -377,7 +319,7 @@ mod tests {
     #[test]
     #[serial_test::serial(tracing)]
     fn both_present_keeps_hooks_drops_post_and_warns() {
-        let captured = capture_warnings(|| {
+        let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: Some(vec![HookEntry::Simple("modern.sh".to_string())]),
                 post: Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
@@ -410,7 +352,7 @@ mod tests {
     #[test]
     #[serial_test::serial(tracing)]
     fn canonical_hooks_only_emits_no_warning() {
-        let captured = capture_warnings(|| {
+        let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: Some(vec![HookEntry::Simple("modern.sh".to_string())]),
                 post: None,
@@ -584,7 +526,7 @@ mod tests {
     #[serial_test::serial(tracing)]
     fn empty_block_neither_spelling_stays_empty_and_silent() {
         // (false, false) arm: empty block, nothing folds and nothing warns.
-        let captured = capture_warnings(|| {
+        let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: None,
                 post: None,
@@ -604,7 +546,7 @@ mod tests {
     fn empty_post_vec_does_not_trigger_fold_or_warn() {
         // is_some_and(|v| !v.is_empty()) means an empty post vec is treated as
         // absent — it must not fold into hooks nor warn.
-        let captured = capture_warnings(|| {
+        let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: None,
                 post: Some(vec![]),
