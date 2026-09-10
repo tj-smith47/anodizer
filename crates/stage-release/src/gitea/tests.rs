@@ -18,14 +18,41 @@ fn gitea_instance_url_trims_terminal_api_v1() {
             "https://gitea.com/api/v1/api/v1",
             "https://gitea.com/api/v1",
         ),
-        // The built-in default, which is already the instance root.
-        ("https://gitea.com", "https://gitea.com"),
     ] {
         assert_eq!(
             gitea_instance_url(configured),
             want,
             "instance root for {configured:?}"
         );
+    }
+    // The built-in default is already an instance root, so it survives the
+    // trim untouched — read from the constant so the two cannot drift.
+    assert_eq!(
+        gitea_instance_url(DEFAULT_GITEA_INSTANCE),
+        DEFAULT_GITEA_INSTANCE
+    );
+}
+
+/// A base URL missing either half of `scheme://host` is refused before any
+/// request is built — the same rejection Gitea's own client makes.
+#[test]
+fn gitea_base_url_needs_both_a_scheme_and_a_host() {
+    for good in [
+        DEFAULT_GITEA_INSTANCE,
+        "https://gitea.example.com/forge",
+        "http://localhost:3000",
+    ] {
+        assert!(has_scheme_and_host(good), "must accept {good:?}");
+    }
+    for bad in [
+        "",
+        "gitea.example.com",
+        "gitea.example.com/api/v1",
+        "https://",
+        "https:///forge",
+        "://gitea.example.com",
+    ] {
+        assert!(!has_scheme_and_host(bad), "must reject {bad:?}");
     }
 }
 
@@ -1776,15 +1803,22 @@ fn run_backend_accepts_an_api_url_carrying_api_v1() {
     );
 }
 
-/// A `gitea_urls.api` with no scheme builds a relative request URL, which
-/// fails far from the config that caused it — so it is refused up front.
+/// A `gitea_urls.api` missing its scheme or its host builds a relative or
+/// hostless request URL, which fails far from the config that caused it — so
+/// it is refused up front, exactly as Gitea's own client refuses it.
 #[test]
-fn run_backend_rejects_a_schemeless_api_url() {
+fn run_backend_rejects_an_api_url_without_a_scheme_or_host() {
+    for configured in ["gitea.example.com/api/v1", "https:///forge"] {
+        assert_backend_rejects_api_url(configured);
+    }
+}
+
+fn assert_backend_rejects_api_url(configured: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
     let artifact = dir.path().join("demo.tar.gz");
     std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
 
-    let ctx = build_gitea_ctx("gitea.example.com/api/v1");
+    let ctx = build_gitea_ctx(configured);
     let crate_cfg = build_gitea_crate_cfg();
     let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
     let rt = tokio::runtime::Runtime::new().expect("rt");
@@ -1805,11 +1839,11 @@ fn run_backend_rejects_a_schemeless_api_url() {
         &default_gitea_spec(),
         &artifacts,
     )
-    .expect_err("a schemeless base must be refused");
+    .expect_err("a base without a scheme or host must be refused");
     assert!(
         err.to_string()
             .contains("release: invalid gitea_urls.api URL:"),
-        "unexpected error: {err}"
+        "unexpected error for {configured:?}: {err}"
     );
 }
 
