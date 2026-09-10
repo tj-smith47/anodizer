@@ -217,6 +217,7 @@ fn redacted_git_detail(stderr: &str) -> String {
 pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
         .current_dir(cwd)
+        .args(crate::git::COLUMN_UI_NEVER)
         .args(["tag", "--points-at", sha])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")

@@ -90,6 +90,18 @@ pub use tags::{
 };
 pub use worktree::Worktree;
 
+/// Config override that keeps a listing subcommand's stdout one record per
+/// line.
+///
+/// `column.ui = always` (or the more specific `column.tag`) in a user's
+/// `~/.gitconfig` makes `git tag` pad its output into columns even when
+/// stdout is a pipe, so two tags on one commit arrive as
+/// `"v1.0.0      v1.0.0-rc1"` on a single line and an annotated tag's
+/// `--format=%(contents)` body is flattened into padded columns. Every
+/// listing spawn whose stdout is parsed passes this; `-c` is applied after
+/// all config files, so it overrides a repository-level `column.tag` too.
+pub(crate) const COLUMN_UI_NEVER: [&str; 2] = ["-c", "column.ui=never"];
+
 /// Run `git` in `cwd` and return stdout, trimmed.
 ///
 /// Shared low-level git invocation wrapper. Path-taking so callers
@@ -112,6 +124,7 @@ pub(crate) fn git_output_in(cwd: &Path, args: &[&str]) -> Result<String> {
     //     matching in caller code is stable.
     let output = Command::new("git")
         .current_dir(cwd)
+        .args(COLUMN_UI_NEVER)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")

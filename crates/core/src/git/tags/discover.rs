@@ -314,6 +314,7 @@ pub fn list_tags_with_prefix(
     prefix: &str,
 ) -> Result<Vec<String>> {
     let out = Command::new("git")
+        .args(crate::git::COLUMN_UI_NEVER)
         .arg("-C")
         .arg(workspace_root)
         .args(["tag", "--list", "--sort=-v:refname"])

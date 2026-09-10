@@ -2458,3 +2458,194 @@ fn list_tags_with_prefix_filters_and_sorts_by_reverse_semver() {
 // -----------------------------------------------------------------------
 // tracing capture, shared by the git submodules' inline tests
 // -----------------------------------------------------------------------
+
+// -----------------------------------------------------------------------
+// column.ui: a listing spawn's stdout stays one record per line
+// -----------------------------------------------------------------------
+
+mod column_ui {
+    use super::{tags_init_commit_repo, tags_run_git};
+    use crate::git::detect_git_info_in;
+    use crate::git::tags::{get_all_semver_tags_in, get_tags_at_sha_in, list_tags_with_prefix};
+
+    /// A repository configured to columnize listing output, carrying two tags
+    /// on HEAD and a multi-line annotated tag message.
+    ///
+    /// `column.ui = always` makes git pad `git tag` output into columns even
+    /// when stdout is a pipe, which is exactly the user configuration that
+    /// collapses a parsed listing onto one line.
+    fn columnized_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        tags_init_commit_repo(tmp.path());
+        tags_run_git(tmp.path(), &["tag", "v1.0.0-rc1"]);
+        tags_run_git(
+            tmp.path(),
+            &[
+                "tag",
+                "-a",
+                "v1.0.0",
+                "-m",
+                "first version\n\nbody line one\nbody line two",
+            ],
+        );
+        tags_run_git(tmp.path(), &["config", "column.ui", "always"]);
+        tmp
+    }
+
+    #[test]
+    fn tags_at_a_sha_stay_one_per_line_under_a_columnizing_config() {
+        let repo = columnized_repo();
+        let tags = get_tags_at_sha_in(repo.path(), "HEAD").unwrap();
+        assert_eq!(
+            tags,
+            vec!["v1.0.0".to_string(), "v1.0.0-rc1".to_string()],
+            "two tags on one commit must stay two entries"
+        );
+    }
+
+    #[test]
+    fn the_semver_tag_listing_stays_one_per_line_under_a_columnizing_config() {
+        let repo = columnized_repo();
+        let tags = get_all_semver_tags_in(repo.path(), "v", None, None).unwrap();
+        assert_eq!(
+            tags,
+            vec!["v1.0.0".to_string(), "v1.0.0-rc1".to_string()],
+            "the semver listing must not fold two tags into one padded line"
+        );
+    }
+
+    #[test]
+    fn the_prefixed_tag_listing_stays_one_per_line_under_a_columnizing_config() {
+        let repo = columnized_repo();
+        let tags = list_tags_with_prefix(repo.path(), "v").unwrap();
+        assert_eq!(
+            tags,
+            vec!["v1.0.0-rc1".to_string(), "v1.0.0".to_string()],
+            "the prefix listing must not fold two tags into one padded line"
+        );
+    }
+
+    #[test]
+    fn an_annotated_tag_body_keeps_its_lines_under_a_columnizing_config() {
+        let repo = columnized_repo();
+        let info = detect_git_info_in(repo.path(), "v1.0.0", false).unwrap();
+        assert_eq!(info.tag_subject, "first version");
+        assert_eq!(
+            info.tag_body, "body line one\nbody line two",
+            "a --format listing is columnized too: the body's newlines must survive"
+        );
+    }
+
+    /// Every crate's `src/`, from the workspace members list, so a `git tag`
+    /// spawn added in any crate is in the population.
+    fn workspace_sources() -> Vec<std::path::PathBuf> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root above crates/core");
+        let manifest =
+            std::fs::read_to_string(root.join("Cargo.toml")).expect("workspace manifest");
+        let members: Vec<String> = manifest
+            .lines()
+            .skip_while(|l| !l.starts_with("members"))
+            .skip(1)
+            .take_while(|l| !l.starts_with(']'))
+            .filter_map(|l| {
+                l.trim()
+                    .trim_end_matches(',')
+                    .strip_prefix('"')?
+                    .strip_suffix('"')
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(!members.is_empty(), "no workspace members parsed");
+        let mut sources = Vec::new();
+        for member in members {
+            let src = root.join(member).join("src");
+            if src.is_dir() {
+                sources.extend(crate::test_helpers::test_sources::rust_sources(&src));
+            }
+        }
+        sources
+    }
+
+    /// Whether an argv literal in `body` spawns a `git tag` form that LISTS —
+    /// the forms whose stdout git will columnize. `git tag -d` and tag
+    /// creation print nothing a caller parses, so they are not in the class.
+    fn lists_tags(body: &str) -> bool {
+        const LISTING: [&str; 7] = [
+            "--list",
+            "--points-at",
+            "-l",
+            "--merged",
+            "--sort",
+            "--format",
+            "--contains",
+        ];
+        body.match_indices("\"tag\"").any(|(at, _)| {
+            let window = &body[at..(at + 80).min(body.len())];
+            LISTING
+                .iter()
+                .any(|flag| window.contains(&format!("\"{flag}")))
+        })
+    }
+
+    /// Every `git tag` listing spawn pins `column.ui=never` — itself, or by
+    /// going through a wrapper that does.
+    ///
+    /// The flag is hand-applied per spawn site (there is no single git
+    /// constructor in this workspace), so nothing but this walk stops the
+    /// next listing spawn from inheriting a user's `column.ui = always` and
+    /// parsing a padded line as a tag name.
+    #[test]
+    fn every_git_tag_listing_spawn_pins_column_ui() {
+        const WRAPPERS: [&str; 2] = ["git_output_in(", "collect_semver_tags_in("];
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        for source in workspace_sources() {
+            let text = std::fs::read_to_string(&source).expect("read source");
+            let production = crate::test_helpers::test_sources::production_half(&text);
+            for body in crate::test_helpers::test_sources::function_bodies(production) {
+                if !lists_tags(&body) {
+                    continue;
+                }
+                checked += 1;
+                let pinned = body.contains("COLUMN_UI_NEVER")
+                    || body.contains("column.ui=never")
+                    || WRAPPERS.iter().any(|w| body.contains(w));
+                if !pinned {
+                    let name = body.lines().next().unwrap_or_default().trim().to_string();
+                    offenders.push(format!("{}: {name}", source.display()));
+                }
+            }
+        }
+        assert!(
+            checked >= 6,
+            "the git tag listing population shrank to {checked}; a rename likely \
+             slipped the walk"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these `git tag` listing spawns do not pin column.ui=never:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The wrappers the walk above accepts really do pin the flag — otherwise
+    /// the allow-list would launder every site that routes through them.
+    #[test]
+    fn the_shared_git_wrapper_pins_column_ui() {
+        let wrapper = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git/mod.rs"),
+        )
+        .expect("read git/mod.rs");
+        let body = crate::test_helpers::test_sources::function_bodies(&wrapper)
+            .into_iter()
+            .find(|b| b.contains("fn git_output_in("))
+            .expect("git_output_in body");
+        assert!(
+            body.contains("COLUMN_UI_NEVER"),
+            "git_output_in must pin column.ui=never for every caller that routes through it"
+        );
+    }
+}
