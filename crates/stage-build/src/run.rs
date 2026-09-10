@@ -10,7 +10,7 @@ use anodizer_core::env_expand::expand_env as expand_env_vars;
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 
-use anodizer_core::build_plan::{crate_declares_bin, planned_builds};
+use anodizer_core::build_plan::{binary_or_crate_name, crate_declares_bin, planned_builds};
 
 use super::command::{build_command, build_lib_command, detect_crate_type};
 use super::profile::detect_cargo_profile;
@@ -291,13 +291,9 @@ fn plan_build_jobs(
                 continue;
             }
 
-            // Resolve binary name template — falls back to the crate's
-            // `name` field when not set so `defaults.builds` (the
-            // path-mirrored template) can omit it.
-            let binary_field: String = build
-                .binary
-                .clone()
-                .unwrap_or_else(|| crate_cfg.name.clone());
+            // The value every derived-name consumer validates against, so it
+            // is resolved by the shared helper rather than re-spelled here.
+            let binary_field: String = binary_or_crate_name(crate_cfg, build);
             // Skip builds marked with skip: true/template
             let should_skip = match build.skip.as_ref() {
                 Some(s) => s

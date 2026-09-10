@@ -3576,3 +3576,69 @@ fn detect_profile_equals_form_wins_over_release_flag() {
         "bench"
     );
 }
+
+/// The `binary` metadata the build stage stamps on a produced artifact is the
+/// value every derived name is validated against (the cargo-binstall
+/// `pkg_url`, the `curl | sh` installer's asset table), so it must agree with
+/// the shared fallback helper rather than being spelled a second time here: a
+/// build entry declaring no `binary:` is named after the crate's own `[[bin]]`
+/// target, and the two sides must move together when that rule changes.
+#[test]
+fn the_produced_binary_metadata_matches_the_shared_fallback_helper() {
+    use anodizer_core::build_plan::binary_or_crate_name;
+    use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("myapp");
+    fs::create_dir_all(crate_dir.join("src")).unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        r#"
+[package]
+name = "myapp"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(crate_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // `binary: None` is the shape a `defaults.builds:` template materializes
+    // onto a crate, so the fallback is what names the artifact.
+    let build = BuildConfig {
+        binary: None,
+        targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+        ..Default::default()
+    };
+    let krate = CrateConfig {
+        name: "myapp".to_string(),
+        path: crate_dir.to_string_lossy().into_owned(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        builds: Some(vec![build.clone()]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "test".to_string();
+    config.crates.push(krate.clone());
+
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    BuildStage.run(&mut ctx).unwrap();
+
+    let binaries = ctx.artifacts.by_kind(ArtifactKind::Binary);
+    assert_eq!(
+        binaries.len(),
+        1,
+        "one non-skipped build entry must produce one binary artifact"
+    );
+    assert_eq!(
+        binaries[0].metadata.get("binary").map(String::as_str),
+        Some(binary_or_crate_name(&krate, &build).as_str()),
+        "the produced artifact's binary metadata must equal the shared fallback helper's answer"
+    );
+}

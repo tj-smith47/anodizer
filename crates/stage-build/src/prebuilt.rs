@@ -4,6 +4,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::build_env::{
     clear_build_target_vars, prebuilt_amd64_variant, seed_build_target_vars,
 };
+use anodizer_core::build_plan::binary_or_crate_name;
 use anodizer_core::config::{BuildConfig, BuildIgnore};
 use anodizer_core::context::Context;
 use anodizer_core::target::map_target;
@@ -50,10 +51,7 @@ pub(crate) fn plan_prebuilt_build(
     build: &BuildConfig,
     inputs: &PlanInputs<'_>,
 ) -> Result<()> {
-    let binary_field: String = build
-        .binary
-        .clone()
-        .unwrap_or_else(|| crate_cfg.name.clone());
+    let binary_field: String = binary_or_crate_name(crate_cfg, build);
 
     let should_skip = match build.skip.as_ref() {
         Some(s) => s

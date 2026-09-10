@@ -688,7 +688,12 @@ pub fn installer_crate(config: &Config) -> Option<CrateConfig> {
     let project = config.project_name.as_str();
     let produces_project_binary = |c: &CrateConfig| -> bool {
         crate::build_plan::planned_builds(c)
-            .map(|builds| builds.iter().any(|b| b.binary.as_deref() == Some(project)))
+            .map(|builds| {
+                builds.iter().any(|b| {
+                    crate::build_plan::build_produces(c, b)
+                        && crate::build_plan::binary_or_crate_name(c, b) == project
+                })
+            })
             .unwrap_or(false)
     };
 
