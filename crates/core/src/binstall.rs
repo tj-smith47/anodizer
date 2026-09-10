@@ -398,6 +398,11 @@ pub fn crate_archive_asset_names(
     let render_all = |ctx: &mut Context| -> Result<BTreeMap<String, ArchiveAssetName>> {
         let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
         for target in &targets {
+            // The build stage seeds the per-target vars BEFORE it renders a
+            // build's `binary:`, so a templated binary name must be resolved
+            // against THIS target's values here too — not the ones the
+            // previous iteration's asset-name render left behind.
+            crate::archive_name::seed_target_vars(ctx, target);
             // The archive stage groups its binaries by target before naming
             // the asset after the first one, so a crate whose builds split by
             // platform binds a different `Binary` on each target.
@@ -1854,6 +1859,31 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         assert_eq!(
             names["x86_64-unknown-linux-gnu"],
             "myapp-cli-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
+    /// A `binary:` that is itself a template resolves per target in the build
+    /// stage, which seeds `Os`/`Arch`/`Target` before rendering it. Rendering
+    /// it here against the previous target's values derives one name and
+    /// produces another — the broken-download class this seam exists to close.
+    #[test]
+    fn a_templated_binary_name_derives_each_targets_own_value() {
+        let templated = BuildConfig {
+            binary: Some("{{ Os }}-cli".to_string()),
+            targets: Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-apple-darwin".to_string(),
+            ]),
+            ..Default::default()
+        };
+        let names = derived_names(&binary_named_crate(vec![templated], None, None));
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "linux-cli-1.0.0-linux-amd64.tar.gz"
+        );
+        assert_eq!(
+            names["aarch64-apple-darwin"],
+            "darwin-cli-1.0.0-darwin-arm64.tar.gz"
         );
     }
 
