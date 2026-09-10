@@ -13,10 +13,11 @@ Anodizer shells out to the `git` on `PATH` and needs **git 2.13 or newer**.
 The floor comes from previous-tag discovery: when a crate's tag family has a
 nested sibling track (a bare `v*` family next to a `vault-v*` one), the
 search runs `git describe --match '<family>*' --exclude '<sibling>*'`, and
-`--exclude` first shipped in git 2.13. Anodizer does not probe the version
-at startup, so on an older git the floor surfaces as a failed `git describe`
-(`error: unknown option 'exclude'`) the first time a multi-track repo
-searches for a previous tag.
+`--exclude` first shipped in git 2.13. `anodizer healthcheck` compares the
+probed `git --version` against that floor and marks an older git `✗ ... —
+below the 2.13 floor`; a run that skips the healthcheck meets the floor later
+as a failed `git describe` (`error: unknown option 'exclude'`) the first time
+a multi-track repo searches for a previous tag.
 
 ```console
 $ git --version
