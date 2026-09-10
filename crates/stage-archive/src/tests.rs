@@ -7244,12 +7244,53 @@ fn finish_archive_file_surfaces_a_write_back_error() {
     );
 }
 
+/// The `binary` archive format publishes a file the run goes on to checksum,
+/// sign and upload, so its destination owes the same close-time write-back
+/// check every other writer performs.
+#[test]
+fn copy_binary_finishes_through_the_helper() {
+    let body =
+        anodizer_core::test_helpers::test_sources::function_bodies(include_str!("formats.rs"))
+            .into_iter()
+            .find(|b| b.contains("pub fn copy_binary("))
+            .expect("copy_binary must exist in formats.rs");
+    assert!(
+        body.contains("finish_archive_file("),
+        "copy_binary must close its destination through the helper; got: {body}"
+    );
+    assert!(
+        !body.contains("fs::copy("),
+        "fs::copy drops the destination without surfacing its close error; got: {body}"
+    );
+}
+
+/// The copied binary keeps the source's mode: `fs::copy` carried it across for
+/// free and an explicit create does not.
+#[test]
+#[cfg(unix)]
+fn copy_binary_keeps_the_executable_bit() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("myapp");
+    fs::write(&src, b"binary bytes").unwrap();
+    // exec-writer-ok: the fixture is copied and stat'd, never executed
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+    let dest = tmp.path().join("myapp-copy");
+    copy_binary(&src, &dest).unwrap();
+    assert_eq!(
+        fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+        0o755,
+        "the copied binary must stay executable"
+    );
+}
+
 #[test]
 fn every_archive_writer_finishes_through_the_helper() {
-    // Twelve writer sites: the seven `formats.rs` entry points plus the five
-    // arms of `write_archive_in_format` that build their own writer. The `gz`
-    // and `xz` arms delegate to `formats::create_gz`/`create_xz` and must not
-    // sync a second time.
+    // Thirteen writer sites: the seven `formats.rs` codec entry points plus
+    // `copy_binary`, plus the five arms of `write_archive_in_format` that build
+    // their own writer. The `gz` and `xz` arms delegate to
+    // `formats::create_gz`/`create_xz` and must not sync a second time.
     let mut calls = 0usize;
     for src in [include_str!("formats.rs"), include_str!("run_helpers.rs")] {
         for line in src.lines() {
@@ -7261,7 +7302,7 @@ fn every_archive_writer_finishes_through_the_helper() {
         }
     }
     assert_eq!(
-        calls, 12,
+        calls, 13,
         "every archive writer must close through finish_archive_file"
     );
     assert_eq!(

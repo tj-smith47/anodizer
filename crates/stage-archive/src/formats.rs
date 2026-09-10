@@ -339,9 +339,21 @@ pub fn copy_binary(src: &Path, output: &Path) -> Result<()> {
     if !src.exists() {
         anyhow::bail!("binary: source does not exist: {}", src.display());
     }
-    fs::copy(src, output)
-        .with_context(|| format!("binary: copy {} → {}", src.display(), output.display()))?;
-    Ok(())
+    let ctx = || format!("binary: copy {} → {}", src.display(), output.display());
+    let mut reader = File::open(src).with_context(ctx)?;
+    let mut writer = File::create(output).with_context(ctx)?;
+    std::io::copy(&mut reader, &mut writer).with_context(ctx)?;
+    // `fs::copy` carried the source mode across; an explicit create does not,
+    // and a `binary` artifact that lost its executable bit is unusable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = reader.metadata().with_context(ctx)?.permissions().mode();
+        writer
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .with_context(ctx)?;
+    }
+    finish_archive_file(writer, "binary", output)
 }
 
 /// Normalize path separators: backslashes to forward slashes for archive entries.
