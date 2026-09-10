@@ -617,6 +617,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
 
         assert_eq!(
@@ -791,6 +792,7 @@ mod tests {
                 required: true,
                 outcome: PublisherOutcome::Succeeded,
                 evidence,
+                entry_skips: Vec::new(),
             }
         }
 
@@ -1246,6 +1248,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
 
         let (addr, calls) = spawn_oneshot_http_responder(vec![

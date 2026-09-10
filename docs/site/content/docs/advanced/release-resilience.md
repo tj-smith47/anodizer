@@ -564,13 +564,38 @@ active to publish, so it is recorded and never reaches `run()` — never
 reported as `Succeeded` for work it never did.
 
 `EntriesSkipped` (`skipped-entries-skipped` in the run summary and
-`--summary-json` output) fires when `run()` did execute but at least one entry
-it iterated disqualified itself — a missing `name:`/`target:`, a half-set
-username/password pair, a half-set `client_x509_cert`/`client_x509_key` pair.
-Each entry's own reason is listed in the intentional-skip block, and the
-entries that did publish keep their own result lines. Distinct from
+`--summary-json` output) fires when `run()` did execute, at least one entry it
+iterated disqualified itself — a missing `name:`/`target:`, a half-set
+username/password pair, a half-set `client_x509_cert`/`client_x509_key` pair —
+and **nothing landed**. A publisher that landed anything keeps the outcome of
+what it landed; `skipped-entries-skipped` means no entry ran. Distinct from
 `ConfigSkipped`, which is decided before `run()` from `skip:`/`if:` alone; here
 the defects are per-entry and only the run itself can see them.
+
+Either way the reasons are reported: every publisher that disqualified an entry
+carries them in `entry_skips` on its `report.json` / `summary.json` result, and
+the summary's publisher row appends the count to the status:
+
+```
+• uploads   Assets  optional  succeeded  (1 entry skipped)
+• winget    Submitter  optional  skipped-entries-skipped
+```
+
+```json
+{
+  "name": "uploads",
+  "group": "Assets",
+  "required": false,
+  "outcome": "Succeeded",
+  "entry_skips": ["uploads: entry 'mirror' is missing required 'target' URL"]
+}
+```
+
+`entry_skips` is absent when the publisher skipped no entry. Reporting the
+skips beside the outcome rather than in place of it is what keeps
+`anodizer tag rollback` and `irreversibly_published` truthful: a mixed run's
+uploaded artifact is still live at the remote, so its publisher must still be
+unwound.
 
 `VerifyGateBlocked` (`skipped-verify-gate-blocked` in the run summary and
 `--summary-json` output) fires when the pre-submitter verify-release gate

@@ -601,7 +601,13 @@ impl anodizer_core::Publisher for WingetPublisher {
             }
         }
         let processed = targets.len();
-        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "winget");
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "winget",
+            !targets.is_empty(),
+            selected.len(),
+        );
         if entry_skips == 0 && processed == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {

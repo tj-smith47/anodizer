@@ -398,6 +398,7 @@ mod gate_tests {
             required,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 
@@ -470,6 +471,7 @@ mod gate_tests {
             required,
             outcome,
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 
@@ -1092,6 +1094,7 @@ mod summary_tests {
             required: true,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         let mut ctx = ctx_with(
             opts_with_summary_path(summary_path.clone()),
@@ -1133,6 +1136,7 @@ mod summary_tests {
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: None,
+            entry_skips: Vec::new(),
         });
         let mut ctx = ctx_with(
             opts_with_summary_path(summary_path.clone()),
@@ -1299,6 +1303,7 @@ mod summary_tests {
                 required: true,
                 outcome: PublisherOutcome::Succeeded,
                 evidence: None,
+                entry_skips: Vec::new(),
             }],
         });
         emit_summary(&mut release_ctx);

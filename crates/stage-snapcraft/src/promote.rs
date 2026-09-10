@@ -593,6 +593,7 @@ Rev    Uploaded              Arches  Version  Channels
             required: false,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
 
         assert_eq!(
@@ -920,6 +921,7 @@ Rev    Uploaded              Arches  Version  Channels
             required: false,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
         let selector = PromoteSelector::FromRun {
             run_id: "r".into(),
@@ -982,6 +984,7 @@ Rev    Uploaded              Arches  Version  Channels
             required: false,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
         let selector = PromoteSelector::FromRun {
             run_id: "r".into(),

@@ -615,7 +615,13 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
-        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "homebrew");
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "homebrew",
+            any_pushed,
+            selected.len() + cask_result.total,
+        );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len(), cask_result.total)
         {
             log.warn(&run_no_eligible_crates_warning(selected.len()));

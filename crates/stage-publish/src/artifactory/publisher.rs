@@ -110,7 +110,14 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
                 anodizer_core::SkipReason::AlreadyPublished,
             ));
         }
-        crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "artifactory");
+        let configured_entries = ctx.config.artifactories.as_ref().map_or(0, Vec::len);
+        crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "artifactory",
+            summary.uploaded > 0,
+            configured_entries,
+        );
         let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
         let targets = collect_artifactory_targets(ctx);
         if let Some(first) = targets.first() {

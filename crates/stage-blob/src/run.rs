@@ -278,6 +278,7 @@ pub(crate) fn record_blob_result(
         required,
         outcome,
         evidence,
+        entry_skips: Vec::new(),
     });
 }
 
@@ -304,6 +305,7 @@ pub(crate) fn record_blob_gated(ctx: &mut Context) {
         required,
         outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
         evidence: None,
+        entry_skips: Vec::new(),
     });
 }
 
@@ -330,6 +332,7 @@ pub(crate) fn record_blob_deselected(ctx: &mut Context) {
         required,
         outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
         evidence: None,
+        entry_skips: Vec::new(),
     });
 }
 

@@ -237,6 +237,7 @@ pub fn dispatch(
                     required: p.required(),
                     outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 });
                 report.submitter_gated = true;
                 snapshot(ctx, &report);
@@ -268,6 +269,7 @@ pub fn dispatch(
                     required: p.required(),
                     outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 });
                 snapshot(ctx, &report);
                 continue;
@@ -291,6 +293,7 @@ pub fn dispatch(
                     required: p.required(),
                     outcome: PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 });
                 snapshot(ctx, &report);
                 continue;
@@ -313,6 +316,7 @@ pub fn dispatch(
                     required: p.required(),
                     outcome: PublisherOutcome::Skipped(SkipReason::Nightly),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 });
                 snapshot(ctx, &report);
                 continue;
@@ -372,6 +376,7 @@ pub fn dispatch(
                             required: p.required(),
                             outcome: PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
                             evidence: None,
+                            entry_skips: Vec::new(),
                         });
                         snapshot(ctx, &report);
                         continue;
@@ -405,6 +410,7 @@ pub fn dispatch(
                             required: p.required(),
                             outcome: PublisherOutcome::Failed(msg),
                             evidence: None,
+                            entry_skips: Vec::new(),
                         });
                         snapshot(ctx, &report);
                         if opts.fail_fast {
@@ -475,6 +481,7 @@ pub fn dispatch(
                     required: p.required(),
                     outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 });
                 snapshot(ctx, &report);
                 continue;
@@ -535,6 +542,10 @@ pub fn dispatch(
             };
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
             let result = PublisherResult {
+                // Reported beside the outcome, never instead of it: a
+                // publisher that landed part of its entries keeps the
+                // outcome of what landed.
+                entry_skips: crate::publisher_helpers::entry_skip_reasons(ctx, p.name()),
                 name: p.name().into(),
                 group,
                 required: p.required(),
@@ -1084,6 +1095,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("minio upload refused: connection reset".into()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         ctx.publish_report = Some(seeded);
 
@@ -1159,6 +1171,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("minio upload refused: connection reset".into()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         ctx.publish_report = Some(seeded);
 
@@ -2462,6 +2475,7 @@ mod tests {
                 required: true,
                 status: status.to_string(),
                 evidence: Some(evidence),
+                entry_skips: Vec::new(),
             }],
             determinism_allowlist: crate::run_summary::DeterminismAllowlist::default(),
         };

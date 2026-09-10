@@ -2829,6 +2829,7 @@ fn npm_report(registry: &str) -> anodizer_core::publish_report::PublishReport {
             required: true,
             outcome: anodizer_core::publish_report::PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         }],
         ..Default::default()
     }

@@ -568,6 +568,7 @@ mod tests {
             required,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(PublishEvidence::new(name)),
+            entry_skips: Vec::new(),
         }
     }
 
@@ -579,6 +580,7 @@ mod tests {
             required,
             outcome: PublisherOutcome::Failed(msg.into()),
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 
@@ -720,6 +722,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: None,
+            entry_skips: Vec::new(),
         });
         write_fixture_report(&ctx, "fixt", &report);
 
@@ -956,6 +959,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         write_fixture_report(&ctx, "fixt", &report);
 
@@ -1030,6 +1034,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::RollbackFailed("transient failure".into()),
             evidence: Some(PublishEvidence::new("mgr1")),
+            entry_skips: Vec::new(),
         });
         write_fixture_report(&ctx, "fixt", &report);
 

@@ -1100,6 +1100,7 @@ fn ctx_with_report(
         required,
         outcome,
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.set_publish_report(report);
     ctx
@@ -1138,6 +1139,7 @@ fn release_exits_zero_when_no_required_failures() {
         required: true,
         outcome: PublisherOutcome::Succeeded,
         evidence: None,
+        entry_skips: Vec::new(),
     });
     // A *non*-required publisher that failed must NOT trip the gate.
     report.results.push(PublisherResult {
@@ -1146,6 +1148,7 @@ fn release_exits_zero_when_no_required_failures() {
         required: false,
         outcome: PublisherOutcome::Failed("network".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.set_publish_report(report);
 

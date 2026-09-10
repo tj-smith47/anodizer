@@ -188,6 +188,7 @@ fn submitter_gate_records_skipped_gated() {
         required: true,
         outcome: PublisherOutcome::Failed("simulated upload failure".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 
@@ -228,6 +229,7 @@ fn submitter_gate_fires_on_required_cargo_submitter_failure() {
         required: true,
         outcome: PublisherOutcome::Failed("crate-b failed after crate-a published".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 
@@ -263,6 +265,7 @@ fn submitter_gate_stays_open_on_optional_upstream_failure() {
         required: false,
         outcome: PublisherOutcome::Failed("optional blob boom".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 
@@ -556,6 +559,7 @@ fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
         required: false,
         outcome: PublisherOutcome::Succeeded,
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 

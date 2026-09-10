@@ -194,6 +194,14 @@ pub struct PublisherResult {
     pub required: bool,
     pub outcome: PublisherOutcome,
     pub evidence: Option<PublishEvidence>,
+    /// One reason per entry this publisher disqualified during its run, in
+    /// first-seen order. Independent of `outcome`: a publisher that landed
+    /// some of its entries keeps the outcome of what it landed and still
+    /// lists here what it skipped, so a rollback and the landed accounting
+    /// read the truth while the misconfigured entry stays visible. Empty
+    /// (and absent from the JSON) for a run that skipped no entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_skips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +451,41 @@ pub fn gate_required_failures(
 mod tests {
     use super::*;
 
+    /// `entry_skips` is additive: a result that skipped no entry serializes
+    /// exactly as it did before the field existed, so every persisted report
+    /// and every consumer reading one is unaffected.
+    #[test]
+    fn entry_skips_are_omitted_from_the_report_json_when_empty() {
+        let mut result = PublisherResult {
+            name: "uploads".to_string(),
+            group: PublisherGroup::Assets,
+            required: false,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+            entry_skips: Vec::new(),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"name":"uploads","group":"Assets","required":false,"outcome":"Succeeded","evidence":null}"#
+        );
+
+        result.entry_skips =
+            vec!["uploads: entry 'mirror' is missing required 'target' URL".into()];
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            json.contains(
+                r#""entry_skips":["uploads: entry 'mirror' is missing required 'target' URL"]"#
+            ),
+            "a recorded skip is carried into the report: {json}"
+        );
+
+        let back: PublisherResult =
+            serde_json::from_str(r#"{"name":"uploads","group":"Assets","required":false,"outcome":"Succeeded","evidence":null}"#)
+                .expect("a report written before the field parses");
+        assert!(back.entry_skips.is_empty());
+    }
+
     #[test]
     fn empty_report_has_zero_failures() {
         let r = PublishReport::default();
@@ -460,6 +503,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "required-pub".to_string(),
@@ -467,6 +511,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert_eq!(r.required_failures(), 1);
     }
@@ -483,6 +528,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "required-pub".to_string(),
@@ -490,6 +536,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "required-rollback-failed".to_string(),
@@ -497,6 +544,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::RollbackFailed("cleanup".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert_eq!(
             r.required_failure_names(),
@@ -518,6 +566,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::RollbackFailed("manual cleanup needed".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert_eq!(r.required_failures(), 1);
     }
@@ -574,6 +623,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "optional-mgr".to_string(),
@@ -581,6 +631,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert!(r.any_failed(PublisherGroup::Manager, true));
 
@@ -591,6 +642,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert!(!r.any_failed(PublisherGroup::Manager, true));
         assert!(r.any_failed(PublisherGroup::Manager, false));
@@ -603,6 +655,7 @@ mod tests {
             required,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 
@@ -655,6 +708,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert!(!r.submitter_gate_closed());
     }
@@ -684,6 +738,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert!(!r.verify_gate_blocked);
         assert!(r.one_way_door_gate_closed());
@@ -706,6 +761,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "chocolatey".to_string(),
@@ -713,6 +769,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Skipped(SkipReason::VerifyGateBlocked),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         r.results.push(PublisherResult {
             name: "npm".to_string(),
@@ -720,6 +777,7 @@ mod tests {
             required: true,
             outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
             evidence: None,
+            entry_skips: Vec::new(),
         });
         assert_eq!(r.required_gate_blocked_names(), vec!["cargo"]);
     }

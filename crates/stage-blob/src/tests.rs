@@ -1769,6 +1769,7 @@ fn blob_stage_skips_via_gate_on_required_upstream_failure() {
         required: true,
         outcome: PublisherOutcome::Failed("tap push rejected".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 
@@ -1930,6 +1931,7 @@ fn blob_stage_not_gated_on_optional_upstream_failure() {
         required: false,
         outcome: PublisherOutcome::Failed("optional cargo boom".to_string()),
         evidence: None,
+        entry_skips: Vec::new(),
     });
     ctx.publish_report = Some(report);
 

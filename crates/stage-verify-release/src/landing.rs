@@ -440,6 +440,7 @@ mod tests {
             required: true,
             outcome,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         }
     }
 

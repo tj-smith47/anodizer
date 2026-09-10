@@ -1733,6 +1733,7 @@ before_publish:
             required: true,
             outcome: PublisherOutcome::Succeeded,
             evidence: None,
+            entry_skips: Vec::new(),
         });
         ctx.publish_report = Some(report);
 

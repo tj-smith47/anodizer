@@ -147,37 +147,60 @@ pub(crate) fn record_entry_skip(
     ctx.remember_skip(publisher, label, reason);
 }
 
-/// Report a publisher any of whose entries disqualified itself as skipped,
-/// and answer how many of its entries did.
-///
-/// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
-/// (`internal/pipe/pipe.go`): a non-empty memento skips the pipe with the
-/// joined reasons, whatever else the loop managed to publish — otherwise a
-/// misconfigured entry is invisible in the run summary, which reads the same
-/// as a publisher that published everything it was given. The entries that
-/// did publish keep their own per-entry result lines.
+/// Every reason an entry of `publisher` recorded when it disqualified
+/// itself this run, in first-seen order.
 ///
 /// Skips land under the publisher's own name or under a `<publisher>-<sub>`
 /// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
-/// spellings count. A publisher that already recorded its own terminal
-/// outcome keeps it, and the count is still reported.
-pub(crate) fn evaluate_entry_skips(
-    ctx: &mut anodizer_core::context::Context,
-    log: &anodizer_core::log::StageLogger,
+/// spellings count.
+pub(crate) fn entry_skip_reasons(
+    ctx: &anodizer_core::context::Context,
     publisher: &str,
-) -> usize {
+) -> Vec<String> {
     let sub_prefix = format!("{publisher}-");
-    let reasons: Vec<String> = ctx
-        .skip_memento
+    ctx.skip_memento
         .snapshot()
         .into_iter()
         .filter(|e| e.stage == publisher || e.stage.starts_with(&sub_prefix))
         .map(|e| e.reason)
-        .collect();
+        .collect()
+}
+
+/// Report the entries a publisher disqualified this run, and answer how many
+/// there were. `landed` says whether the publisher put anything at its remote;
+/// `total` is how many entries it iterated.
+///
+/// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
+/// (`internal/pipe/pipe.go`) in making a misconfigured entry impossible to
+/// miss, without letting the report lie about what landed:
+///
+/// - nothing landed — the publisher is skipped with the joined reasons and
+///   records [`anodizer_core::SkipReason::EntriesSkipped`];
+/// - something landed — the terminal outcome is left alone (a rollback and
+///   the landed accounting must still see the work the run really did) and
+///   the reasons are reported alongside it as a skip count.
+///
+/// A publisher that already recorded a more specific terminal outcome keeps
+/// it: `NotApplicable` and `AlreadyPublished` answer *why* nothing landed,
+/// where `EntriesSkipped` only says that entries disqualified themselves.
+pub(crate) fn evaluate_entry_skips(
+    ctx: &mut anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+    publisher: &str,
+    landed: bool,
+    total: usize,
+) -> usize {
+    let reasons = entry_skip_reasons(ctx, publisher);
     if reasons.is_empty() {
         return 0;
     }
-    if ctx.pending_outcome.is_none() {
+    if landed {
+        log.status(&format!(
+            "{publisher} skipped {} of {total} entries — {}",
+            reasons.len(),
+            reasons.join(", ")
+        ));
+    } else if ctx.pending_outcome.is_none() {
         log.status(&format!("skipping {publisher} — {}", reasons.join(", ")));
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
             anodizer_core::SkipReason::EntriesSkipped,

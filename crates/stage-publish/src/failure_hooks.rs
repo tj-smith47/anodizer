@@ -390,6 +390,7 @@ mod tests {
             required,
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 

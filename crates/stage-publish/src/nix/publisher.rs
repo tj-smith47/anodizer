@@ -420,7 +420,13 @@ impl anodizer_core::Publisher for NixPublisher {
                 any_pushed = true;
             }
         }
-        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "nix");
+        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "nix",
+            any_pushed,
+            selected.len(),
+        );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {

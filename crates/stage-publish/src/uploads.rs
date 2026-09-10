@@ -636,7 +636,14 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 anodizer_core::SkipReason::AlreadyPublished,
             ));
         }
-        crate::publisher_helpers::evaluate_entry_skips(ctx, &log, "uploads");
+        let configured_entries = ctx.config.uploads.as_ref().map_or(0, Vec::len);
+        crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "uploads",
+            summary.uploaded > 0,
+            configured_entries,
+        );
         let mut evidence = anodizer_core::PublishEvidence::new("uploads");
         let targets = collect_upload_targets(ctx);
         if let Some(first) = targets.first() {
@@ -1154,47 +1161,38 @@ mod tests {
         );
     }
 
-    /// One entry skipped while another reached its work is NOT an all-skipped
-    /// publisher — the run must stay a run so its evidence is kept.
+    /// The counterpart: when EVERY entry disqualified itself the publisher
+    /// really is skipped, and a skipped publisher has nothing to roll back.
     #[test]
-    fn one_skipped_entry_reports_the_publisher_skipped_and_still_lists_the_live_one() {
+    fn a_publisher_whose_every_entry_skipped_is_skipped_and_is_no_rollback_candidate() {
         let mut config = Config::default();
-        config.uploads = Some(vec![
-            UploadConfig {
-                name: Some("mirror".to_string()),
-                target: String::new(),
-                ..Default::default()
-            },
-            UploadConfig {
-                name: Some("named".to_string()),
-                target: "https://uploads.example.com/named/".to_string(),
-                ..Default::default()
-            },
-        ]);
-        let mut ctx = dry_run_ctx(config);
-        let (_log, capture) =
-            StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Normal);
-        ctx.with_log_capture(capture.clone());
-        UploadsPublisher::new().run(&mut ctx).expect("Ok");
-        assert!(
-            matches!(
-                ctx.pending_outcome,
-                Some(anodizer_core::PublisherOutcome::Skipped(
-                    anodizer_core::SkipReason::EntriesSkipped
-                ))
-            ),
-            "unexpected outcome: {:?}",
-            ctx.pending_outcome
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: String::new(),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(MapEnvSource::new());
+
+        let publishers: Vec<Box<dyn anodizer_core::Publisher>> =
+            vec![Box::new(UploadsPublisher::new())];
+        let report = crate::dispatch::dispatch(
+            &publishers,
+            &mut ctx,
+            &crate::dispatch::DispatchOptions::default(),
+        )
+        .expect("dispatch ok");
+
+        assert_eq!(
+            report.results[0].outcome,
+            anodizer_core::PublisherOutcome::Skipped(anodizer_core::SkipReason::EntriesSkipped),
+            "nothing landed, so the publisher is skipped: {:?}",
+            report.results[0]
         );
-        let logged: String = capture
-            .all_messages()
-            .into_iter()
-            .map(|(_, m)| m)
-            .collect::<Vec<_>>()
-            .join("\n");
+        assert_eq!(report.results[0].entry_skips.len(), 1);
         assert!(
-            logged.contains("would upload artifacts to 'named'"),
-            "the entry that ran must still be listed: {logged}"
+            crate::rollback::rollback_candidates(&report).is_empty(),
+            "a publisher that published nothing is not a rollback candidate"
         );
     }
 
@@ -1832,6 +1830,7 @@ mod tests {
 mod live_http_tests {
     use super::*;
     use anodizer_core::MapEnvSource;
+    use anodizer_core::Publisher as _;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{Config, HumanDuration, RetryConfig, UploadConfig};
     use anodizer_core::context::{Context, ContextOptions};
@@ -2221,6 +2220,128 @@ mod live_http_tests {
             None,
             "an unmapped URL's DELETE is anonymous: {:?}",
             del_b.headers
+        );
+    }
+    /// Routes for one artifact that is absent and then lands: the absence
+    /// probe 404s, the PUT is created.
+    fn landing_routes() -> Vec<ScriptedRoute> {
+        vec![
+            ScriptedRoute {
+                method: "HEAD",
+                path_pattern: "/repo/app-1.0.0.tar.gz",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/repo/app-1.0.0.tar.gz",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]
+    }
+
+    /// Put an entry that disqualifies itself (no `target:`) ahead of the
+    /// live one, so the run both skips an entry and uploads.
+    fn prepend_targetless_entry(ctx: &mut Context) {
+        ctx.config.uploads.as_mut().expect("uploads").insert(
+            0,
+            UploadConfig {
+                name: Some("mirror".to_string()),
+                target: String::new(),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// A run that PUT one entry's artifact while another entry disqualified
+    /// itself keeps the outcome of what it landed. The skipped entry is
+    /// reported beside that outcome — a count on the publisher's own line
+    /// and a reason on the result — never by overwriting it, because the
+    /// upload that happened is still live at the remote.
+    #[test]
+    fn a_publisher_that_landed_an_entry_keeps_its_outcome_and_records_the_skips() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| landing_routes());
+
+        let (_dir, mut ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |_| {});
+        prepend_targetless_entry(&mut ctx);
+        let (_log, capture) =
+            StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Normal);
+        ctx.with_log_capture(capture.clone());
+
+        UploadsPublisher::new().run(&mut ctx).expect("Ok");
+
+        assert!(
+            ctx.pending_outcome.is_none(),
+            "a run that uploaded must keep the outcome its work earned: {:?}",
+            ctx.pending_outcome
+        );
+        let reasons = crate::publisher_helpers::entry_skip_reasons(&ctx, "uploads");
+        assert_eq!(
+            reasons.len(),
+            1,
+            "one entry disqualified itself: {reasons:?}"
+        );
+        assert!(
+            reasons[0].contains("missing required 'target' URL"),
+            "the reason names the defect: {reasons:?}"
+        );
+        let logged: String = capture
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("uploads skipped 1 of 2 entries —"),
+            "the skip count is visible on the publisher's own line: {logged}"
+        );
+        assert!(
+            !logged.contains("skipping uploads —"),
+            "a publisher that uploaded is not reported as skipped: {logged}"
+        );
+    }
+
+    /// The rollback consequence of the rule above: `tag rollback` unwinds
+    /// Assets-group publishers that SUCCEEDED, so a mixed run must reach the
+    /// candidate list — otherwise the artifact it really PUT is stranded at
+    /// the remote with no record.
+    #[test]
+    fn a_landed_publisher_with_entry_skips_stays_a_rollback_candidate() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| landing_routes());
+
+        let (_dir, mut ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |_| {});
+        prepend_targetless_entry(&mut ctx);
+
+        let publishers: Vec<Box<dyn anodizer_core::Publisher>> =
+            vec![Box::new(UploadsPublisher::new())];
+        let report = crate::dispatch::dispatch(
+            &publishers,
+            &mut ctx,
+            &crate::dispatch::DispatchOptions::default(),
+        )
+        .expect("dispatch ok");
+
+        assert_eq!(
+            report.results[0].outcome,
+            anodizer_core::PublisherOutcome::Succeeded,
+            "the row records what landed: {:?}",
+            report.results[0]
+        );
+        assert_eq!(
+            report.results[0].entry_skips.len(),
+            1,
+            "the skipped entry rides on the result: {:?}",
+            report.results[0].entry_skips
+        );
+        assert_eq!(
+            crate::rollback::rollback_candidates(&report),
+            vec![0],
+            "the upload that landed must still be rollback-eligible"
         );
     }
 }

@@ -60,6 +60,7 @@ pub(crate) fn record_snapcraft_result(
         required,
         outcome,
         evidence,
+        entry_skips: Vec::new(),
     });
 }
 

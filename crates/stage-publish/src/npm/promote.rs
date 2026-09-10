@@ -756,6 +756,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
 
         assert_eq!(
@@ -972,6 +973,7 @@ mod tests {
             required: false,
             outcome: PublisherOutcome::Succeeded,
             evidence: Some(evidence),
+            entry_skips: Vec::new(),
         });
 
         retag.retag_recorded(&report);

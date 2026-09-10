@@ -1150,6 +1150,7 @@ fn summary_result(
         required: true,
         status: status.to_string(),
         evidence: None,
+        entry_skips: Vec::new(),
     }
 }
 

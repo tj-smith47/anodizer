@@ -139,6 +139,13 @@ pub struct RunSummaryResult {
     /// Kebab-case status string per the spec's "Status Set".
     pub status: String,
     pub evidence: Option<PublishEvidence>,
+    /// One reason per entry this publisher disqualified during its run — the
+    /// summary-side copy of
+    /// [`anodizer_core::publish_report::PublisherResult::entry_skips`].
+    /// Reported alongside `status`, never folded into it: a publisher that
+    /// landed some entries keeps its landed status here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_skips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,6 +207,7 @@ impl RunSummary {
                         required: res.required,
                         status: outcome_to_status_string(&res.outcome),
                         evidence: res.evidence.clone(),
+                        entry_skips: res.entry_skips.clone(),
                     })
                     .collect()
             })
@@ -602,10 +610,18 @@ pub fn status_table_rows(
             // "required" and "optional" are both 8 chars, so the status
             // column aligns without padding the requirement cell.
             let requirement = if r.required { "required" } else { "optional" };
+            // A landed publisher that disqualified some entries keeps its
+            // landed status, so the skip count is what makes the
+            // misconfigured entry visible on the row.
+            let skips = match r.entry_skips.len() {
+                0 => String::new(),
+                1 => "  (1 entry skipped)".to_string(),
+                n => format!("  ({n} entries skipped)"),
+            };
             rows.push((
                 truncate_name(&r.name),
                 format!(
-                    "{:<group_width$}  {requirement}  {}",
+                    "{:<group_width$}  {requirement}  {}{skips}",
                     format!("{:?}", r.group),
                     r.status,
                 ),
@@ -694,6 +710,7 @@ mod tests {
                         nondeterministic: None,
                         extra: anodizer_core::PublishEvidenceExtra::Empty,
                     }),
+                    entry_skips: Vec::new(),
                 },
                 RunSummaryResult {
                     name: "cargo".to_string(),
@@ -701,6 +718,7 @@ mod tests {
                     required: true,
                     status: "skipped-submitter-gated".to_string(),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 },
             ],
             determinism_allowlist: DeterminismAllowlist {
@@ -869,6 +887,7 @@ mod tests {
             required: false,
             outcome,
             evidence: None,
+            entry_skips: Vec::new(),
         }
     }
 
@@ -1082,6 +1101,7 @@ mod tests {
                 required: false,
                 outcome: PublisherOutcome::Failed("boom".to_string()),
                 evidence: None,
+                entry_skips: Vec::new(),
             }],
         };
         ctx.publish_report = Some(report);
@@ -1496,6 +1516,7 @@ mod tests {
                     required: false,
                     status: "succeeded".to_string(),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 },
                 RunSummaryResult {
                     name: "gh".to_string(),
@@ -1503,6 +1524,7 @@ mod tests {
                     required: true,
                     status: "succeeded".to_string(),
                     evidence: None,
+                    entry_skips: Vec::new(),
                 },
             ],
             determinism_allowlist: DeterminismAllowlist::default(),
@@ -1547,6 +1569,7 @@ mod tests {
                 required: true,
                 status: "succeeded".to_string(),
                 evidence: None,
+                entry_skips: Vec::new(),
             }],
             determinism_allowlist: DeterminismAllowlist::default(),
         };

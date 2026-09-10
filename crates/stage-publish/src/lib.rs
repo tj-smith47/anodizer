@@ -1749,6 +1749,7 @@ mod tests {
                 required: false,
                 outcome: PublisherOutcome::Succeeded,
                 evidence: None,
+                entry_skips: Vec::new(),
             });
             r
         }
@@ -1938,6 +1939,7 @@ mod tests {
                 required: true,
                 outcome: PublisherOutcome::Failed("tap push rejected".to_string()),
                 evidence: None,
+                entry_skips: Vec::new(),
             });
             ctx.set_publish_report(report);
 
