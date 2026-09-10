@@ -165,7 +165,7 @@ pub(crate) fn plan_prebuilt_build(
                 format!(
                     "prebuilt: failed to stat imported binary at '{}' (rendered from \
                      `prebuilt.path: {}`) for target '{}'. Stage the binary before running \
-                     `anodize build`, or check the path template renders to a real file.",
+                     `anodizer build`, or check the path template renders to a real file.",
                     rendered_path, path_template, target
                 )
             })?;

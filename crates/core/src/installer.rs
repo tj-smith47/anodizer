@@ -715,7 +715,7 @@ mod tests {
 
     /// The six lockstep triples anodizer releases, paired with the installer
     /// `os-arch` key `map_target` reduces each to.
-    const ANODIZE_TARGETS: &[&str] = &[
+    const ANODIZER_TARGETS: &[&str] = &[
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
@@ -764,7 +764,7 @@ mod tests {
         let config = Config {
             project_name: "anodizer".to_string(),
             defaults: Some(Defaults {
-                targets: Some(ANODIZE_TARGETS.iter().map(|s| s.to_string()).collect()),
+                targets: Some(ANODIZER_TARGETS.iter().map(|s| s.to_string()).collect()),
                 ..Default::default()
             }),
             crates: vec![crate_cfg],
@@ -888,8 +888,8 @@ mod tests {
         let table = render_installer_cases(&mut ctx).unwrap().asset_cases;
         let arms = parse_arms(&table);
 
-        assert_eq!(arms.len(), ANODIZE_TARGETS.len(), "one arm per target");
-        for target in ANODIZE_TARGETS {
+        assert_eq!(arms.len(), ANODIZER_TARGETS.len(), "one arm per target");
+        for target in ANODIZER_TARGETS {
             let (os, arch) = map_target(target);
             let key = format!("{os}-{arch}");
             let format = if os == "windows" { "zip" } else { "tar.gz" };
@@ -922,7 +922,7 @@ mod tests {
         let table = render_installer_cases(&mut ctx).unwrap().asset_cases;
         let arms = parse_arms(&table);
 
-        for target in ANODIZE_TARGETS {
+        for target in ANODIZER_TARGETS {
             let (os, arch) = map_target(target);
             let key = format!("{os}-{arch}");
             let format = if os == "windows" { "zip" } else { "tar.gz" };
