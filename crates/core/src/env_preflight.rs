@@ -781,11 +781,14 @@ pub fn secret_requirement(
     }
 }
 
-/// The union of build targets this run would compile, routed through the
-/// build-synthesis SSOT ([`crate::build_plan::planned_builds`] +
-/// [`crate::build_plan::build_produces`]): per-build `targets:` (an explicitly
-/// empty list means "skip this build"), else `defaults.targets`, else the
-/// canonical default matrix (via [`crate::config::Config::effective_default_targets`]).
+/// The union of build targets this run would compile, composed from the
+/// enumeration SSOT ([`crate::build_plan::crate_target_list`]) so the rule it
+/// applies — planner synthesis, the compile/artifact gate, the skip veto,
+/// per-build `targets:` (an explicitly empty list means "skip this build")
+/// else `defaults.targets` — cannot drift here. `defaults.targets` falls back
+/// to the canonical default matrix (via
+/// [`crate::config::Config::effective_default_targets`]).
+///
 /// A build the planner compiles nothing for — a library crate's materialized
 /// `binary: None` build with no matching `--bin` — contributes nothing; a
 /// skipped build (`skip:` truthy) contributes nothing; an unrenderable `skip:`
@@ -802,22 +805,10 @@ pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
         }
     };
     for krate in ctx.config.crate_universe() {
-        // A library crate with no default binary yields no builds, so it
-        // contributes nothing — the planner's compile/artifact gate.
-        let Some(builds) = crate::build_plan::planned_builds(krate) else {
-            continue;
-        };
-        for build in &builds {
-            if entry_inactive(ctx, build.skip.as_ref(), None, None) {
-                continue;
-            }
-            if !crate::build_plan::build_produces(krate, build) {
-                continue;
-            }
-            match build.targets.as_ref() {
-                Some(targets) => targets.iter().for_each(|t| push(t)),
-                None => default_targets.iter().for_each(|t| push(t)),
-            }
+        for t in crate::build_plan::crate_target_list(krate, &default_targets, |build| {
+            entry_inactive(ctx, build.skip.as_ref(), None, None)
+        }) {
+            push(&t);
         }
     }
     if let Some(single) = ctx.options.single_target.as_deref() {
@@ -1423,6 +1414,63 @@ mod tests {
             configured_build_targets(&ctx),
             vec!["aarch64-apple-darwin".to_string()]
         );
+    }
+
+    /// Preflight's union must be the enumeration SSOT's answer, crate by
+    /// crate, not a second reading of the same rule. A copy stops moving the
+    /// moment the SSOT learns anything — a new gate, a different reading of an
+    /// explicitly empty `targets:` — and preflight then demands (or omits)
+    /// toolchains for a matrix the build stage does not compile.
+    #[test]
+    fn the_preflight_target_union_is_the_enumeration_ssots_answer() {
+        use crate::config::{BuildConfig, Config, CrateConfig, StringOrBool};
+        use crate::context::{Context, ContextOptions};
+
+        // Every entry names its targets: the union must then be exactly what
+        // the SSOT enumerates, with no default matrix masking a rule the copy
+        // read differently.
+        let build = |binary: &str, targets: Option<Vec<&str>>, skip: bool| BuildConfig {
+            binary: Some(binary.to_string()),
+            targets: targets.map(|ts| ts.iter().map(|t| (*t).to_string()).collect()),
+            skip: skip.then_some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let config = Config {
+            crates: vec![
+                CrateConfig {
+                    name: "app".to_string(),
+                    builds: Some(vec![
+                        build("app", Some(vec!["x86_64-unknown-linux-gnu"]), false),
+                        build("app", Some(vec!["x86_64-pc-windows-msvc"]), true),
+                        build("app", Some(vec![]), false),
+                    ]),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "helper".to_string(),
+                    builds: Some(vec![build(
+                        "helper",
+                        Some(vec!["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]),
+                        false,
+                    )]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        let default_targets = ctx.config.effective_default_targets();
+        let mut expected: Vec<String> = Vec::new();
+        for krate in ctx.config.crate_universe() {
+            for t in crate::build_plan::crate_target_list(krate, &default_targets, |b| {
+                entry_inactive(&ctx, b.skip.as_ref(), None, None)
+            }) {
+                if !expected.contains(&t) {
+                    expected.push(t);
+                }
+            }
+        }
+        assert_eq!(configured_build_targets(&ctx), expected);
     }
 
     #[test]
