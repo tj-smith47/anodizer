@@ -1144,34 +1144,44 @@ mod tests {
         }
     }
 
-    /// The document's `summary.json` shape block is the document CI consumers
-    /// are told to parse, so it must be a document this type accepts:
+    /// EVERY documented summary block on the page is a document CI consumers
+    /// are told to parse, so each must be one this type accepts:
     /// `deny_unknown_fields` turns any drift — a renamed key, a field the
     /// serializer never emits — into a failure here rather than into a
-    /// surprise in a consumer's pipeline.
+    /// surprise in a consumer's pipeline. Selected by shape (an object
+    /// carrying a `results` array) rather than by one block's contents,
+    /// because a second summary block on the same page went on contradicting
+    /// the first for two rounds while a pin aimed at one of them kept passing.
     #[test]
-    fn the_documented_summary_json_parses_back_into_a_run_summary() {
+    fn every_documented_summary_json_parses_back_into_a_run_summary() {
         let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/site/content/docs/advanced/release-resilience.md");
         let text =
             std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {}: {e}", doc.display()));
-        let block = text
+        let statuses: Vec<&str> = every_outcome().iter().map(expect_status).collect();
+        let blocks: Vec<&str> = text
             .split("```json")
-            .find(|b| b.contains("\"determinism_allowlist\""))
-            .and_then(|b| b.split("```").next())
-            .expect("the summary.json shape block");
-        let parsed: RunSummary = serde_json::from_str(block)
-            .unwrap_or_else(|e| panic!("the documented summary.json must parse: {e}\n{block}"));
-        assert_eq!(parsed.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
-        assert_eq!(
-            parsed
-                .results
-                .iter()
-                .map(|r| r.status.as_str())
-                .collect::<Vec<_>>(),
-            vec!["succeeded", "failed"],
-            "the documented statuses are the tokens the serializer writes"
+            .skip(1)
+            .filter_map(|b| b.split("```").next())
+            .filter(|b| b.contains("\"results\""))
+            .collect();
+        assert!(
+            blocks.len() >= 2,
+            "the page documents more than one summary block; found {}",
+            blocks.len()
         );
+        for block in blocks {
+            let parsed: RunSummary = serde_json::from_str(block)
+                .unwrap_or_else(|e| panic!("a documented summary.json must parse: {e}\n{block}"));
+            assert_eq!(parsed.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
+            for r in &parsed.results {
+                assert!(
+                    statuses.contains(&r.status.as_str()),
+                    "'{}' is not a status the serializer writes:\n{block}",
+                    r.status
+                );
+            }
+        }
     }
 
     /// Naming a variant in the chain is not reaching it: an arm returning

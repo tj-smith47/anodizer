@@ -674,21 +674,27 @@ Resulting `dist/run-summary.json` (abbreviated):
 
 ```json
 {
+  "schema_version": 3,
+  "anodizer_version": "0.2.1",
   "tag": "v0.2.1",
   "submitter_gated": false,
   "announce_gated": false,
+  "publishers_succeeded": 3,
+  "publishers_failed": 1,
+  "irreversibly_published": true,
   "results": [
-    { "name": "github-release", "group": "Assets", "required": true,  "outcome": "Succeeded" },
-    { "name": "cloudsmith",     "group": "Assets", "required": false, "outcome": "Succeeded" },
-    { "name": "homebrew",       "group": "Manager","required": false, "outcome": { "Failed": "tap push rejected: branch protection" } },
-    { "name": "cargo",          "group": "Submitter","required": true,"outcome": "Succeeded" }
-  ]
+    { "name": "github-release", "group": "Assets",    "required": true,  "status": "succeeded", "evidence": null },
+    { "name": "cloudsmith",     "group": "Assets",    "required": false, "status": "succeeded", "evidence": null },
+    { "name": "homebrew",       "group": "Manager",   "required": false, "status": "failed",    "evidence": null },
+    { "name": "cargo",          "group": "Submitter", "required": true,  "status": "succeeded", "evidence": null }
+  ],
+  "determinism_allowlist": { "compile_time": [], "runtime": [] }
 }
 ```
 
 Contrast: if homebrew had been marked `required: true`, the Submitter gate
 would have closed before cargo dispatched. `cargo` would appear as
-`{ "Skipped": "SubmitterGated" }` and announce would be `announce-gated`.
+`"status": "skipped-submitter-gated"` and announce would be `announce-gated`.
 Recovery is still just re-running the identical command once the branch
 protection rule is fixed: github-release PATCHes the release it already
 created and cloudsmith skips every file whose md5 already matches, homebrew
