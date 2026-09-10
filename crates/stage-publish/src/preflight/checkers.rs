@@ -713,13 +713,13 @@ fn run_preflight_inner(
         if let Some(ref winget_cfg) = publish.winget
             && probe("winget")
         {
+            let winget_cfg = crate::winget::derive_winget_config(ctx, log, winget_cfg)?;
             let auto_pkg_id = winget_cfg
                 .name
                 .as_deref()
                 .unwrap_or(&krate.name)
                 .to_string();
-            let pkg_id =
-                crate::winget::render_package_identifier(ctx, log, winget_cfg, &auto_pkg_id)?;
+            let pkg_id = crate::winget::package_identifier_of(&winget_cfg, &auto_pkg_id);
             let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
             log.verbose(&format!("checking winget for '{}@{}'", pkg_id, version));
             let checker = factory.winget(token, policy, deadline);

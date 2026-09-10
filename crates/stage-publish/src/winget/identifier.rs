@@ -52,25 +52,43 @@ pub fn static_package_identifier(
     Some(auto_package_identifier(&publisher, name))
 }
 
-/// Resolve a crate's WinGet PackageIdentifier for a live release: the
-/// configured `package_identifier` template rendered against the run's
-/// variables, or `auto` when the field is unset.
+/// Derive a crate's `publish.winget` block for the live run: the configured
+/// `package_identifier` template is rendered INTO the returned config, so the
+/// struct every later consumer reads already carries the text winget will
+/// receive.
 ///
-/// Every consumer — the one-way-door preflight probe, the emission-validate
-/// pass, the manifest bodies, the manifest filenames and the publish branch —
-/// resolves the identifier here, so the rendered value is the only one any of
-/// them ever sees. A raw `{{ … }}` reaching a search URL or a manifest is the
-/// failure this seam exists to prevent.
-pub(crate) fn render_package_identifier(
+/// This is the one render of that field. The one-way-door preflight probe, the
+/// emission-validate pass, the manifest bodies, the manifest filenames and the
+/// publish branch all read the derived field, so a raw `{{ … }}` cannot reach
+/// a search URL or a manifest, and a new consumer has no separate helper to
+/// forget.
+pub(crate) fn derive_winget_config(
     ctx: &anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
     cfg: &anodizer_core::config::WingetConfig,
-    auto: &str,
-) -> Result<String> {
-    match cfg.package_identifier.as_deref() {
-        Some(raw) => crate::util::render_or_warn(ctx, log, "winget.package_identifier", raw),
-        None => Ok(auto.to_string()),
+) -> Result<anodizer_core::config::WingetConfig> {
+    let mut derived = cfg.clone();
+    if let Some(raw) = cfg.package_identifier.as_deref() {
+        derived.package_identifier = Some(crate::util::render_or_warn(
+            ctx,
+            log,
+            "winget.package_identifier",
+            raw,
+        )?);
     }
+    Ok(derived)
+}
+
+/// The PackageIdentifier a derived config carries: its `package_identifier`
+/// (already rendered by [`derive_winget_config`]) or `auto` when the field is
+/// unset.
+pub(crate) fn package_identifier_of(
+    cfg: &anodizer_core::config::WingetConfig,
+    auto: &str,
+) -> String {
+    cfg.package_identifier
+        .clone()
+        .unwrap_or_else(|| auto.to_string())
 }
 
 /// Derive the automatic WinGet PackageIdentifier from a publisher display

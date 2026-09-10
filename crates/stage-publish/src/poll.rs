@@ -189,8 +189,9 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         // PackageIdentifier resolution: prefer explicit `package_identifier`,
         // fall back to `<publisher>.<name>` (the upstream convention enforced
         // by winget validation), then to the crate name as a last resort.
-        // Polling is non-fatal, so a render failure keeps the derived value
-        // rather than aborting the publish stage.
+        // Polling is non-fatal, so a render failure keeps the unrendered
+        // config rather than aborting the publish stage.
+        let cfg = winget::derive_winget_config(ctx, log, &cfg).unwrap_or(cfg);
         let auto_pkg_id = {
             let publisher = cfg.publisher.as_deref().unwrap_or("");
             let name = cfg
@@ -204,8 +205,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
                 winget::auto_package_identifier(publisher, name)
             }
         };
-        let pkg_id =
-            winget::render_package_identifier(ctx, log, &cfg, &auto_pkg_id).unwrap_or(auto_pkg_id);
+        let pkg_id = winget::package_identifier_of(&cfg, &auto_pkg_id);
         match poll_cfg {
             None => skipped.push(("winget", pkg_id, version.clone())),
             Some(poll_cfg) => {

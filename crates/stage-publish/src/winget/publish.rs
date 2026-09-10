@@ -262,6 +262,7 @@ pub(crate) fn collect_winget_target(
     let Some(cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) else {
         return Ok(None);
     };
+    let cfg = &super::identifier::derive_winget_config(ctx, log, cfg)?;
     let Some((repo_owner, _repo_name)) =
         crate::util::resolve_repo_owner_name(cfg.repository.as_ref())
     else {
@@ -278,7 +279,7 @@ pub(crate) fn collect_winget_target(
     };
 
     let auto_pkg_id = auto_package_identifier(&publisher_name, &name_rendered);
-    let package_id = super::identifier::render_package_identifier(ctx, log, cfg, &auto_pkg_id)?;
+    let package_id = super::identifier::package_identifier_of(cfg, &auto_pkg_id);
 
     let version = ctx.version();
     let auto_branch = format!("{}-{}", package_id, version);

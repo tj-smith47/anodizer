@@ -383,6 +383,53 @@ fn msi_installer_manifest_emits_silent_switch() {
     assert!(!inst.contains("NestedInstallerType"), "msi is not nested");
 }
 
+/// `package_identifier` is rendered in exactly one place — the derive seam.
+/// A second render site would let one consumer resolve the field differently
+/// from the rest, which is the divergence the seam exists to prevent.
+#[test]
+fn package_identifier_is_rendered_at_one_seam_only() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("readable source dir") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("tests"))
+            {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    let sites: Vec<String> = files
+        .iter()
+        .filter(|p| {
+            let text = std::fs::read_to_string(p).expect("readable source");
+            anodizer_core::test_helpers::test_sources::production_half(&text)
+                .contains("\"winget.package_identifier\"")
+        })
+        .map(|p| p.display().to_string())
+        .collect();
+    assert_eq!(
+        sites.len(),
+        1,
+        "winget.package_identifier must be rendered once, at the derive seam; found: {sites:?}"
+    );
+    assert!(
+        sites[0].ends_with("winget/identifier.rs"),
+        "the render seam moved: {sites:?}"
+    );
+}
+
 /// `package_identifier` is a template like every sibling field: the
 /// rendered value is what the manifests, the manifest filenames and the
 /// publish branch carry.
