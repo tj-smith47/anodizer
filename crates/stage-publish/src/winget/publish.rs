@@ -611,6 +611,14 @@ impl anodizer_core::Publisher for WingetPublisher {
         } else {
             log.status(&run_done_message(processed));
         }
+        // A dry run submits nothing, so it has nothing to unwind: keeping the
+        // targets would have a later required failure tell the operator to
+        // close pull requests this run never opened.
+        let targets = if ctx.is_dry_run() {
+            Vec::new()
+        } else {
+            targets
+        };
         let mut evidence = anodizer_core::PublishEvidence::new("winget");
         if let Some(first) = targets.first() {
             evidence.primary_ref = Some(format!(

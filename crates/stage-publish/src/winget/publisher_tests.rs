@@ -1000,16 +1000,18 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
     add_windows_zip(&mut ctx, "broken");
     add_windows_zip(&mut ctx, "healthy");
 
-    let evidence = WingetPublisher::new()
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    WingetPublisher::new()
         .run(&mut ctx)
         .expect("a dry run must not fail");
-    let anodizer_core::PublishEvidenceExtra::Winget(ref extra) = evidence.extra else {
-        panic!("winget evidence: {:?}", evidence.extra);
-    };
-    assert_eq!(
-        extra.winget_targets.len(),
-        1,
-        "the healthy crate still collects a target"
+    assert!(
+        capture
+            .all_messages()
+            .iter()
+            .any(|(_, m)| m == &run_done_message(1)),
+        "the healthy crate is still considered: {:?}",
+        capture.all_messages()
     );
     assert!(
         matches!(
@@ -1020,6 +1022,42 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
         ),
         "a dry run reached no remote, so nothing landed: {:?}",
         ctx.pending_outcome
+    );
+}
+
+/// A dry run opens no pull request, so it must carry no target for a rollback
+/// to decode: a later required failure in the same run would otherwise tell
+/// the operator to close pull requests this run never created. The evidence
+/// set and the landing answer are one property, asserted from both ends.
+#[test]
+fn a_dry_run_records_no_winget_rollback_evidence() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![winget_crate_with(
+            "healthy",
+            "v{{ .Version }}",
+            "Acme.healthy",
+        )])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    add_windows_zip(&mut ctx, "healthy");
+
+    let evidence = WingetPublisher::new()
+        .run(&mut ctx)
+        .expect("a dry run must not fail");
+    let anodizer_core::PublishEvidenceExtra::Winget(ref extra) = evidence.extra else {
+        panic!("winget evidence: {:?}", evidence.extra);
+    };
+    assert!(
+        extra.winget_targets.is_empty(),
+        "a dry run submitted nothing, so it has nothing to unwind: {:?}",
+        extra.winget_targets
+    );
+    assert_eq!(
+        evidence.primary_ref, None,
+        "the primary reference names a pull-request search this run never filled"
     );
 }
 
