@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::CannedFactory;
 use anodizer_core::log::StageLogger;
 use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -739,76 +740,6 @@ fn chocolatey_checker_present_without_hash_is_published() {
 }
 
 // ---- run_preflight orchestration with injected mock factory -------
-
-/// Mock checker that ignores inputs and returns a canned state. The
-/// `name` field is the publisher label written into the report entry.
-struct StaticChecker {
-    name: &'static str,
-    state: PublisherState,
-}
-
-impl PreflightChecker for StaticChecker {
-    fn publisher_name(&self) -> &str {
-        self.name
-    }
-    fn check(&self, _package: &str, _version: &str, _log: &StageLogger) -> PublisherState {
-        self.state.clone()
-    }
-}
-
-/// Factory wired up to return the four canned states the orchestration
-/// test asserts against.
-struct CannedFactory {
-    cargo_state: PublisherState,
-    choco_state: PublisherState,
-    winget_state: PublisherState,
-    aur_state: PublisherState,
-}
-
-impl CheckerFactory for CannedFactory {
-    fn cargo(
-        &self,
-        _policy: RetryPolicy,
-        _deadline: Option<std::time::Instant>,
-    ) -> Box<dyn PreflightChecker> {
-        Box::new(StaticChecker {
-            name: "cargo",
-            state: self.cargo_state.clone(),
-        })
-    }
-    fn chocolatey(
-        &self,
-        _source: String,
-        _policy: RetryPolicy,
-        _deadline: Option<std::time::Instant>,
-    ) -> Box<dyn PreflightChecker> {
-        Box::new(StaticChecker {
-            name: "chocolatey",
-            state: self.choco_state.clone(),
-        })
-    }
-    fn winget(
-        &self,
-        _token: Option<String>,
-        _policy: RetryPolicy,
-        _deadline: Option<std::time::Instant>,
-    ) -> Box<dyn PreflightChecker> {
-        Box::new(StaticChecker {
-            name: "winget",
-            state: self.winget_state.clone(),
-        })
-    }
-    fn aur(
-        &self,
-        _policy: RetryPolicy,
-        _deadline: Option<std::time::Instant>,
-    ) -> Box<dyn PreflightChecker> {
-        Box::new(StaticChecker {
-            name: "aur",
-            state: self.aur_state.clone(),
-        })
-    }
-}
 
 /// The one-way-door probe searches the community repository by
 /// PackageIdentifier, so a templated identifier must be rendered before it

@@ -7,6 +7,11 @@
 //! use. NOT a stable public API.
 
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::preflight::PublisherState;
+use anodizer_core::retry::RetryPolicy;
+
+use crate::preflight::{CheckerFactory, PreflightChecker};
 use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -544,4 +549,78 @@ pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
         assert!(out.status.success(), "git tag {tag} exited non-zero");
     }
     repo
+}
+
+// ---------------------------------------------------------------------------
+// Preflight doubles
+// ---------------------------------------------------------------------------
+
+/// Preflight checker that ignores its inputs and answers a canned state.
+/// The `name` field is the publisher label written into the report entry.
+pub struct StaticChecker {
+    pub name: &'static str,
+    pub state: PublisherState,
+}
+
+impl PreflightChecker for StaticChecker {
+    fn publisher_name(&self) -> &str {
+        self.name
+    }
+    fn check(&self, _package: &str, _version: &str, _log: &StageLogger) -> PublisherState {
+        self.state.clone()
+    }
+}
+
+/// Checker factory answering one canned state per one-way-door publisher,
+/// so a preflight run can be driven with no network.
+pub struct CannedFactory {
+    pub cargo_state: PublisherState,
+    pub choco_state: PublisherState,
+    pub winget_state: PublisherState,
+    pub aur_state: PublisherState,
+}
+
+impl CheckerFactory for CannedFactory {
+    fn cargo(
+        &self,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(StaticChecker {
+            name: "cargo",
+            state: self.cargo_state.clone(),
+        })
+    }
+    fn chocolatey(
+        &self,
+        _source: String,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(StaticChecker {
+            name: "chocolatey",
+            state: self.choco_state.clone(),
+        })
+    }
+    fn winget(
+        &self,
+        _token: Option<String>,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(StaticChecker {
+            name: "winget",
+            state: self.winget_state.clone(),
+        })
+    }
+    fn aur(
+        &self,
+        _policy: RetryPolicy,
+        _deadline: Option<std::time::Instant>,
+    ) -> Box<dyn PreflightChecker> {
+        Box::new(StaticChecker {
+            name: "aur",
+            state: self.aur_state.clone(),
+        })
+    }
 }

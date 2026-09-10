@@ -127,6 +127,11 @@ where
 /// All polling is non-fatal; any worker error becomes a
 /// `PostPublishStatus::Error` in the results vec rather than failing the
 /// publish stage.
+///
+/// Results are written in dispatch order — crate order within a publisher,
+/// chocolatey before winget — whatever each candidate resolved to: a polled
+/// result, a `NotPolled` row, or the `Error` row of a candidate that could not
+/// be turned into a job at all.
 pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageLogger) {
     let version = ctx.version();
     let mut jobs: Vec<post_publish::PollJob> = Vec::new();
@@ -134,14 +139,18 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     // `PollJob` is constructed (no cfg / no URL / no token needed),
     // but a `NotPolled` result is still emitted per configured
     // publisher so summaries can render "skipped via flag" vs. "no
-    // publishers configured" distinctly. `(publisher, package, version)`
-    // triples are collected in dispatch order to match the result vec
-    // ordering invariant.
-    let mut skipped: Vec<(&'static str, String, String)> = Vec::new();
+    // publishers configured" distinctly.
+    let mut skipped: Vec<(usize, &'static str, String, String)> = Vec::new();
     // Candidates that could not be resolved into a poll job at all. Recorded
     // as `Error` rows so a resolution failure is visible in the release
     // summary instead of silently narrowing the polled set.
-    let mut errors: Vec<post_publish::PostPublishResult> = Vec::new();
+    let mut errors: Vec<(usize, post_publish::PostPublishResult)> = Vec::new();
+    // The three row classes are filled by one walk but finished at different
+    // times, so each row records the position it was minted at and the classes
+    // are merged back on it — an unresolvable candidate keeps its place in the
+    // listing instead of sinking to the end.
+    let mut ord = 0usize;
+    let mut job_ord: Vec<usize> = Vec::new();
     let skip_via_cli = ctx.options.skip_post_publish_poll;
 
     // Chocolatey eligibility — `poll_eligibility` owns the shared ladder
@@ -171,14 +180,18 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         }
         let pkg_name = cfg.name.unwrap_or(crate_name);
         match poll_cfg {
-            None => skipped.push(("chocolatey", pkg_name, version.clone())),
-            Some(poll_cfg) => jobs.push(post_publish::PollJob::Chocolatey {
-                package: pkg_name,
-                version: version.clone(),
-                page_base_url: "https://community.chocolatey.org".to_string(),
-                cfg: poll_cfg,
-            }),
+            None => skipped.push((ord, "chocolatey", pkg_name, version.clone())),
+            Some(poll_cfg) => {
+                job_ord.push(ord);
+                jobs.push(post_publish::PollJob::Chocolatey {
+                    package: pkg_name,
+                    version: version.clone(),
+                    page_base_url: "https://community.chocolatey.org".to_string(),
+                    cfg: poll_cfg,
+                });
+            }
         }
+        ord += 1;
     }
 
     // WinGet eligibility — same shared ladder via `poll_eligibility`. The PR
@@ -200,14 +213,18 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         let cfg = match winget::derive_winget_config(ctx, log, &cfg) {
             Ok(derived) => derived,
             Err(e) => {
-                errors.push(post_publish::PostPublishResult {
-                    publisher: "winget".to_string(),
-                    package: crate_name.clone(),
-                    version: version.clone(),
-                    status: post_publish::PostPublishStatus::Error {
-                        reason: e.to_string(),
+                errors.push((
+                    ord,
+                    post_publish::PostPublishResult {
+                        publisher: "winget".to_string(),
+                        package: crate_name.clone(),
+                        version: version.clone(),
+                        status: post_publish::PostPublishStatus::Error {
+                            reason: e.to_string(),
+                        },
                     },
-                });
+                ));
+                ord += 1;
                 continue;
             }
         };
@@ -226,7 +243,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         };
         let pkg_id = winget::package_identifier_of(&cfg, &auto_pkg_id);
         match poll_cfg {
-            None => skipped.push(("winget", pkg_id, version.clone())),
+            None => skipped.push((ord, "winget", pkg_id, version.clone())),
             Some(poll_cfg) => {
                 // Render a configured `repository.token` before use — a
                 // templated `{{ .Env.GH_PAT }}` must become the resolved
@@ -259,6 +276,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
                 // makes the PR title unpredictable — mirroring the burn
                 // probe so poll and publish can never disagree.
                 let (upstream_owner, upstream_repo) = winget::resolve_winget_upstream(&cfg);
+                job_ord.push(ord);
                 jobs.push(post_publish::PollJob::Winget {
                     package_identifier: pkg_id,
                     version: version.clone(),
@@ -270,6 +288,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
                 });
             }
         }
+        ord += 1;
     }
 
     // Skip-path: emit one `NotPolled` per eligible publisher so the
@@ -287,21 +306,25 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
             "skipped post-publish polling — --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
             skipped.len()
         ));
-        let mut not_polled: Vec<post_publish::PostPublishResult> = skipped
+        let mut rows: Vec<(usize, post_publish::PostPublishResult)> = skipped
             .into_iter()
-            .map(
-                |(publisher, package, version)| post_publish::PostPublishResult {
-                    publisher: publisher.to_string(),
-                    package,
-                    version,
-                    status: post_publish::PostPublishStatus::NotPolled,
-                },
-            )
+            .map(|(ord, publisher, package, version)| {
+                (
+                    ord,
+                    post_publish::PostPublishResult {
+                        publisher: publisher.to_string(),
+                        package,
+                        version,
+                        status: post_publish::PostPublishStatus::NotPolled,
+                    },
+                )
+            })
             .collect();
-        not_polled.extend(errors);
-        ctx.stage_outputs.post_publish_results = not_polled
+        rows.extend(errors);
+        rows.sort_by_key(|(ord, _)| *ord);
+        ctx.stage_outputs.post_publish_results = rows
             .iter()
-            .map(|r| {
+            .map(|(_, r)| {
                 serde_json::to_value(r).expect(
                     "PostPublishResult is always serializable — schema is derived from a string + enum struct",
                 )
@@ -320,8 +343,16 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
             jobs.len()
         ));
     }
-    let mut results = post_publish::run_post_publish_polls(jobs, log);
-    results.extend(errors);
+    // `run_post_publish_polls` returns its results in input order
+    // (`run_post_publish_polls_returns_results_in_input_order`), so zipping
+    // the job ordinals back on is sound.
+    let mut rows: Vec<(usize, post_publish::PostPublishResult)> = job_ord
+        .into_iter()
+        .zip(post_publish::run_post_publish_polls(jobs, log))
+        .collect();
+    rows.extend(errors);
+    rows.sort_by_key(|(ord, _)| *ord);
+    let results: Vec<post_publish::PostPublishResult> = rows.into_iter().map(|(_, r)| r).collect();
     for r in &results {
         match &r.status {
             post_publish::PostPublishStatus::Approved { detail } => log.status(&format!(

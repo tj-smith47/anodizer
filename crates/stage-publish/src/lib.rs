@@ -1315,6 +1315,9 @@ mod tests {
 
     /// Without `--strict` the shared render fallback stays: the run warns and
     /// carries on polling rather than turning a template into a hard failure.
+    /// The candidate polls under the auto-derived `<publisher>.<name>`
+    /// identifier — the raw template names no package, so it is never what the
+    /// listing (or the PR search built from it) carries.
     #[test]
     fn non_strict_unrenderable_package_identifier_keeps_the_render_fallback() {
         let mut ctx = Context::new(
@@ -1334,6 +1337,77 @@ mod tests {
         assert_eq!(
             results[0]["status"]["kind"], "not_polled",
             "the non-strict fallback keeps the candidate eligible: {results:?}"
+        );
+        assert_eq!(
+            results[0]["package"], "TJSmith.MyLib",
+            "the fallback identifier is the auto-derived one, never the raw \
+             template: {results:?}"
+        );
+    }
+
+    /// The poll listing is written in dispatch order whatever a candidate
+    /// resolved to. A crate whose identifier fails to render is an `Error`
+    /// row, and it stays where its crate sits in the config — a reader
+    /// matching rows against crates must not have to re-sort, and the row of
+    /// the crate that failed must not appear to belong to a later one.
+    #[test]
+    fn an_unresolvable_poll_candidate_keeps_its_dispatch_position() {
+        use anodizer_core::config::{PostPublishPollConfig, WingetConfig};
+
+        let polled_winget = |package_identifier: Option<&str>| {
+            Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    publisher: Some("TJSmith".to_string()),
+                    name: Some("MyLib".to_string()),
+                    package_identifier: package_identifier.map(str::to_string),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        };
+
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "brokenlib".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                publish: polled_winget(Some("{{ TJSmith.MyLib")),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "goodlib".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                publish: polled_winget(None),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                skip_post_publish_poll: true,
+                strict: true,
+                ..Default::default()
+            },
+        );
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        let results = &ctx.stage_outputs.post_publish_results;
+        assert_eq!(results.len(), 2, "got {results:?}");
+        assert_eq!(results[0]["package"], "brokenlib", "got {results:?}");
+        assert_eq!(results[0]["status"]["kind"], "error", "got {results:?}");
+        assert_eq!(results[1]["package"], "TJSmith.MyLib", "got {results:?}");
+        assert_eq!(
+            results[1]["status"]["kind"], "not_polled",
+            "got {results:?}"
         );
     }
 

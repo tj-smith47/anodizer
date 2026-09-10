@@ -81,14 +81,21 @@ pub(crate) fn derive_winget_config(
 
 /// The PackageIdentifier a derived config carries: its `package_identifier`
 /// (already rendered by [`derive_winget_config`]) or `auto` when the field is
-/// unset.
+/// unset — or when the field did not render.
+///
+/// A residual `{{` can only come from the non-strict render fallback, which
+/// warns and keeps the raw template. A template is not an identifier: it names
+/// a package that cannot exist, so the auto-derived identifier stands in
+/// rather than reaching a manifest, a branch name or the PR search a poll is
+/// built from.
 pub(crate) fn package_identifier_of(
     cfg: &anodizer_core::config::WingetConfig,
     auto: &str,
 ) -> String {
-    cfg.package_identifier
-        .clone()
-        .unwrap_or_else(|| auto.to_string())
+    match cfg.package_identifier.as_deref() {
+        Some(id) if !id.contains("{{") => id.to_string(),
+        _ => auto.to_string(),
+    }
 }
 
 /// Derive the automatic WinGet PackageIdentifier from a publisher display

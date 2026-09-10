@@ -14,8 +14,40 @@
 //!   the parent module really does declare the file under a test-only `cfg`.
 //! - [`production_half`] finds where a production file's inline test module
 //!   starts, so a walk over production code stops before it.
+//! - [`rust_sources`] is the walk itself: every production `.rs` file under a
+//!   directory, with test sources skipped by name once their declaration has
+//!   been checked.
 
 use std::path::{Path, PathBuf};
+
+/// Every production `.rs` file under `dir`, recursively.
+///
+/// Test sources are skipped by NAME — whatever [`is_test_source_path`] names,
+/// plus a `tests/` module directory — rather than by their content, because a
+/// sibling test file carries no `#[cfg(test)]` of its own. Skipping one by
+/// name is only sound while it really is test-only, so every skipped path is
+/// checked against its parent module's declaration and an ungated one panics
+/// rather than silently dropping production code from the walk.
+pub fn rust_sources(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("read source dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "tests") {
+                declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
+                continue;
+            }
+            found.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            if is_test_source_path(&path) {
+                declared_under_test_cfg(&path).unwrap_or_else(|why| panic!("{why}"));
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
 
 /// Whether `path` is a whole test source file by name, exactly as
 /// `.claude/scripts/lib/test-regions.awk`'s `is_test_file` decides it.

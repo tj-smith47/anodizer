@@ -384,13 +384,10 @@ fn msi_installer_manifest_emits_silent_switch() {
 }
 
 /// `package_identifier` is rendered in exactly one place — the derive seam —
-/// and every consumer reads the field the seam wrote. A raw `{{ … }}` reaching
-/// the publish branch, the PR target or a manifest is the failure the seam
-/// exists to prevent; the sibling pins
-/// `winget_preflight_probes_the_rendered_package_identifier` (the one-way-door
-/// probe) and `package_identifier_is_templated` (the manifest bodies, which
-/// the emission-validate pass renders through the same call) cover the other
-/// two consumers.
+/// and every consumer reads the field the seam wrote: the one-way-door
+/// preflight probe, the emission-validate render, the manifest bodies and the
+/// publish branch. A raw `{{ … }}` reaching a search URL or a manifest is the
+/// failure the seam exists to prevent.
 #[test]
 fn package_identifier_is_rendered_at_one_seam_only() {
     let crate_cfg = winget_crate_with("demo", "v{{ .Version }}", "{{ .Env.WINGET_OWNER }}.tool");
@@ -428,6 +425,76 @@ fn package_identifier_is_rendered_at_one_seam_only() {
     assert_eq!(
         target.branch, "Acme.tool-1.0.0",
         "the publish branch is built from the rendered identifier"
+    );
+
+    // The emission-validate pass renders through this same call, so its
+    // manifests are the ones asserted here.
+    let rendered = render_winget_manifests_for_crate(&ctx, "demo", &log)
+        .expect("render ok")
+        .expect("demo not skipped");
+    assert_eq!(rendered.package_id, "Acme.tool");
+    for yaml in [
+        &rendered.version_yaml,
+        &rendered.installer_yaml,
+        &rendered.locale_yaml,
+    ] {
+        assert!(
+            yaml.contains("PackageIdentifier: Acme.tool"),
+            "unrendered identifier in a validated manifest:\n{yaml}"
+        );
+    }
+
+    let report = crate::preflight::run_preflight_with_factory(
+        &mut ctx,
+        &log,
+        &crate::testing::CannedFactory {
+            cargo_state: anodizer_core::preflight::PublisherState::Clean,
+            choco_state: anodizer_core::preflight::PublisherState::Clean,
+            winget_state: anodizer_core::preflight::PublisherState::Clean,
+            aur_state: anodizer_core::preflight::PublisherState::Clean,
+        },
+    )
+    .expect("preflight ok");
+    let probed = report
+        .entries
+        .iter()
+        .find(|e| e.publisher == "winget")
+        .expect("a winget preflight entry");
+    assert_eq!(
+        probed.package, "Acme.tool",
+        "the one-way-door probe searches the rendered identifier"
+    );
+
+    // Structural half: the behavioural assertions above all read the seam's
+    // output, so they cannot see a SECOND render appearing elsewhere.
+    let mut sites = Vec::new();
+    let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for source in anodizer_core::test_helpers::test_sources::rust_sources(&src_root) {
+        let text = std::fs::read_to_string(&source).expect("readable source");
+        let prod = anodizer_core::test_helpers::test_sources::production_half(&text);
+        let code: Vec<&str> = prod
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        for (i, line) in code.iter().enumerate() {
+            let renders = line.contains("render_or_warn(") || line.contains("render_template(");
+            if renders
+                && code[i..code.len().min(i + 3)]
+                    .iter()
+                    .any(|l| l.contains("package_identifier"))
+            {
+                sites.push(format!("{}: {}", source.display(), line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "the identifier must be rendered at exactly one seam: {sites:?}"
+    );
+    assert!(
+        sites[0].contains("winget/identifier.rs"),
+        "the one seam is `derive_winget_config`: {sites:?}"
     );
 }
 
