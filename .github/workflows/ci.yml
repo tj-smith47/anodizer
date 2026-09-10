@@ -152,11 +152,12 @@ jobs:
     timeout-minutes: 30
     env:
       RUSTC_WRAPPER: sccache
-      # The release-binary bootstrap runs on master, Linux only — used by the
-      # `release` job's `--publish-only` step (consumed via
+      # The release-binary bootstrap runs Linux-only, wherever a consumer of the
+      # artifact runs — the `release` job's `--publish-only` step (consumed via
       # `from-artifact: anodizer-linux`) and the snapshot dry-run. Stated once
-      # here so both the build and upload steps gate on the same condition.
-      RELEASE_BOOTSTRAP: ${{ github.ref == 'refs/heads/master' && matrix.os == 'ubuntu-latest' }}
+      # here so both the build and upload steps gate on the same condition, and
+      # it must stay identical to the `snapshot` job's own guard.
+      RELEASE_BOOTSTRAP: ${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') && matrix.os == 'ubuntu-latest' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -225,7 +226,11 @@ jobs:
 
   snapshot:
     name: Snapshot (dry-run)
-    if: github.ref == 'refs/heads/master'
+    # `github.ref` on a pull_request is `refs/pull/N/merge`, so a master-only
+    # guard skips the one job that proves the release pipeline still plans —
+    # and a break then surfaces on the master push, after the merge. Scratch
+    # `session-*` pushes still skip it.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -325,7 +330,6 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
     # Provisions the runtime-probed toolchain (coverage-tools) and therefore
     # actually executes the ~780 probe sites a bare runner skips; the run is
     # strictly longer than when those tests no-oped.
@@ -348,5 +352,9 @@ jobs:
           coverage-tools: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run coverage and update badge
-        run: task coverage:publish
+      # `coverage:gate` measures and enforces the floor; `coverage:publish` is
+      # that plus the badge push to origin/badges. Splitting by target rather
+      # than gating the whole job is what lets the floor fail the pull request
+      # that would breach it instead of the master push that already merged it.
+      - name: Run coverage
+        run: task ${{ github.ref == 'refs/heads/master' && 'coverage:publish' || 'coverage:gate' }}
