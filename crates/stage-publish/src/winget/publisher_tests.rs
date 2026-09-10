@@ -628,6 +628,53 @@ fn package_identifier_is_rendered_at_one_seam_only() {
     );
 }
 
+/// The repository owner is a template too, and the derive seam is the one
+/// place it is rendered: an owner that cannot render warns once for the crate,
+/// not once per consumer that re-renders the same field.
+#[test]
+fn the_repository_owner_is_rendered_once_per_crate() {
+    let crate_cfg = CrateConfig {
+        name: "demo".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            winget: Some(WingetConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("{{ acme".to_string()),
+                    name: Some("winget-pkgs-fork".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    add_windows_zip(&mut ctx, "demo");
+
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    let log = ctx.logger("publish");
+    collect_winget_target(&ctx, "demo", &log)
+        .expect("target ok")
+        .expect("demo is winget-configured");
+
+    let owner_warns: Vec<String> = capture
+        .warn_messages()
+        .into_iter()
+        .filter(|m| m.contains("winget.repository.owner"))
+        .collect();
+    assert_eq!(
+        owner_warns.len(),
+        1,
+        "the owner is rendered at the derive seam only: {owner_warns:?}"
+    );
+}
+
 /// `package_identifier` is a template like every sibling field: the
 /// rendered value is what the manifests, the manifest filenames and the
 /// publish branch carry.
@@ -1345,9 +1392,9 @@ fn run_no_eligible_crates_warning_handles_empty_selection() {
 
 /// Run the publisher end-to-end in dry-run mode against a context
 /// that selects a winget-configured crate. Verifies the run path is
-/// wired (returns Ok, records target evidence). The log lines
-/// themselves are written to stderr and asserted indirectly via the
-/// helper-string tests above.
+/// wired: the crate is visited and named in the submission line rather
+/// than silently skipped. A dry run stores no rollback evidence, so the
+/// log is what says the crate was reached.
 #[test]
 fn winget_publisher_run_dry_run_records_target() {
     let repo = crate::testing::hermetic_tagged_repo();
@@ -1357,23 +1404,22 @@ fn winget_publisher_run_dry_run_records_target() {
         .dry_run(true)
         .project_root(repo.path().to_path_buf())
         .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
     let p = WingetPublisher::new();
-    let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
-    // primary_ref + extra.winget_targets must reflect that the run
-    // path actually visited the demo crate (not silently skipped).
-    // Without these the publisher would report "succeeded" with
-    // nothing recorded.
-    let primary = evidence
-        .primary_ref
-        .as_deref()
-        .expect("primary_ref must be set after a real run");
+    p.run(&mut ctx).expect("dry-run publisher.run");
+    let messages = capture.all_messages();
     assert!(
-        primary.starts_with("https://github.com/microsoft/winget-pkgs/pulls?q=head%3Aacme%3A"),
-        "primary_ref shape: {primary}"
+        messages.iter().any(|(_, m)| m.contains(
+            "(dry-run) would submit WinGet manifest for 'demo' (pkg=AcmeCo.demo) to \
+             acme/winget-pkgs-fork"
+        )),
+        "the run must visit the demo crate: {messages:?}"
     );
-    let targets = decode_winget_targets(&evidence.extra);
-    assert_eq!(targets.len(), 1, "{:?}", targets);
-    assert_eq!(targets[0].crate_name, "demo");
+    assert!(
+        messages.iter().any(|(_, m)| m == &run_done_message(1)),
+        "the demo crate is the one considered crate: {messages:?}"
+    );
 }
 
 /// When the publisher is registered (a crate has a winget block) but
@@ -1429,23 +1475,21 @@ fn winget_publisher_run_empty_selection_publishes_all_configured() {
         .dry_run(true)
         .project_root(repo.path().to_path_buf())
         .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
     let p = WingetPublisher::new();
-    let evidence = p.run(&mut ctx).expect("publisher.run ok");
-    let primary = evidence
-        .primary_ref
-        .as_deref()
-        .expect("empty selection must implicitly publish every winget-configured crate");
+    p.run(&mut ctx).expect("publisher.run ok");
+    let messages = capture.all_messages();
     assert!(
-        primary.starts_with("https://github.com/microsoft/winget-pkgs/pulls?q=head%3Aacme%3A"),
-        "primary_ref shape: {primary}"
+        messages
+            .iter()
+            .any(|(_, m)| m.contains("would submit WinGet manifest for 'demo'")),
+        "empty selection must implicitly publish every winget-configured crate: {messages:?}"
     );
-    let targets = decode_winget_targets(&evidence.extra);
-    assert_eq!(
-        targets.len(),
-        1,
-        "empty selection must produce one target per winget-configured crate"
+    assert!(
+        messages.iter().any(|(_, m)| m == &run_done_message(1)),
+        "empty selection must consider one winget-configured crate: {messages:?}"
     );
-    assert_eq!(targets[0].crate_name, "demo");
 }
 
 /// Implicit-all must still produce empty evidence when zero crates

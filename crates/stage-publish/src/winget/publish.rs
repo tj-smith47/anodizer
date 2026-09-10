@@ -268,7 +268,8 @@ pub(crate) fn collect_winget_target(
     else {
         return Ok(None);
     };
-    let fork_owner = util::render_or_warn(ctx, log, "winget.repository.owner", &repo_owner)?;
+    // `derive_winget_config` rendered the owner onto the config above.
+    let fork_owner = repo_owner;
 
     let version = ctx.version();
     let package_id = super::identifier::package_identifier_of(cfg);

@@ -57,6 +57,11 @@ pub fn static_package_identifier(
 /// configured `package_identifier` rendered, or the auto-derived
 /// `<publisher>.<name>` when that field is unset or did not render.
 ///
+/// The returned config also carries its repository owner rendered, so the fork
+/// coordinates a consumer reads are the same string the identifier was built
+/// from and an unrenderable owner warns once per crate rather than once per
+/// consumer that re-renders it.
+///
 /// This is the one place either value is computed. The one-way-door preflight
 /// probe, the post-publish poll, the emission-validate pass, the manifest
 /// bodies, the manifest filenames and the publish branch all read the derived
@@ -70,12 +75,22 @@ pub(crate) fn derive_winget_config(
     crate_name: &str,
 ) -> Result<anodizer_core::config::WingetConfig> {
     let mut derived = cfg.clone();
+    if let Some(repo) = derived.repository.as_mut()
+        && let Some(owner) = repo.owner.as_deref()
+    {
+        repo.owner = Some(crate::util::render_or_warn(
+            ctx,
+            log,
+            "winget.repository.owner",
+            owner,
+        )?);
+    }
     let rendered = cfg
         .package_identifier
         .as_deref()
         .map(|raw| crate::util::render_or_warn(ctx, log, "winget.package_identifier", raw))
         .transpose()?;
-    derived.package_identifier = Some(match rendered {
+    let identifier = match rendered {
         // A residual `{{` can only come from the non-strict render fallback,
         // which warns and keeps the raw template. A template is not an
         // identifier: it names a package that cannot exist, so the
@@ -84,8 +99,9 @@ pub(crate) fn derive_winget_config(
         // render is kept whatever it says, so an identifier the operator chose
         // fails validation instead of being replaced behind their back.
         Some(id) if !id.contains("{{") => id,
-        _ => auto_identifier_for(ctx, log, cfg, crate_name)?,
-    });
+        _ => auto_identifier_for(ctx, log, &derived, crate_name)?,
+    };
+    derived.package_identifier = Some(identifier);
     Ok(derived)
 }
 
@@ -94,6 +110,9 @@ pub(crate) fn derive_winget_config(
 /// and the name to the crate name. A config that resolves no publisher at all
 /// yields the bare name, which fails [`validate_package_identifier`] rather
 /// than naming someone else's package.
+///
+/// Takes the config [`derive_winget_config`] has already rendered the owner
+/// onto, so the owner is not rendered a second time here.
 fn auto_identifier_for(
     ctx: &anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
@@ -109,9 +128,7 @@ fn auto_identifier_for(
     let publisher = match cfg.publisher.as_deref() {
         Some(p) if !p.is_empty() => p.to_string(),
         _ => match crate::util::resolve_repo_owner_name(cfg.repository.as_ref()) {
-            Some((owner, _)) => {
-                crate::util::render_or_warn(ctx, log, "winget.repository.owner", &owner)?
-            }
+            Some((owner, _)) => owner,
             None => String::new(),
         },
     };
