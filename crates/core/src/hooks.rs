@@ -223,13 +223,33 @@ fn run_hooks_inner(
         };
 
         executed = true;
+
+        // The command's effective environment, in the precedence the child
+        // receives it: process env (inherited) < build env < extra env < the
+        // hook's own `env:`. A secret any of those layers interpolated into
+        // `cmd:` is now literal text in `cmd_str`, so every rendered form that
+        // reaches a log line or an error chain is masked against that env.
+        // `cmd_str` itself is what runs.
+        let mut effective_env: Vec<(String, String)> = std::env::vars().collect();
+        if let Some(be) = build_env {
+            effective_env.extend(be.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        if let Some(ee) = extra_env {
+            effective_env.extend(ee.iter().cloned());
+        }
+        if let Some(ref envs) = expanded_env {
+            effective_env.extend(envs.iter().cloned());
+        }
+        let redacting_log = log.clone().with_env(effective_env);
+        let safe_cmd = redacting_log.redact(&cmd_str);
+
         if dry_run {
             log.status(&format!(
                 "(dry-run) would run {} hook via `{}`",
-                label, cmd_str
+                label, safe_cmd
             ));
         } else {
-            log.verbose(&format!("running {} hook via `{}`", label, cmd_str));
+            log.verbose(&format!("running {} hook via `{}`", label, safe_cmd));
             let mut command = Command::new("sh");
             command.arg("-c").arg(&cmd_str);
             // Hooks inherit the host env so toolchain env vars (PATH, MSVC
@@ -261,30 +281,29 @@ fn run_hooks_inner(
             // them on failure, and (at verbose) streams the hook's output
             // live so a long-running before/after hook shows progress. Hook
             // output may contain secrets from the inherited host env, so the
-            // helper logger carries the full process env for redaction —
-            // matching the prior `redact_secrets` (process-env) coverage,
-            // which is broader than the caller logger's attached env.
-            let redacting_log = log.clone().with_env(std::env::vars().collect::<Vec<_>>());
+            // helper logger carries the whole effective env for redaction —
+            // a superset of the process env the prior `redact_secrets`
+            // coverage used.
             let output = crate::run::run_checked(
                 &mut command,
                 &redacting_log,
-                &format!("{} hook: {}", label, cmd_str),
+                &format!("{} hook: {}", label, safe_cmd),
             )?;
 
             match result_line {
                 HookResultLine::PerArtifact(name) => {
-                    log.verbose(&format!("ran {label} hook '{cmd_str}' on {name}"))
+                    log.verbose(&format!("ran {label} hook '{safe_cmd}' on {name}"))
                 }
                 // Run-once: the caller emits the single default summary, so the
                 // joined command stays at verbose — never echoed at `status`.
                 HookResultLine::Suppressed => {
-                    log.verbose(&format!("ran {label} hook '{cmd_str}' once"))
+                    log.verbose(&format!("ran {label} hook '{safe_cmd}' once"))
                 }
                 HookResultLine::Status => {
                     // Name WHICH hook ran so several `before:`/`after:` entries
                     // produce distinct default lines instead of N identical
                     // "ran before hook" echoes.
-                    let hook_name = hook_cmd_summary(&cmd_str);
+                    let hook_name = hook_cmd_summary(&safe_cmd);
                     log.status(&format!("ran {label} hook: {hook_name}"));
                 }
             }
@@ -1036,6 +1055,200 @@ mod tests {
             chain.contains("template render failed") || chain.contains("UndefinedSymbol"),
             "expected render-error diagnostic, got: {chain}",
         );
+    }
+
+    /// A secret the hook's own `env:` carries and its `cmd:` interpolates.
+    const HOOK_SECRET: &str = "ghp_realsecretvalue";
+
+    /// A structured hook whose `env:` exports `DEPLOY_TOKEN` and whose `cmd:`
+    /// interpolates it, so the rendered command line carries the value.
+    #[cfg(feature = "test-helpers")]
+    fn secret_hook(cmd: &str) -> HookEntry {
+        HookEntry::Structured(StructuredHook {
+            cmd: cmd.to_string(),
+            env: Some(vec![format!("DEPLOY_TOKEN={HOOK_SECRET}")]),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn dry_run_hook_line_redacts_a_secret_from_the_hook_env() {
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let hooks = vec![secret_hook(
+            "curl -H 'Authorization: {{ .Env.DEPLOY_TOKEN }}'",
+        )];
+        let mut vars = TemplateVars::new();
+        vars.set_env("DEPLOY_TOKEN", HOOK_SECRET);
+        run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
+            .expect("dry-run must not execute the hook");
+        let lines = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            lines.contains("$DEPLOY_TOKEN"),
+            "the dry-run line must name the masked variable; got: {lines:?}"
+        );
+        assert!(
+            !lines.contains(HOOK_SECRET),
+            "the dry-run line must not carry the secret value; got: {lines:?}"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn verbose_hook_line_redacts_a_secret_from_the_hook_env() {
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+        let hooks = vec![secret_hook("true {{ .Env.DEPLOY_TOKEN }}")];
+        let mut vars = TemplateVars::new();
+        vars.set_env("DEPLOY_TOKEN", HOOK_SECRET);
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("hook must run");
+        for (_, msg) in cap.all_messages() {
+            assert!(
+                !msg.contains(HOOK_SECRET),
+                "no logged line may carry the secret value; got: {msg:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hook_result_line_redacts_the_rendered_command() {
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let hooks = vec![secret_hook("true {{ .Env.DEPLOY_TOKEN }}")];
+        let mut vars = TemplateVars::new();
+        vars.set_env("DEPLOY_TOKEN", HOOK_SECRET);
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("hook must run");
+        let result_line = cap
+            .all_messages()
+            .into_iter()
+            .find(|(_, m)| m.starts_with("ran test hook: "))
+            .map(|(_, m)| m)
+            .expect("the run must emit one result line");
+        assert!(
+            result_line.contains("$DEPLOY_TOKEN") && !result_line.contains(HOOK_SECRET),
+            "the result line summarises the masked command; got: {result_line:?}"
+        );
+    }
+
+    #[test]
+    fn hook_failure_context_redacts_the_rendered_command() {
+        let log = test_logger();
+        let hooks = vec![secret_hook_failing()];
+        let mut vars = TemplateVars::new();
+        vars.set_env("DEPLOY_TOKEN", HOOK_SECRET);
+        let err = run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect_err("a non-zero hook must fail the run");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("$DEPLOY_TOKEN"),
+            "the error chain must name the masked variable; got: {chain}"
+        );
+        assert!(
+            !chain.contains(HOOK_SECRET),
+            "the error chain must not carry the secret value; got: {chain}"
+        );
+    }
+
+    /// The [`secret_hook`] shape with a non-zero exit, for the failure-path
+    /// assertion (available without the capture feature).
+    fn secret_hook_failing() -> HookEntry {
+        HookEntry::Structured(StructuredHook {
+            cmd: "false {{ .Env.DEPLOY_TOKEN }}".to_string(),
+            env: Some(vec![format!("DEPLOY_TOKEN={HOOK_SECRET}")]),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hook_effective_env_masks_a_build_env_secret() {
+        // The secret arrives through the build env, not the hook's own `env:`,
+        // so a logger carrying only the process env would print it.
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: "true {{ .Env.BUILD_TOKEN }}".to_string(),
+            ..Default::default()
+        })];
+        let mut vars = TemplateVars::new();
+        vars.set_env("BUILD_TOKEN", "ghp_buildenvsecret");
+        let mut build_env = HashMap::new();
+        build_env.insert("BUILD_TOKEN".to_string(), "ghp_buildenvsecret".to_string());
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext {
+                dry_run: true,
+                log: &log,
+                template_vars: Some(&vars),
+                build_env: Some(&build_env),
+                extra_env: None,
+            },
+        )
+        .expect("dry-run must not execute the hook");
+        let lines = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            lines.contains("$BUILD_TOKEN") && !lines.contains("ghp_buildenvsecret"),
+            "a build-env secret must be masked in the hook line too; got: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn hook_executes_the_unredacted_command() {
+        // Redaction is a logging concern: the argv handed to `sh -c` keeps the
+        // real value, or the hook cannot do its job.
+        let dir = std::env::temp_dir().join(format!("anodizer-hookexec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("executed.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_fwd = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            // Single quotes so a masked `$DEPLOY_TOKEN` would land in the
+            // file literally instead of being re-expanded by the shell from
+            // the hook's own env.
+            cmd: format!("printf '%s' '{{{{ .Env.DEPLOY_TOKEN }}}}' > {out_fwd}"),
+            env: Some(vec![format!("DEPLOY_TOKEN={HOOK_SECRET}")]),
+            ..Default::default()
+        })];
+        let mut vars = TemplateVars::new();
+        vars.set_env("DEPLOY_TOKEN", HOOK_SECRET);
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains(HOOK_SECRET),
+            "the executed command must carry the real value, not the mask; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
     }
 
     #[cfg(feature = "test-helpers")]
