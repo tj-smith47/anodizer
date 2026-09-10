@@ -196,6 +196,17 @@ impl std::fmt::Display for RepositoryUnreadable {
 
 impl std::error::Error for RepositoryUnreadable {}
 
+/// The redaction [`RepositoryUnreadable::message`] promises: git's own stderr
+/// with process-env secrets masked and any credential-bearing URL stripped.
+///
+/// Named rather than inlined so the guarantee the field's doc states has one
+/// place to be checked — `redact_process_env` composes both halves, and
+/// `a_refused_repository_message_masks_url_credentials` fails if either stops
+/// being applied instead of the doc quietly becoming aspirational.
+fn redacted_git_detail(stderr: &str) -> String {
+    crate::redact::redact_process_env(stderr.trim())
+}
+
 /// Return all tags that point at the given commit (any revision spec).
 ///
 /// Runs `git tag --points-at <sha>`. A revision that simply carries no tags
@@ -213,7 +224,7 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let detail = crate::redact::redact_process_env(stderr.trim());
+        let detail = redacted_git_detail(&stderr);
         // Exit 128 is git's "I could not read this repository" code — dubious
         // ownership, a path that is not a work tree, a corrupt object store.
         // Every other non-zero exit is a revision question git answered.
@@ -236,4 +247,38 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_repository_message_masks_url_credentials() {
+        let stderr = "fatal: could not read from \
+                      'https://alice:s3cr3t-token@github.com/owner/repo.git'\n";
+        let detail = redacted_git_detail(stderr);
+        assert!(
+            !detail.contains("s3cr3t-token") && !detail.contains("alice:"),
+            "the userinfo must not reach the operator's log: {detail}"
+        );
+        assert!(
+            detail.contains("github.com/owner/repo.git"),
+            "the remote itself is what makes the message actionable: {detail}"
+        );
+        let err = RepositoryUnreadable { message: detail };
+        assert!(
+            !err.to_string().contains("s3cr3t-token"),
+            "the error the caller prints carries the redacted message: {err}"
+        );
+    }
+
+    #[test]
+    fn a_refused_repository_message_keeps_the_path_git_names() {
+        // Dubious ownership is the canonical cause, and the remediation the
+        // operator needs is `git config --global --add safe.directory <path>`.
+        let detail =
+            redacted_git_detail("fatal: detected dubious ownership in repository at '/src/app'\n");
+        assert!(detail.contains("/src/app"), "got {detail}");
+    }
 }
