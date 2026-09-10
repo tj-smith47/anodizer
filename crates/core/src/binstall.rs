@@ -1834,6 +1834,29 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         );
     }
 
+    /// A `binary:` that is itself a template becomes the build's id, and the
+    /// build stage renders it before stamping it on the artifact the archive's
+    /// `ids:` filter then matches. Comparing the raw template here selects no
+    /// build at all, and the derived name silently falls back to the crate
+    /// name — a name the release never uploads.
+    #[test]
+    fn a_binary_fallback_id_is_rendered_before_matching_an_archive_id() {
+        let templated = BuildConfig {
+            binary: Some("{{ ProjectName }}-cli".to_string()),
+            targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+            ..Default::default()
+        };
+        let names = derived_names(&binary_named_crate(
+            vec![templated, build_for("other", &["x86_64-unknown-linux-gnu"])],
+            Some(vec!["myapp-cli".to_string()]),
+            None,
+        ));
+        assert_eq!(
+            names["x86_64-unknown-linux-gnu"],
+            "myapp-cli-1.0.0-linux-amd64.tar.gz"
+        );
+    }
+
     /// The common case must not move: one build packed on every target derives
     /// the SAME binary name on each, because nothing narrowed the candidates.
     #[test]

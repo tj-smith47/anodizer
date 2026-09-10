@@ -248,10 +248,10 @@ pub fn crate_primary_binary_name(krate: &CrateConfig) -> String {
 /// static-id half of the artifact-level `matches_id_filter`, which judges the
 /// produced artifacts by that same id; an absent or empty list selects every
 /// build.
-fn archive_selects_id(id: &BuildId, archive_ids: Option<&[String]>) -> bool {
+fn archive_selects_id(id: &str, archive_ids: Option<&[String]>) -> bool {
     match archive_ids {
         None | Some([]) => true,
-        Some(ids) => ids.iter().any(|want| want == id.raw()),
+        Some(ids) => ids.iter().any(|want| want == id),
     }
 }
 
@@ -303,12 +303,22 @@ pub fn archive_binary_name(
         build_is_skipped(build, &render)
     })
     .into_iter()
-    .find(|entry| {
-        entry.targets.iter().any(|t| t == target)
-            && archive_selects_id(&entry.id, archive_ids)
-            && archive_packs_binary(&entry.binary, archive_binaries)
+    .find_map(|entry| {
+        // `stage-build` renders the binary name, and the `binary`-fallback id
+        // it derives from it, once per target before stamping either on the
+        // artifact the archive stage then filters — so a `binary:` that is
+        // itself a template is matched and displayed RENDERED. An explicit
+        // `build.id` is stamped verbatim and must never be rendered.
+        let binary = render(&entry.binary).unwrap_or(entry.binary);
+        let id = match &entry.id {
+            BuildId::Explicit(raw) => raw.clone(),
+            BuildId::BinaryFallback(raw) => render(raw).unwrap_or_else(|_| raw.clone()),
+        };
+        (entry.targets.iter().any(|t| t == target)
+            && archive_selects_id(&id, archive_ids)
+            && archive_packs_binary(&binary, archive_binaries))
+        .then_some(binary)
     })
-    .map(|entry| entry.binary)
     .unwrap_or_else(|| krate.name.clone())
 }
 
