@@ -1919,6 +1919,18 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
             names["x86_64-unknown-linux-gnu"],
             "solo-1.0.0-linux-amd64.tar.gz"
         );
+        // The exclusion governs the fallback too: a crate whose archives are
+        // ALL meta ships no binary asset, so it derives no names at all rather
+        // than settling for the meta entry.
+        let mut all_meta = krate.clone();
+        if let ArchivesConfig::Configs(configs) = &mut all_meta.archives {
+            configs.retain(|a| a.meta.unwrap_or(false));
+        }
+        assert!(
+            crate_archive_asset_names(&all_meta, &[], &mut make_ctx())
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// A triple whose only build is skipped releases no archive, so it must
