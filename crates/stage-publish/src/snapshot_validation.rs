@@ -1094,17 +1094,19 @@ mod tests {
     }
 
     /// A produced asset carrying a naming input the config-time derivation
-    /// cannot reproduce (here: the group's `amd64v3` suffix with NO tuning
-    /// env in config at all) is the residual drift class — the derived
-    /// cross-check must fail loud on it.
+    /// cannot reproduce — here a group tuned by an ambient build env, so the
+    /// archive carries the `amd64v3` suffix and the matching metadata while
+    /// config declares no level at all — is the residual drift class. The
+    /// derived cross-check must fail loud on it, quoting the produced level.
     #[test]
     fn binstall_auto_derived_name_missing_variant_suffix_fails() {
         let (cfg, _bs, mut ctx) = auto_derived_fixture(None);
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
             .expect_err("derived name must be cross-checked against produced assets");
@@ -1119,6 +1121,10 @@ mod tests {
             "names the produced asset: {msg}"
         );
         assert!(msg.contains("404"), "explains the failure class: {msg}");
+        assert!(
+            msg.contains("`amd64_variant: \"v3\"`"),
+            "the produced group carries a level, so the remedy quotes it: {msg}"
+        );
     }
 
     /// The auto-derived cross-check passes when the produced asset carries the
@@ -1143,11 +1149,12 @@ mod tests {
     #[test]
     fn binstall_auto_derived_v3_tuned_name_matches_produced_asset() {
         let (cfg, _bs, mut ctx) = auto_derived_fixture(Some("-Ctarget-cpu=x86-64-v3"));
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         validate_derived_asset_names(&mut ctx, &cfg, &log())
             .expect("config-derived variant must reproduce the produced v3 name");
@@ -1331,11 +1338,12 @@ mod tests {
     #[test]
     fn installer_only_crate_derived_name_mismatch_fails() {
         let (cfg, mut ctx, _tmp) = installer_only_fixture();
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         assert!(
             derived_names_consumed(&mut ctx, &cfg),
@@ -1405,11 +1413,12 @@ mod tests {
             )]),
         )]));
         ctx.config.crates = vec![cfg.clone()];
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         assert!(
             !derived_names_consumed(&mut ctx, &cfg),
