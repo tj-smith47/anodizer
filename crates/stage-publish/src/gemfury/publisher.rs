@@ -266,6 +266,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         let snapshots = decode_gemfury_targets(&evidence.extra);
         if snapshots.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "gemfury",
                 "pushed packages",
             ));

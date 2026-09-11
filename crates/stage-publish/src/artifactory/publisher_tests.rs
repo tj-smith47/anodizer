@@ -51,7 +51,9 @@ fn artifactory_rollback_warns_when_no_targets_recorded() {
 /// message wording can be pinned in one place.
 #[test]
 fn artifactory_rollback_empty_warning_msg_shape() {
-    let msg = crate::publisher_helpers::rollback_empty_warning_msg("artifactory", "upload URLs");
+    let ctx = anodizer_core::context::Context::test_fixture();
+    let msg =
+        crate::publisher_helpers::rollback_empty_warning_msg(&ctx, "artifactory", "upload URLs");
     assert!(
         msg.starts_with("no upload URLs recorded in artifactory evidence"),
         "{msg}"

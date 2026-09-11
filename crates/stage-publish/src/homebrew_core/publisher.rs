@@ -223,6 +223,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         let targets = decode_targets(&evidence.extra);
         if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "homebrew-core",
                 "bump PRs",
             ));

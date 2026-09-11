@@ -788,6 +788,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         let targets = decode_dockerhub_targets(&evidence.extra);
         if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "dockerhub",
                 "description-sync targets",
             ));

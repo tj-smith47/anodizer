@@ -1146,6 +1146,30 @@ mod tests {
         }
     }
 
+    /// The document quotes the section at depth 0, so only that nesting is
+    /// held to the renderer. The section threads `depth` to its header and
+    /// `depth + 1` to its rows; a step applied to one half and not the other
+    /// misaligns every row beneath the header on any run that emits the
+    /// section nested, and nothing quoted at depth 0 would notice.
+    #[test]
+    fn the_summary_section_nests_its_header_and_rows_together() {
+        let summary = entry_skip_summary();
+        let flat = summary_section_lines(&summary, PublishDisposition::Ran, 0);
+        let nested = summary_section_lines(&summary, PublishDisposition::Ran, 1);
+        assert_eq!(flat.len(), nested.len(), "one nesting step adds no lines");
+        assert!(
+            flat.len() > 1,
+            "the section is a header plus rows: {flat:?}"
+        );
+        for (flat_line, nested_line) in flat.iter().zip(&nested) {
+            assert_eq!(
+                anodizer_core::log::strip_ansi(nested_line),
+                format!("  {}", anodizer_core::log::strip_ansi(flat_line)),
+                "one nesting step moves every line by exactly one level"
+            );
+        }
+    }
+
     /// EVERY documented summary block on the page is a document CI consumers
     /// are told to parse, so each must be one this type accepts:
     /// `deny_unknown_fields` turns any drift — a renamed key, a field the

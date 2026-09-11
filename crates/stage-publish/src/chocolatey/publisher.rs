@@ -419,6 +419,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         let targets = decode_chocolatey_targets(&evidence.extra);
         if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "chocolatey",
                 "submitted packages",
             ));

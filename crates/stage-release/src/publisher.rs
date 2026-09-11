@@ -559,6 +559,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         let targets = decode_github_release_targets(&evidence.extra);
         if targets.is_empty() {
             log.warn(&anodizer_core::rollback_empty_warning_msg(
+                ctx,
                 Self::PUBLISHER_NAME,
                 "release targets",
             ));

@@ -139,6 +139,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         let log = ctx.logger("publish");
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "artifactory",
                 "upload URLs",
             ));

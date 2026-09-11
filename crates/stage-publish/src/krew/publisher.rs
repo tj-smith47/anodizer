@@ -440,6 +440,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // to roll back when there are no targets.
         if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "krew",
                 "PR targets",
             ));

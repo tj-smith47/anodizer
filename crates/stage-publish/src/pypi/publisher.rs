@@ -870,6 +870,7 @@ impl anodizer_core::Publisher for PypiPublisher {
         };
         if files.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "pypi",
                 "uploaded files",
             ));

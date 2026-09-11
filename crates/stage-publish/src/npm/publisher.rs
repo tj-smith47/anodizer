@@ -375,6 +375,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         let targets = decode_npm_targets(&evidence.extra);
         if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                ctx,
                 "npm",
                 "published packages",
             ));

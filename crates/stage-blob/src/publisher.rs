@@ -218,6 +218,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         // shape that doesn't surface the targets list.
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
             log.warn(&anodizer_core::rollback_empty_warning_msg(
+                ctx,
                 "blob",
                 "upload targets",
             ));

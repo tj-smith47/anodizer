@@ -1092,7 +1092,8 @@ mod tests {
 
     #[test]
     fn rollback_empty_warning_msg_contains_publisher_and_target() {
-        let msg = rollback_empty_warning_msg("artifactory", "upload URLs");
+        let ctx = anodizer_core::context::Context::test_fixture();
+        let msg = rollback_empty_warning_msg(&ctx, "artifactory", "upload URLs");
         assert!(msg.contains("artifactory"));
         assert!(msg.contains("upload URLs"));
         assert!(msg.contains("verify"));

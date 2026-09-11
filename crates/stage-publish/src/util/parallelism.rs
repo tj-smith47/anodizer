@@ -215,6 +215,7 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     let log = ctx.logger("publish");
     if deduped_targets.is_empty() {
         log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+            ctx,
             publisher,
             empty_evidence_noun,
         ));

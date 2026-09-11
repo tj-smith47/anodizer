@@ -69,6 +69,7 @@ pub(crate) fn rollback_publish(
     // dry-run, or the in-flight idempotency path) — nothing to close.
     if targets.is_empty() {
         log.warn(&anodizer_core::rollback_empty_warning_msg(
+            ctx,
             "schemastore",
             "PR targets",
         ));

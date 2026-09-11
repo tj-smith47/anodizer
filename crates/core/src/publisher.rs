@@ -262,13 +262,24 @@ pub trait Publisher: Send + Sync {
 /// assert on the returned string without having to intercept stderr
 /// (`eprintln!` cannot be portably captured from the same process).
 ///
+/// A run that publishes nothing — dry-run or snapshot — reaches the same empty
+/// branch, and there the manual-verification wording sends the operator to
+/// inspect remote state the run never created. The distinction is made here,
+/// on the evidence, so every publisher says the right thing rather than one
+/// of them carrying a special case.
+///
 /// Lives in `anodizer_core` because the rollback shape is shared across
 /// publishers spread between `stage-publish` and `stage-blob` (and any
 /// future stage crate that implements `Publisher`).
-pub fn rollback_empty_warning_msg(publisher: &str, target_label: &str) -> String {
+pub fn rollback_empty_warning_msg(ctx: &Context, publisher: &str, target_label: &str) -> String {
+    if ctx.is_dry_run() || ctx.is_snapshot() {
+        return format!(
+            "no {target_label} recorded in {publisher} evidence — this run published nothing to \
+             {publisher}, so there is no state to undo"
+        );
+    }
     format!(
-        "no {} recorded in {} evidence — verify {} state manually",
-        target_label, publisher, publisher
+        "no {target_label} recorded in {publisher} evidence — verify {publisher} state manually"
     )
 }
 
@@ -345,7 +356,8 @@ mod tests {
 
     #[test]
     fn rollback_empty_warning_msg_interpolates_all_three_slots() {
-        let msg = rollback_empty_warning_msg("homebrew", "tap commit");
+        let ctx = Context::test_fixture();
+        let msg = rollback_empty_warning_msg(&ctx, "homebrew", "tap commit");
         assert_eq!(
             msg,
             "no tap commit recorded in homebrew evidence — verify homebrew state manually"
@@ -354,11 +366,37 @@ mod tests {
 
     #[test]
     fn rollback_empty_warning_msg_distinct_per_publisher() {
-        let a = rollback_empty_warning_msg("cargo", "crate");
-        let b = rollback_empty_warning_msg("aur", "commit");
+        let ctx = Context::test_fixture();
+        let a = rollback_empty_warning_msg(&ctx, "cargo", "crate");
+        let b = rollback_empty_warning_msg(&ctx, "aur", "commit");
         assert_ne!(a, b);
         assert!(a.contains("cargo") && a.contains("crate"));
         assert!(b.contains("aur") && b.contains("commit"));
+    }
+
+    /// A run that published nothing has no remote state to inspect, so the
+    /// empty-evidence line must not send the operator to verify any. Decided
+    /// on the evidence, once, rather than in the publisher that happened to
+    /// surface it.
+    #[test]
+    fn a_run_that_published_nothing_is_not_asked_to_verify_remote_state() {
+        for mode in ["dry_run", "snapshot"] {
+            let mut ctx = Context::test_fixture();
+            match mode {
+                "dry_run" => ctx.options.dry_run = true,
+                _ => ctx.options.snapshot = true,
+            }
+            let msg = rollback_empty_warning_msg(&ctx, "winget", "submitted PR targets");
+            assert!(
+                msg.starts_with("no submitted PR targets recorded in winget evidence"),
+                "{mode}: {msg}"
+            );
+            assert!(
+                !msg.contains("verify") && !msg.contains("manually"),
+                "{mode}: a run that published nothing has no state to verify: {msg}"
+            );
+            assert!(msg.contains("no state to undo"), "{mode}: {msg}");
+        }
     }
 
     #[test]
