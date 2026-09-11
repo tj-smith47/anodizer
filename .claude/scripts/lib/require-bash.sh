@@ -12,3 +12,12 @@
     echo "$(basename "${BASH_SOURCE[1]:-$0}" .sh): needs bash >= 4.4, found $BASH_VERSION." >&2
     exit 2
 }
+
+# The scanners are written against GNU grep (`-P`) and gawk; macOS ships the
+# BSD ones. Homebrew installs the GNU tools under their own gnubin directories
+# (`brew install grep gawk`), which go ahead of PATH wherever they exist.
+for gnubin in /opt/homebrew/opt/grep/libexec/gnubin /opt/homebrew/opt/gawk/libexec/gnubin \
+    /usr/local/opt/grep/libexec/gnubin /usr/local/opt/gawk/libexec/gnubin; do
+    if [[ -d "$gnubin" ]]; then PATH="$gnubin:$PATH"; fi
+done
+export PATH

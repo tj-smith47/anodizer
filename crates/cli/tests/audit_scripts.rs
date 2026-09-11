@@ -1321,6 +1321,7 @@ fn the_gate_mirror_audit_walks_the_graph_on_a_host_under_the_memory_floor() {
 /// The other direction: the bypass is scoped to the walk. A real `task gate`
 /// on the same host still refuses, because that one would spawn rustdoc.
 #[test]
+#[cfg(target_os = "linux")]
 fn the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it() {
     if Command::new("sh")
         .args(["-c", "command -v task >/dev/null"])

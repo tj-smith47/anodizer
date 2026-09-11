@@ -211,11 +211,12 @@ jobs:
           # MSI determinism test silently revert to its skip-with-pass path.
           dotnet tool install --global wix || dotnet tool update --global wix
 
-      # The audit-scanner integration tests run every `.claude/scripts` scanner,
-      # and each asserts the bash 4.4 floor. macOS ships 3.2 at /bin/bash.
-      - name: Install a bash that meets the scanners' floor
+      # The audit-scanner integration tests run every `.claude/scripts` scanner.
+      # Each asserts the bash 4.4 floor and is written against GNU grep and
+      # gawk; macOS ships bash 3.2 and the BSD tools.
+      - name: Install the bash, grep and awk the scanners need
         if: runner.os == 'macOS'
-        run: brew install bash
+        run: brew install bash grep gawk
 
       - name: Tests
         run: task test
