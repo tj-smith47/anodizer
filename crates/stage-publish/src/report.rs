@@ -270,7 +270,7 @@ mod tests {
     use anodizer_core::context::{Context, ContextOptions};
 
     /// The recovery hint must name the binary the operator actually has on
-    /// PATH. `anodizer` is the tool's former name and resolves to nothing.
+    /// PATH: the tool's former name resolves to nothing.
     #[test]
     fn missing_prior_report_names_the_real_binary() {
         let tmp = tempfile::tempdir().unwrap();

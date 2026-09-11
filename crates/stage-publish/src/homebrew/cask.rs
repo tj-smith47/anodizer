@@ -162,10 +162,9 @@ pub struct CaskParams<'a> {
     pub uninstall_postflight: Option<&'a str>,
     /// Pre-rendered Ruby continuation for the `url` line — empty string when
     /// no [`HomebrewCaskURL`](anodizer_core::config::HomebrewCaskURL) sub-fields
-    /// (`verified`, `using`, `cookies`,
-    /// `referer`, `headers`, `user_agent`, `data`) are configured. When
-    /// non-empty, starts with `,\n      verified: "..."` so it splices
-    /// directly after the closing `"` of `url "..."`.
+    /// (`using`, `cookies`, `referer`, `headers`, `user_agent`, `data`) are
+    /// configured. When non-empty, starts with `,\n      using: …` so it
+    /// splices directly after the closing `"` of `url "..."`.
     pub url_extras: &'a str,
     /// Same payload as [`Self::url_extras`] but indented two extra spaces so
     /// it can splice into the per-arch `on_{intel,arm}` blocks (which are
@@ -365,9 +364,9 @@ pub(super) fn render_zap_block(
 // additional_url_params
 // ---------------------------------------------------------------------------
 
-/// Render Ruby kwargs for the `url "<url>"` line: `verified`, `using`,
-/// `cookies`, `referer`, `header`, `user_agent`, `data`. Returns `""` when
-/// every sub-field is unset.
+/// Render Ruby kwargs for the `url "<url>"` line: `using`, `cookies`,
+/// `referer`, `header`, `user_agent`, `data`. Returns `""` when every
+/// sub-field is unset.
 ///
 /// `indent` is the leading whitespace placed before each kwarg (6 spaces
 /// at top level, 8 spaces when the call site is inside an

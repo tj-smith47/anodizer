@@ -209,6 +209,25 @@ impl KrewPublishOutcome {
 /// safe single answer where the manifest can carry only one.
 pub(super) const DEFAULT_ARM_VARIANT: &str = "6";
 
+/// The `amd64_variant` filter for a krew config: the configured
+/// microarchitecture level, else the baseline `v1`.
+pub(super) fn amd64_variant(krew_cfg: &anodizer_core::config::KrewConfig) -> &str {
+    krew_cfg.amd64_variant.map_or("v1", |v| v.as_str())
+}
+
+/// The `arm_variant` filter for a krew config.
+///
+/// An unset filter would admit every 32-bit ARM archive, so one platform would
+/// get an entry per variant and krew would install whichever it read last.
+/// The eligibility predicate and the live render must answer this identically
+/// or a crate passes the predicate and then renders a different archive set.
+pub(super) fn arm_variant(krew_cfg: &anodizer_core::config::KrewConfig) -> &str {
+    krew_cfg
+        .arm_variant
+        .as_deref()
+        .unwrap_or(DEFAULT_ARM_VARIANT)
+}
+
 /// Whether `crate_name` has at least one krew-eligible archive artifact under
 /// `krew_cfg` in this run.
 ///
@@ -226,20 +245,12 @@ pub(crate) fn crate_has_krew_artifacts(
     krew_cfg: &anodizer_core::config::KrewConfig,
 ) -> Result<bool> {
     let ids_filter = krew_cfg.ids.as_deref();
-    let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    // An unset filter would admit every 32-bit ARM archive, so one platform
-    // would get an entry per variant and krew would install whichever it read
-    // last. Baseline armv6 runs on every ARM krew supports.
-    let arm_variant = krew_cfg
-        .arm_variant
-        .as_deref()
-        .unwrap_or(DEFAULT_ARM_VARIANT);
     let artifacts = util::find_all_platform_artifacts_with_variant(
         ctx,
         crate_name,
         ids_filter,
-        Some(amd64_variant),
-        Some(arm_variant),
+        Some(amd64_variant(krew_cfg)),
+        Some(arm_variant(krew_cfg)),
     )?;
     Ok(!artifacts.is_empty())
 }
@@ -378,14 +389,8 @@ pub(crate) fn render_krew_manifest_for_crate(
     // Find artifacts across all platforms, applying the IDs +
     // amd64_variant/arm_variant filters.
     let ids_filter = krew_cfg.ids.as_deref();
-    let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    // An unset filter would admit every 32-bit ARM archive, so one platform
-    // would get an entry per variant and krew would install whichever it read
-    // last. Baseline armv6 runs on every ARM krew supports.
-    let arm_variant = krew_cfg
-        .arm_variant
-        .as_deref()
-        .unwrap_or(DEFAULT_ARM_VARIANT);
+    let amd64_variant = amd64_variant(krew_cfg);
+    let arm_variant = arm_variant(krew_cfg);
 
     // Krew plugins support a single binary per archive. Walk the eligible
     // archives — through the SAME `ids` allow-list `find_all_platform_artifacts_with_variant`
