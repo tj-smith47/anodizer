@@ -29,7 +29,7 @@
 # feeds awk whatever its own `grep -rl crates/...` printed, which is relative.
 
 function is_test_file(f) {
-    return (f ~ /(^|\/)([a-z0-9_]*_)?tests\.rs$/) || (f ~ /(^|\/)crates\/[^/]+\/tests\//)
+    return (f ~ /(^|\/)([a-z0-9_]*_)?tests\.rs$/) || (f ~ /(^|\/)crates\/[^\/]+\/tests\//)
 }
 
 FNR == 1 {

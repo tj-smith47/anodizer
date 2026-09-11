@@ -14,10 +14,20 @@
 }
 
 # The scanners are written against GNU grep (`-P`) and gawk; macOS ships the
-# BSD ones. Homebrew installs the GNU tools under their own gnubin directories
-# (`brew install grep gawk`), which go ahead of PATH wherever they exist.
-for gnubin in /opt/homebrew/opt/grep/libexec/gnubin /opt/homebrew/opt/gawk/libexec/gnubin \
-    /usr/local/opt/grep/libexec/gnubin /usr/local/opt/gawk/libexec/gnubin; do
-    if [[ -d "$gnubin" ]]; then PATH="$gnubin:$PATH"; fi
-done
+# BSD ones at /usr/bin. Where PATH still resolves a tool to that system copy
+# and Homebrew has installed the GNU one (`brew install grep gawk`), its gnubin
+# directory goes ahead. A tool that PATH already resolves elsewhere — a test's
+# shim, a user's own build — is left in charge.
+prefer_gnu_tool() {
+    local tool="$1" formula="$2" gnubin
+    [[ "$(command -v "$tool")" == "/usr/bin/$tool" ]] || return 0
+    for gnubin in "/opt/homebrew/opt/$formula/libexec/gnubin" "/usr/local/opt/$formula/libexec/gnubin"; do
+        if [[ -x "$gnubin/$tool" ]]; then
+            PATH="$gnubin:$PATH"
+            return 0
+        fi
+    done
+}
+prefer_gnu_tool grep grep
+prefer_gnu_tool awk gawk
 export PATH

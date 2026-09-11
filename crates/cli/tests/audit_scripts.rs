@@ -219,6 +219,18 @@ fn bash() -> Command {
     Command::new(homebrew.unwrap_or("bash"))
 }
 
+/// The awk the lexer agreement tests run the shared libraries under: gawk
+/// from Homebrew where it is installed (macOS ships BSD awk), else `PATH`.
+fn awk() -> Command {
+    let gawk = [
+        "/opt/homebrew/opt/gawk/libexec/gnubin/awk",
+        "/usr/local/opt/gawk/libexec/gnubin/awk",
+    ]
+    .into_iter()
+    .find(|candidate| Path::new(candidate).is_file());
+    Command::new(gawk.unwrap_or("awk"))
+}
+
 fn run_audit(script: &str, root: &Path) -> (i32, String) {
     run_audit_with_path(script, root, None)
 }
@@ -827,7 +839,7 @@ fn test_source_predicate_agrees_with_the_awk_lexer() {
     let list = dir.path().join("paths.txt");
     std::fs::write(&list, format!("{}\n", AGREEMENT_PATHS.join("\n"))).expect("path list");
 
-    let out = Command::new("awk")
+    let out = awk()
         .arg("-f")
         .arg(lib.join("rust-lex.awk"))
         .arg("-f")
@@ -909,7 +921,7 @@ fn test_only_cfg_predicate_agrees_with_the_awk_lexer() {
     let list = dir.path().join("cfg-lines.txt");
     std::fs::write(&list, format!("{}\n", AGREEMENT_CFG_LINES.join("\n"))).expect("cfg lines");
 
-    let out = Command::new("awk")
+    let out = awk()
         .arg("-f")
         .arg(lib.join("rust-lex.awk"))
         .arg("-f")
