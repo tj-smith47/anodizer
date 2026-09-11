@@ -475,6 +475,26 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         }
     }
 
+    // A triple that links neither glibc nor musl carries an empty libc class.
+    // On a key that DID split, its arm renders as `linux-armv7-)` — a
+    // dangling dash no `uname` pair can ever produce, because the probe only
+    // ever reports `gnu` or `musl`. Drop those arms rather than advertise a
+    // platform string the script cannot match, and report their targets as
+    // stranded. A key that did NOT split is unaffected: its single arm is
+    // rendered from the key alone.
+    let mut arms_per_key: BTreeMap<String, usize> = BTreeMap::new();
+    for (key, _) in arms.keys() {
+        *arms_per_key.entry(key.clone()).or_default() += 1;
+    }
+    let undetectable_libc_keys: Vec<(String, &'static str)> = arms
+        .keys()
+        .filter(|(key, libc)| libc.is_empty() && arms_per_key.get(key).copied().unwrap_or(0) > 1)
+        .cloned()
+        .collect();
+    for arm in &undetectable_libc_keys {
+        arms.remove(arm);
+    }
+
     // Which released tokens the generated detect arms can actually emit. A
     // token with no row in the detection tables (the mips family, illumos)
     // makes every asset arm keyed by it unreachable — the release ships the
@@ -531,6 +551,28 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
              their asset arms are unreachable — matching hosts get the \
              unsupported-platform error",
             stranded.join(", ")
+        ));
+    }
+
+    let libc_stranded: Vec<&str> = assets
+        .iter()
+        .filter(|(target, _)| {
+            let (os, arch) = map_target(target);
+            let key = format!("{os}-{arch}");
+            libc_class(target).is_empty()
+                && undetectable_libc_keys
+                    .iter()
+                    .any(|(dropped, _)| *dropped == key)
+        })
+        .map(|(target, _)| target.as_str())
+        .collect();
+    if !libc_stranded.is_empty() {
+        ctx.logger("templatefiles").warn(&format!(
+            "installer script cannot detect released target(s) {}: the platform \
+             ships more than one libc class, and the installer's libc probe \
+             cannot select a build that links neither glibc nor musl — matching \
+             hosts get the build for the libc they do report",
+            libc_stranded.join(", ")
         ));
     }
 
@@ -1596,6 +1638,47 @@ mod tests {
             cases.formats,
             BTreeSet::from(["tar.gz".to_string()]),
             "only the formats a reachable arm selects constrain the generator"
+        );
+    }
+
+    /// A platform shipping a gnu build and a uclibc build splits by libc, but
+    /// the script's probe only ever reports `gnu` or `musl`. The uclibc arm
+    /// would render as `linux-armv7-)` and put a dangling-dash entry in
+    /// `supported_platforms` — a platform string no `uname` pair produces. It
+    /// is dropped, and its target is named as stranded instead. With one
+    /// selectable build left, the key no longer splits, so the survivor is
+    /// keyed by the platform alone and demands no libc segment.
+    #[test]
+    fn an_undetectable_libc_arm_is_dropped_from_a_split_key() {
+        let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";
+        let mut ctx = anodizer_ctx(Some(name_template));
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "armv7-unknown-linux-gnueabihf".to_string(),
+            "armv7-unknown-linux-uclibceabihf".to_string(),
+        ]);
+        let capture = crate::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        let arms = parse_arms(&cases.asset_cases);
+
+        assert!(
+            arms.contains_key("linux-armv7"),
+            "the detectable libc keeps its arm: {arms:?}"
+        );
+        assert!(
+            !arms.keys().any(|k| k.ends_with('-')),
+            "no arm may render with an empty libc segment: {arms:?}"
+        );
+        assert_eq!(arms.len(), 1, "only the gnu build survives: {arms:?}");
+        assert_eq!(cases.supported_platforms, "linux-armv7");
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("armv7-unknown-linux-uclibceabihf")),
+            "warn must name the target the probe cannot select: {:?}",
+            capture.warn_messages()
         );
     }
 
