@@ -419,7 +419,7 @@ pub fn enroll_version_files(
         return Ok(());
     }
 
-    let (new_text, added) = add_version_files(config_file, &config_text, &selected)?;
+    let (new_text, added) = add_version_files(&config_text, &already_enrolled, &selected)?;
     if added.is_empty() {
         log.status("all selected files were already enrolled — nothing to do");
         return Ok(());
@@ -482,6 +482,12 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
     Ok(versions)
 }
 
+/// Named in the error when the enrolment scan cannot load the config: the load
+/// runs the includes merge and every validator, so a rejection is not only a
+/// parse failure.
+const NOT_A_CONFIG: &str =
+    ".anodizer.yaml is not a valid anodizer config; fix it before enrolling version files";
+
 /// Extract the paths already listed under the top-level `version_files:` key,
 /// so discovery can drop them (idempotency). Reads the text through the CLI's
 /// own config loader, so both spellings (block and flow), both entry forms (a
@@ -490,10 +496,8 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
 /// anchored entry's continuation line, and a raw parse cannot see an include
 /// at all, so its entries were offered for enrolment a second time.
 fn existing_version_files(config_path: &Path, config_text: &str) -> Result<HashSet<String>> {
-    let config = crate::pipeline::load_config_from_str(config_path, config_text)
-        .context(
-        ".anodizer.yaml does not parse as an anodizer config; fix it before enrolling version files",
-    )?;
+    let config =
+        crate::pipeline::load_config_from_str(config_path, config_text).context(NOT_A_CONFIG)?;
     Ok(config
         .version_files
         .unwrap_or_default()
@@ -684,13 +688,18 @@ struct BlockInsertion {
 /// are emitted as YAML scalars (quoted when special) so a path with a space or
 /// indicator can never invalidate the document.
 ///
+/// `existing` is the enrolment the config already resolves to, including what
+/// its `includes:` declare — the caller has it from the discovery scan, and
+/// loading the config a second time here would repeat every deprecation
+/// warning the loader emits.
+///
 /// Returns the rewritten text and the paths actually added (empty when every
 /// selection was already enrolled). Bails when the existing `version_files:`
 /// value is FLOW style (`[...]`), which the block writer cannot extend without
 /// corrupting the document.
 fn add_version_files(
-    config_path: &Path,
     config_text: &str,
+    existing: &HashSet<String>,
     selected: &[String],
 ) -> Result<(String, Vec<String>)> {
     if version_files_is_flow_style(config_text) {
@@ -701,7 +710,6 @@ fn add_version_files(
         );
     }
 
-    let existing = existing_version_files(config_path, config_text)?;
     let mut to_add: Vec<String> = Vec::new();
     for path in selected {
         if !existing.contains(path) && !to_add.contains(path) {
@@ -1097,21 +1105,33 @@ path = "src/main.rs"
         );
     }
 
+    /// The enrolment scan runs every config validator, so a config the rest of
+    /// the CLI would refuse is refused before any enrolment is offered.
+    #[test]
+    fn existing_version_files_refuses_a_config_a_validator_rejects() {
+        let err = existing_version_files(cfg_file(), "project_name: app\npartial:\n  by: cpu\n")
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("unsupported partial.by value"), "err: {text}");
+    }
+
     #[test]
     fn existing_version_files_errors_on_an_unparseable_config() {
         let err = existing_version_files(cfg_file(), "project_name: [unclosed\n")
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("does not parse as an anodizer config"),
-            "err: {err}"
-        );
+        assert!(err.contains("is not a valid anodizer config"), "err: {err}");
     }
 
     #[test]
     fn add_version_files_bails_on_flow_style() {
         let cfg = "project_name: app\nversion_files: [a.md]\n";
-        let err = add_version_files(cfg_file(), cfg, &["b.md".to_string()]).unwrap_err();
+        let err = add_version_files(
+            cfg,
+            &existing_version_files(cfg_file(), cfg).unwrap(),
+            &["b.md".to_string()],
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("inline"), "err: {err}");
         assert!(err.to_string().contains("block list"), "err: {err}");
     }
@@ -1119,7 +1139,12 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_matches_four_space_indent() {
         let cfg = "project_name: app\nversion_files:\n    - a.md\n";
-        let (out, added) = add_version_files(cfg_file(), cfg, &["b.md".to_string()]).unwrap();
+        let (out, added) = add_version_files(
+            cfg,
+            &existing_version_files(cfg_file(), cfg).unwrap(),
+            &["b.md".to_string()],
+        )
+        .unwrap();
         assert_eq!(added, vec!["b.md".to_string()]);
         assert!(out.contains("    - b.md"), "indent not matched:\n{out}");
         // Parses as valid YAML with both entries.
@@ -1137,7 +1162,12 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_appends_block_when_absent() {
         let cfg = "project_name: app\n";
-        let (out, _) = add_version_files(cfg_file(), cfg, &["a.md".to_string()]).unwrap();
+        let (out, _) = add_version_files(
+            cfg,
+            &existing_version_files(cfg_file(), cfg).unwrap(),
+            &["a.md".to_string()],
+        )
+        .unwrap();
         assert!(out.contains("version_files:\n  - a.md\n"), "out:\n{out}");
     }
 
@@ -1156,8 +1186,12 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_quotes_spaced_path_and_validates() {
         let cfg = "project_name: app\n";
-        let (out, added) =
-            add_version_files(cfg_file(), cfg, &["with space.md".to_string()]).unwrap();
+        let (out, added) = add_version_files(
+            cfg,
+            &existing_version_files(cfg_file(), cfg).unwrap(),
+            &["with space.md".to_string()],
+        )
+        .unwrap();
         assert!(out.contains("- \"with space.md\""), "not quoted:\n{out}");
         validate_enrolled_yaml(cfg_file(), &out, &added).unwrap();
     }

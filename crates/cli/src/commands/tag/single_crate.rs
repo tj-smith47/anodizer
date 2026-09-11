@@ -26,9 +26,9 @@ pub(crate) fn sync_single_crate_manifests(
         log,
     )?;
 
-    // An unreadable or malformed manifest is an error, not a silent skip of the
-    // sibling dep-spec update: the crate's own version was just rewritten, so a
-    // skipped propagation leaves siblings pinned to the version before it.
+    // An unreadable or malformed manifest is an error: the crate's own version
+    // was just rewritten, so skipping the sibling dep-spec update would leave
+    // siblings pinned to the version before it.
     let crate_name = crate::commands::bump::cargo_edit::parse_member_manifest(
         &abs_crate_dir.join("Cargo.toml"),
     )?

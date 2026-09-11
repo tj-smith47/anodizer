@@ -549,9 +549,9 @@ fn floor_minimum(spec: &str) -> Option<(semver::Op, semver::Version)> {
 /// wrote (`"0.6"` → `"0.7"`, `"^0.6.1"` → `"^0.7.0"`, `"=0.6.1"` → `"=0.7.0"`).
 ///
 /// The comparator operator is preserved too, with one exception: `>` is
-/// rendered as `>=`. A healed floor names the version the workspace just
-/// minted, and `>0.7.0` excludes exactly that version, so the path dependency
-/// the floor guards would no longer resolve.
+/// rendered as `>=`. A healed floor names the version the workspace just cut,
+/// and `>0.7.0` excludes exactly that version, so the path dependency the
+/// floor guards would no longer resolve.
 ///
 /// Returns `None` for a requirement `floor_minimum` also rejects.
 fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
@@ -898,7 +898,7 @@ mod tests {
             restyle_floor("^0.6.1", &ver("0.7.0-rc.1")).as_deref(),
             Some("^0.7.0-rc.1")
         );
-        // `>` heals to `>=`: the floor names the version just minted, and `>`
+        // `>` heals to `>=`: the floor names the version just cut, and `>`
         // would exclude it.
         assert_eq!(restyle_floor(">0.6.1", &target).as_deref(), Some(">=0.7.0"));
         assert_eq!(

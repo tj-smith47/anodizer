@@ -6,9 +6,9 @@ use anodizer_core::log::StageLogger;
 /// The crate whose tag family the run derives its tag from: the first crate in
 /// DECLARATION order that this run covers.
 ///
-/// Declaration order — not the order the crates were typed on the command line
-/// — is what makes the answer one answer: `--crate b --crate a` and
-/// `--crate a --crate b` name the same set, so they must seed the same family.
+/// Declaration order is what makes the answer one answer: `--crate b --crate a`
+/// and `--crate a --crate b` name the same set, so they must seed the same
+/// family whichever way they were typed.
 /// An empty selection covers every crate, which makes the first declared crate
 /// the answer there too.
 pub(crate) fn first_covered_crate<'a>(
