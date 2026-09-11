@@ -1,9 +1,6 @@
-//! Which artifacts one upload entry selects.
-//!
-//! Shared by the Artifactory publisher and the generic `uploads:` publisher —
-//! both resolve `mode:` to a set of artifact kinds, then narrow that set with
-//! the entry's `ids` / `exclude` / `exts` filters and its resolved
-//! `extra_files`.
+//! Which artifacts one upload entry selects: `mode:` resolves to a set of
+//! artifact kinds, narrowed by the entry's `ids` / `exclude` / `exts` filters
+//! and its resolved `extra_files`.
 
 use super::*;
 
@@ -14,46 +11,59 @@ use super::*;
 /// Validate the upload mode string. Only `"archive"` and `"binary"` are
 /// accepted; matching is case-insensitive so `mode: Archive` works.
 ///
-/// `publisher` prefixes the error so the same shared validator serves both the
-/// Artifactory and the generic `uploads:` publisher with a correct label.
-pub fn validate_upload_mode_for(publisher: &str, mode: &str) -> Result<()> {
+/// An unknown mode disqualifies the ENTRY — an `Err` carrying
+/// [`anodizer_core::pipe_skip::entry_skip`], which callers route through
+/// [`crate::publisher_helpers::absorb_entry_skip`] so the entry's siblings
+/// still upload.
+pub fn validate_upload_mode(mode: &str) -> Result<()> {
     match mode.to_ascii_lowercase().as_str() {
         "archive" | "binary" => Ok(()),
         _ => Err(anodizer_core::pipe_skip::entry_skip(format!(
-            "{}: invalid upload mode '{}' (expected 'archive' or 'binary')",
-            publisher, mode
+            "invalid upload mode '{mode}' (expected 'archive' or 'binary')"
         ))),
     }
-}
-
-/// Validate the upload mode for the Artifactory publisher (label `artifactory`).
-pub fn validate_upload_mode(mode: &str) -> Result<()> {
-    validate_upload_mode_for("artifactory", mode)
 }
 
 // ---------------------------------------------------------------------------
 // Artifact filtering by mode
 // ---------------------------------------------------------------------------
 
+/// Kinds the `archive` mode leaves to another switch rather than selecting
+/// itself: the compiled binary belongs to `binary` mode, the sidecars to the
+/// entry's `checksum:` / `signature:` toggles, and the extra files to
+/// `extra_files:` / `extra_files_only:`.
+const NOT_SELECTED_BY_MODE: &[ArtifactKind] = &[
+    ArtifactKind::UploadableBinary,
+    ArtifactKind::Checksum,
+    ArtifactKind::Signature,
+    ArtifactKind::Certificate,
+    ArtifactKind::UploadableFile,
+];
+
+/// The one kind an upload target selects that a GitHub release does not: a
+/// built `.snap` is left out of
+/// [`anodizer_core::artifact::release_uploadable_kinds`] because it belongs on
+/// the snap store, but a generic file store accepts it like any other package.
+const EXTRA_UPLOADABLE_KINDS: &[ArtifactKind] = &[ArtifactKind::Snap];
+
 /// Return the artifact kinds that match the given upload mode.
 /// `binary` selects compiled binaries; everything else selects every
 /// uploadable artifact kind.
+///
+/// The `archive` set is derived from
+/// [`anodizer_core::artifact::release_uploadable_kinds`] rather than written
+/// out again here: a third hand-kept list drifted from the core one, so an
+/// AppImage or an install script that reached the GitHub release reached no
+/// `artifactory:` or `uploads:` target.
 pub(crate) fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
     match mode.to_ascii_lowercase().as_str() {
         "binary" => vec![ArtifactKind::UploadableBinary],
-        _ => vec![
-            ArtifactKind::Archive,
-            ArtifactKind::SourceArchive,
-            ArtifactKind::Makeself,
-            ArtifactKind::LinuxPackage,
-            ArtifactKind::Flatpak,
-            ArtifactKind::SourceRpm,
-            ArtifactKind::Sbom,
-            ArtifactKind::Snap,
-            ArtifactKind::DiskImage,
-            ArtifactKind::Installer,
-            ArtifactKind::MacOsPackage,
-        ],
+        _ => anodizer_core::artifact::release_uploadable_kinds()
+            .iter()
+            .chain(EXTRA_UPLOADABLE_KINDS)
+            .copied()
+            .filter(|k| !NOT_SELECTED_BY_MODE.contains(k))
+            .collect(),
     }
 }
 

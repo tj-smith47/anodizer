@@ -438,7 +438,7 @@ fn test_artifactory_missing_name_skips_the_entry() {
             .iter()
             .map(|e| (e.stage.as_str(), e.label.as_str()))
             .collect::<Vec<_>>(),
-        vec![("artifactory", "<unnamed>")]
+        vec![("artifactory", "artifactories[0]")]
     );
     assert!(
         ctx.skip_memento.snapshot()[0]
@@ -466,7 +466,7 @@ fn test_artifactory_empty_name_skips_the_entry() {
             .iter()
             .map(|e| (e.stage.as_str(), e.label.as_str()))
             .collect::<Vec<_>>(),
-        vec![("artifactory", "<unnamed>")]
+        vec![("artifactory", "artifactories[0]")]
     );
     assert!(
         ctx.skip_memento.snapshot()[0]
@@ -551,9 +551,7 @@ fn test_artifactory_username_without_password_skips_the_entry_in_live_mode() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].label, "test");
     assert!(
-        events[0]
-            .reason
-            .contains("has username set but no password"),
+        events[0].reason.contains("username set but no password"),
         "unexpected reason: {}",
         events[0].reason
     );
@@ -573,6 +571,54 @@ fn test_artifact_kinds_for_mode_binary() {
     let kinds = artifact_kinds_for_mode("binary");
     assert!(kinds.contains(&ArtifactKind::UploadableBinary));
     assert!(!kinds.contains(&ArtifactKind::Archive));
+}
+
+#[test]
+fn archive_mode_selects_every_release_uploadable_kind() {
+    let kinds = artifact_kinds_for_mode("archive");
+    let flag_governed = [
+        ArtifactKind::UploadableBinary,
+        ArtifactKind::Checksum,
+        ArtifactKind::Signature,
+        ArtifactKind::Certificate,
+        ArtifactKind::UploadableFile,
+    ];
+    for kind in anodizer_core::artifact::release_uploadable_kinds() {
+        if flag_governed.contains(kind) {
+            assert!(!kinds.contains(kind), "{kind:?} is chosen by its own flag");
+            continue;
+        }
+        assert!(
+            kinds.contains(kind),
+            "{kind:?} reaches the GitHub release but no upload target"
+        );
+    }
+    // A built `.snap` is release-excluded yet uploadable to a file store.
+    assert!(kinds.contains(&ArtifactKind::Snap));
+}
+
+#[test]
+fn an_appimage_reaches_an_archive_mode_upload_target() {
+    let mut config = Config::default();
+    config.project_name = "testapp".to_string();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    for kind in [ArtifactKind::AppImage, ArtifactKind::InstallScript] {
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: String::new(),
+            path: PathBuf::from("dist/testapp-1.0.0"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "testapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+    }
+
+    let collected =
+        collect_upload_artifacts(&ctx, "archive", None, None, None, CollectFlags::default());
+    let kinds: Vec<_> = collected.iter().map(|a| a.kind).collect();
+    assert!(kinds.contains(&ArtifactKind::AppImage), "{kinds:?}");
+    assert!(kinds.contains(&ArtifactKind::InstallScript), "{kinds:?}");
 }
 
 #[test]
