@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-07-29
+
+### Bug Fixes
+
+* 33c33e69b1e5 reject an <Environment> wxs on a wixl too old to parse it ([@tj-smith47](https://github.com/tj-smith47))
+* 09c47e98e003 drive cpio directly instead of a pipefail shell pipeline ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.25.1] - 2026-07-27
 
 ### Bug Fixes
@@ -790,7 +797,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.25.2...HEAD
+[0.25.2]: https://github.com/tj-smith47/anodizer/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/tj-smith47/anodizer/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/tj-smith47/anodizer/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tj-smith47/anodizer/compare/v0.23.0...v0.24.0
