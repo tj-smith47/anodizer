@@ -170,7 +170,7 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!(
-            "winget: invalid PackageIdentifier '{}'. Must have 2-8 dot-separated segments, \
+            "invalid PackageIdentifier '{}'. Must have 2-8 dot-separated segments, \
              each 1-32 chars, with no whitespace, control chars, or special characters \
              (\\/:*?\"<>|).",
             id

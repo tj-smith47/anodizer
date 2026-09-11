@@ -1,6 +1,14 @@
 use super::*;
 
-pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Submit one crate's WinGet manifests, deriving its `publish.winget` block
+/// here. `Ok(false)` when nothing was submitted — the crate's `skip_upload:` /
+/// `if:` gate closed it, or the run is a dry-run.
+///
+/// A caller that already holds the derived config (the publisher's `run`, which
+/// reads the same value for the PR target it records) passes it to
+/// [`publish_to_winget_with_config`] instead, so the derive — and the warnings
+/// an unrenderable field emits — happens once per crate.
+pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     // Clone the winget config upfront so subsequent helpers do not borrow from
     // `ctx.config`; that frees the `&mut ctx` call site at the end of the
     // function (`ctx.record_publisher_outcome`).
@@ -10,12 +18,24 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
         .clone();
+    let derived = super::identifier::derive_winget_config(ctx, log, &winget_cfg, crate_name)?;
+    publish_to_winget_with_config(ctx, crate_name, &derived, log)
+}
 
+/// As [`publish_to_winget`], for a caller that already derived the crate's
+/// `publish.winget` block through
+/// [`super::identifier::derive_winget_config`].
+pub(crate) fn publish_to_winget_with_config(
+    ctx: &mut Context,
+    crate_name: &str,
+    derived: &anodizer_core::config::WingetConfig,
+    log: &StageLogger,
+) -> Result<bool> {
     // Resolve identity first so dry-run short-circuits BEFORE the full manifest
     // render (which requires short_description/license/installers): a dry-run
     // only reports the coordinates it would push, exactly as before.
-    let Some(identity) = resolve_winget_identity(ctx, crate_name, &winget_cfg, log)? else {
-        return Ok(());
+    let Some(identity) = resolve_winget_identity(ctx, crate_name, derived, log)? else {
+        return Ok(false);
     };
 
     if ctx.is_dry_run() {
@@ -23,16 +43,16 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
             "(dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
             crate_name, identity.package_id, identity.repo_owner, identity.repo_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     // Reuse the identity already resolved above so the manifest render does not
     // re-run `resolve_winget_publisher_name` (which would re-emit its
     // fallback-to-repo-owner warning a second time per publish).
-    let rendered =
-        render_winget_manifests_with_identity(ctx, crate_name, &winget_cfg, &identity, log)?;
+    let rendered = render_winget_manifests_with_identity(ctx, crate_name, derived, &identity, log)?;
 
-    submit_winget_manifests(ctx, log, &winget_cfg, &rendered)
+    submit_winget_manifests(ctx, log, derived, &rendered)?;
+    Ok(true)
 }
 
 /// Clone the package repo, write the pre-rendered manifests, commit, push, and
@@ -246,29 +266,22 @@ pub(crate) fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) ->
     crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
-/// Build a [`WingetTarget`] for the given crate. Reads config + the
-/// live process version so the recorded coordinates match what
-/// `publish_to_winget` will push. Returns `None` when no winget block
-/// is configured or when the publisher / repo resolution would itself
-/// no-op (matches the publish path's skip semantics).
+/// Build a [`WingetTarget`] for the given crate from its DERIVED
+/// `publish.winget` block (see [`super::identifier::derive_winget_config`]),
+/// plus the live process version, so the recorded coordinates match what
+/// `publish_to_winget` will push. Returns `None` when the repo resolution
+/// would itself no-op.
+///
+/// Whether the crate is submitted at all is the publish call's answer, not
+/// this one's: the caller records the target only when that call reports a
+/// submission, so a `skip_upload:` crate leaves no PR to roll back.
 pub(crate) fn collect_winget_target(
     ctx: &Context,
     crate_name: &str,
-    log: &StageLogger,
-) -> Result<Option<WingetTarget>> {
-    let Some(c) = crate::util::find_crate_in_universe(ctx, crate_name) else {
-        return Ok(None);
-    };
-    let Some(cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) else {
-        return Ok(None);
-    };
-    let cfg = &super::identifier::derive_winget_config(ctx, log, cfg, crate_name)?;
-    let Some((repo_owner, _repo_name)) =
-        crate::util::resolve_repo_owner_name(cfg.repository.as_ref())
-    else {
-        return Ok(None);
-    };
-    // `derive_winget_config` rendered the owner onto the config above.
+    cfg: &anodizer_core::config::WingetConfig,
+) -> Option<WingetTarget> {
+    let (repo_owner, _repo_name) = crate::util::resolve_repo_owner_name(cfg.repository.as_ref())?;
+    // The derived config carries the owner already rendered.
     let fork_owner = repo_owner;
 
     let package_id = super::identifier::package_identifier_of(cfg);
@@ -278,7 +291,7 @@ pub(crate) fn collect_winget_target(
 
     let (upstream_owner, upstream_repo) = resolve_winget_upstream(cfg);
 
-    Ok(Some(WingetTarget {
+    Some(WingetTarget {
         target: package_id.clone(),
         crate_name: crate_name.to_string(),
         package_id,
@@ -287,7 +300,7 @@ pub(crate) fn collect_winget_target(
         upstream_repo,
         fork_owner,
         branch,
-    }))
+    })
 }
 
 /// Message emitted just before delegating to `publish_to_winget`.
@@ -340,39 +353,6 @@ fn open_pr_for_target(
 
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate winget publish for '{}'", crate_name)
-}
-
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_winget` on (not
-/// the count of successful PRs — `publish_to_winget` has its own skip
-/// paths for skip_upload/dry-run/etc., each of which logs its own status
-/// line, and the gh CLI submission helper logs its own success/warn).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished winget publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
-/// Warning emitted when the publisher was registered (at least one
-/// crate has a `publish.winget` block at the config level) but the
-/// run path processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a
-/// `publish.winget` block — so a zero-processed run means `--crate` /
-/// `--all` matrix selection was non-empty AND filtered every
-/// winget-configured crate out. Operators must see this — otherwise the
-/// publisher's `succeeded` status hides the fact that nothing was
-/// pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "winget publisher registered but 0 of {} effective crate(s) had a winget \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.winget block is set.",
-        selected_total
-    )
 }
 
 /// Winget entries across the crate universe whose `skip_upload:`/`if:`
@@ -462,7 +442,14 @@ impl anodizer_core::Publisher for WingetPublisher {
         }
         let mut notes: Vec<String> = Vec::new();
         for crate_name in &crate_names {
-            let Some(target) = collect_winget_target(ctx, crate_name, &log)? else {
+            let derived = crate::util::find_crate_in_universe(ctx, crate_name)
+                .and_then(|c| c.publish.as_ref()?.winget.as_ref())
+                .map(|cfg| crate::winget::derive_winget_config(ctx, &log, cfg, crate_name))
+                .transpose()?;
+            let target = derived
+                .as_ref()
+                .and_then(|cfg| collect_winget_target(ctx, crate_name, cfg));
+            let Some(target) = target else {
                 // Unresolvable target (no repo owner, …): run() owns the
                 // decision (it no-ops with its own diagnostics).
                 return Ok(ReconcileState::Absent);
@@ -522,6 +509,11 @@ impl anodizer_core::Publisher for WingetPublisher {
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<WingetTarget> = Vec::new();
+        // `processed` counts crates whose configured predicate passed and whose
+        // publish call was reached — NOT crates that submitted. The dry-run and
+        // skip paths inside it are still a successful run of the right code
+        // path, so they must not trigger the no-eligible-crates warning.
+        let mut processed = 0usize;
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_winget_per_crate_configured);
         log.status(&crate::publisher_helpers::run_start_message(
@@ -538,6 +530,7 @@ impl anodizer_core::Publisher for WingetPublisher {
                 );
                 continue;
             }
+            processed += 1;
             log.verbose(&run_per_crate_start_message(crate_name));
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered manifest — AND the snapshot target's version/branch —
@@ -551,7 +544,18 @@ impl anodizer_core::Publisher for WingetPublisher {
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| {
-                    let target = collect_winget_target(ctx, crate_name, &log)?;
+                    // One derive per crate, inside this crate's own template
+                    // scope: the PR target and the submission read the same
+                    // rendered identifier and owner, and an unrenderable field
+                    // warns once rather than once per consumer.
+                    let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
+                        .and_then(|c| c.publish.as_ref()?.winget.as_ref())
+                        .cloned();
+                    let Some(cfg) = cfg else {
+                        return Ok(None);
+                    };
+                    let derived = crate::winget::derive_winget_config(ctx, &log, &cfg, crate_name)?;
+                    let target = collect_winget_target(ctx, crate_name, &derived);
                     // Per-crate duplicate-PR self-skip: an open upstream PR
                     // for this exact package+version means this crate's
                     // submission already exists, and pushing again would open
@@ -561,7 +565,16 @@ impl anodizer_core::Publisher for WingetPublisher {
                     // it, so rollback must not touch the earlier run's PR.
                     // Probe failures fall through to publish (the fail-safe
                     // direction; the upstream's own dup handling backstops).
+                    // Probing for a crate whose gate already closed costs an
+                    // upstream search for a submission that will not happen.
+                    let active = !crate::publisher_helpers::entry_inactive(
+                        ctx,
+                        None,
+                        derived.skip_upload.as_ref(),
+                        derived.if_condition.as_deref(),
+                    );
                     if let Some(ref t) = target
+                        && active
                         && !ctx.is_dry_run()
                         && let Ok(crate::preflight::OpenPrLookup::Found(url)) = open_pr_for_target(
                             ctx,
@@ -577,8 +590,12 @@ impl anodizer_core::Publisher for WingetPublisher {
                         ));
                         return Ok(None);
                     }
-                    publish_to_winget(ctx, crate_name, &log)?;
-                    Ok(target)
+                    let submitted = publish_to_winget_with_config(ctx, crate_name, &derived, &log)?;
+                    // A crate the publish path skipped (`skip_upload:`, a falsy
+                    // `if:`, a dry run) opened no PR, so recording its target
+                    // would have a rollback tell the operator to close a pull
+                    // request that does not exist.
+                    Ok(target.filter(|_| submitted))
                 },
             );
             let target = crate::publisher_helpers::absorb_entry_skip(
@@ -589,35 +606,25 @@ impl anodizer_core::Publisher for WingetPublisher {
                 targets.push(t);
             }
         }
-        let processed = targets.len();
-        let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
+        crate::publisher_helpers::evaluate_entry_skips(
             ctx,
             &log,
             "winget",
-            // A dry run collects targets without submitting any of them, so
-            // nothing landed and nothing can be unwound.
-            crate::publisher_helpers::RunLanding::from_landed(
-                !ctx.is_dry_run() && !targets.is_empty(),
-            ),
+            // A target is recorded only for a crate that really submitted, so
+            // a dry run and a run whose every crate skipped both land nothing.
+            crate::publisher_helpers::RunLanding::from_landed(!targets.is_empty()),
             selected.len(),
         );
-        // `processed` counts the targets that survived collection, so an
-        // entry that disqualified itself leaves it at zero — without the
-        // entry-skip term the run would blame a missing `publish.winget`
-        // block for a defect the skip lines already named.
-        if entry_skips == 0 && processed == 0 {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        if processed == 0 {
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "winget",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "winget", processed,
+            ));
         }
-        // A dry run submits nothing, so it has nothing to unwind: keeping the
-        // targets would have a later required failure tell the operator to
-        // close pull requests this run never opened.
-        let targets = if ctx.is_dry_run() {
-            Vec::new()
-        } else {
-            targets
-        };
         let mut evidence = anodizer_core::PublishEvidence::new("winget");
         if let Some(first) = targets.first() {
             evidence.primary_ref = Some(format!(

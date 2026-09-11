@@ -165,6 +165,21 @@ fn add_windows_msi_with_product_code(
     });
 }
 
+/// The derived `publish.winget` block for a crate, as the publisher's run loop
+/// derives it once per crate before reading the PR target and submitting.
+fn derived_winget_config(
+    ctx: &anodizer_core::context::Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anodizer_core::config::WingetConfig {
+    let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
+        .and_then(|c| c.publish.as_ref()?.winget.as_ref())
+        .expect("the crate carries a winget block")
+        .clone();
+    crate::winget::derive_winget_config(ctx, log, &cfg, crate_name)
+        .expect("a non-strict render failure is not an error")
+}
+
 /// derive-don't-require: with no `winget.product_code` configured, the
 /// resolver falls back to the MSI artifact's stamped `product_code`.
 #[test]
@@ -414,9 +429,7 @@ fn preflight_probes_the_package_identifier_the_submission_uses() {
         "an unrenderable identifier falls back to the auto-derived one"
     );
 
-    let target = collect_winget_target(&ctx, "demo", &log)
-        .expect("target ok")
-        .expect("demo is winget-configured");
+    let target = collect_winget_target(&ctx, "demo", &derived).expect("demo is winget-configured");
     assert_eq!(target.package_id, "AcmeCo.demo", "the submitted identifier");
 
     let rendered = render_winget_manifests_for_crate(&ctx, "demo", &log)
@@ -545,9 +558,7 @@ fn package_identifier_is_rendered_at_one_seam_only() {
         "the seam must render the template into the config it returns"
     );
 
-    let target = collect_winget_target(&ctx, "demo", &log)
-        .expect("target ok")
-        .expect("demo is winget-configured");
+    let target = collect_winget_target(&ctx, "demo", &derived).expect("demo is winget-configured");
     assert_eq!(
         target.package_id, "Acme.tool",
         "the PR target reads the derived field, not the raw template"
@@ -651,8 +662,7 @@ fn the_repository_owner_is_rendered_once_per_crate() {
     let capture = anodizer_core::log::LogCapture::new();
     ctx.with_log_capture(capture.clone());
     let log = ctx.logger("publish");
-    collect_winget_target(&ctx, "demo", &log)
-        .expect("target ok")
+    collect_winget_target(&ctx, "demo", &derived_winget_config(&ctx, "demo", &log))
         .expect("demo is winget-configured");
 
     let owner_warns: Vec<String> = capture
@@ -1082,10 +1092,11 @@ fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
     );
 }
 
-/// A dry run collects targets without submitting any of them. A mixed dry run
-/// — one entry disqualified, one healthy — therefore landed nothing, so the
-/// publisher reports itself skipped rather than claiming an outcome a rollback
-/// would have something to unwind.
+/// A dry run submits nothing. A mixed dry run — one entry disqualified, one
+/// healthy — therefore landed nothing, so the publisher reports itself skipped
+/// rather than claiming an outcome a rollback would have something to unwind.
+/// Both crates are still counted as considered: the count is of publish calls
+/// reached, not of submissions.
 #[test]
 fn a_dry_run_winget_submission_records_no_landed_entry() {
     let mut ctx = TestContextBuilder::new()
@@ -1110,8 +1121,8 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
         capture
             .all_messages()
             .iter()
-            .any(|(_, m)| m == &run_done_message(1)),
-        "the healthy crate is still considered: {:?}",
+            .any(|(_, m)| m == &crate::publisher_helpers::run_done_message("winget", 2)),
+        "both crates are still considered: {:?}",
         capture.all_messages()
     );
     assert!(
@@ -1371,8 +1382,8 @@ fn winget_collect_target_uses_explicit_package_identifier() {
         w.package_identifier = Some("ExplicitOrg.Demo".to_string());
     }
     let ctx = TestContextBuilder::new().crates(vec![c]).build();
-    let t = collect_winget_target(&ctx, "demo", &ctx.logger("publish"))
-        .expect("render ok")
+    let log = ctx.logger("publish");
+    let t = collect_winget_target(&ctx, "demo", &derived_winget_config(&ctx, "demo", &log))
         .expect("target");
     assert_eq!(t.package_id, "ExplicitOrg.Demo");
     assert_eq!(t.upstream_owner, "microsoft");
@@ -1385,8 +1396,8 @@ fn winget_collect_target_auto_generates_package_identifier() {
     let ctx = TestContextBuilder::new()
         .crates(vec![winget_crate("demo")])
         .build();
-    let t = collect_winget_target(&ctx, "demo", &ctx.logger("publish"))
-        .expect("render ok")
+    let log = ctx.logger("publish");
+    let t = collect_winget_target(&ctx, "demo", &derived_winget_config(&ctx, "demo", &log))
         .expect("target");
     // Publisher "AcmeCo" + name "demo" → "AcmeCo.demo".
     assert_eq!(t.package_id, "AcmeCo.demo");
@@ -1413,14 +1424,14 @@ fn run_per_crate_start_message_names_crate() {
 
 #[test]
 fn run_done_message_reports_considered_count() {
-    let msg = run_done_message(2);
+    let msg = crate::publisher_helpers::run_done_message("winget", 2);
     assert!(msg.starts_with("finished winget publish"), "{msg}");
     assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
 }
 
 #[test]
 fn run_no_eligible_crates_warning_names_remediation() {
-    let msg = run_no_eligible_crates_warning(5);
+    let msg = crate::publisher_helpers::run_no_eligible_crates_warning("winget", 5);
     assert!(msg.starts_with("winget publisher registered"), "{msg}");
     assert!(msg.contains("0 of 5 effective"), "{msg}");
     assert!(msg.contains("nothing pushed"), "{msg}");
@@ -1436,7 +1447,7 @@ fn run_no_eligible_crates_warning_handles_empty_selection() {
     // block) must produce the remediation string with a 0/0 count.
     // The warn helper must not panic or omit the remediation text in
     // this shape.
-    let msg = run_no_eligible_crates_warning(0);
+    let msg = crate::publisher_helpers::run_no_eligible_crates_warning("winget", 0);
     assert!(msg.starts_with("winget publisher registered"), "{msg}");
     assert!(msg.contains("0 of 0 effective"), "{msg}");
     assert!(msg.contains("nothing pushed"), "{msg}");
@@ -1471,7 +1482,9 @@ fn winget_publisher_run_dry_run_announces_the_submission() {
         "the run must visit the demo crate: {messages:?}"
     );
     assert!(
-        messages.iter().any(|(_, m)| m == &run_done_message(1)),
+        messages
+            .iter()
+            .any(|(_, m)| m == &crate::publisher_helpers::run_done_message("winget", 1)),
         "the demo crate is the one considered crate: {messages:?}"
     );
 }
@@ -1517,7 +1530,7 @@ fn winget_publisher_run_no_eligible_crates_returns_empty_evidence() {
 /// shape, produced by `release --publish-only` with no
 /// `--crate`/`--all`) MUST resolve to implicit-all over every crate
 /// carrying a `publish.winget` block. Without this the publisher
-/// would emit `run_done_message(0)` and report `succeeded` with zero
+/// would emit `crate::publisher_helpers::run_done_message("winget", 0)` and report `succeeded` with zero
 /// winget activity in the publish log — the root-cause failure mode
 /// this regression test pins against.
 #[test]
@@ -1541,7 +1554,9 @@ fn winget_publisher_run_empty_selection_publishes_all_configured() {
         "empty selection must implicitly publish every winget-configured crate: {messages:?}"
     );
     assert!(
-        messages.iter().any(|(_, m)| m == &run_done_message(1)),
+        messages
+            .iter()
+            .any(|(_, m)| m == &crate::publisher_helpers::run_done_message("winget", 1)),
         "empty selection must consider one winget-configured crate: {messages:?}"
     );
 }
@@ -1695,4 +1710,60 @@ fn portable_installer_command_falls_back_to_the_file_name_without_exe() {
     let item = build_portable_installer(&ctx, &a, None, "widget", "1.0.0", None)
         .expect("portable installer with sha256 + url builds");
     assert_eq!(item.commands, vec!["wdg".to_string()]);
+}
+
+/// A crate the publish path skipped opens no PR, so the run records no target
+/// for it. Without the submitted flag the run collects a target for every
+/// configured crate: the run reads as landed and `tag rollback` tells the
+/// operator to close pull requests that were never opened.
+#[test]
+fn a_skipped_crate_records_no_pull_request_target() {
+    let mut gated = winget_crate("gated");
+    gated
+        .publish
+        .as_mut()
+        .unwrap()
+        .winget
+        .as_mut()
+        .unwrap()
+        .skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
+    let mut conditional = winget_crate("conditional");
+    conditional
+        .publish
+        .as_mut()
+        .unwrap()
+        .winget
+        .as_mut()
+        .unwrap()
+        .if_condition = Some("false".to_string());
+
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![gated, conditional])
+        .build();
+    ctx.with_log_capture(capture.clone());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("RawVersion", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let evidence = WingetPublisher::new()
+        .run(&mut ctx)
+        .expect("a gated crate must not fail the publisher");
+
+    assert!(
+        decode_winget_targets(&evidence.extra).is_empty(),
+        "a crate that submitted nothing must leave no PR to close"
+    );
+    assert!(
+        evidence.primary_ref.is_none(),
+        "no submission means no PR search reference"
+    );
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.contains("2 configured crate(s) considered")),
+        "both crates were reached, so the no-eligible warning must not fire; \
+         got: {logged:?}"
+    );
 }
