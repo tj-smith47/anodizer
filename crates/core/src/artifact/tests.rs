@@ -1671,3 +1671,46 @@ fn artifacts_json_rejects_an_unknown_kind() {
     .expect_err("an unknown kind must not load");
     assert!(err.to_string().contains("moon_rock"), "got: {err}");
 }
+
+#[test]
+fn group_by_target_variant_splits_amd64_micro_architectures() {
+    let bin = |name: &str, target: Option<&str>, variant: Option<&str>| {
+        let mut metadata = HashMap::new();
+        if let Some(v) = variant {
+            metadata.insert("amd64_variant".to_string(), v.to_string());
+        }
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: name.to_string(),
+            path: PathBuf::from(format!("dist/{name}")),
+            target: target.map(str::to_string),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        }
+    };
+    let v1 = bin("myapp-v1", Some("x86_64-unknown-linux-gnu"), Some("v1"));
+    let v3 = bin("myapp-v3", Some("x86_64-unknown-linux-gnu"), Some("v3"));
+    let host = bin("myapp-host", None, None);
+    let owned = [v1, v3, host];
+    let refs: Vec<&Artifact> = owned.iter().collect();
+
+    let groups = group_by_target_variant(&refs);
+
+    // Two amd64 builds of one triple are different machine code, so the
+    // variant splits them instead of one overwriting the other.
+    assert_eq!(groups.len(), 3);
+    let key_v1 = (
+        "x86_64-unknown-linux-gnu".to_string(),
+        Some("v1".to_string()),
+    );
+    let key_v3 = (
+        "x86_64-unknown-linux-gnu".to_string(),
+        Some("v3".to_string()),
+    );
+    assert_eq!(groups[&key_v1].len(), 1);
+    assert_eq!(groups[&key_v1][0].name, "myapp-v1");
+    assert_eq!(groups[&key_v3][0].name, "myapp-v3");
+    // A binary with no triple lands under `unknown`.
+    assert_eq!(groups[&("unknown".to_string(), None)][0].name, "myapp-host");
+}

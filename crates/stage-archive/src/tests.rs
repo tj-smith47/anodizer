@@ -7309,7 +7309,9 @@ fn copy_binary_keeps_the_executable_bit() {
 /// Every writer that opens an output file closes it through
 /// `finish_archive_file`, pinned as a RATIO rather than a hand-written total:
 /// a writer added with its own `File::create` and no helper call moves one side
-/// of the equality and fails here.
+/// of the equality and fails here. The tar and zip containers open and close in
+/// `write_tar_archive` / `write_zip_archive`, so each format contributes one
+/// pair no matter how many entry writers feed it.
 #[test]
 fn every_archive_writer_matches_a_finish_call() {
     let mut opens = 0usize;
@@ -7330,7 +7332,7 @@ fn every_archive_writer_matches_a_finish_call() {
          finish_archive_file call ({opens} opened, {finishes} finished)"
     );
     assert!(
-        opens >= 13,
+        opens >= 5,
         "the writer population shrank to {opens}; a removed writer needs a \
          deliberate decision, not a silently smaller pin"
     );

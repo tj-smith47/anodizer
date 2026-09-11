@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anodizer_core::arch_path_guard::Claim;
-use anodizer_core::artifact::{Artifact, FORMAT_BINARY, matches_id_filter};
+use anodizer_core::artifact::{Artifact, FORMAT_BINARY, TargetVariantKey, matches_id_filter};
 use anodizer_core::config::{ArchiveConfig, FormatOverride};
 use anodizer_core::context::Context;
 use anodizer_core::target::map_target;
@@ -390,30 +390,15 @@ pub(crate) fn plan_crate(
     })
 }
 
-/// One archive group: the build target triple and the binaries'
-/// `amd64_variant`.
-///
-/// Two amd64 builds of one triple (baseline `v1` and, e.g., `v3`) share
-/// `Os`/`Arch` but are different machine code, so the variant is part of the
-/// key — grouping on the triple alone merged them into one archive named
-/// after whichever binary the registry happened to hold first, and the other
-/// build never shipped. The same key shape as `stage-snapcraft`'s
-/// `SnapTargetKey`.
-type ArchiveTargetKey = (String, Option<String>);
-
 /// The entry's binaries (after its `ids:` filter) grouped by build target and
 /// CPU variant, or `None` when the entry has nothing to archive.
-///
-/// `BTreeMap` is load-bearing: the map is iterated to register one archive
-/// per group, and `HashMap` order is randomised per process, which would
-/// surface as per-run drift in `dist/artifacts.json`.
 fn group_binaries_by_target(
     ctx: &Context,
     log: &anodizer_core::log::StageLogger,
     archive_cfg: &ArchiveConfig,
     crate_name: &str,
     all_binaries: &[Artifact],
-) -> Result<Option<BTreeMap<ArchiveTargetKey, Vec<Artifact>>>> {
+) -> Result<Option<BTreeMap<TargetVariantKey, Vec<Artifact>>>> {
     let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
     let is_meta = archive_cfg.meta.unwrap_or(false);
     let binaries: Vec<Artifact> = if is_meta {
@@ -448,12 +433,12 @@ fn group_binaries_by_target(
         return Ok(None);
     }
 
-    let mut by_target: BTreeMap<ArchiveTargetKey, Vec<Artifact>> = BTreeMap::new();
-    for bin in binaries {
-        let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());
-        let variant = bin.metadata.get("amd64_variant").cloned();
-        by_target.entry((target, variant)).or_default().push(bin);
-    }
+    let binary_refs: Vec<&Artifact> = binaries.iter().collect();
+    let mut by_target: BTreeMap<TargetVariantKey, Vec<Artifact>> =
+        anodizer_core::artifact::group_by_target_variant(&binary_refs)
+            .into_iter()
+            .map(|(key, bins)| (key, bins.into_iter().cloned().collect()))
+            .collect();
     if is_meta && by_target.is_empty() {
         by_target.insert(("unknown".to_string(), None), Vec::new());
     }

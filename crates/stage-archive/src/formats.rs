@@ -147,6 +147,156 @@ pub(crate) fn finish_archive_file(file: File, label: &str, output: &Path) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// tar / zip container open + close
+// ---------------------------------------------------------------------------
+
+/// A tar container's codec, closed down to the `File` underneath it.
+///
+/// The uncompressed `tar` container implements this as the identity, so one
+/// open/close sequence serves every codec.
+pub(crate) trait TarCodec: IoWrite + Sized {
+    /// Codec name in the close-error context (`tar.gz: finish gzip`).
+    const CODEC: &'static str;
+
+    fn finish_to_file(self) -> Result<File>;
+}
+
+impl TarCodec for GzEncoder<File> {
+    const CODEC: &'static str = "gzip";
+
+    fn finish_to_file(self) -> Result<File> {
+        Ok(self.finish()?)
+    }
+}
+
+impl TarCodec for xz2::write::XzEncoder<File> {
+    const CODEC: &'static str = "xz";
+
+    fn finish_to_file(self) -> Result<File> {
+        Ok(self.finish()?)
+    }
+}
+
+impl TarCodec for zstd::Encoder<'static, File> {
+    const CODEC: &'static str = "zstd";
+
+    fn finish_to_file(self) -> Result<File> {
+        Ok(self.finish()?)
+    }
+}
+
+impl TarCodec for File {
+    const CODEC: &'static str = "tar";
+
+    fn finish_to_file(self) -> Result<File> {
+        Ok(self)
+    }
+}
+
+/// What goes inside one tar container, written into the builder the container
+/// opened. Generic over the codec so the same entry list can be written into
+/// any of them.
+pub(crate) trait TarEntries {
+    fn write_into<W: IoWrite>(self, tar: &mut tar::Builder<W>, label: &str) -> Result<()>;
+}
+
+/// Create `output` in `format` (`tar.gz` / `tar.xz` / `tar.zst` / `tar`),
+/// write `entries` into it, then close the tar, the codec and the file.
+///
+/// Compression levels live here: gzip `best`, xz preset 9, zstd 3.
+pub(crate) fn write_tar_archive<E: TarEntries>(
+    format: &str,
+    output: &Path,
+    entries: E,
+) -> Result<()> {
+    let out_file =
+        File::create(output).with_context(|| format!("create {format}: {}", output.display()))?;
+    match format {
+        "tar.gz" => close_tar(
+            format,
+            output,
+            GzEncoder::new(out_file, Compression::best()),
+            entries,
+        ),
+        "tar.xz" => close_tar(
+            format,
+            output,
+            xz2::write::XzEncoder::new(out_file, 9),
+            entries,
+        ),
+        // Level 3 is zstd's default, matching the Go zstd library used by
+        // the archiver dependency. Level 19 (near-max) was much slower with
+        // marginal size improvement for release artifacts.
+        "tar.zst" => close_tar(
+            format,
+            output,
+            zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?,
+            entries,
+        ),
+        "tar" => close_tar(format, output, out_file, entries),
+        other => bail!("unsupported tar format: {other}"),
+    }
+}
+
+/// Write the entries, then unwind builder → codec → file, reporting each
+/// close error instead of dropping it: a codec dropped mid-flush or a file
+/// dropped before `sync_all` publishes a truncated archive as a success.
+fn close_tar<W: TarCodec, E: TarEntries>(
+    label: &str,
+    output: &Path,
+    codec: W,
+    entries: E,
+) -> Result<()> {
+    let mut tar = tar::Builder::new(codec);
+    entries.write_into(&mut tar, label)?;
+    tar.finish().with_context(|| format!("{label}: finish"))?;
+    let codec = tar
+        .into_inner()
+        .with_context(|| format!("{label}: finish tar"))?;
+    let out_file = codec
+        .finish_to_file()
+        .with_context(|| format!("{label}: finish {}", W::CODEC))?;
+    finish_archive_file(out_file, label, output)
+}
+
+/// Create `output` as a zip, write entries into it through `entries`, then
+/// close the zip and the file.
+pub(crate) fn write_zip_archive(
+    output: &Path,
+    entries: impl FnOnce(&mut zip::ZipWriter<File>) -> Result<()>,
+) -> Result<()> {
+    let out_file =
+        File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
+    let mut zip = zip::ZipWriter::new(out_file);
+    entries(&mut zip)?;
+    let out_file = zip.finish().context("zip: finish")?;
+    finish_archive_file(out_file, "zip", output)
+}
+
+/// The `files` list the `create_tar*` entry points write into a container.
+pub(crate) struct FileEntries<'a> {
+    pub(crate) files: &'a [&'a Path],
+    pub(crate) base_dir: Option<&'a Path>,
+    pub(crate) wrap_dir: Option<&'a str>,
+    pub(crate) mtime: Option<u64>,
+    pub(crate) file_info: Option<&'a anodizer_core::config::ArchiveFileInfo>,
+}
+
+impl TarEntries for FileEntries<'_> {
+    fn write_into<W: IoWrite>(self, tar: &mut tar::Builder<W>, label: &str) -> Result<()> {
+        write_tar_entries(
+            tar,
+            self.files,
+            self.base_dir,
+            self.wrap_dir,
+            self.mtime,
+            self.file_info,
+            label,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // tar.gz / tar.xz / tar.zst / tar / gz / zip / binary writers
 // ---------------------------------------------------------------------------
 
@@ -163,17 +313,17 @@ pub fn create_tar_gz(
     mtime: Option<u64>,
     file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
-    let enc = GzEncoder::new(out_file, Compression::best());
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz",
-    )?;
-    tar.finish().context("tar.gz: finish")?;
-    let enc = tar.into_inner().context("tar.gz: finish tar")?;
-    let out_file = enc.finish().context("tar.gz: finish gzip")?;
-    finish_archive_file(out_file, "tar.gz", output)
+    write_tar_archive(
+        "tar.gz",
+        output,
+        FileEntries {
+            files,
+            base_dir,
+            wrap_dir,
+            mtime,
+            file_info,
+        },
+    )
 }
 
 /// Create a tar.xz archive containing the given files.
@@ -193,17 +343,17 @@ pub fn create_tar_xz(
     mtime: Option<u64>,
     file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
-    let enc = xz2::write::XzEncoder::new(out_file, 9);
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz",
-    )?;
-    tar.finish().context("tar.xz: finish")?;
-    let enc = tar.into_inner().context("tar.xz: finish tar")?;
-    let out_file = enc.finish().context("tar.xz: finish xz")?;
-    finish_archive_file(out_file, "tar.xz", output)
+    write_tar_archive(
+        "tar.xz",
+        output,
+        FileEntries {
+            files,
+            base_dir,
+            wrap_dir,
+            mtime,
+            file_info,
+        },
+    )
 }
 
 /// Create a tar.zst archive containing the given files.
@@ -215,19 +365,17 @@ pub fn create_tar_zst(
     mtime: Option<u64>,
     file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
-    // Level 3 is zstd's default, matching the Go zstd library used by
-    // the archiver dependency. Previously level 19 (near-max) which
-    // was much slower with marginal size improvement for release artifacts.
-    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst",
-    )?;
-    let enc = tar.into_inner().context("tar.zst: finish tar")?;
-    let out_file = enc.finish().context("tar.zst: finish zstd")?;
-    finish_archive_file(out_file, "tar.zst", output)
+    write_tar_archive(
+        "tar.zst",
+        output,
+        FileEntries {
+            files,
+            base_dir,
+            wrap_dir,
+            mtime,
+            file_info,
+        },
+    )
 }
 
 /// Create an uncompressed tar archive containing the given files.
@@ -239,13 +387,17 @@ pub fn create_tar(
     mtime: Option<u64>,
     file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar: {}", output.display()))?;
-    let mut tar = tar::Builder::new(out_file);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar")?;
-    tar.finish().context("tar: finish")?;
-    let out_file = tar.into_inner().context("tar: finish tar")?;
-    finish_archive_file(out_file, "tar", output)
+    write_tar_archive(
+        "tar",
+        output,
+        FileEntries {
+            files,
+            base_dir,
+            wrap_dir,
+            mtime,
+            file_info,
+        },
+    )
 }
 
 /// Create a standalone .gz file from a single input file.
@@ -296,9 +448,6 @@ pub fn create_zip(
     wrap_dir: Option<&str>,
     file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
-    let mut zip = zip::ZipWriter::new(out_file);
     let mut options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
@@ -308,28 +457,28 @@ pub fn create_zip(
         options = options.unix_permissions(mode.value());
     }
 
-    for &src in files {
-        if !src.exists() {
-            continue;
+    write_zip_archive(output, |zip| {
+        for &src in files {
+            if !src.exists() {
+                continue;
+            }
+            let base_name = src
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let name = if let Some(dir) = wrap_dir {
+                format!("{dir}/{base_name}")
+            } else {
+                base_name.to_string()
+            };
+            zip.start_file(&name, options)
+                .with_context(|| format!("zip: start_file {name}"))?;
+            let data = fs::read(src).with_context(|| format!("zip: read {}", src.display()))?;
+            zip.write_all(&data)
+                .with_context(|| format!("zip: write {name}"))?;
         }
-        let base_name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        let name = if let Some(dir) = wrap_dir {
-            format!("{dir}/{base_name}")
-        } else {
-            base_name.to_string()
-        };
-        zip.start_file(&name, options)
-            .with_context(|| format!("zip: start_file {name}"))?;
-        let data = fs::read(src).with_context(|| format!("zip: read {}", src.display()))?;
-        zip.write_all(&data)
-            .with_context(|| format!("zip: write {name}"))?;
-    }
-
-    let out_file = zip.finish().context("zip: finish")?;
-    finish_archive_file(out_file, "zip", output)
+        Ok(())
+    })
 }
 
 /// Copy one binary directly to `output` (the `binary` archive format — no

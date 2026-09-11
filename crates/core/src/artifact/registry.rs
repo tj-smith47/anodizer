@@ -153,7 +153,7 @@ impl ArtifactRegistry {
         // rehydrated dist, re-registering each artifact's checksum/signature/
         // certificate/subjects-manifest at its existing (path, kind); without
         // this merge those byte-stable re-adds would duplicate into
-        // `artifacts.json`. The narrowing is load-bearing: for a PRIMARY kind
+        // `artifacts.json`. The narrowing is deliberate: for a PRIMARY kind
         // (Archive/Binary/LinuxPackage/…) a same-path duplicate is a real
         // emission bug (e.g. two determinism shards overlapping a target) that
         // MUST fall through to the warning + `detect_duplicate_paths` guard, not
@@ -440,4 +440,34 @@ pub fn binary_name_of(
             .unwrap_or(&file_name)
             .to_string(),
     )
+}
+
+/// One platform group: the build target triple and the binaries'
+/// `amd64_variant` metadata.
+///
+/// Two amd64 builds of one triple (baseline `v1` and, e.g., `v3`) share
+/// `Os`/`Arch` but are different machine code, so the variant is part of the
+/// key — grouping on the triple alone merges them into one output named after
+/// whichever binary came first, and the other build never ships.
+pub type TargetVariantKey = (String, Option<String>);
+
+/// Group binary artifacts by `(target triple, amd64_variant)` — one output per
+/// platform-variant.
+///
+/// A binary with no target lands under the `unknown` key (a host-target build
+/// with no triple). `BTreeMap` (not `HashMap`) so iteration order is
+/// deterministic across runs: callers iterate the map to register one artifact
+/// per key, and `HashMap`'s randomised order would bake per-run order into
+/// `dist/artifacts.json`.
+pub fn group_by_target_variant<'a>(
+    binaries: &[&'a Artifact],
+) -> std::collections::BTreeMap<TargetVariantKey, Vec<&'a Artifact>> {
+    let mut by_target: std::collections::BTreeMap<TargetVariantKey, Vec<&'a Artifact>> =
+        std::collections::BTreeMap::new();
+    for b in binaries {
+        let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
+        let variant = b.metadata.get("amd64_variant").cloned();
+        by_target.entry((target, variant)).or_default().push(b);
+    }
+    by_target
 }

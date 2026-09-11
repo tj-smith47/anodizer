@@ -1,15 +1,12 @@
 //! Archive-stage output plumbing: config validation, archive-mtime
 //! resolution, per-format archive writing, per-binary output naming, the
-//! `templated_files` staging renderer, the produced-path claim that backs
-//! collision detection, and the per-run template-var teardown.
+//! `templated_files` staging renderer, and the per-run template-var
+//! teardown.
 
 use std::fs;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use flate2::Compression;
-use flate2::write::GzEncoder;
 
 use anodizer_core::artifact::Artifact;
 use anodizer_core::config::{ArchiveConfig, VALID_ARCHIVE_FORMATS};
@@ -18,7 +15,7 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template_file_render::render_templated_file_entry;
 
 use crate::entries::{ArchiveEntry, write_archive_entries, write_zip_entries};
-use crate::formats::{create_gz, create_xz, finish_archive_file};
+use crate::formats::{TarEntries, create_gz, create_xz, write_tar_archive, write_zip_archive};
 use crate::run::ARCHIVE_TEMPLATED_STAGING_DIR;
 
 pub(crate) fn validate_archive_configs(
@@ -124,6 +121,20 @@ pub(crate) fn render_binary_outputs<'a>(
     Ok(outs)
 }
 
+/// The resolved `(src, archive_name, info)` entries an archive entry writes,
+/// after `files:` globs and `templated_files` staging have been applied.
+struct ResolvedEntries {
+    entries: Vec<ArchiveEntry>,
+    mtime: Option<u64>,
+    strict: bool,
+}
+
+impl TarEntries for ResolvedEntries {
+    fn write_into<W: std::io::Write>(self, tar: &mut tar::Builder<W>, label: &str) -> Result<()> {
+        write_archive_entries(tar, &self.entries, self.mtime, label, self.strict)
+    }
+}
+
 pub(crate) fn write_archive_in_format(
     format: &str,
     archive_path: &Path,
@@ -135,82 +146,31 @@ pub(crate) fn write_archive_in_format(
 ) -> Result<()> {
     match format {
         "zip" => {
-            let out_file = File::create(archive_path)
-                .with_context(|| format!("create zip: {}", archive_path.display()))?;
-            let mut zip = zip::ZipWriter::new(out_file);
-            write_zip_entries(
-                &mut zip,
-                &entries_to_owned(all_entries),
-                source_date_epoch,
-                strict,
-            )?;
-            let out_file = zip.finish().context("zip: finish")?;
-            finish_archive_file(out_file, "zip", archive_path)?;
+            write_zip_archive(archive_path, |zip| {
+                write_zip_entries(
+                    zip,
+                    &entries_to_owned(all_entries),
+                    source_date_epoch,
+                    strict,
+                )
+            })?;
         }
-        "tar.gz" | "tgz" => {
-            let out_file = File::create(archive_path)
-                .with_context(|| format!("create tar.gz: {}", archive_path.display()))?;
-            let enc = GzEncoder::new(out_file, Compression::best());
-            let mut tar = tar::Builder::new(enc);
-            write_archive_entries(
-                &mut tar,
-                &entries_to_owned(all_entries),
-                source_date_epoch,
-                "tar.gz",
-                strict,
+        "tar.gz" | "tgz" | "tar.xz" | "txz" | "tar.zst" | "tzst" | "tar" => {
+            let tar_format = match format {
+                "tgz" => "tar.gz",
+                "txz" => "tar.xz",
+                "tzst" => "tar.zst",
+                other => other,
+            };
+            write_tar_archive(
+                tar_format,
+                archive_path,
+                ResolvedEntries {
+                    entries: entries_to_owned(all_entries),
+                    mtime: source_date_epoch,
+                    strict,
+                },
             )?;
-            tar.finish().context("tar.gz: finish")?;
-            let enc = tar.into_inner().context("tar.gz: finish tar")?;
-            let out_file = enc.finish().context("tar.gz: finish gzip")?;
-            finish_archive_file(out_file, "tar.gz", archive_path)?;
-        }
-        "tar.xz" | "txz" => {
-            let out_file = File::create(archive_path)
-                .with_context(|| format!("create tar.xz: {}", archive_path.display()))?;
-            let enc = xz2::write::XzEncoder::new(out_file, 9);
-            let mut tar = tar::Builder::new(enc);
-            write_archive_entries(
-                &mut tar,
-                &entries_to_owned(all_entries),
-                source_date_epoch,
-                "tar.xz",
-                strict,
-            )?;
-            tar.finish().context("tar.xz: finish")?;
-            let enc = tar.into_inner().context("tar.xz: finish tar")?;
-            let out_file = enc.finish().context("tar.xz: finish xz")?;
-            finish_archive_file(out_file, "tar.xz", archive_path)?;
-        }
-        "tar.zst" | "tzst" => {
-            let out_file = File::create(archive_path)
-                .with_context(|| format!("create tar.zst: {}", archive_path.display()))?;
-            let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
-            let mut tar = tar::Builder::new(enc);
-            write_archive_entries(
-                &mut tar,
-                &entries_to_owned(all_entries),
-                source_date_epoch,
-                "tar.zst",
-                strict,
-            )?;
-            let enc = tar.into_inner().context("tar.zst: finish tar")?;
-            let out_file = enc.finish().context("tar.zst: finish zstd")?;
-            finish_archive_file(out_file, "tar.zst", archive_path)?;
-        }
-        "tar" => {
-            let out_file = File::create(archive_path)
-                .with_context(|| format!("create tar: {}", archive_path.display()))?;
-            let mut tar = tar::Builder::new(out_file);
-            write_archive_entries(
-                &mut tar,
-                &entries_to_owned(all_entries),
-                source_date_epoch,
-                "tar",
-                strict,
-            )?;
-            tar.finish().context("tar: finish")?;
-            let out_file = tar.into_inner().context("tar: finish tar")?;
-            finish_archive_file(out_file, "tar", archive_path)?;
         }
         "gz" => {
             if path_refs.is_empty() {

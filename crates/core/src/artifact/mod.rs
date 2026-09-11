@@ -16,5 +16,7 @@ pub use kind::{
     ArtifactKind, checksummable_subject_kinds, is_derived_sidecar_kind, primary_subject_kinds,
     release_uploadable_kinds, signable_subject_kinds, size_reportable_kinds, uploadable_kinds,
 };
-pub use registry::{Artifact, ArtifactRegistry, binary_name_of};
+pub use registry::{
+    Artifact, ArtifactRegistry, TargetVariantKey, binary_name_of, group_by_target_variant,
+};
 pub use size_report::{format_size, print_size_report};

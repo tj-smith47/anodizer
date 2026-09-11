@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::artifact::{Artifact, ArtifactKind, TargetVariantKey};
 use anodizer_core::config::SnapcraftConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -265,30 +265,14 @@ impl Stage for SnapcraftStage {
     }
 }
 
-/// Group key for one snap: target triple plus the amd64 micro-architecture
-/// variant. Two amd64 builds of one triple (baseline `v1` and, e.g., `v3`)
-/// share `Os`/`Arch` but must produce distinct snaps, so the variant is part
-/// of the grouping key.
-type SnapTargetKey = (String, Option<String>);
-
 /// Group a crate's Linux binary artifacts by `(target triple, amd64_variant)`
-/// — one snap per platform-variant. `BTreeMap` (not `HashMap`) so iteration
-/// order is deterministic across runs; the map is iterated to register one
-/// snap Artifact per key, and `HashMap`'s randomised iteration would bake
-/// per-run order into `dist/artifacts.json`. A binary with no target lands
-/// under the `unknown` key (a host-target build with no triple). Both the
-/// build's `run` loop and the offline `snapcraft_snap_yamls_for_crate`
-/// renderer call this so the two can never diverge on grouping.
+/// — one snap per platform-variant. Two amd64 builds of one triple (baseline
+/// `v1` and, e.g., `v3`) share `Os`/`Arch` but must produce distinct snaps,
+/// so the variant is part of the grouping key.
 pub(crate) fn group_binaries_by_target<'a>(
     binaries: &[&'a Artifact],
-) -> BTreeMap<SnapTargetKey, Vec<&'a Artifact>> {
-    let mut by_target: BTreeMap<SnapTargetKey, Vec<&Artifact>> = BTreeMap::new();
-    for b in binaries {
-        let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
-        let variant = b.metadata.get("amd64_variant").cloned();
-        by_target.entry((target, variant)).or_default().push(b);
-    }
-    by_target
+) -> BTreeMap<TargetVariantKey, Vec<&'a Artifact>> {
+    anodizer_core::artifact::group_by_target_variant(binaries)
 }
 
 /// Collect a crate's Linux binary artifacts in artifact-registry order.
