@@ -6,7 +6,7 @@ use super::*;
 ///
 /// A caller that already holds the derived config (the publisher's `run`, which
 /// reads the same value for the PR target it records) passes it to
-/// [`publish_to_winget_with_config`] instead, so the derive — and the warnings
+/// `publish_to_winget_with_config` instead, so the derive — and the warnings
 /// an unrenderable field emits — happens once per crate.
 pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     // Clone the winget config upfront so subsequent helpers do not borrow from

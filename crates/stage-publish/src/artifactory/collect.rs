@@ -13,7 +13,7 @@ use super::*;
 ///
 /// An unknown mode disqualifies the ENTRY — an `Err` carrying
 /// [`anodizer_core::pipe_skip::entry_skip`], which callers route through
-/// [`crate::publisher_helpers::absorb_entry_skip`] so the entry's siblings
+/// `crate::publisher_helpers::absorb_entry_skip` so the entry's siblings
 /// still upload.
 pub fn validate_upload_mode(mode: &str) -> Result<()> {
     match mode.to_ascii_lowercase().as_str() {
