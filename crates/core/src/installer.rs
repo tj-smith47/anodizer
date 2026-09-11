@@ -595,17 +595,18 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
 /// has none.
 ///
 /// Only Linux ships two interchangeable-looking C libraries for one
-/// `os-arch` pair. A `*-musl*` triple (including `musleabihf`) is the static
-/// one; every other Linux triple links glibc. Non-Linux targets collapse to
-/// the empty class so their arms stay unsuffixed.
+/// `os-arch` pair, so a non-Linux target collapses to the empty class and its
+/// arm stays unsuffixed — a `*-windows-gnu` triple names a MinGW toolchain,
+/// not a glibc host. Within Linux the answer is
+/// [`libc_from_target`](crate::target::libc_from_target), the same classifier
+/// that names archive and binstall assets, so an arm and the asset it points
+/// at can never disagree about which libc a triple links.
 fn libc_class(target: &str) -> &'static str {
     let (os, _) = map_target(target);
     if os != "linux" {
         ""
-    } else if target.contains("musl") {
-        "musl"
     } else {
-        "gnu"
+        crate::target::libc_from_target(target)
     }
 }
 
@@ -712,6 +713,30 @@ mod tests {
         ArchiveConfig, ArchivesConfig, BuildConfig, Config, Defaults, FormatOverride,
     };
     use crate::context::{Context, ContextOptions};
+
+    /// The installer's arm classifier and the asset namer's classifier answer
+    /// the same question; a triple either one calls glibc while the other
+    /// calls it nothing would point an arm at an asset named for the other
+    /// libc. Android and uclibc link neither glibc nor musl, so both must
+    /// answer with no class.
+    #[test]
+    fn the_installer_and_the_asset_namer_classify_libc_alike() {
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-linux-android",
+            "armv7-unknown-linux-uclibceabi",
+            "aarch64-apple-darwin",
+        ] {
+            assert_eq!(
+                libc_class(target),
+                crate::target::libc_from_target(target),
+                "classifiers disagree on {target}"
+            );
+        }
+        assert_eq!(libc_class("aarch64-linux-android"), "");
+        assert_eq!(libc_class("armv7-unknown-linux-uclibceabi"), "");
+    }
 
     /// The six lockstep triples anodizer releases, paired with the installer
     /// `os-arch` key `map_target` reduces each to.
