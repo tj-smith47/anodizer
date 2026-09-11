@@ -282,7 +282,7 @@ impl RunLanding {
 ///
 /// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
 /// (`internal/pipe/pipe.go`) in making a misconfigured entry impossible to
-/// miss, without letting the report lie about what published:
+/// miss, without letting the report lie about what was published:
 ///
 /// - nothing published — the publisher is skipped with the joined reasons and
 ///   records [`anodizer_core::SkipReason::EntriesSkipped`];

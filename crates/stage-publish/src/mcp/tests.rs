@@ -963,7 +963,7 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
         snippet.len()
     );
     // The smiley straddles the cap, so it must NOT appear in the snippet
-    // — otherwise the cut published past the boundary, not before it.
+    // — otherwise the cut fell past the boundary, not before it.
     assert!(
         !snippet.contains('\u{1F600}'),
         "the multi-byte char straddling the cap must be dropped wholesale, not split"

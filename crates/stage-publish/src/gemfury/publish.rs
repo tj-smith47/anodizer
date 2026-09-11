@@ -351,7 +351,7 @@ enum PushOutcome {
     AlreadyPresent,
 }
 
-/// Probe-then-push one artifact to Fury, returning whether it published (a
+/// Probe-then-push one artifact to Fury, returning whether it was uploaded (a
 /// rollback target) or was an idempotent no-op. Self-contained so the account
 /// loop can run it under bounded parallelism: it builds its own multipart
 /// body, carries its own retry budget (floored to

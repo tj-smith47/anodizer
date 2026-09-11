@@ -379,7 +379,7 @@ fn select_binaries<'a>(
 /// Top-level publish entrypoint. Iterates each `pypis[]` entry, assembles
 /// its wheels (+ optional sdist) into `<dist>/pypi/<entry>/`, and uploads
 /// each file. `files` is an out-param so a mid-loop error still yields
-/// evidence for what already published.
+/// evidence for what was already published.
 pub(crate) fn publish_to_pypi(
     ctx: &Context,
     log: &StageLogger,

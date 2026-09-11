@@ -50,7 +50,7 @@ pub(crate) fn resolve_selected_crates(
 /// (`git.ignore_tags` globs, `git.ignore_tag_prefixes`, and the unconditional
 /// nightly-shape exclusion) so a stranded per-crate nightly tag at HEAD can
 /// never drive stable crate selection — the tags anodizer's own nightly runs
-/// tag would otherwise scope the release to whichever crates last had a
+/// create would otherwise scope the release to whichever crates last had a
 /// nightly, collapsing the shard target matrix.
 ///
 /// Returns an empty vec when HEAD has no tags; the caller treats that as a

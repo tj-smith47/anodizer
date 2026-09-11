@@ -346,7 +346,7 @@ tasks:
       - .claude/scripts/audit-binary-name.sh
 
   audit:test-isolation:
-    desc: "Guard: no unjustified process-global env mutation in tests (serial/seam/env-ok)."
+    desc: "Guard: no unjustified process-global env mutation in tests (serial/env-ok)."
     cmds:
       - .claude/scripts/audit-test-isolation.sh
 
@@ -578,7 +578,7 @@ tasks:
           printf '%s\n' '{{.MODIFIED_LIST}}' | sed 's/^/  /' >&2
           echo >&2
           echo "Stage the edits that belong with this commit, or move the rest" >&2
-          echo "aside, then re-run. Committing as-is would land generated output" >&2
+          echo "aside, then re-run. Committing as-is would commit generated output" >&2
           echo "ahead of the source that produces it, leaving a tree whose own" >&2
           echo "'cargo xtask gen-docs --check' fails." >&2
           exit 1

@@ -379,11 +379,11 @@ if [[ -n "$violations" ]]; then
     echo "swaps the process working directory, inside test code without an inline"
     echo "marker justifying why it is race-free under parallel test execution."
     echo
-    echo "[env] Fix (preferred): route the var through an EnvSource seam — call"
+    echo "[env] Fix (preferred): route the var through an EnvSource override — call"
     echo "the fn's  *_with_env  variant with an anodizer_core::MapEnvSource, so"
     echo "the test injects the value and never touches process env (then DELETE"
     echo "the set_var entirely — no marker needed)."
-    echo "[env] Fix (no seam): annotate the enclosing test"
+    echo "[env] Fix (no override): annotate the enclosing test"
     echo "#[serial_test::serial(<grp>)] grouped by shared resource (path_env /"
     echo "git_env / <var>_env), then add  // env-ok: serialised by #[serial(<grp>)]"
     echo "at the call site."

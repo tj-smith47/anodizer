@@ -36,7 +36,7 @@ section explains why each one is safe.
 
 > **Re-running is for a failed PUBLISHER; `anodizer continue` is for a failed
 > STAGE.** A re-run reconciles each publisher against its upstream and
-> self-skips what already published. `continue` resumes a pipeline that stalled
+> self-skips what is already published. `continue` resumes a pipeline that stalled
 > before publishing — it skips the stages that already completed rather than
 > the publishers that already published. See
 > [`publish` vs `continue`](@/docs/general/release-workflow.md#publish-vs-continue).

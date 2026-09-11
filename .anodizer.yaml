@@ -720,7 +720,7 @@ crates:
         # a snap that installs but can't run a release. devmode runs unconfined
         # (tool works) and uploads without review, but the Store only permits it
         # on beta/edge and its uniqueness-check backend has been faulting these
-        # uploads, so no devmode revision ever published. Re-enable with
+        # uploads, so no devmode revision was ever published. Re-enable with
         # `confinement: classic` + `latest/stable` once the store-request for the
         # `anodizer` classic snap is approved.
         confinement: devmode

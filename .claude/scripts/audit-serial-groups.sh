@@ -96,7 +96,7 @@ if [[ -n "$stale" ]]; then
     echo
     printf '%s' "$stale"
     echo
-    echo "The conversion landed (or the line moved). Remove the entry from"
+    echo "The conversion is done (or the line moved). Remove the entry from"
     echo "SERIAL_PENDING in this script so the list keeps meaning what it says."
     exit 1
 fi

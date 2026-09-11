@@ -269,7 +269,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     // A pipeline failure leaves every tag, commit, and published artifact
     // exactly where it stopped: recovery is re-running this same command
-    // (publishers reconcile and skip what already published), and deliberate
+    // (publishers reconcile and skip what is already published), and deliberate
     // withdrawal is `anodizer tag rollback`.
     //
     // `on_error:` stays scoped to a dispatched-mode failure — the boundary

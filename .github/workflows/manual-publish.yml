@@ -49,7 +49,7 @@ on:
           release assets, while verify-release re-runs whole-release install
           smoke-tests that pull cross-arch (e.g. arm64) packages — these cannot
           execute on an amd64 github-hosted runner without qemu/binfmt and would
-          spuriously fail the run after the publish already landed. Override to
+          spuriously fail the run after the publish already succeeded. Override to
           `""` on a runner with emulation, or to widen the skip set.
         required: false
         default: verify-release

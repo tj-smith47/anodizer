@@ -220,7 +220,7 @@ fn probe_revision_for_version(
 /// Promote `revision` into every channel in `channels` via `snapcraft
 /// release`, stopping at the first failure. Used to recover a dedup
 /// rejection whose colliding revision matches the version being published
-/// — the bytes already published, they just were never released.
+/// — the bytes were already published, they just were never released.
 pub(crate) fn promote_revision(
     snap_name: &str,
     revision: &str,

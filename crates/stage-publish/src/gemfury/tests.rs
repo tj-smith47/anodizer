@@ -1016,7 +1016,7 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
     ctx.config = config;
     // Pin serial so the sequential responder's first-200-then-400 script maps
     // deterministically to alpha (arrives) then beta (fails): this test asserts
-    // the EXACT partial that published, which only a serial push order fixes.
+    // the EXACT partial that was published, which only a serial push order fixes.
     // Concurrent-failure recording (a sibling success kept despite a failing
     // push) is covered separately and does not depend on which one fails.
     ctx.options.parallelism = 1;

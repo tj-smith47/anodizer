@@ -58,7 +58,7 @@ TAG_FAMILY_RAW_OK=(
 # `<file>::<fn>` — the only functions allowed to spell "<prefix> else v".
 TAG_PREFIX_RAW_OK=(
     "crates/core/src/config/accessors.rs::repo_tag_prefix — the composition itself"
-    "crates/core/src/config/accessors.rs::derived_repo_tag_prefix — the fold's lockstep rung mints the v family from the same constant"
+    "crates/core/src/config/accessors.rs::derived_repo_tag_prefix — the fold's lockstep rung creates the v family from the same constant"
     "crates/cli/src/commands/tag/repo_shape.rs::check_shared_prefix_version_coherence — message-only: the DECLARED shared prefix else v, a different question from the repo prefix"
 )
 

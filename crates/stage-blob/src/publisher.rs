@@ -64,7 +64,7 @@ pub(crate) type BlobTarget = anodizer_core::publish_evidence::BlobTargetSnapshot
 /// [`BlobTarget`]. Used by the publisher to populate
 /// [`anodizer_core::PublishEvidence`]`.artifact_paths` so the text
 /// `anodizer tag rollback` summary keeps rendering the same shape that
-/// shipped before the structured-target capture published.
+/// shipped before the structured-target capture existed.
 ///
 /// Free function rather than an inherent impl because [`BlobTarget`]
 /// is a type alias for a core-owned struct — Rust does not allow
@@ -133,7 +133,7 @@ impl Default for BlobPublisher {
 /// emits for one recorded object key when structured `blob_targets` evidence
 /// is absent
 /// (`anodizer tag rollback` against a run written before the structured-target
-/// capture published). Exposed as a helper so tests can pin the wording
+/// capture existed). Exposed as a helper so tests can pin the wording
 /// without intercepting stderr.
 ///
 /// The PRIMARY rollback path issues a real
@@ -214,7 +214,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         // Fallback path: legacy evidence with only `artifact_paths` and
         // no structured `blob_targets` — emit the per-object manual
         // cleanup checklist. Reached for runs written before the
-        // structured-target capture published, and for any future evidence
+        // structured-target capture existed, and for any future evidence
         // shape that doesn't surface the targets list.
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
             log.warn(&anodizer_core::rollback_empty_warning_msg(

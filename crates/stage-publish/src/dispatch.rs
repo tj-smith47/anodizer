@@ -544,7 +544,7 @@ pub fn dispatch(
             let result = PublisherResult {
                 // Reported beside the outcome, never instead of it: a
                 // publisher that published part of its entries keeps the
-                // outcome of what published.
+                // outcome of what was published.
                 entry_skips: crate::publisher_helpers::entry_skip_reasons(ctx, p.name()),
                 name: p.name().into(),
                 group,

@@ -840,7 +840,7 @@ fn per_crate_no_output_when_push_fails() {
     // (`--push`), so drive the push explicitly; point `origin` at an
     // unreachable URL and run under `--strict` so the atomic push hard-fails;
     // the command must exit non-zero AND emit no `anodizer-output` line (a
-    // pre-push emission would advertise tags that never published).
+    // pre-push emission would advertise tags that were never published).
     let tmp = TempDir::new().unwrap();
     flat_two_crate_workspace(tmp.path());
     git_init(tmp.path());

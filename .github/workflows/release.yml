@@ -431,7 +431,7 @@ jobs:
 
       # No workflow-side rollback step: a failed run holds everything
       # exactly where it stopped. Recovery is re-running the same release
-      # command (publishers reconcile and skip what already published);
+      # command (publishers reconcile and skip what is already published);
       # `anodizer tag rollback` withdraws the release deliberately after
       # reading the uploaded summary.
       - name: Upload run summary

@@ -97,12 +97,12 @@ nightly:
 | `nightly.publish_repo` | `string` | (source repo) | Publish the nightly release to a different `"owner/repo"` than the one resolved from `release.github` (e.g. a dedicated `org/nightly` repo). The release create, asset upload, and retention deletes all target this repo. The active token must have write access to it. GitHub-only. |
 | `nightly.retention.keep_last` | `int` | (none) | Keep the N newest nightly releases (matched by the rendered nightly release name) and delete the older ones, including the git tags anodizer created for them. In a workspace that creates more than one tag family the name-matched set is narrowed to the publishing crate's family first, so the tracks — which all render the same name — do not delete each other. Operates on `publish_repo` when set. |
 | `nightly.keep_single_release` | `bool` | `false` | Back-compat alias for `retention: { keep_last: 1 }` (a single rolling nightly release). When both are set, `retention` wins. |
+| `nightly.skip_if_no_changes` | `bool` | `false` | Skip the nightly release when the run's changelog resolved to zero notable entries — a nightly becomes a no-op on a quiet day instead of re-cutting the last release's content. Decided per crate in a per-crate workspace. A run with `--skip=changelog` has no signal and never skips. |
+| `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
 
 `retention` only has something to sweep while `tag_name` is unset. A pinned
 `tag_name` re-creates one release on one tag every run, so there is never more
 than a single nightly release for `keep_last` to keep.
-| `nightly.skip_if_no_changes` | `bool` | `false` | Skip the nightly release when the run's changelog resolved to zero notable entries — a nightly becomes a no-op on a quiet day instead of re-cutting the last release's content. Decided per crate in a per-crate workspace. A run with `--skip=changelog` has no signal and never skips. |
-| `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
 
 ### Build-counter and base-version template vars
 

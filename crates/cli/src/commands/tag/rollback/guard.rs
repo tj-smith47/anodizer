@@ -84,7 +84,7 @@ pub(super) enum ModeratedProbe {
 /// Refuse rollback when any tag's configured chocolatey / winget package is
 /// already visible on those registries at the tag's version. Both are true
 /// one-way doors (a moderation queue submission or a merged manifest PR
-/// blocks re-submitting the same version), and a burn published by another
+/// blocks re-submitting the same version), and a burn caused by another
 /// runner leaves no local summary and no GitHub release — this probe is the
 /// only evidence path that can see it.
 ///

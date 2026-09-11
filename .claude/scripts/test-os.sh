@@ -190,4 +190,4 @@ done
 # configured) executed ZERO suites — "GATE PASS" there is the empty-coverage
 # illusion the gate exists to kill. Demand at least one real PASS.
 if [ "$ran" = 0 ]; then say "GATE INCONCLUSIVE (no suite ran — every leg skipped)"; exit 1; fi
-if [ "$fail" = 0 ]; then say "GATE PASS ($ran leg(s) green)"; else say "GATE FAILED"; exit 1; fi
+if [ "$fail" = 0 ]; then say "GATE PASS ($ran leg(s) passed)"; else say "GATE FAILED"; exit 1; fi

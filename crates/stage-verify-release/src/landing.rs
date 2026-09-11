@@ -27,7 +27,7 @@
 //! A publisher that was ATTEMPTED and reported `Failed` is a different case:
 //! the run tried to ship it and did not. That is a landing defect on its own
 //! merits — recorded without a network probe. How a landing finding (a failed
-//! publish attempt, or a probe that could not confirm the upload published) is
+//! publish attempt, or a probe that could not confirm the upload succeeded) is
 //! reported follows the publisher's `required` flag: a REQUIRED publisher's
 //! landing finding is a gate-failing issue; an advisory (`required: false`)
 //! publisher's is a loud, recorded WARNING that never fails the release.

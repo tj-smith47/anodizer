@@ -527,7 +527,7 @@ mod tests {
             "every-option single-crate derivation + flake must conform, got: {findings:?}"
         );
 
-        // Parse the rendered derivation and assert each key attribute published.
+        // Parse the rendered derivation and assert each key attribute is present.
         let render = render_nix_for_validation(&ctx, "widget", &ctx.logger("publish"))
             .expect("render ok")
             .expect("not skipped");

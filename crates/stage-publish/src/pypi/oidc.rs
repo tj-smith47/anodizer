@@ -137,6 +137,6 @@ pub(crate) fn mint_trusted_publishing_token(
             }
         );
     }
-    log.verbose("minted short-lived PyPI upload token via Trusted Publishing");
+    log.verbose("issued short-lived PyPI upload token via Trusted Publishing");
     Ok(mint.token)
 }
