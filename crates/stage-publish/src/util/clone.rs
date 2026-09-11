@@ -1072,7 +1072,7 @@ mod tests {
             std::env::set_current_dir(scratch.path()).unwrap(); // cwd-ok: serialised by #[serial(cwd)]
             drop(scratch);
             f();
-            std::env::set_current_dir(&original).unwrap(); // cwd-ok: restore immediately
+            std::env::set_current_dir(&original).unwrap(); // cwd-ok: serialised by #[serial(cwd)]; closes the dangling window
         };
 
         // With the CWD dangling, both helpers must still clone because they
