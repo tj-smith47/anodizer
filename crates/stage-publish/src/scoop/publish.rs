@@ -265,10 +265,7 @@ pub(crate) fn dedup_scoop_targets(targets: &[ScoopTarget]) -> Vec<ScoopTarget> {
 pub(crate) fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
     let mut out: Vec<ScoopTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
+    for c in ctx.config.selected_crates(selected) {
         let Some(sc) = c.publish.as_ref().and_then(|p| p.scoop.as_ref()) else {
             continue;
         };

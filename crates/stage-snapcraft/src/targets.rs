@@ -33,10 +33,7 @@ pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTarg
 pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
     let selected = &ctx.options.selected_crates;
     let mut out: Vec<SnapcraftTarget> = Vec::new();
-    for krate in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&krate.name) {
-            continue;
-        }
+    for krate in ctx.config.selected_crates(selected) {
         let Some(snap_configs) = krate.snapcrafts.as_ref() else {
             continue;
         };

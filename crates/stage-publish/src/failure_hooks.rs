@@ -43,10 +43,7 @@ fn resolve_hooks(
     select: impl Fn(&anodizer_core::config::PublishConfig) -> Option<&[HookEntry]>,
 ) -> Vec<HookEntry> {
     let selected = &ctx.options.selected_crates;
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.iter().any(|s| s == &c.name) {
-            continue;
-        }
+    for c in ctx.config.selected_crates(selected) {
         let Some(publish) = c.publish.as_ref() else {
             continue;
         };

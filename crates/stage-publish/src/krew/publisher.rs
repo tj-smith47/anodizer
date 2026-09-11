@@ -197,9 +197,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 fn active_krew_configs(ctx: &Context) -> Vec<&anodizer_core::config::KrewConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
         .filter(|k| {
             !crate::publisher_helpers::entry_inactive(
@@ -314,9 +313,8 @@ impl anodizer_core::Publisher for KrewPublisher {
         let selected = ctx.options.selected_crates.clone();
         let crate_names: Vec<String> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter(|c| {
                 c.publish
                     .as_ref()

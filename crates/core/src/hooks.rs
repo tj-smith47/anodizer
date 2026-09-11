@@ -527,9 +527,8 @@ fn run_per_crate_lifecycle_with_resolver(
     let selected = &ctx.options.selected_crates;
     let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
         .config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| {
             kind.block(c)
                 .and_then(|b| b.hooks.as_ref())
@@ -577,9 +576,8 @@ fn run_per_crate_before_publish_with_resolver(
     let selected = &ctx.options.selected_crates;
     let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
         .config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| {
             c.before_publish
                 .as_ref()

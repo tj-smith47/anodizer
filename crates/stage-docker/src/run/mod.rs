@@ -481,9 +481,8 @@ pub(crate) fn collect_docker_crates(
     selected: &[String],
 ) -> Vec<anodizer_core::config::CrateConfig> {
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
         .cloned()
         .collect()

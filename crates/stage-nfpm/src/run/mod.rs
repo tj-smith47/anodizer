@@ -85,9 +85,8 @@ impl Stage for NfpmStage {
         // Collect crates that have nfpm config
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.nfpms.is_some())
             .cloned()
             .collect();

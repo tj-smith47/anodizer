@@ -50,14 +50,7 @@ fn newest_tag_across_crates(
     log: &StageLogger,
 ) -> Option<(String, String)> {
     let selected = &ctx.options.selected_crates;
-    let covered: Vec<&anodizer_core::config::CrateConfig> = if selected.is_empty() {
-        config.crate_universe()
-    } else {
-        selected
-            .iter()
-            .filter_map(|name| config.find_crate(name))
-            .collect()
-    };
+    let covered = config.selected_crates(selected);
 
     let mut seen_templates: Vec<String> = Vec::new();
     let mut best: Option<(git::SemVer, String, String)> = None;

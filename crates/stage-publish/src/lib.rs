@@ -96,9 +96,8 @@ where
     F: Fn(&PublishConfig) -> bool,
 {
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.publish.as_ref().is_some_and(&has_config))
         .map(|c| c.name.clone())
         .collect()

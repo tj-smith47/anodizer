@@ -115,9 +115,8 @@ impl Stage for ChecksumStage {
         // Collect crate configs up-front to avoid borrow conflicts.
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
 

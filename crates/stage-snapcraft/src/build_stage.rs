@@ -150,9 +150,8 @@ impl Stage for SnapcraftStage {
         // Collect crates that have snapcraft config
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.snapcrafts.is_some())
             .cloned()
             .collect();

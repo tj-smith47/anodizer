@@ -140,9 +140,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 fn active_chocolatey_configs(ctx: &Context) -> Vec<&anodizer_core::config::ChocolateyConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
         .filter(|ch| {
             !crate::publisher_helpers::entry_inactive(
@@ -235,9 +234,8 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             Option<anodizer_core::config::StringOrBool>,
         )> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter_map(|c| Some((c, c.publish.as_ref()?.chocolatey.as_ref()?)))
             .filter(|(_, ch)| {
                 !crate::publisher_helpers::entry_inactive(

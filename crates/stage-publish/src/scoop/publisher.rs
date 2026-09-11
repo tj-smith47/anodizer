@@ -101,9 +101,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 fn active_scoop_configs(ctx: &Context) -> Vec<&anodizer_core::config::ScoopConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.scoop.as_ref())
         .filter(|s| {
             !crate::publisher_helpers::entry_inactive(
@@ -217,9 +216,8 @@ impl anodizer_core::Publisher for ScoopPublisher {
         let selected = &ctx.options.selected_crates;
         let crate_names: Vec<String> = ctx
             .config
-            .crate_universe()
+            .selected_crates(selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter(|c| {
                 c.publish
                     .as_ref()

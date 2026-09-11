@@ -50,14 +50,16 @@ pub(crate) fn cargo_publish_plan(
 ) -> Result<CargoPublishPlan> {
     let all_crates: Vec<CrateConfig> = ctx.config.crate_universe().into_iter().cloned().collect();
 
-    let expanded_selection: Vec<String> = if selected.is_empty() {
-        Vec::new()
+    // `None` is "no --crate given", which publishes every eligible crate;
+    // `Some(names)` is the transitive expansion of what WAS given, and an
+    // expansion that resolved nothing publishes nothing. A plain `Vec` cannot
+    // tell those apart — both are empty — and conflating them makes
+    // `--crate ghost` publish the whole workspace.
+    let expanded_selection: Option<Vec<String>> = if selected.is_empty() {
+        None
     } else {
-        expand_with_transitive_deps(&all_crates, selected)
+        Some(expand_with_transitive_deps(&all_crates, selected))
     };
-    let selected_set: std::collections::HashSet<&str> =
-        expanded_selection.iter().map(|s| s.as_str()).collect();
-
     let cfgs: HashMap<String, CargoPublishConfig> = {
         let mut m = HashMap::new();
         for c in &all_crates {
@@ -111,7 +113,10 @@ pub(crate) fn cargo_publish_plan(
     let member_names: HashSet<String> = all_crates.iter().map(|c| c.name.clone()).collect();
     let publishable: Vec<(String, Vec<String>)> = all_crates
         .iter()
-        .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
+        .filter(|c| match &expanded_selection {
+            None => true,
+            Some(names) => names.iter().any(|n| n == &c.name),
+        })
         .filter(|c| cfgs.contains_key(&c.name))
         .map(|c| {
             let deps = match c.depends_on.as_ref() {

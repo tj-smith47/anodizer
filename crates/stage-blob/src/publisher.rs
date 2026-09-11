@@ -456,9 +456,8 @@ pub fn blob_object_exists(
 pub fn is_configured(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .any(|c| c.blobs.as_ref().is_some_and(|v| !v.is_empty()))
 }
 

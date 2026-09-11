@@ -345,9 +345,8 @@ pub(crate) fn record_blob_deselected(ctx: &mut Context) {
 pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.blobs.as_ref())
         .flat_map(|configs| configs.iter())
         .any(|cfg| cfg.required.unwrap_or(false))
@@ -367,9 +366,8 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
 fn blob_destinations(ctx: &Context) -> Vec<String> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.blobs.as_ref())
         .flat_map(|configs| configs.iter())
         .map(|cfg| format!("{}://{}", cfg.provider, cfg.bucket))
@@ -434,9 +432,8 @@ impl BlobStage {
         // Collect crates that have blob config
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.blobs.is_some())
             .cloned()
             .collect();

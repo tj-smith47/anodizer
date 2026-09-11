@@ -187,7 +187,7 @@ fn first_covered_crate<'a>(ctx: &Context, config: &'a Config) -> Option<&'a Crat
     config
         .crate_universe()
         .into_iter()
-        .find(|c| selected.is_empty() || selected.contains(&c.name))
+        .find(|c| anodizer_core::config::crate_is_selected(selected, &c.name))
 }
 
 /// Apply the snapshot version template (one is always applied).

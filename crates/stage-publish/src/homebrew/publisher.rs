@@ -88,10 +88,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
 
     // Per-crate formulae (and same-tap casks share the formula's tap).
     let selected = &ctx.options.selected_crates;
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
+    for c in ctx.config.selected_crates(selected) {
         let Some(hb) = c.publish.as_ref().and_then(|p| p.homebrew.as_ref()) else {
             continue;
         };
@@ -248,9 +245,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 fn active_homebrew_formula_configs(ctx: &Context) -> Vec<&anodizer_core::config::HomebrewConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
         .filter(|h| {
             !crate::publisher_helpers::entry_inactive(
@@ -494,9 +490,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let selected = &ctx.options.selected_crates;
         let crate_names: Vec<String> = ctx
             .config
-            .crate_universe()
+            .selected_crates(selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter(|c| {
                 c.publish
                     .as_ref()

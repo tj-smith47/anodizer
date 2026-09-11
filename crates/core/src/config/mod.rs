@@ -504,6 +504,7 @@ impl Default for Config {
 }
 
 mod accessors;
+pub use accessors::crate_is_selected;
 
 mod schema;
 pub use schema::*;

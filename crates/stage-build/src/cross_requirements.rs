@@ -65,10 +65,7 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
     let mut tools: BTreeSet<String> = BTreeSet::new();
     let is_skipped = anodizer_core::build_plan::skipped_in(ctx);
 
-    for krate in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&krate.name) {
-            continue;
-        }
+    for krate in ctx.config.selected_crates(selected) {
         let strategy = krate
             .cross
             .clone()

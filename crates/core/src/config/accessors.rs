@@ -21,6 +21,21 @@ impl Config {
         self.crate_universe_walk().0
     }
 
+    /// The crates a run acts on: [`Self::crate_universe`] narrowed by the
+    /// run's `--crate` selection.
+    ///
+    /// An EMPTY `selected` means every crate — that is what a single-crate or
+    /// lockstep run passes, and what `--all` resolves to. Every stage and
+    /// publisher that dispatches per crate answers the question here, so a
+    /// change to what `--crate` selects (by name today) reaches all of them
+    /// at once.
+    pub fn selected_crates(&self, selected: &[String]) -> Vec<&CrateConfig> {
+        self.crate_universe()
+            .into_iter()
+            .filter(|c| crate_is_selected(selected, &c.name))
+            .collect()
+    }
+
     /// Borrow a crate by name from [`Self::crate_universe`] (top-level wins
     /// on a name collision). The single by-name lookup every consumer must
     /// use — a `config.crates.iter().find(...)` cannot see workspace-only
@@ -474,5 +489,113 @@ impl Config {
                 c.depends_on = Some(deps.clone());
             }
         }
+    }
+}
+
+/// Whether a crate named `name` is in a run's `--crate` selection.
+///
+/// The predicate half of [`Config::selected_crates`], for the few walks whose
+/// source is not the crate universe (an aggregate changelog set, a Cargo member
+/// list). An EMPTY selection means every crate.
+pub fn crate_is_selected(selected: &[String], name: &str) -> bool {
+    selected.is_empty() || selected.iter().any(|s| s == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn krate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An empty `--crate` selection is what a single-crate or lockstep run
+    /// passes, and it means every crate — a selection that narrowed to nothing
+    /// there would publish nothing at all.
+    #[test]
+    fn an_empty_selection_selects_every_crate() {
+        let config = Config {
+            crates: vec![krate("core"), krate("cli")],
+            ..Default::default()
+        };
+        let names: Vec<&str> = config
+            .selected_crates(&[])
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["core", "cli"]);
+    }
+
+    /// A non-empty selection narrows to the named crates, in the universe's own
+    /// order, and a name that matches nothing simply selects nothing.
+    #[test]
+    fn a_named_selection_narrows_to_those_crates() {
+        let config = Config {
+            crates: vec![krate("core"), krate("cli"), krate("xtask")],
+            ..Default::default()
+        };
+        let selected = vec!["xtask".to_string(), "core".to_string()];
+        let names: Vec<&str> = config
+            .selected_crates(&selected)
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["core", "xtask"]);
+        assert!(config.selected_crates(&["nope".to_string()]).is_empty());
+    }
+
+    /// "Is this crate in the run's selection" is one question with one answer.
+    /// It was re-typed at nearly fifty production sites, in two spellings and
+    /// two polarities, so a change to what `--crate` selects had to be made
+    /// fifty times. Every walk now asks [`Config::selected_crates`] or
+    /// [`crate_is_selected`]; this walk fails the moment a new one does not.
+    #[test]
+    fn the_selection_predicate_is_spelled_once() {
+        use crate::test_helpers::test_sources::{production_half, rust_sources};
+
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ above crates/core");
+        let mut sources: Vec<std::path::PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
+            let src = entry.expect("crate entry").path().join("src");
+            if src.is_dir() {
+                sources.extend(rust_sources(&src));
+            }
+        }
+        assert!(
+            sources.len() > 100,
+            "the walk must cover every crate's production sources, found {}",
+            sources.len()
+        );
+
+        let this_file = std::path::Path::new(file!())
+            .file_name()
+            .expect("accessors.rs");
+        let mut strays: Vec<String> = Vec::new();
+        for source in &sources {
+            if source.file_name() == Some(this_file) {
+                continue;
+            }
+            let text = std::fs::read_to_string(source).expect("read source");
+            let production = production_half(&text);
+            for (index, line) in production.lines().enumerate() {
+                let flat = line.replace(' ', "");
+                if flat.contains("selected.is_empty()||selected")
+                    || flat.contains("!selected.is_empty()&&!selected")
+                {
+                    strays.push(format!("{}:{}", source.display(), index + 1));
+                }
+            }
+        }
+        assert!(
+            strays.is_empty(),
+            "ask `Config::selected_crates` or `config::crate_is_selected` \
+             instead of re-typing the selection predicate: {strays:#?}"
+        );
     }
 }

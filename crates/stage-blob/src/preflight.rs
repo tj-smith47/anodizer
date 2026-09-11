@@ -104,12 +104,7 @@ fn collect_targets(
     let selected = &ctx.options.selected_crates;
     let mut targets: BTreeMap<TargetKey, ProbeTarget> = BTreeMap::new();
 
-    for krate in ctx
-        .config
-        .crate_universe()
-        .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
-    {
+    for krate in ctx.config.selected_crates(selected).into_iter() {
         let Some(blob_configs) = krate.blobs.as_ref() else {
             continue;
         };

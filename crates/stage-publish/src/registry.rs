@@ -552,9 +552,8 @@ fn is_github_release_configured(ctx: &Context) -> bool {
     }
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .any(|c| c.release.is_some())
 }
 

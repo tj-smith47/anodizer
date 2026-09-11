@@ -54,10 +54,7 @@ fn dedup_nix_targets(targets: &[NixTarget]) -> Vec<NixTarget> {
 fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
     let mut out: Vec<NixTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
+    for c in ctx.config.selected_crates(selected) {
         let Some(nc) = c.publish.as_ref().and_then(|p| p.nix.as_ref()) else {
             continue;
         };
@@ -167,9 +164,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 fn active_nix_configs(ctx: &Context) -> Vec<&anodizer_core::config::NixConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
         .filter(|n| {
             !crate::publisher_helpers::entry_inactive(
@@ -323,9 +319,8 @@ impl anodizer_core::Publisher for NixPublisher {
         let selected = ctx.options.selected_crates.clone();
         let crate_names: Vec<String> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter(|c| {
                 c.publish
                     .as_ref()

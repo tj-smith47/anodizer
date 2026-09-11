@@ -387,9 +387,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 pub(crate) fn active_winget_configs(ctx: &Context) -> Vec<&anodizer_core::config::WingetConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
         .filter(|w| {
             !crate::publisher_helpers::entry_inactive(
@@ -441,9 +440,8 @@ impl anodizer_core::Publisher for WingetPublisher {
         let selected = ctx.options.selected_crates.clone();
         let crate_names: Vec<String> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter(|c| {
                 c.publish
                     .as_ref()

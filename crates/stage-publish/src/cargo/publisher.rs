@@ -89,9 +89,8 @@ pub(crate) fn active_cargo_configs(
 ) -> Vec<&anodizer_core::config::CargoPublishConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
         .filter(|cargo| {
             !crate::publisher_helpers::entry_inactive(

@@ -237,9 +237,8 @@ pub(crate) fn handle_release_notes_override(ctx: &mut Context, log: &StageLogger
     let selected = ctx.options.selected_crates.clone();
     let crates: Vec<_> = ctx
         .config
-        .crate_universe()
+        .selected_crates(&selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect();
     for crate_cfg in &crates {
@@ -291,9 +290,8 @@ pub(crate) fn handle_github_native_changelog(
     let selected = ctx.options.selected_crates.clone();
     let crates: Vec<_> = ctx
         .config
-        .crate_universe()
+        .selected_crates(&selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect();
 

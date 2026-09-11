@@ -219,9 +219,8 @@ impl Default for GithubReleasePublisher {
 fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         // A crate the release stage skipped has no release to name, capture or
         // roll back; emitting a target for it makes `PublishEvidence.primary_ref`
         // point at a release that was never created.

@@ -173,9 +173,8 @@ fn any_aur_source_active(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     let per_crate_active = ctx
         .config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
         .any(|a| {
             !crate::publisher_helpers::entry_inactive(
@@ -230,9 +229,8 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         let selected = &ctx.options.selected_crates;
         let per_crate = ctx
             .config
-            .crate_universe()
+            .selected_crates(selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
             .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
             .filter(|a| {
                 !crate::publisher_helpers::entry_inactive(

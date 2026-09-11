@@ -68,7 +68,7 @@ impl Stage for super::ReleaseStage {
             .crate_universe()
             .into_iter()
             .filter(|c| c.release.is_some())
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| anodizer_core::config::crate_is_selected(&selected, &c.name))
             .cloned()
             .collect();
 

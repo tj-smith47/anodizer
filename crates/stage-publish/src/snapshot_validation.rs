@@ -273,9 +273,8 @@ fn restore_artifact_version(ctx: &mut Context, prior: (Option<String>, Option<St
 fn in_scope_crates(ctx: &Context) -> Vec<CrateConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect()
 }

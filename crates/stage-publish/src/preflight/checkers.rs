@@ -664,7 +664,7 @@ fn run_preflight_inner(
     let probe = |name: &str| !ctx.publisher_deselected(name);
 
     for krate in &crates {
-        if !selected.is_empty() && !selected.contains(&krate.name) {
+        if !anodizer_core::config::crate_is_selected(selected, &krate.name) {
             continue;
         }
         let publish = match krate.publish.as_ref() {

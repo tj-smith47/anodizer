@@ -662,7 +662,7 @@ fn crates_to_verify(ctx: &Context) -> Vec<CrateConfig> {
         .crate_universe()
         .into_iter()
         .filter(|c| c.release.is_some())
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| anodizer_core::config::crate_is_selected(selected, &c.name))
         .filter(|c| !ctx.stage_outputs.release_skipped_crates.contains(&c.name))
         .cloned()
         .collect()

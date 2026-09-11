@@ -39,9 +39,8 @@ pub fn archive_producing_crates<'a>(
     selected: &[String],
 ) -> Vec<&'a CrateConfig> {
     config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| match &c.archives {
             ArchivesConfig::Disabled => false,
             ArchivesConfig::Configs(cfgs) => {

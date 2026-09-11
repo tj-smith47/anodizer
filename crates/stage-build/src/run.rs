@@ -70,9 +70,8 @@ impl Stage for super::BuildStage {
         // Collect crates to process (cloned to avoid borrow conflict with ctx.artifacts)
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
 

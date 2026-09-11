@@ -263,9 +263,8 @@ impl Stage for DmgStage {
         // Collect crates that have dmg config
         let crates: Vec<_> = ctx
             .config
-            .crate_universe()
+            .selected_crates(&selected)
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.dmgs.is_some())
             .cloned()
             .collect();

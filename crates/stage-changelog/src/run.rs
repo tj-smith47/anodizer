@@ -142,7 +142,7 @@ impl Stage for super::ChangelogStage {
             .clone()
             .unwrap_or_else(|| ctx.config.crate_universe().into_iter().cloned().collect())
             .into_iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| anodizer_core::config::crate_is_selected(&selected, &c.name))
             .collect();
 
         let ai_cfg = changelog_cfg.as_ref().and_then(|c| c.ai.clone());

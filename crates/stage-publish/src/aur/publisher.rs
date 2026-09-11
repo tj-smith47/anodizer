@@ -180,10 +180,7 @@ pub(crate) fn collect_aur_our_run_targets(
 ) -> Result<Vec<AurOurTarget>> {
     let mut out: Vec<AurOurTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in ctx.config.crate_universe() {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
+    for c in ctx.config.selected_crates(selected) {
         let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
             continue;
         };
@@ -293,9 +290,8 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 pub(crate) fn active_aur_configs(ctx: &Context) -> Vec<&anodizer_core::config::AurConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
         .filter(|a| {
             !crate::publisher_helpers::entry_inactive(

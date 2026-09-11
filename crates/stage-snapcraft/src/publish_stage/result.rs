@@ -84,9 +84,8 @@ pub(crate) fn record_snapcraft_result(
 pub(crate) fn derive_snapcraft_required(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crate_universe()
+        .selected_crates(selected)
         .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.snapcrafts.as_ref())
         .flat_map(|configs| configs.iter())
         .filter(|cfg| cfg.publish.unwrap_or(false))
