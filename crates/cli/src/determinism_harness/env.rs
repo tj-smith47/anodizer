@@ -488,11 +488,12 @@ pub(crate) fn build_subprocess_env_with_env(
     // the pin must key off the actual running host triple rather than a
     // fixed guess — reuses the already-injected `host_is_windows_msvc` bool
     // to avoid a redundant probe when the host isn't windows-msvc at all.
-    if inputs.targets.is_empty() && host_is_windows_msvc {
-        if let Ok(host_triple) = anodizer_core::partial::detect_host_target() {
-            for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(&host_triple) {
-                env.insert(key, value);
-            }
+    if inputs.targets.is_empty()
+        && host_is_windows_msvc
+        && let Ok(host_triple) = anodizer_core::partial::detect_host_target()
+    {
+        for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(&host_triple) {
+            env.insert(key, value);
         }
     }
 

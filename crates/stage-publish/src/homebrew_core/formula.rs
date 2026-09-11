@@ -334,11 +334,12 @@ pub(crate) fn rewrite_formula(text: &str, rw: &FormulaRewrite) -> Result<(String
                 None => bail!("formula sha256 stanza has no quoted value: {line}"),
             }
         }
-        if !summary.version_rewritten && is_version_line(&line) {
-            if let Some(new_line) = replace_quoted(&line, &rw.version) {
-                line = new_line;
-                summary.version_rewritten = true;
-            }
+        if !summary.version_rewritten
+            && is_version_line(&line)
+            && let Some(new_line) = replace_quoted(&line, &rw.version)
+        {
+            line = new_line;
+            summary.version_rewritten = true;
         }
         // A version bump resets the rebuild counter: drop the standalone
         // `revision N` line entirely (never the git-form `revision:` field,

@@ -82,10 +82,12 @@ debug = "line-tables-only"
 [workspace.package]
 version = "0.25.2"
 edition = "2024"
-# edition 2024 needs ≥1.85, but the code uses `Option::is_none_or` and
-# `{integer}::is_multiple_of`, both stabilized in 1.87 — clippy's
-# incompatible_msrv lint is the authoritative gate for this floor.
-rust-version = "1.87"
+# The lowest toolchain that resolves the locked dependency graph: brontes
+# declares 1.94. Clippy's incompatible_msrv lint holds the code to this
+# version, `task check:msrv` (the CI msrv job) proves the locked graph builds
+# on it, and `declared_msrv_covers_every_locked_dependency` (crates/cli/tests)
+# fails when a dependency bump raises the floor above it.
+rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tj-smith47/anodizer"
 homepage = "https://tj-smith47.github.io/anodizer"

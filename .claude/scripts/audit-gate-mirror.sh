@@ -38,6 +38,7 @@ declare -A JOB_MIRROR=(
     [snapshot]="snapshot"
     [validate-readme]="docs:validate-readme"
     [check-config]="check:config"
+    [msrv]="check:msrv"
     [docs-check]="docs:check"
     [native-object-determinism]="check:native-object-determinism"
     [coverage]="coverage:gate"

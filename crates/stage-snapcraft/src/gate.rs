@@ -100,24 +100,23 @@ pub(crate) fn validate_and_check_skip(
     // upload, which is the only check both paths always hit.
     let confinement_is_devmode = snap_cfg.confinement.as_deref() == Some("devmode");
     let grade_is_devel = snap_cfg.grade.as_deref() == Some("devel");
-    if confinement_is_devmode || grade_is_devel {
-        if let Some(channels) = snap_cfg.channel_templates.as_deref() {
-            if let Some(rejected) = first_channel_rejected_for_prerelease_snap(channels) {
-                let reason = match (confinement_is_devmode, grade_is_devel) {
-                    (true, true) => "devmode confinement and devel grade",
-                    (true, false) => "devmode confinement",
-                    (false, true) => "devel grade",
-                    (false, false) => unreachable!("guarded by the outer if"),
-                };
-                anyhow::bail!(
-                    "snapcraft: crate '{krate_name}' configures {reason} together \
+    if (confinement_is_devmode || grade_is_devel)
+        && let Some(channels) = snap_cfg.channel_templates.as_deref()
+        && let Some(rejected) = first_channel_rejected_for_prerelease_snap(channels)
+    {
+        let reason = match (confinement_is_devmode, grade_is_devel) {
+            (true, true) => "devmode confinement and devel grade",
+            (true, false) => "devmode confinement",
+            (false, true) => "devel grade",
+            (false, false) => unreachable!("guarded by the outer if"),
+        };
+        anyhow::bail!(
+            "snapcraft: crate '{krate_name}' configures {reason} together \
                      with channel '{rejected}', which the Snap Store rejects — a \
                      snap with {reason} may only be pushed to pre-release channels \
                      (edge, beta). Remove '{rejected}' from channel_templates or \
                      drop the setting that produces {reason}."
-                );
-            }
-        }
+        );
     }
 
     // Icon validation: when `icon` is set, check the source file exists

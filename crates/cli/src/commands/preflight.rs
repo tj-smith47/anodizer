@@ -586,10 +586,11 @@ fn gpg_sign_cmds(requirements: &[SourcedRequirement]) -> Vec<String> {
         if sr.source != "stage:sign" && sr.source != "stage:docker-sign" {
             continue;
         }
-        if let anodizer_core::EnvRequirement::Tool { name } = &sr.requirement {
-            if anodizer_core::signing::is_gpg_command(name) && !cmds.contains(name) {
-                cmds.push(name.clone());
-            }
+        if let anodizer_core::EnvRequirement::Tool { name } = &sr.requirement
+            && anodizer_core::signing::is_gpg_command(name)
+            && !cmds.contains(name)
+        {
+            cmds.push(name.clone());
         }
     }
     cmds

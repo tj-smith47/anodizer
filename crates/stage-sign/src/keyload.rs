@@ -111,10 +111,10 @@ pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> C
     // Forward the key var explicitly when `key_ref` is `env://VAR`: cosign
     // resolves the ref by reading `VAR` from its OWN child environment, so the
     // value must be planted on the command rather than left to ambient inherit.
-    if let Some(var) = key_ref.strip_prefix("env://") {
-        if let Some(value) = env.var(var) {
-            command.env(var, value);
-        }
+    if let Some(var) = key_ref.strip_prefix("env://")
+        && let Some(value) = env.var(var)
+    {
+        command.env(var, value);
     }
     // Forward COSIGN_PASSWORD explicitly so an encrypted key can decrypt.
     if let Some(password) = env.var(COSIGN_PASSWORD_ENV) {

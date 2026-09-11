@@ -250,21 +250,21 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     // Authenticode (osslsigncode) writes to a sibling temp; atomically replace
     // the original artifact only after the signer succeeded so a failed sign
     // never leaves a half-written file in place.
-    if let Some((from, to)) = &job.rename_after {
-        if let Err(e) = std::fs::rename(from, to) {
-            // A failed rename (e.g. cross-device, permissions) would otherwise
-            // strand the signed temp next to the untouched original; remove it
-            // so the error path leaves no `.authenticode-tmp` litter behind.
-            cleanup_rename_temp(job);
-            return Err(e).with_context(|| {
-                format!(
-                    "{}: failed to move signed temp {} over {}",
-                    job.label,
-                    from.display(),
-                    to.display()
-                )
-            });
-        }
+    if let Some((from, to)) = &job.rename_after
+        && let Err(e) = std::fs::rename(from, to)
+    {
+        // A failed rename (e.g. cross-device, permissions) would otherwise
+        // strand the signed temp next to the untouched original; remove it
+        // so the error path leaves no `.authenticode-tmp` litter behind.
+        cleanup_rename_temp(job);
+        return Err(e).with_context(|| {
+            format!(
+                "{}: failed to move signed temp {} over {}",
+                job.label,
+                from.display(),
+                to.display()
+            )
+        });
     }
 
     // A signer that exits 0 without writing its output leaves a registered

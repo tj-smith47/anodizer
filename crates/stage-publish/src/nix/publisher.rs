@@ -913,10 +913,10 @@ mod publisher_tests {
 
     fn nix_crate_with_formatter(name: &str, formatter: Option<&str>) -> CrateConfig {
         let mut c = nix_crate(name);
-        if let Some(p) = c.publish.as_mut() {
-            if let Some(n) = p.nix.as_mut() {
-                n.formatter = formatter.map(str::to_string);
-            }
+        if let Some(p) = c.publish.as_mut()
+            && let Some(n) = p.nix.as_mut()
+        {
+            n.formatter = formatter.map(str::to_string);
         }
         c
     }

@@ -224,10 +224,10 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
     // bare `release/<bin>` path — when a per-triple build exists, anything
     // there is only ever a host `cargo run` hook byproduct (the man-page
     // emitter), never a shipped artifact, so it is excluded.
-    if let Some(host_release) = host_release {
-        if !any_triple_release {
-            push_release_dir_files(&host_release, out)?;
-        }
+    if let Some(host_release) = host_release
+        && !any_triple_release
+    {
+        push_release_dir_files(&host_release, out)?;
     }
     Ok(())
 }

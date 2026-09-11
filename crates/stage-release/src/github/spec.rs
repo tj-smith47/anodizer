@@ -160,19 +160,19 @@ pub(crate) fn classify_already_exists(
         return AlreadyExistsAction::DeleteAndRetry;
     }
     let remote_size = remote.as_ref().map(|p| p.size);
-    if remote_size == Some(local_size) {
-        if let (Some(remote_digest), Some(local_digest)) = (
+    if remote_size == Some(local_size)
+        && let (Some(remote_digest), Some(local_digest)) = (
             remote.as_ref().and_then(|p| p.digest.as_deref()),
             local_digest,
-        ) {
-            return if digests_match(remote_digest, local_digest) {
-                AlreadyExistsAction::SkipIdempotent
-            } else if replace_existing_artifacts {
-                AlreadyExistsAction::DeleteAndRetry
-            } else {
-                AlreadyExistsAction::BailReplaceForbidden
-            };
-        }
+        )
+    {
+        return if digests_match(remote_digest, local_digest) {
+            AlreadyExistsAction::SkipIdempotent
+        } else if replace_existing_artifacts {
+            AlreadyExistsAction::DeleteAndRetry
+        } else {
+            AlreadyExistsAction::BailReplaceForbidden
+        };
     }
     match crate::classify_asset_conflict(replace_existing_artifacts, true, remote_size, local_size)
     {

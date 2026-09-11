@@ -216,14 +216,13 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     }
     // Empty-as-unset, the same predicate `CrateConfig::tag_family_template`
     // reads the field with.
-    if crate_cfg.tag_template.as_deref().is_none_or(str::is_empty) {
-        if let Some(tag_template) = defaults
+    if crate_cfg.tag_template.as_deref().is_none_or(str::is_empty)
+        && let Some(tag_template) = defaults
             .crates
             .as_ref()
             .and_then(|c| c.tag_template.clone())
-        {
-            crate_cfg.tag_template = Some(tag_template);
-        }
+    {
+        crate_cfg.tag_template = Some(tag_template);
     }
     // Override-not-append: a per-crate list wins outright; defaults supply the
     // whole list only when the crate declares none.

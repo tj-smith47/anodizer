@@ -109,6 +109,19 @@ tasks:
         fi
         bash scripts/native-object-determinism.sh
 
+  check:msrv:
+    # `rust-version` is only a claim until something builds on it. Stable CI
+    # never notices a dependency whose own floor moved above the declared one;
+    # this check resolves the locked graph with exactly that toolchain.
+    desc: "Guard: the locked workspace builds on the declared rust-version (mirrors the CI msrv job)."
+    cmds:
+      - |
+        set -eu
+        msrv="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+        [ -n "$msrv" ] || { echo "check:msrv: no rust-version line in Cargo.toml" >&2; exit 1; }
+        rustup toolchain install "$msrv" --profile minimal
+        cargo "+$msrv" check --workspace --all-targets --locked
+
   check:config:
     desc: "Validate this repo's anodizer config (single-crate, post-restructure form)."
     deps: [_check:tmp-headroom]
@@ -473,6 +486,7 @@ tasks:
       - task: audit:deps                      # cargo-audit
       - task: docs:validate-readme            # validate-readme
       - task: check:config                    # check-config
+      - task: check:msrv                      # msrv
       - task: check:native-object-determinism # native-object-determinism (windows-only; no-ops elsewhere)
       - task: snapshot                        # snapshot (dry-run)
       - task: audit:workflows                 # actionlint

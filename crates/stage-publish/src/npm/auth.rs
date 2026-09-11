@@ -385,15 +385,14 @@ pub(crate) fn guard_latest_regression(
     if configured_tag != DEFAULT_TAG {
         return configured_tag.to_string();
     }
-    if let Some(current) = registry_latest {
-        if let (Ok(pubv), Ok(cur)) = (
+    if let Some(current) = registry_latest
+        && let (Ok(pubv), Ok(cur)) = (
             anodizer_core::git::parse_semver(publish_version),
             anodizer_core::git::parse_semver(current),
-        ) {
-            if pubv < cur {
-                return format!("release-{publish_version}");
-            }
-        }
+        )
+        && pubv < cur
+    {
+        return format!("release-{publish_version}");
     }
     configured_tag.to_string()
 }
