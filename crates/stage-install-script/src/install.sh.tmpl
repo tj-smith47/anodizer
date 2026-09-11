@@ -30,8 +30,8 @@ usage() {
 @NAME@ installer — installs $BINARIES from $REPO releases.
 
 Usage:
-  sh ${0##*/} [--help]
-  curl -fsSL $BASE_URL/$REPO/releases/latest/download/${0##*/} | sh
+  sh @SCRIPT_NAME@ [--help]
+  curl -fsSL $BASE_URL/$REPO/releases/latest/download/@SCRIPT_NAME@ | sh
 
 Environment:
   VERSION       release to install (default: the latest release);

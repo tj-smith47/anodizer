@@ -44,7 +44,7 @@ fi
 case "{{ InstallerAssetCaseSubject }}" in
 {{ InstallerAssetCases }}
     *)
-        echo "Error: no prebuilt ${PROJECT} binary for ${OS}/${ARCH}" >&2
+        echo "Error: no prebuilt ${PROJECT} binary for {{ InstallerAssetCaseSubject }}" >&2
         echo "Prebuilt binaries: {{ InstallerSupportedPlatforms }}" >&2
         echo "All assets: https://github.com/${REPO}/releases/tag/v${VERSION}" >&2
         exit 1

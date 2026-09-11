@@ -176,6 +176,33 @@ fn honors_filename_install_dir_and_binaries_overrides() {
     assert!(!tmp.path().join("install.sh").exists());
 }
 
+/// The `--help` text names the asset a user actually downloads. `$0` cannot
+/// supply it: the documented invocation is `curl … | sh`, where `$0` is the
+/// shell, so the usage line would print `sh sh` and a download URL ending in
+/// `/download/sh`.
+#[test]
+fn usage_text_names_the_real_script_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = InstallScriptConfig {
+        repo: Some("acme/tool".to_string()),
+        filename: Some("get.sh".to_string()),
+        ..Default::default()
+    };
+    let script = run_and_read(tmp.path(), cfg, "get.sh");
+    assert!(
+        script.contains("  sh get.sh [--help]"),
+        "usage must name the script file: {script}"
+    );
+    assert!(
+        script.contains("/releases/latest/download/get.sh | sh"),
+        "the curl line must name the script file: {script}"
+    );
+    assert!(
+        !script.contains("${0##*/}"),
+        "no usage line may derive the name from $0: {script}"
+    );
+}
+
 #[test]
 fn base_url_override_appears_in_urls() {
     let tmp = tempfile::tempdir().unwrap();

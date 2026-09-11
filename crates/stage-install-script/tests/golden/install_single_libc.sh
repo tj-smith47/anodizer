@@ -30,8 +30,8 @@ usage() {
 myapp installer — installs $BINARIES from $REPO releases.
 
 Usage:
-  sh ${0##*/} [--help]
-  curl -fsSL $BASE_URL/$REPO/releases/latest/download/${0##*/} | sh
+  sh install.sh [--help]
+  curl -fsSL $BASE_URL/$REPO/releases/latest/download/install.sh | sh
 
 Environment:
   VERSION       release to install (default: the latest release);

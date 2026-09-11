@@ -662,9 +662,11 @@ mod tests {
         }
         // No HTML-escaping of the embedded quotes, and the fallback arm survives.
         assert!(!rendered.contains("&quot;"), "quotes must not be escaped");
+        // The fallback names the subject the case matched on, so a host that
+        // matched no arm is told the exact value that failed to match.
         assert!(
-            rendered.contains("no prebuilt ${PROJECT} binary"),
-            "fallback error arm must be present"
+            rendered.contains("no prebuilt ${PROJECT} binary for ${OS}-${ARCH}"),
+            "fallback error arm must name the case subject"
         );
         // Both error paths list the platforms that DO have prebuilt binaries.
         assert_eq!(
@@ -774,6 +776,68 @@ mod tests {
         assert!(
             err.contains("install") && err.contains("InstallerAssetCaseSubject"),
             "the failure must name the entry and the value it must consume: {err}"
+        );
+    }
+
+    /// A dual-libc release keys its arms `${OS}-${ARCH}-${LIBC}`, so the
+    /// fallback must report that subject too: a musl host on a gnu-only
+    /// release was otherwise told "no prebuilt binary for linux/x86_64" while
+    /// linux/x86_64 assets existed, omitting the input that failed to match.
+    #[test]
+    fn dual_libc_fallback_names_the_libc_in_the_case_subject() {
+        use anodizer_core::config::{
+            ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, Defaults,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        ctx.config.defaults = Some(Defaults {
+            targets: Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-musl".to_string(),
+            ]),
+            ..Default::default()
+        });
+        ctx.config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                id: Some("myapp".to_string()),
+                binary: Some("myapp".to_string()),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Target }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                ids: Some(vec!["myapp".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let tpl = format!(
+            "{}/../../scripts/install.sh.tpl",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("install".to_string()),
+            src: tpl,
+            dst: "install.sh".to_string(),
+            mode: Some("0755".to_string()),
+            skip: None,
+        }]);
+
+        TemplateFilesStage.run(&mut ctx).unwrap();
+        let rendered =
+            fs::read_to_string(ctx.config.dist.join("install.sh")).expect("install.sh written");
+
+        assert!(
+            rendered.contains("case \"${OS}-${ARCH}-${LIBC}\" in"),
+            "the arms must be keyed by libc: {rendered}"
+        );
+        assert!(
+            rendered.contains("no prebuilt ${PROJECT} binary for ${OS}-${ARCH}-${LIBC}"),
+            "the fallback must name the same subject the case matched on: {rendered}"
         );
     }
 

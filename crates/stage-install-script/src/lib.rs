@@ -405,20 +405,23 @@ struct ScriptParams<'a> {
 /// policy, so every `@MARKER@` position is substituted exactly once and no
 /// replacement value can be re-scanned as a marker (re-substitution is
 /// structurally impossible). Two DATA categories are escaped for their shell
-/// context — free-text metadata (`@NAME@` via [`shell_dq_escape`],
-/// `@DESCRIPTION@` / `@HOMEPAGE@` / `@FILENAME@` via [`comment_sanitize`]) and
+/// context — free-text metadata (`@NAME@` / `@SCRIPT_NAME@` via
+/// [`shell_dq_escape`], `@DESCRIPTION@` / `@HOMEPAGE@` / `@FILENAME@` via
+/// [`comment_sanitize`]) and
 /// structured identifiers baked into double-quoted assignments (`@REPO@`,
 /// `@BASE_URL@`, `@BINARIES@` via [`shell_dq_escape`]) — so a `"`, `$`,
 /// `` ` ``, `\`, or newline cannot break out and inject shell text. Engine-
 /// rendered shell fragments (the case tables, tag prefix, checksums filename)
 /// and the shell-expandable `@INSTALL_DIR@` pass through verbatim by design.
 ///
-/// `@NAME@`, `@TAG_PREFIX@` and `@SUPPORTED_PLATFORMS@` also land inside the
-/// `--help` heredoc, an unquoted `<<EOF` body whose escape context is the same
-/// as a double-quoted string — which is why the `comment_sanitize` markers
-/// (`@DESCRIPTION@`, `@HOMEPAGE@`, `@FILENAME@`) deliberately do NOT appear
-/// there: that helper strips newlines only and escapes neither `$` nor a
-/// backtick, so it is safe in a `#` comment and unsafe in a heredoc.
+/// `@NAME@`, `@SCRIPT_NAME@`, `@TAG_PREFIX@` and `@SUPPORTED_PLATFORMS@` also
+/// land inside the `--help` heredoc, an unquoted `<<EOF` body whose escape
+/// context is the same as a double-quoted string. The file name therefore
+/// reaches the heredoc through `@SCRIPT_NAME@` ([`shell_dq_escape`]) while the
+/// `#` comment header takes `@FILENAME@` ([`comment_sanitize`]): that helper
+/// strips newlines only and escapes neither `$` nor a backtick, so it is safe
+/// in a comment and unsafe in a heredoc. `@DESCRIPTION@` and `@HOMEPAGE@`
+/// carry the same restriction and never appear there.
 fn render_script(params: &ScriptParams) -> String {
     // Human free-text metadata: escaped for its shell context (@NAME@ lands in
     // double-quoted strings and a comment; description/homepage are comment-only).
@@ -426,6 +429,10 @@ fn render_script(params: &ScriptParams) -> String {
     let description = comment_sanitize(params.description);
     let homepage = comment_sanitize(params.homepage);
     let filename = comment_sanitize(params.filename);
+    // The same file name inside the `--help` heredoc, whose escape context is a
+    // double-quoted string rather than a `#` comment. `$0` cannot serve there:
+    // the documented invocation is `curl … | sh`, where `$0` is `sh`.
+    let script_name = shell_dq_escape(params.filename);
     // Structured identifiers baked into double-quoted assignments. A slug / URL /
     // binary-name never legitimately contains `"`, `$`, backtick, or a newline,
     // so escaping them is zero-cost defense-in-depth and keeps the escape policy
@@ -456,6 +463,7 @@ fn render_script(params: &ScriptParams) -> String {
         ("@INSTALL_DIR@", params.install_dir),
         ("@VERIFY_CHECKSUM@", verify),
         ("@FILENAME@", &filename),
+        ("@SCRIPT_NAME@", &script_name),
         ("@CHECKSUMS@", params.checksums),
         ("@TAG_PREFIX@", params.tag_prefix),
         ("@DETECT_OS_CASES@", &params.cases.detect_os_cases),
