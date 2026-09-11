@@ -36,8 +36,9 @@ pub(crate) struct AurSourceRender {
 /// source build's `arch=()` advertises the host architectures pacman builds
 /// for — darwin/windows triples are not pacman arches), each mapped to its
 /// pacman name via [`crate::aur_arch::triple_to_pacman_arch`]. A linux target
-/// whose architecture has no pacman name hard-fails rather than being dropped
-/// or mislabeled.
+/// whose architecture has no pacman name disqualifies the entry (`entry_skip`)
+/// rather than being dropped or mislabeled; the caller absorbs the skip and
+/// moves on to the next entry.
 ///
 /// Falls back to `["x86_64"]` only when no linux target is configured at all
 /// (a source package must advertise at least one architecture); a degenerate
