@@ -99,23 +99,50 @@ struct Edit {
     text: String,
 }
 
-/// Claim every unclaimed occurrence of `old` inside `window` — a slice of the
-/// original content starting at byte `offset` — and record its replacement.
+/// Every occurrence of `occurrence` lying wholly inside `region` of `text`, as
+/// `(start, end, matched_text)` byte ranges into `text`.
+///
+/// The search runs over the FULL text rather than a detached `&text[start..end]`
+/// slice, because a slice edge always satisfies `\b`: with the anchor
+/// `{version}` selecting `0.7.0` out of `10.7.0`, a slice search would report a
+/// word-boundary match the file does not contain. `Regex::find_at` starts at a
+/// byte offset while still reading the character before it, which is exactly the
+/// context `\b` needs.
+fn occurrences_in<'a>(
+    text: &'a str,
+    region: (usize, usize),
+    occurrence: &'a Regex,
+) -> impl Iterator<Item = (usize, usize, &'a str)> + 'a {
+    let (start, end) = region;
+    let mut pos = start;
+    std::iter::from_fn(move || {
+        let m = occurrence.find_at(text, pos)?;
+        // A match reaching past the region ends the walk: every later match
+        // starts further right, so none can fit either.
+        if m.end() > end || m.end() == pos {
+            return None;
+        }
+        pos = m.end();
+        Some((m.start(), m.end(), m.as_str()))
+    })
+}
+
+/// Claim every unclaimed occurrence of `old` inside `region` of `text` and
+/// record its replacement.
 ///
 /// Claiming makes two entries on one file non-overlapping by construction: an
 /// occurrence already spoken for by an earlier entry is skipped rather than
 /// rewritten twice. Returns how many occurrences this entry claimed.
 fn claim_occurrences(
-    window: &str,
-    offset: usize,
+    text: &str,
+    region: (usize, usize),
     occurrence: &Regex,
     new: &str,
     claimed: &mut Vec<(usize, usize)>,
     edits: &mut Vec<Edit>,
 ) -> usize {
     let mut count = 0;
-    for m in occurrence.find_iter(window) {
-        let (start, end) = (offset + m.start(), offset + m.end());
+    for (start, end, matched) in occurrences_in(text, region, occurrence) {
         if claimed.iter().any(|(cs, ce)| start < *ce && *cs < end) {
             continue;
         }
@@ -123,7 +150,7 @@ fn claim_occurrences(
         edits.push(Edit {
             start,
             end,
-            text: if m.as_str().starts_with('v') {
+            text: if matched.starts_with('v') {
                 format!("v{new}")
             } else {
                 new.to_string()
@@ -165,8 +192,10 @@ fn apply_edits(original: &str, mut edits: Vec<Edit>) -> String {
 /// therefore share a file — each rewrites its own bytes, exactly once.
 ///
 /// An entry whose `old` equals its `new` is a no-op reporting zero
-/// replacements; the file is still read, so a stale enrollment pointing at a
-/// missing file is caught.
+/// replacements; the file is still read and an anchored entry's `match` is
+/// still compiled and required to select a region, so a stale enrollment — a
+/// missing file, or an anchor that no longer matches — is caught on a no-op
+/// bump too.
 ///
 /// Errors if an enrolled file is missing or unreadable, if an anchor is invalid
 /// or matches nothing, or (outside `dry_run`) if a file cannot be written.
@@ -206,22 +235,11 @@ pub fn rewrite_version_in_files(
         let mut edits: Vec<Edit> = Vec::new();
         for idx in indices {
             let rewrite = &rewrites[idx];
-            if rewrite.old == rewrite.new {
-                continue;
-            }
-            let occurrence = occurrence_regex(&rewrite.old)?;
-            match rewrite.anchor.as_deref() {
-                None => {
-                    let replacements = claim_occurrences(
-                        &original,
-                        0,
-                        &occurrence,
-                        &rewrite.new,
-                        &mut claimed,
-                        &mut edits,
-                    );
-                    counts[idx] = (replacements, None);
-                }
+            // The anchor is compiled and matched BEFORE the no-op check, so a
+            // stale anchor is caught on a bump that rewrites nothing and the
+            // outcome still reports the regions it selected.
+            let regions = match rewrite.anchor.as_deref() {
+                None => None,
                 Some(anchor) => {
                     let re = anchor_regex(&rewrite.path, anchor, &rewrite.old)?;
                     let regions: Vec<(usize, usize)> = re
@@ -238,11 +256,32 @@ pub fn rewrite_version_in_files(
                             rewrite.old,
                         );
                     }
+                    Some(regions)
+                }
+            };
+            if rewrite.old == rewrite.new {
+                counts[idx] = (0, regions.as_ref().map(Vec::len));
+                continue;
+            }
+            let occurrence = occurrence_regex(&rewrite.old)?;
+            match regions {
+                None => {
+                    let replacements = claim_occurrences(
+                        &original,
+                        (0, original.len()),
+                        &occurrence,
+                        &rewrite.new,
+                        &mut claimed,
+                        &mut edits,
+                    );
+                    counts[idx] = (replacements, None);
+                }
+                Some(regions) => {
                     let mut replacements = 0;
                     for (start, end) in &regions {
                         replacements += claim_occurrences(
-                            &original[*start..*end],
-                            *start,
+                            &original,
+                            (*start, *end),
                             &occurrence,
                             &rewrite.new,
                             &mut claimed,
@@ -312,7 +351,17 @@ pub fn check_version_present(
         let content = fs::read_to_string(root.join(path))
             .with_context(|| format!("failed to read version file {path}"))?;
         let present = match anchor {
-            Some(anchor) => anchor_regex(path, anchor, version)?.is_match(&content),
+            // A selected region counts only when the version sits inside it on
+            // a word boundary read against the whole file: the anchor's own
+            // `{version}` carries no boundary, so `10.7.0` would otherwise
+            // report `0.7.0` present.
+            Some(anchor) => anchor_regex(path, anchor, version)?
+                .find_iter(&content)
+                .any(|m| {
+                    occurrences_in(&content, (m.start(), m.end()), &occurrence)
+                        .next()
+                        .is_some()
+                }),
             None => occurrence.is_match(&content),
         };
         results.push((path.clone(), present));
@@ -809,6 +858,75 @@ mod tests {
         assert_eq!(read(&dir, &f), "a 0.9.9 b 0.5.0\n");
         assert_eq!(out[0].replacements, 1);
         assert_eq!(out[1].replacements, 1);
+    }
+
+    /// A region is a slice of the file, and a slice edge always satisfies `\b`.
+    /// With the anchor `{version}` selecting the `0.7.0` sitting inside
+    /// `10.7.0`, a region-local search calls that a whole-word match and the
+    /// file becomes `10.8.0`.
+    #[test]
+    fn an_anchored_region_keeps_the_word_boundary_of_the_whole_file() {
+        let dir = TempDir::new().unwrap();
+        let f = write(&dir, "versions.txt", "tool 10.7.0\n");
+        let out = rewrite_version_in_files(
+            dir.path(),
+            &[anchored(&f, r"{version}", "0.7.0", "0.8.0")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(out[0].replacements, 0);
+        assert_eq!(out[0].matched_regions, Some(1));
+        assert_eq!(read(&dir, &f), "tool 10.7.0\n");
+    }
+
+    #[test]
+    fn an_anchored_presence_check_keeps_the_word_boundary_of_the_whole_file() {
+        let dir = TempDir::new().unwrap();
+        let f = write(&dir, "versions.txt", "tool 10.7.0\n");
+        let res = check_version_present(
+            dir.path(),
+            &[(f.clone(), Some(r"{version}".to_string()))],
+            "0.7.0",
+        )
+        .unwrap();
+        assert_eq!(res, vec![(f, false)]);
+    }
+
+    /// A bump that rewrites nothing still has to prove every enrollment is
+    /// live: the anchor is compiled and matched before the no-op shortcut.
+    #[test]
+    fn a_noop_bump_still_catches_a_stale_anchor() {
+        let dir = TempDir::new().unwrap();
+        let f = write(&dir, "values.yaml", "pin: v0.7.0\n");
+        let err = rewrite_version_in_files(
+            dir.path(),
+            &[anchored(&f, r"gone: v{version}", "0.7.0", "0.7.0")],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("matched nothing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_noop_bump_reports_the_regions_its_anchor_selected() {
+        let dir = TempDir::new().unwrap();
+        let f = write(&dir, "values.yaml", "pin: v0.7.0\nalt: v0.7.0\n");
+        let out = rewrite_version_in_files(
+            dir.path(),
+            &[anchored(&f, r"v{version}", "0.7.0", "0.7.0")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(out[0].replacements, 0);
+        assert_eq!(
+            out[0].matched_regions,
+            Some(2),
+            "`matched_regions: None` documents a BARE entry, so an anchored \
+             no-op must not report it"
+        );
     }
 
     #[test]
