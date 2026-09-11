@@ -22,7 +22,7 @@ pub fn write_effective_config(config: &Config, log: &StageLogger) -> Result<()> 
     let dist = &config.dist;
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
-    let effective_path = dist.join("config.yaml");
+    let effective_path = dist.join(anodizer_core::dist::CONFIG_YAML);
     let mut value: serde_yaml_ng::Value =
         serde_yaml_ng::to_value(config).context("failed to serialize effective config")?;
     sort_yaml_mapping(&mut value);

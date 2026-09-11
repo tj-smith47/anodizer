@@ -2233,6 +2233,44 @@ fn refused_repository() -> anyhow::Error {
     .context("failed to read tags at HEAD")
 }
 
+/// The whole tagless-mode population, asked both questions: a mode that never
+/// consults HEAD's tags tolerates a repository git cannot read, and one that
+/// does consult them never does. The two answers come from one list, so the
+/// walk is what proves a new mode joined it.
+#[test]
+fn every_tagless_mode_answers_both_questions_the_same_way() {
+    type ModeSetter = fn(&mut ReleaseOpts);
+    let modes: [(&str, ModeSetter); 8] = [
+        ("--snapshot", |o| o.snapshot = true),
+        ("--nightly", |o| o.nightly = true),
+        ("--dry-run", |o| o.dry_run = true),
+        ("--publish-only", |o| o.publish_only = true),
+        ("--announce-only", |o| o.announce_only = true),
+        ("--split", |o| o.split = true),
+        ("--merge", |o| o.merge = true),
+        ("--preflight-secrets", |o| o.preflight_secrets = true),
+    ];
+    for (flag, set) in modes {
+        let mut opts = base_release_opts();
+        set(&mut opts);
+        assert!(
+            !super::run::selection_depends_on_head_tags(&opts),
+            "{flag} does not read HEAD's tags to pick crates"
+        );
+        let log = StageLogger::new("release", Verbosity::Quiet);
+        super::run::recover_crate_selection(Err(refused_repository()), &opts, &log)
+            .unwrap_or_else(|e| panic!("{flag} must survive an unreadable repository: {e:#}"));
+    }
+    let plain = base_release_opts();
+    assert!(
+        super::run::selection_depends_on_head_tags(&plain),
+        "a plain release picks its crates from HEAD's tags"
+    );
+    let log = StageLogger::new("release", Verbosity::Quiet);
+    super::run::recover_crate_selection(Err(refused_repository()), &plain, &log)
+        .expect_err("a plain release fails on an unreadable repository");
+}
+
 #[test]
 fn release_fails_when_git_refuses_the_repository() {
     let opts = base_release_opts();

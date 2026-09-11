@@ -31,6 +31,17 @@ pub const ROLLBACK_JSON: &str = "rollback.json";
 /// `dist/run-<id>/summary.json` — the per-run publish summary.
 pub const SUMMARY_JSON: &str = "summary.json";
 
+/// `dist/config.yaml` — the effective config every run writes before any stage
+/// produces an artifact.
+pub const CONFIG_YAML: &str = "config.yaml";
+
+/// `dist/release-notes.md` — the rendered `--release-notes-tmpl`.
+pub const RELEASE_NOTES_MD: &str = "release-notes.md";
+
+/// `dist/matrix.json` — the worker matrix `release --split` writes and
+/// `--merge` reconciles each shard against.
+pub const MATRIX_JSON: &str = "matrix.json";
+
 /// Directory-name prefix of the per-run `dist/run-<id>/` subdir. Shared by
 /// the writer (`run_dir` in the publish stage) and the run-summary scanner
 /// so a prefix rename cannot make the scanner silently return empty — which

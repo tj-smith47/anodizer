@@ -2670,6 +2670,49 @@ fn resolve_git_context_snapshot_base_is_newest_across_tag_families() {
     });
 }
 
+/// The crate that seeds the tag comes from DECLARATION order, so two spellings
+/// of one `--crate` selection cannot seed two different tag families.
+#[test]
+fn first_covered_crate_ignores_the_order_the_crates_were_named_in() {
+    let config = multi_family_config();
+    for selection in [
+        vec!["cfgd-operator".to_string(), "cfgd-crd".to_string()],
+        vec!["cfgd-crd".to_string(), "cfgd-operator".to_string()],
+    ] {
+        let opts = ContextOptions {
+            selected_crates: selection.clone(),
+            ..Default::default()
+        };
+        let ctx = empty_env_ctx(&config, opts);
+        assert_eq!(
+            first_covered_crate(&ctx, &config).map(|c| c.name.as_str()),
+            Some("cfgd-crd"),
+            "selection {selection:?} must seed the first DECLARED crate",
+        );
+    }
+}
+
+/// The git context reads that same answer: a selection typed operator-first
+/// still resolves the tag from the first declared crate's family.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_seeds_the_first_declared_crate_of_the_selection() {
+    with_multi_family_tags_repo_cwd(&["crd-v0.5.1", "v0.10.0", "operator-v0.8.0"], || {
+        let config = multi_family_config();
+        let opts = ContextOptions {
+            selected_crates: vec!["cfgd-operator".to_string(), "cfgd-crd".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log()).expect("stable resolve must succeed");
+        assert_eq!(
+            ctx.template_vars().get("Tag").map(String::as_str),
+            Some("crd-v0.5.1"),
+        );
+    });
+}
+
 /// A stable run still anchors on the selected crate's own family: its tag
 /// exists at HEAD and IS the release, so the newest-across-families rule
 /// (which exists only to pick a synthesis BASE) must not reach it.

@@ -149,8 +149,11 @@ pub(crate) fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOp
 /// to overwrite them — otherwise a `matrix.json` from an earlier `--split`
 /// outlives the split that wrote it and a later `--merge` reconciles against a
 /// worker set that no longer exists.
-pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] =
-    &["config.yaml", "release-notes.md", "matrix.json"];
+pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] = &[
+    anodizer_core::dist::CONFIG_YAML,
+    anodizer_core::dist::RELEASE_NOTES_MD,
+    anodizer_core::dist::MATRIX_JSON,
+];
 
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
 /// otherwise a dist holding anything beyond the run's own bookkeeping

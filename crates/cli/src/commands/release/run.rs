@@ -2,37 +2,21 @@ use super::*;
 
 /// Whether the tags at HEAD decide which crates this run releases.
 ///
-/// `--snapshot` / `--nightly` / `--dry-run` build without a real tag,
-/// `--publish-only` / `--announce-only` consume a prior dist tree,
-/// `--split` / `--merge` drive a multi-host flow, and `--preflight-secrets` is
-/// a gate that runs before any tag exists. All of those read "no selected
-/// crates" as "every crate", so HEAD's tags neither pick the crates nor end the
-/// run.
+/// A [tagless mode](is_tagless_mode) reads "no selected crates" as "every
+/// crate", so HEAD's tags neither pick the crates nor end the run.
 pub(crate) fn selection_depends_on_head_tags(opts: &ReleaseOpts) -> bool {
-    opts.crate_names.is_empty()
-        && !opts.all
-        && !opts.snapshot
-        && !opts.nightly
-        && !opts.dry_run
-        && !opts.publish_only
-        && !opts.announce_only
-        && !opts.split
-        && !opts.merge
-        && !opts.preflight_secrets
+    opts.crate_names.is_empty() && !opts.all && !is_tagless_mode(opts)
 }
 
-/// Whether this run can proceed without reading the repository at all.
+/// Whether this run works without a tag at HEAD at all.
 ///
-/// These modes never consult HEAD: `--snapshot` / `--nightly` / `--dry-run`
-/// build without a real tag, `--publish-only` / `--announce-only` consume a
-/// prior dist tree, `--split` / `--merge` drive a multi-host flow, and
-/// `--preflight-secrets` is a gate that runs before any tag exists.
-///
-/// Deliberately NOT the negation of [`selection_depends_on_head_tags`]: that
-/// predicate is also false for `--crate foo` and `--all`, which name the crates
-/// themselves but still need a repository git will read — asking one question
-/// for both let a real release continue past an unreadable repository.
-fn mode_tolerates_an_unreadable_repository(opts: &ReleaseOpts) -> bool {
+/// The ONE enumeration of those modes: `--snapshot` / `--nightly` /
+/// `--dry-run` build without a real tag, `--publish-only` / `--announce-only`
+/// consume a prior dist tree, `--split` / `--merge` drive a multi-host flow,
+/// and `--preflight-secrets` is a gate that runs before any tag exists. Asked
+/// twice from one list, a mode added to one copy alone could otherwise both
+/// need HEAD's tags and tolerate a repository git cannot read.
+fn is_tagless_mode(opts: &ReleaseOpts) -> bool {
     opts.snapshot
         || opts.nightly
         || opts.dry_run
@@ -41,6 +25,16 @@ fn mode_tolerates_an_unreadable_repository(opts: &ReleaseOpts) -> bool {
         || opts.split
         || opts.merge
         || opts.preflight_secrets
+}
+
+/// Whether this run can proceed without reading the repository at all.
+///
+/// Deliberately NOT the negation of [`selection_depends_on_head_tags`]: that
+/// predicate is also false for `--crate foo` and `--all`, which name the crates
+/// themselves but still need a repository git will read — asking one question
+/// for both let a real release continue past an unreadable repository.
+fn mode_tolerates_an_unreadable_repository(opts: &ReleaseOpts) -> bool {
+    is_tagless_mode(opts)
 }
 
 /// Decide what a failed crate selection means for this run.

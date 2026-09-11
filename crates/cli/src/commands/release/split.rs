@@ -313,7 +313,7 @@ pub(super) fn run_split(
 
         let matrix = build_matrix(&all_targets, split_by);
         let matrix_json = serde_json::to_string_pretty(&matrix).context("serialize matrix")?;
-        let matrix_path = original_dist.join("matrix.json");
+        let matrix_path = original_dist.join(anodizer_core::dist::MATRIX_JSON);
         std::fs::create_dir_all(&original_dist)?;
         std::fs::write(&matrix_path, &matrix_json)
             .with_context(|| format!("write matrix to {}", matrix_path.display()))?;
@@ -392,7 +392,7 @@ fn check_split_worker_completeness(
     context_files: &[PathBuf],
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    let matrix_path = dist.join("matrix.json");
+    let matrix_path = dist.join(anodizer_core::dist::MATRIX_JSON);
     if !matrix_path.exists() {
         log.verbose(&format!(
             "skipped worker-completeness check — no matrix.json at {}",
@@ -503,18 +503,17 @@ fn shard_identity_keys(
     if split_by == "os" || expected.contains(&own) {
         return std::iter::once(own).collect();
     }
-    let PartialTarget::OsArch { .. } = PartialTarget::from_dist_subdir(partial_target) else {
+    let shard @ PartialTarget::OsArch { .. } = PartialTarget::from_dist_subdir(partial_target)
+    else {
         return std::iter::once(own).collect();
     };
-    let (os, arch) = anodizer_core::target::map_target(partial_target);
-    let names_arch = partial_target.contains('_');
-    let covered: std::collections::BTreeSet<String> = expected
-        .iter()
-        .filter(|triple| {
-            let (t_os, t_arch) = anodizer_core::target::map_target(triple);
-            t_os == os && (!names_arch || t_arch == arch)
-        })
-        .cloned()
+    // The one os/arch filter, asked with the words the subdir resolved to. A
+    // second derivation straight from the subdir string reads `linux_armv7` as
+    // one opaque triple whose arch is the whole word, so an arch-qualified
+    // shard outside amd64/arm64 covered nothing.
+    let covered: std::collections::BTreeSet<String> = shard
+        .filter_targets(&expected.iter().cloned().collect::<Vec<_>>())
+        .into_iter()
         .collect();
     if covered.is_empty() {
         std::iter::once(own).collect()
@@ -1445,6 +1444,26 @@ mod tests {
         assert_eq!(
             shard_identity_keys("linux_amd64", "target", &expected),
             ["x86_64-unknown-linux-gnu".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+    }
+
+    /// An arch-qualified shard outside amd64/arm64 fans over its own matrix
+    /// entries. Deriving the arch from the subdir STRING reads `linux_armv7`
+    /// as one opaque triple whose arch is the whole word, matching nothing.
+    #[test]
+    fn shard_identity_keys_fan_an_arch_outside_the_two_common_ones() {
+        let expected: std::collections::BTreeSet<String> = [
+            "armv7-unknown-linux-gnueabihf".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            shard_identity_keys("linux_armv7", "target", &expected),
+            ["armv7-unknown-linux-gnueabihf".to_string()]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>(),
         );

@@ -3,6 +3,25 @@ use anodizer_core::context::Context;
 use anodizer_core::git;
 use anodizer_core::log::StageLogger;
 
+/// The crate whose tag family the run derives its tag from: the first crate in
+/// DECLARATION order that this run covers.
+///
+/// Declaration order — not the order the crates were typed on the command line
+/// — is what makes the answer one answer: `--crate b --crate a` and
+/// `--crate a --crate b` name the same set, so they must seed the same family.
+/// An empty selection covers every crate, which makes the first declared crate
+/// the answer there too.
+pub(crate) fn first_covered_crate<'a>(
+    ctx: &Context,
+    config: &'a Config,
+) -> Option<&'a anodizer_core::config::CrateConfig> {
+    let selected = &ctx.options.selected_crates;
+    config
+        .crate_universe()
+        .into_iter()
+        .find(|c| anodizer_core::config::crate_is_selected(selected, &c.name))
+}
+
 /// Resolve the current-tag override from the env-var precedence chain.
 ///
 /// Precedence (first non-empty wins):
@@ -140,19 +159,12 @@ pub fn resolve_git_context(
         github_ref_name,
     );
 
-    // Resolve a crate to derive the tag from. Selection order:
-    //   1. The first explicitly selected crate (--crate or --all selection)
-    //   2. The first crate of the universe (top-level first, then workspace
-    //      crates — the workspace fallback is critical for snapshot/dry-run
-    //      mode in workspace-only configs like cfgd; without it, `Version`
-    //      is never populated in the template context, breaking any
-    //      template that references it).
-    let first_crate = ctx
-        .options
-        .selected_crates
-        .first()
-        .and_then(|name| config.find_crate(name))
-        .or_else(|| config.crate_universe().into_iter().next());
+    // The universe fallback catches a selection that names no declared crate;
+    // without it `Version` is never populated in the template context for a
+    // snapshot / dry-run in a workspace-only config, breaking every template
+    // that references it.
+    let first_crate =
+        first_covered_crate(ctx, config).or_else(|| config.crate_universe().into_iter().next());
 
     if let Some(crate_cfg) = first_crate {
         // The crate's own tag family, resolved once. A nightly / snapshot base

@@ -90,7 +90,7 @@ pub(crate) fn render_release_notes_tmpl(
         })?;
         let dist = &config.dist;
         std::fs::create_dir_all(dist).ok();
-        let rendered_path = dist.join("release-notes.md");
+        let rendered_path = dist.join(anodizer_core::dist::RELEASE_NOTES_MD);
         std::fs::write(&rendered_path, &rendered).with_context(|| {
             format!(
                 "failed to write rendered release notes: {}",
@@ -164,7 +164,7 @@ pub(crate) fn apply_nightly_template_vars(
     // Best-effort: a template that cannot render here fails loudly in the
     // release stage, and a `--skip=release` run must not die for a tag it
     // never uses.
-    if let Some(crate_cfg) = first_covered_crate(ctx, config).cloned() {
+    if let Some(crate_cfg) = crate::commands::helpers::first_covered_crate(ctx, config).cloned() {
         match anodizer_core::release_tag::resolve_release_tag(
             ctx,
             &crate_cfg,
@@ -177,17 +177,6 @@ pub(crate) fn apply_nightly_template_vars(
 
     log.verbose(&format!("nightly version={nightly_version}"));
     Ok(())
-}
-
-/// The crate whose tag family seeds the run-wide nightly `Tag`: the first of
-/// the explicit `--crate` selection when there is one, else the first crate in
-/// declaration order.
-fn first_covered_crate<'a>(ctx: &Context, config: &'a Config) -> Option<&'a CrateConfig> {
-    let selected = &ctx.options.selected_crates;
-    config
-        .crate_universe()
-        .into_iter()
-        .find(|c| anodizer_core::config::crate_is_selected(selected, &c.name))
 }
 
 /// Apply the snapshot version template (one is always applied).
