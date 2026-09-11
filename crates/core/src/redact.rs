@@ -78,42 +78,64 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Whether an occurrence of `value` sitting between `before` and `after` stands
-/// on its own rather than inside a longer word.
+/// Length at or above which a value is masked wherever it appears, word
+/// boundary or not.
 ///
-/// A short secret matches almost everywhere: masking `SHORT=s` without this
-/// rewrites the `s` of `git ls-remote`, corrupting unrelated output while
-/// protecting nothing. A length floor answered the same worry with an
-/// arbitrary constant that a two-character secret walks straight past; this
-/// asks the question the floor was standing in for, at every length.
+/// Below this, a value is a plausible substring of unrelated output (masking
+/// `SHORT=s` would rewrite the `s` of `git ls-remote`, corrupting the log while
+/// protecting nothing). At eight characters or more of a real credential, an
+/// accidental substring is not credible, so the boundary question stops being
+/// worth asking and the value is always masked.
+const ALWAYS_MASK_LEN: usize = 8;
+
+/// Whether an occurrence of `value` sitting between `before` and `after` may be
+/// masked: either the value is long enough that any occurrence is the secret
+/// ([`ALWAYS_MASK_LEN`]), or it stands on its own rather than inside a longer
+/// word.
 ///
-/// The test is applied per edge and only where the value's own edge is a word
-/// character, so a secret that begins or ends in punctuation — a PEM block's
-/// `-----BEGIN`, a URL — is masked wherever it appears.
+/// Both rules are needed. Without the length rule a 32-character token glued to
+/// a word character — `mysql -p<secret>`, `<secret>_suffix` — reaches the log
+/// verbatim. Without the boundary rule a one- or two-character secret rewrites
+/// unrelated text everywhere it happens to appear.
+///
+/// The boundary test is applied per edge and only where the value's own edge is
+/// a word character, so a short secret that begins or ends in punctuation — a
+/// PEM block's `-----BEGIN`, a URL — is masked wherever it appears.
 fn stands_alone(before: Option<char>, value: &str, after: Option<char>) -> bool {
+    if value.len() >= ALWAYS_MASK_LEN {
+        return true;
+    }
     let edge_ok = |edge: Option<char>, value_edge: Option<char>| {
         !value_edge.is_some_and(is_word_char) || !edge.is_some_and(is_word_char)
     };
     edge_ok(before, value.chars().next()) && edge_ok(after, value.chars().last())
 }
 
-/// Mask every whole-word occurrence of a secret in `input`, in one pass.
+/// Mask every maskable occurrence of a secret in `input`, in one pass.
 ///
 /// `secrets` must be ordered longest-value-first (as [`secret_pairs`] returns
-/// them) so the longest match at a position wins. `before` is the character
-/// immediately preceding `input` in the stream, if any; the return carries the
-/// last character of the text scanned so a caller feeding chunks can pass it
-/// back.
+/// them) so the longest match at a position wins. `stop` is asked at every
+/// position whether the remainder cannot be decided yet; the first position it
+/// answers `true` for ends the walk and that remainder is returned unconsumed.
+/// `before` is the character immediately preceding `input` in the stream, if
+/// any; the return carries the last character of the text scanned so a caller
+/// feeding chunks can pass it back.
+///
+/// Returns `(masked, unconsumed, last_char)`.
 fn mask_from<'a>(
     input: &str,
     secrets: impl Fn(&str) -> Option<(&'a str, &'a str)>,
+    stop: impl Fn(&str) -> bool,
     before: Option<char>,
-) -> (String, Option<char>) {
+) -> (String, String, Option<char>) {
     let mut out = String::with_capacity(input.len());
     let mut prev = before;
     let mut i = 0;
     while i < input.len() {
         let rest = &input[i..];
+        if stop(rest) {
+            return (out, rest.to_string(), prev);
+        }
         if let Some((key, value)) = secrets(rest)
             && stands_alone(prev, value, rest[value.len()..].chars().next())
         {
@@ -130,7 +152,7 @@ fn mask_from<'a>(
         i += ch.len_utf8();
         prev = Some(ch);
     }
-    (out, prev)
+    (out, String::new(), prev)
 }
 
 /// The secret entries of `env`, ordered longest-value-first with the key
@@ -167,6 +189,7 @@ pub fn string(input: &str, env: &[(String, String)]) -> String {
                 .find(|(_, v)| rest.starts_with(*v))
                 .map(|(k, v)| (*k, *v))
         },
+        |_| false,
         None,
     )
     .0
@@ -255,7 +278,8 @@ impl StreamRedacter {
     /// Mask every whole-word secret in `s` — [`string`] restricted to this
     /// redacter's already-ordered secret set, continuing from `prev`.
     fn replace_all(&self, s: &str, prev: Option<char>) -> (String, Option<char>) {
-        mask_from(s, |rest| self.match_at(rest), prev)
+        let (out, _, prev) = mask_from(s, |rest| self.match_at(rest), |_| false, prev);
+        (out, prev)
     }
 
     /// Split `s` into `(safe_to_emit, withheld)`.
@@ -264,34 +288,18 @@ impl StreamRedacter {
     /// remainder is a strict prefix of some secret — that remainder is the
     /// withheld tail.
     fn replace_partial(&self, s: &str) -> (String, String, Option<char>) {
-        let mut prev = self.prev;
+        // The undecidable-remainder question is only worth asking at every
+        // position when the chunk ends near a secret at all.
         if !self.has_incomplete_suffix(s) {
-            let (out, prev) = self.replace_all(s, prev);
+            let (out, prev) = self.replace_all(s, self.prev);
             return (out, String::new(), prev);
         }
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while !rest.is_empty() {
-            if self.is_incomplete_secret(rest) {
-                return (out, rest.to_string(), prev);
-            }
-            if let Some((key, value)) = self.match_at(rest)
-                && stands_alone(prev, value, rest[value.len()..].chars().next())
-            {
-                out.push('$');
-                out.push_str(key);
-                rest = &rest[value.len()..];
-                prev = value.chars().last();
-                continue;
-            }
-            // Advance one CHAR, not one byte: `&str` slicing panics off a
-            // code-point boundary, and the input is always valid UTF-8.
-            let Some(ch) = rest.chars().next() else { break };
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
-            prev = Some(ch);
-        }
-        (out, String::new(), prev)
+        mask_from(
+            s,
+            |rest| self.match_at(rest),
+            |rest| self.is_incomplete_secret(rest),
+            self.prev,
+        )
     }
 
     /// Whether any suffix within the last `max_len - 1` bytes of `s` could be
@@ -1151,6 +1159,40 @@ mod tests {
             "git ls-remote $SHORT_KEY",
             "the lone value is a credential; the s of ls-remote is not"
         );
+    }
+
+    #[test]
+    fn a_long_secret_is_masked_glued_to_a_word() {
+        // A real credential of this length cannot be an accidental substring of
+        // unrelated output, so the boundary rule stops applying to it: the
+        // `mysql -p<secret>` argv echo and a `<secret>_suffix` composition both
+        // reach the log otherwise.
+        let env = vec![("DB_PASSWORD".to_string(), "S3cretT0ken".to_string())];
+        assert_eq!(
+            string("mysql -pS3cretT0ken && echo S3cretT0ken_x", &env),
+            "mysql -p$DB_PASSWORD && echo $DB_PASSWORD_x"
+        );
+    }
+
+    #[test]
+    fn a_short_secret_glued_to_a_word_stays_unmasked() {
+        let env = vec![("VER_TOKEN".to_string(), "v2".to_string())];
+        assert_eq!(
+            string("dev2x", &env),
+            "dev2x",
+            "below the always-mask length the boundary rule still protects \
+             unrelated text"
+        );
+    }
+
+    #[test]
+    fn the_stream_redacter_masks_a_long_secret_glued_to_a_word() {
+        let env = vec![("DB_PASSWORD".to_string(), "S3cretT0ken".to_string())];
+        let mut r = StreamRedacter::new(&env);
+        let mut out = r.push("mysql -pS3cretT0");
+        out.push_str(&r.push("ken_x"));
+        out.push_str(&r.flush());
+        assert_eq!(out, "mysql -p$DB_PASSWORD_x");
     }
 
     #[test]

@@ -547,7 +547,17 @@ impl StageLogger {
     /// other body-line emitter (`verbose` / `status` / `error` / `debug`)
     /// upholds.
     fn stream_child_line(&self, line: &str, from_stderr: bool) {
-        self.stream_child_chunk(&format!("{}\n", self.redact(line)), from_stderr);
+        // Only the env-value half is applied here; `stream_child_chunk` is the
+        // single place the URL-credential half runs, so a line does not get
+        // scanned for URL credentials twice.
+        let masked = match &self.env {
+            Some(env) => {
+                let table = env.lock().unwrap_or_else(|e| e.into_inner());
+                crate::redact::string(line, &table)
+            }
+            None => line.to_string(),
+        };
+        self.stream_child_chunk(&format!("{masked}\n"), from_stderr);
     }
 
     /// A boundary-spanning redacter over this logger's attached env, for

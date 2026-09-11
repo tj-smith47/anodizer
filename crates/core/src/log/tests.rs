@@ -944,6 +944,34 @@ fn stream_child_helpers_redact_and_record_at_their_own_level() {
     );
 }
 
+/// The line tee and the chunk tee mask one text identically: the env-value half
+/// first, the URL half exactly once. A secret whose value IS a credential URL
+/// is the case that separates them — stripping the credentials first leaves the
+/// env half nothing to recognise, so the variable name never appears.
+#[test]
+fn the_line_tee_and_the_chunk_tee_mask_a_credential_url_secret_alike() {
+    let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (log, cap) = StageLogger::with_capture("build", Verbosity::Normal);
+    let log = log.with_env(vec![(
+        "REPO_TOKEN".to_string(),
+        "https://bot:s3cret@example.com".to_string(),
+    )]);
+
+    log.stream_child_stdout("clone https://bot:s3cret@example.com");
+    let mut redacter = log.stream_redacter();
+    let mut chunk = redacter.push("clone https://bot:s3cret@example.com");
+    chunk.push_str(&redacter.flush());
+    log.stream_child_chunk(&chunk, false);
+
+    assert_eq!(
+        cap.all_messages(),
+        vec![
+            (LogLevel::Verbose, "clone $REPO_TOKEN".to_string()),
+            (LogLevel::Verbose, "clone $REPO_TOKEN".to_string()),
+        ]
+    );
+}
+
 #[test]
 fn test_retag_helpers_record_under_shared_capture() {
     // The retagged clone shares the capture sink, and the plain
