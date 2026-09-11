@@ -4182,7 +4182,7 @@ fn assert_ruby_syntax_err(label: &str, source: &str) {
 /// This proves the escaping does real work rather than being a no-op the suite
 /// would pass even if the filter were deleted.
 #[test]
-fn ruby_escape_is_load_bearing_not_a_noop() {
+fn ruby_escape_does_real_work() {
     use anodizer_core::template::ruby_escape_str;
 
     let raw = r#"the "best" \tool"#;

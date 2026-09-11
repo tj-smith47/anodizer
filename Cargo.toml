@@ -162,8 +162,8 @@ fs4 = { version = "1", default-features = false, features = ["sync"] }
 # `stage-checksum`'s `hash_file_with::<D: Digest>` unifies every algorithm
 # (blake2b/s, md5, sha1, sha2, sha3) under that one `digest` trait version, so
 # those workspace deps must all move together: a partial bump splits the trait
-# graph and fails the build (the v0.12.3 group bump did exactly that). Dependabot groups them so a bump
-# arrives as one PR (.github/dependabot.yml).
+# graph and fails the build (the v0.12.3 group bump did exactly that).
+# Dependabot groups them so a bump arrives as one PR (.github/dependabot.yml).
 sha1 = "0.11"
 sha2 = "0.11"
 uuid = { version = "1", default-features = false, features = ["v5"] }

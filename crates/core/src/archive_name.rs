@@ -84,6 +84,14 @@ pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = default_binary_name_template!();
 /// default to this const so the shared tail cannot drift between them.
 pub const MICRO_ARCH_VARIANT_SUFFIX: &str = micro_arch_variant_suffix!();
 
+/// The baseline x86-64 microarchitecture level.
+///
+/// An ordinary amd64 build carries this level, and every default template
+/// guards against emitting it (`Amd64 != "v1"`) so the common single-variant
+/// build keeps its historical, suffix-free name. Only the optimized levels
+/// (`v2`/`v3`/`v4`) reach an asset name or a package's architecture field.
+pub const AMD64_BASELINE_VARIANT: &str = "v1";
+
 /// The amd64-only subset of [`MICRO_ARCH_VARIANT_SUFFIX`] — the suffix the
 /// macOS/Windows OS-installer family (`app_bundles`, `dmgs`, `pkgs`, `msis`,
 /// `nsis`) default name templates append.
@@ -102,14 +110,6 @@ pub const MICRO_ARCH_VARIANT_SUFFIX: &str = micro_arch_variant_suffix!();
 /// installer names instead of one silently clobbering the other; `v1` (the
 /// baseline) renders no suffix so the common single-variant build keeps its
 /// historical name.
-/// The baseline x86-64 microarchitecture level.
-///
-/// An ordinary amd64 build carries this level, and every default template
-/// guards against emitting it (`Amd64 != "v1"`) so the common single-variant
-/// build keeps its historical, suffix-free name. Only the optimized levels
-/// (`v2`/`v3`/`v4`) reach an asset name or a package's architecture field.
-pub const AMD64_BASELINE_VARIANT: &str = "v1";
-
 pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
     "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
 

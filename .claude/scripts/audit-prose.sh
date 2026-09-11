@@ -129,7 +129,7 @@ done
 # every word it looks for.
 collect_files JARGON_HITS -rnEi --exclude-dir=target --exclude-dir=.git \
     --exclude-dir=fixtures --exclude='audit-prose.sh' \
-    -- 'load[- ]bearing|blast radius|bolted on|keystone' \
+    -- 'load[- _]bearing|blast radius|bolted on|keystone' \
     crates docs/site/content .github/workflows .claude/scripts .claude/rules \
     Taskfile.yml README.md INCIDENT_RESPONSE.md .anodizer.yaml
 
