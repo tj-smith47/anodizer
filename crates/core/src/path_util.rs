@@ -34,7 +34,17 @@ fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
 /// the returned string is a git pathspec as well as a display string: any
 /// formatting added for a reader's benefit would break staging.
 pub fn display_under_root(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    // A path that was resolved through the filesystem (`canonicalize`) names
+    // the real directory while `root` keeps the spelling the user gave, so a
+    // symlinked root (macOS puts `$TMPDIR` under `/var`, a symlink to
+    // `/private/var`) strips under neither spelling alone.
+    let relative = match path.strip_prefix(root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => std::fs::canonicalize(root)
+            .ok()
+            .and_then(|real_root| path.strip_prefix(real_root).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| path.to_path_buf()),
+    };
     // A `.` component survives `join` (`<root>/./Cargo.toml`), and a config
     // declaring the root crate as `.` is the common case — drop it so the
     // manifest prints as `Cargo.toml`, the spelling a reader would search for.
@@ -115,6 +125,27 @@ mod tests {
     // Home-directory resolution is driven through an injected `MapEnvSource`
     // so these tests never touch the process environment and run race-free in
     // parallel with the rest of the crate's suite.
+
+    /// A path resolved through a symlinked root still prints relative to the
+    /// root as the user spelled it: `sync_workspace_deps` walks the canonical
+    /// workspace, and on macOS every tempdir is reached through `/var` →
+    /// `/private/var`.
+    #[cfg(unix)]
+    #[test]
+    fn display_under_root_strips_a_symlinked_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("crates/app")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let resolved = std::fs::canonicalize(&link)
+            .unwrap()
+            .join("crates/app/Cargo.toml");
+        assert_eq!(
+            display_under_root(&link, &resolved),
+            PathBuf::from("crates/app/Cargo.toml").display().to_string()
+        );
+    }
 
     /// The three spellings a message can face: a nested path under the root, the
     /// root's own manifest reached through a `.` crate dir, and a path that is
