@@ -119,7 +119,7 @@ anodizer check determinism \
 | `--stages=<subset>` | host-OS partition | Absent or empty resolves to every produce-stage the host can natively build, intersected with the producers your config configures: the always-on `build,archive,sbom,sign,checksum` plus the OS-native installer/package formats. Pass a comma-separated subset (e.g. `build,archive,sbom,sign,checksum`) to restrict. An explicitly typed stage hard-fails on a missing tool; host-default stages warn-skip. |
 | `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodizer release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
-| `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. See [Preserved raw binaries layout](#preserved-raw-binaries-layout) for how `binary_signs:` source binaries are mirrored alongside dist. |
+| `--preserve-dist=<path>` | off | On passing, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. See [Preserved raw binaries layout](#preserved-raw-binaries-layout) for how `binary_signs:` source binaries are mirrored alongside dist. |
 | `--snapshot` / `--no-snapshot` | auto | Force snapshot mode on or off for the child release subprocess. Default: auto — `--no-snapshot` when HEAD is at a tag (`git describe --tags --exact-match HEAD` succeeds), `--snapshot` otherwise. Mutually exclusive. |
 
 Scope: build-side only. The harness runs every produce-stage the host can
@@ -240,7 +240,7 @@ the full pipeline (which rebuilds and re-proves) instead.
 **Integrity contract.** `skip_determinism` trusts the prior run's proof and
 does **not** re-prove the current source. Its only honest use is re-publishing
 an *unchanged*, already-proven dist — for example, recovering a release whose
-determinism gate went green but whose publish failed downstream (a transient
+determinism gate passed but whose publish failed downstream (a transient
 registry error, an expired token). It must **never** be used to dodge a
 determinism *failure* on changed source: doing so re-publishes bytes that no
 gate ever validated and breaks the verification contract this page exists to
@@ -317,7 +317,8 @@ shared with the failure-handling run report). Shape:
 }
 ```
 
-`schema_version: 1` so downstream CI parsers fail loudly on shape change.
+The `schema_version` field — currently `2` — lets downstream CI parsers fail
+loudly on a shape change.
 Unknown fields are rejected on the producer side; consumers may ignore
 unknown fields per JSON convention.
 

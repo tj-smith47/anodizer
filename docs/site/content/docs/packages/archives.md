@@ -197,22 +197,11 @@ entry that selects no binaries at all (`meta: true`) produces nothing under
      • skipped archive for myapp/unknown — meta archive under format: binary carries no binaries
 ```
 
-### Changed in this release
+### Naming a `binary` output
 
-`binary` outputs are now named per binary from `{{ .Binary }}`, where they were
-previously named from the archive `name_template` (`{{ .ProjectName }}`) for a
-single binary and from the bare file name for several:
-
-| Entry ships… | Old asset | New asset |
-|---|---|---|
-| one binary `myapp`, project `myapp` | `dist/myapp_1.0.0_linux_amd64` | `dist/myapp_1.0.0_linux_amd64` |
-| one binary `mytool`, project `my-tool` | `dist/my-tool_1.0.0_linux_amd64` | `dist/mytool_1.0.0_linux_amd64` |
-| binaries `myapp` + `myhelper` | `dist/myapp`, `dist/myhelper` | `dist/myapp_1.0.0_linux_amd64`, `dist/myhelper_1.0.0_linux_amd64` |
-
-Anything that hard-codes the old asset name — a `cargo binstall` `pkg_url`, an
-install script, a download URL in a README — must be updated to the new one.
-Setting `name_template:` on the entry still wins, so an entry shipping a single
-binary can pin its old name in one line:
+Each `binary` output is named per binary from `{{ .Binary }}`. Setting
+`name_template:` on the entry wins instead, so an entry shipping a single
+binary can pin any name in one line:
 
 ```yaml
 archives:

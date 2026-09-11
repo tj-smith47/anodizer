@@ -146,35 +146,13 @@ precedence.
 A statically-linked musl binary and a glibc binary of the same architecture
 both reduce to `linux-amd64`, but they are not interchangeable: a glibc binary
 cannot run on Alpine. When a release ships both, the asset arms split by libc
-and `InstallerDetectLibc` renders the probe that chooses between them:
-
-```sh
-LIBC=gnu
-if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
-	LIBC=musl
-elif ls /lib/ld-musl-* >/dev/null 2>&1 && ! ls /lib/ld-linux-*.so.* >/dev/null 2>&1; then
-	LIBC=musl
-fi
-```
+and `InstallerDetectLibc` renders the `ldd`/`ld-musl-*` probe that chooses
+between them. The rendered probe and the arms it feeds are shown once, in
+[Install Script](@/docs/packages/install-script.md#glibc-and-musl).
 
 `InstallerAssetCaseSubject` then renders `${OS}-${ARCH}-${LIBC}`, the split
 platform gets one arm per libc, and every other platform is emitted with a
-trailing glob so it still matches:
-
-```sh
-    darwin-arm64-*)
-        ARCHIVE="myapp_${version}_aarch64-apple-darwin.tar.gz"
-        FORMAT="tar.gz"
-        ;;
-    linux-amd64-gnu)
-        ARCHIVE="myapp_${version}_x86_64-unknown-linux-gnu.tar.gz"
-        FORMAT="tar.gz"
-        ;;
-    linux-amd64-musl)
-        ARCHIVE="myapp_${version}_x86_64-unknown-linux-musl.tar.gz"
-        FORMAT="tar.gz"
-        ;;
-```
+trailing glob so it still matches.
 
 A release with one libc per platform pays nothing for this:
 `InstallerDetectLibc` renders empty, `InstallerAssetCaseSubject` renders
