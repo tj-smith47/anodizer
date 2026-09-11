@@ -322,6 +322,34 @@ mod tests {
         ctx
     }
 
+    /// The derived asset name is what binstall and the install script fetch;
+    /// it has to spell the file the archive stage writes, `.exe` included.
+    #[test]
+    fn a_binary_format_asset_name_carries_the_windows_suffix() {
+        let mut c = ctx();
+        let name = render_archive_asset_name_with_variant(
+            &mut c,
+            "{{ ProjectName }}_{{ Os }}_{{ Arch }}",
+            "x86_64-pc-windows-msvc",
+            crate::artifact::FORMAT_BINARY,
+            None,
+        )
+        .unwrap();
+        assert_eq!(name, "anodizer_windows_amd64.exe");
+    }
+
+    #[test]
+    fn a_stem_already_ending_in_exe_is_not_doubled() {
+        assert_eq!(
+            binary_output_name("app.exe".to_string(), "x86_64-pc-windows-msvc"),
+            "app.exe"
+        );
+        assert_eq!(
+            binary_output_name("app".to_string(), "x86_64-unknown-linux-gnu"),
+            "app"
+        );
+    }
+
     #[test]
     fn seeds_os_arch_target() {
         let mut c = ctx();
