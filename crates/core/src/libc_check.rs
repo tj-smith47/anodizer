@@ -182,7 +182,7 @@ fn scan_glibc_requirement<Elf: FileHeader<Endian = Endianness>>(
     let mut max: Option<GlibcVersion> = None;
     for index in 0..symbols.len() {
         let vindex = version_table.version_index(endian, SymbolIndex(index));
-        let Ok(Some(version)) = version_table.version(vindex) else {
+        let Ok(Some(version)) = version_table.version(vindex.index()) else {
             continue;
         };
         let Ok(name) = std::str::from_utf8(version.name()) else {

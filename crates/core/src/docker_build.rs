@@ -64,6 +64,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::hashing::hex_lower;
 use crate::log::StageLogger;
 
 /// Result of a single `oci_build_fixture` invocation.
@@ -172,7 +173,7 @@ pub fn oci_build_fixture(
         std::fs::read(&oci_tar).with_context(|| format!("reading {}", oci_tar.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    let oci_tar_sha256 = format!("sha256:{:x}", hasher.finalize());
+    let oci_tar_sha256 = format!("sha256:{}", hex_lower(&hasher.finalize()));
 
     let image_digest = std::fs::read_to_string(&iidfile)
         .ok()

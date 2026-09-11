@@ -713,7 +713,13 @@ fn hash_file_streaming(path: &Path) -> Result<(String, u64)> {
         total += chunk.len() as u64;
     })
     .with_context(|| format!("hashing preserved artifact {}", path.display()))?;
-    Ok((format!("sha256:{:x}", hasher.finalize()), total))
+    Ok((
+        format!(
+            "sha256:{}",
+            anodizer_core::hashing::hex_lower(&hasher.finalize())
+        ),
+        total,
+    ))
 }
 
 /// Remove the preserved-dist tree after drift detection. Best-effort —
@@ -777,7 +783,10 @@ mod tests {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(b"original-bytes");
-            format!("sha256:{:x}", h.finalize())
+            format!(
+                "sha256:{}",
+                anodizer_core::hashing::hex_lower(&h.finalize())
+            )
         };
         let mut report = empty_report("deadbeef");
         report.artifacts.push(ArtifactRow {
@@ -1482,7 +1491,13 @@ mod tests {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(&body);
-        assert_eq!(sha, format!("sha256:{:x}", h.finalize()));
+        assert_eq!(
+            sha,
+            format!(
+                "sha256:{}",
+                anodizer_core::hashing::hex_lower(&h.finalize())
+            )
+        );
     }
 
     // ── Per-crate subdir layout tests ─────────────────────────────────────────

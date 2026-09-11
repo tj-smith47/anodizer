@@ -148,7 +148,7 @@ fn build_oauth1_header(
 }
 
 fn hmac_sha1_base64(key: &[u8], data: &[u8]) -> Result<String> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha1::Sha1;
     type HmacSha1 = Hmac<Sha1>;
     let mut mac = HmacSha1::new_from_slice(key).map_err(|e| anyhow::anyhow!("HMAC error: {e}"))?;

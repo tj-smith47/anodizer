@@ -119,7 +119,10 @@ fn run_with_files(
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(bytes);
-                let digest = format!("sha256:{:x}", hasher.finalize());
+                let digest = format!(
+                    "sha256:{}",
+                    anodizer_core::hashing::hex_lower(&hasher.finalize())
+                );
                 let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
                 let tail_sample = if bytes.len() > HEAD_SAMPLE_BYTES + TAIL_SAMPLE_BYTES {
                     bytes[bytes.len() - TAIL_SAMPLE_BYTES..].to_vec()

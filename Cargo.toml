@@ -154,23 +154,17 @@ tempfile = "3"
 # Windows) for the determinism harness's disk-headroom guard. `sync` only —
 # no async runtime, no file-locking surface pulled in.
 fs4 = { version = "1", default-features = false, features = ["sync"] }
-# RustCrypto hash/MAC stack — pinned to the digest-0.10 line on purpose.
+# RustCrypto hash/MAC stack — one `digest` line on purpose.
 # `stage-checksum`'s `hash_file_with::<D: Digest>` unifies every algorithm
 # (blake2b/s, md5, sha1, sha2, sha3) under one `digest` trait version, so
-# ANODIZER'S OWN sha1/sha2/sha3/md-5/hmac/blake2 workspace deps must all share
-# it. `blake2` has no stable `digest`-0.11 release yet (latest is
-# 0.11.0-rc.6), and a release-*signing* tool does not ship a release-candidate
-# crypto crate — so the whole stack stays on `digest` 0.10 until `blake2 0.11`
-# lands. Dependabot is told to hold these back (.github/dependabot.yml) so the
-# group can't split the graph again. Bump all of them together once blake2 ships.
-# `object_store` 0.14's `aws-base` carries its own internal `md-5 0.11` →
-# `digest 0.11` line, independent of this stack (it never enters
-# `hash_file_with`'s trait graph) — the two `digest` lines coexist harmlessly
-# and merge once blake2 0.11 stabilizes and the stack above moves.
-sha1 = "0.10"
-sha2 = "0.10"
+# ANODIZER'S OWN sha1/sha2/sha3/md-5/hmac/blake2 workspace deps must all move
+# together: a partial bump splits the trait graph and fails the build (the
+# v0.12.3 group bump did exactly that). Dependabot groups them so a bump
+# arrives as one PR (.github/dependabot.yml).
+sha1 = "0.11"
+sha2 = "0.11"
 uuid = { version = "1", default-features = false, features = ["v5"] }
-blake2 = "0.10"
+blake2 = "0.11"
 hyper-timeout = "0.5"
 # `jwt-aws-lc-rs` replaces octocrab's default `jwt-rust-crypto`, which pulls the
 # `rsa` crate (RUSTSEC-2023-0071, "Marvin Attack" — no fixed release exists).
@@ -231,7 +225,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # 0.40.x line because 0.14 pins `^0.40.1`; the resulting advisory is a
 # tracked ignore in `.cargo/audit.toml`, not a blocker here.
 object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
-object = { version = "0.39", default-features = false, features = ["read", "elf", "macho", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "elf", "macho", "std"] }
 serial_test = "4"
 schemars = "1.2"
 # 2.0 adopted. GoReleaser template parity is preserved by keeping every custom
@@ -243,11 +237,11 @@ schemars = "1.2"
 # configured); `glob_fs` restores the 1.x glob-loading constructor xtask's
 # doc generation uses.
 tera = { version = "2", features = ["preserve_order", "glob_fs"] }
-sha3 = "0.10" # digest-0.10 line; see the sha1/sha2 pin note above
+sha3 = "0.12"
 blake3 = "1"
 crc32fast = "1"
-md-5 = "0.10" # digest-0.10 line; see the sha1/sha2 pin note above
-hmac = "0.12" # digest-0.10 line; see the sha1/sha2 pin note above
+md-5 = "0.11"
+hmac = "0.13"
 base64 = "0.23"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
 tracing = "0.1"

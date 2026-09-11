@@ -527,14 +527,14 @@ mod tests {
         let before = {
             let mut h = Sha256::new();
             h.update(std::fs::read(&p).unwrap());
-            format!("{:x}", h.finalize())
+            anodizer_core::hashing::hex_lower(&h.finalize())
         };
         inject_drift_byte(&p).expect("inject");
         let after_bytes = std::fs::read(&p).unwrap();
         let after = {
             let mut h = Sha256::new();
             h.update(&after_bytes);
-            format!("{:x}", h.finalize())
+            anodizer_core::hashing::hex_lower(&h.finalize())
         };
         assert_ne!(before, after, "hash must change after drift injection");
         assert_eq!(

@@ -9,7 +9,9 @@
 
 use anyhow::{Context as _, Result};
 use object::macho::{LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX, MachHeader32, MachHeader64};
-use object::read::macho::{FatArch, MachHeader, MachOFatFile32, MachOFatFile64};
+use object::read::macho::{
+    FatArch, LoadCommandVariant, MachHeader, MachOFatFile32, MachOFatFile64,
+};
 use object::{Endianness, FileKind};
 
 /// Minimum macOS version a Mach-O declares, as `(major, minor)`.
@@ -86,30 +88,19 @@ fn thin_min_os<Mach: MachHeader<Endian = Endianness>>(bytes: &[u8]) -> Result<Op
         .load_commands(endian, bytes, 0)
         .context("load commands")?;
     while let Some(cmd) = commands.next().context("read load command")? {
-        let raw = match cmd.cmd() {
+        let min_os = match cmd.cmd() {
             LC_BUILD_VERSION => cmd
-                .build_version()
+                .build_version(endian)
                 .context("LC_BUILD_VERSION body")?
-                .map(|bv| bv.minos.get(endian)),
-            LC_VERSION_MIN_MACOSX => {
-                // VersionMinCommand: version at offset 8 (u32, X.Y.Z packed
-                // as 16.8.8 bits).
-                let data = cmd.raw_data();
-                if data.len() >= 12 {
-                    let mut v = [0u8; 4];
-                    v.copy_from_slice(&data[8..12]);
-                    Some(match endian {
-                        Endianness::Little => u32::from_le_bytes(v),
-                        Endianness::Big => u32::from_be_bytes(v),
-                    })
-                } else {
-                    None
-                }
-            }
+                .map(|(bv, _tools)| bv.minos.get(endian)),
+            LC_VERSION_MIN_MACOSX => match cmd.variant().context("LC_VERSION_MIN_MACOSX body")? {
+                LoadCommandVariant::VersionMin(vm) => Some(vm.version.get(endian)),
+                _ => None,
+            },
             _ => None,
         };
-        if let Some(packed) = raw {
-            return Ok(Some(((packed >> 16) as u16, ((packed >> 8) & 0xff) as u16)));
+        if let Some(version) = min_os {
+            return Ok(Some((version.major(), u16::from(version.minor()))));
         }
     }
     Ok(None)
@@ -174,7 +165,7 @@ mod tests {
     /// Thin 64-bit Mach-O carrying one LC_BUILD_VERSION (modern linkers).
     fn thin_build_version(cputype: u32, minos: u32) -> Vec<u8> {
         let mut lc = Vec::new();
-        lc.extend_from_slice(&LC_BUILD_VERSION.to_le_bytes());
+        lc.extend_from_slice(&LC_BUILD_VERSION.0.to_le_bytes());
         lc.extend_from_slice(&24u32.to_le_bytes()); // cmdsize
         lc.extend_from_slice(&PLATFORM_MACOS.to_le_bytes());
         lc.extend_from_slice(&minos.to_le_bytes());
@@ -186,7 +177,7 @@ mod tests {
     /// Thin 64-bit Mach-O carrying one LC_VERSION_MIN_MACOSX (older targets).
     fn thin_version_min(cputype: u32, version: u32) -> Vec<u8> {
         let mut lc = Vec::new();
-        lc.extend_from_slice(&LC_VERSION_MIN_MACOSX.to_le_bytes());
+        lc.extend_from_slice(&LC_VERSION_MIN_MACOSX.0.to_le_bytes());
         lc.extend_from_slice(&16u32.to_le_bytes()); // cmdsize
         lc.extend_from_slice(&version.to_le_bytes()); // version at offset 8
         lc.extend_from_slice(&0u32.to_le_bytes()); // sdk at offset 12
