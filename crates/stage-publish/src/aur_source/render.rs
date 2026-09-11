@@ -67,16 +67,16 @@ pub(super) fn aur_source_arches(ctx: &Context, crate_name: &str) -> Result<Vec<S
         if !anodizer_core::target::is_linux(triple) {
             continue;
         }
+        // The unmappable architecture disqualifies THIS entry only — a hard
+        // error aborts the publisher and strands every crate after it.
         let arch = crate::aur_arch::triple_to_pacman_arch(triple).map_err(|e| {
-            anyhow::anyhow!(
-                "aur_source: {} (target '{}'). The source PKGBUILD `arch=()` \
-                 cannot name this architecture for pacman; emitting it would \
-                 advertise an architecture Arch Linux does not build for. \
-                 Restrict the build targets to Arch-supported architectures \
-                 (x86_64, aarch64, armv7h, i686) or extend the arch mapping.",
-                e,
-                triple,
-            )
+            anodizer_core::pipe_skip::entry_skip(format!(
+                "{e} (target '{triple}'). The source PKGBUILD `arch=()` cannot \
+                 name this architecture for pacman; emitting it would advertise \
+                 an architecture Arch Linux does not build for. Restrict the \
+                 build targets to Arch-supported architectures (x86_64, \
+                 aarch64, armv7h, i686) or extend the arch mapping."
+            ))
         })?;
         if !arches.iter().any(|a| a == arch) {
             arches.push(arch.to_string());

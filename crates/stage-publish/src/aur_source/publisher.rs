@@ -313,7 +313,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             // carry the crate's version, not the first crate's (workspace
             // per-crate independent-version mode). The target snapshot is taken
             // inside the same scope so its recorded `tag` matches what is pushed.
-            let (pushed, target) = crate::publisher_helpers::with_published_crate_scope(
+            let outcome = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
@@ -322,9 +322,22 @@ impl anodizer_core::Publisher for AurSourcePublisher {
                     let pushed = publish_to_aur_source(ctx, crate_name, &log)?;
                     Ok((pushed, target))
                 },
-            )?;
+            );
+            let Some((pushed, target)) = crate::publisher_helpers::absorb_entry_skip(
+                ctx,
+                &log,
+                "aur_source",
+                crate_name,
+                outcome,
+            )?
+            else {
+                continue;
+            };
             any_pushed |= pushed;
-            if let Some(t) = target {
+            // Only a crate that pushed carries a rollback target: a force-push
+            // target recorded for a skipped crate points `tag rollback` at a
+            // repository this run never wrote to.
+            if pushed && let Some(t) = target {
                 targets.push(t);
             }
         }
@@ -337,6 +350,13 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         if !any_pushed {
             targets.clear();
         }
+        crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "aur_source",
+            crate::publisher_helpers::RunLanding::from_landed(any_pushed),
+            selected.len(),
+        );
         let mut evidence = anodizer_core::PublishEvidence::new("upstream-aur");
         if let Some(first) = targets.first() {
             evidence.primary_ref = Some(format!(

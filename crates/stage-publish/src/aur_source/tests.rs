@@ -1225,6 +1225,52 @@ fn publish_to_aur_source_pushes_to_master() {
     drop(bare);
 }
 
+/// A build target pacman cannot name disqualifies THAT crate's entry only,
+/// and a skipped crate leaves no force-push target behind: a hard error here
+/// aborted the publisher, and a run-wide target list recorded the skipped
+/// crate's AUR repository as something `tag rollback` may force-push.
+#[cfg(unix)]
+#[test]
+fn an_unmappable_target_skips_the_entry_and_records_no_rollback_target() {
+    use anodizer_core::Publisher as _;
+
+    let (bare_url, bare) = make_bare_aur_repo();
+    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let mut unmappable = crate_with_aur_source(
+        "alpha",
+        AurSourceConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/alpha.git".to_string()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+    );
+    unmappable.builds = Some(vec![anodizer_core::config::BuildConfig {
+        targets: Some(vec!["riscv64gc-unknown-linux-gnu".to_string()]),
+        ..Default::default()
+    }]);
+    // First in the selection, so a hard error would strand `mytool`.
+    ctx.config.crates.insert(0, unmappable);
+
+    let evidence = super::publisher::AurSourcePublisher::new()
+        .run(&mut ctx)
+        .expect("an unmappable target must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].label, "alpha");
+    assert!(events[0].reason.contains("riscv64"), "{}", events[0].reason);
+    let targets = super::publisher::decode_aur_source_targets(&evidence.extra);
+    assert_eq!(
+        targets.len(),
+        1,
+        "only the pushed crate is a target: {targets:?}"
+    );
+    assert_eq!(targets[0].package, "mytool");
+    std::fs::remove_dir_all(&ctx.config.dist).ok();
+    drop(bare);
+}
+
 /// A second publish against an unchanged repo reports `NoChanges` → `false`.
 #[cfg(unix)]
 #[test]

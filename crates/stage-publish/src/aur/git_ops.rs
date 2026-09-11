@@ -78,24 +78,23 @@ pub(crate) fn aur_build_sources(
     let mut sources: Vec<(String, String, String)> = Vec::new();
     for a in &linux_artifacts {
         // Map the artifact GOARCH to its pacman name. An unknown architecture
-        // must HARD-FAIL: silently relabeling it (the historical
-        // `_ => "x86_64"` fallthrough) would map a non-x86 tarball under
+        // must never be relabeled (the historical `_ => "x86_64"`
+        // fallthrough): that maps a non-x86 tarball under
         // `source_x86_64=`/`sha256sums_x86_64=`, so a user on that arch
         // downloads the right PKGBUILD but installs a binary that cannot run.
+        // It disqualifies THIS crate's entry only — a hard error would abort
+        // the publisher and strand every crate after it in the selection.
         let pkgbuild_arch = crate::aur_arch::goarch_to_pacman_arch(&a.arch).map_err(|e| {
-            anyhow::anyhow!(
-                "aur: {} for crate '{}' (artifact url '{}', os={}). The AUR -bin \
-                 PKGBUILD cannot name this architecture for pacman; emitting it \
-                 would mislabel the tarball under the wrong `arch=()` entry and \
-                 ship a binary that will not run on the target host. Restrict \
-                 the AUR archive set (e.g. `publish.aur.ids`) to architectures \
-                 Arch Linux supports (x86_64, aarch64, armv7h, i686), or extend \
-                 the arch mapping.",
-                e,
-                crate_name,
-                a.url,
-                a.os,
-            )
+            anodizer_core::pipe_skip::entry_skip(format!(
+                "{e} (artifact url '{}', os={}). The AUR -bin PKGBUILD cannot \
+                 name this architecture for pacman; emitting it would mislabel \
+                 the tarball under the wrong `arch=()` entry and ship a binary \
+                 that will not run on the target host. Restrict the AUR archive \
+                 set (e.g. `publish.aur.ids`) to architectures Arch Linux \
+                 supports (x86_64, aarch64, armv7h, i686), or extend the arch \
+                 mapping.",
+                a.url, a.os,
+            ))
         })?;
         if !seen_arches.insert(pkgbuild_arch.to_string()) {
             // One crate's ambiguous archive set disqualifies THAT crate only:

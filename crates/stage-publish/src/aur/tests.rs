@@ -2089,6 +2089,73 @@ fn publish_to_aur_pushes_pkgbuild_and_srcinfo_to_master() {
     drop(bare);
 }
 
+/// A crate the run SKIPPED must leave no rollback target behind. The
+/// ambiguous first crate is skipped, the second one pushes, so `any_pushed`
+/// is true — and a run-wide target collection would record the skipped
+/// crate's AUR repository as something `tag rollback` may revert, although
+/// this run never wrote to it.
+#[cfg(unix)]
+#[test]
+fn a_skipped_crate_records_no_rollback_target() {
+    use anodizer_core::Publisher as _;
+
+    fn aur_crate_at(name: &str, git_url: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some(git_url.to_string()),
+                    homepage: Some(format!("https://example.com/{name}")),
+                    license: Some("MIT".to_string()),
+                    description: Some("A great tool".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    let (bare_url, bare) = make_bare_aur_repo();
+    let mut config = Config::default();
+    config.crates = vec![
+        aur_crate_at("alpha", "ssh://aur@aur.archlinux.org/alpha-bin.git"),
+        aur_crate_at("beta", &bare_url),
+    ];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Two linux archives on one architecture: alpha disqualifies itself
+    // before any clone is attempted, so its ssh url is never contacted.
+    ctx.artifacts.add(linux_amd64_archive(
+        "alpha",
+        "https://example.com/alpha-one.tar.gz",
+        "abc123",
+    ));
+    let mut second = linux_amd64_archive("alpha", "https://example.com/alpha-two.tar.gz", "abc123");
+    second.name = "alpha-two.tar.gz".to_string();
+    second.path = std::path::PathBuf::from("/tmp/alpha-two.tar.gz");
+    ctx.artifacts.add(second);
+    ctx.artifacts.add(linux_amd64_archive(
+        "beta",
+        "https://example.com/beta-linux-amd64.tar.gz",
+        "abc123",
+    ));
+
+    let evidence = super::publisher::AurOurPublisher::new()
+        .run(&mut ctx)
+        .expect("a skipped entry must not fail the publisher");
+
+    let targets = super::publisher::decode_aur_our_targets(&evidence.extra);
+    assert_eq!(
+        targets.len(),
+        1,
+        "only the pushed crate is a target: {targets:?}"
+    );
+    assert_eq!(targets[0].target, "beta-bin");
+    drop(bare);
+}
+
 /// A second `publish_to_aur` against an already-current repo pushes
 /// nothing new: `commit_and_push_with_opts` reports `NoChanges`, so the
 /// publisher returns `false`.

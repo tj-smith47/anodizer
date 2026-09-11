@@ -142,11 +142,11 @@ fn aur_collect_run_targets_uses_default_bin_suffix() {
     let ctx = TestContextBuilder::new()
         .crates(vec![aur_crate("demo")])
         .build();
-    let targets =
-        collect_aur_our_run_targets(&ctx, &ctx.logger("publish")).expect("collect run targets");
-    assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].target, "demo-bin");
-    assert!(targets[0].git_url.ends_with("demo-bin.git"));
+    let target = collect_aur_our_target(&ctx, &ctx.logger("publish"), "demo")
+        .expect("collect target")
+        .expect("the crate carries an aur block");
+    assert_eq!(target.target, "demo-bin");
+    assert!(target.git_url.ends_with("demo-bin.git"));
 }
 
 #[test]
@@ -302,14 +302,11 @@ fn aur_collect_run_targets_records_derived_url_when_git_url_absent() {
         a.git_url = None;
     }
     let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
-    let targets =
-        collect_aur_our_run_targets(&ctx, &ctx.logger("publish")).expect("collect run targets");
-    assert_eq!(targets.len(), 1, "expected one target, got {targets:?}");
-    assert_eq!(targets[0].target, "demo-bin");
-    assert_eq!(
-        targets[0].git_url,
-        "ssh://aur@aur.archlinux.org/demo-bin.git",
-    );
+    let target = collect_aur_our_target(&ctx, &ctx.logger("publish"), "demo")
+        .expect("collect target")
+        .expect("the crate carries an aur block");
+    assert_eq!(target.target, "demo-bin");
+    assert_eq!(target.git_url, "ssh://aur@aur.archlinux.org/demo-bin.git");
 }
 
 // -----------------------------------------------------------------------
@@ -521,6 +518,78 @@ fn aur_sha256_empty_metadata_bails_with_actionable_error() {
     assert!(
         msg.contains("checksum stage"),
         "error must mention the checksum stage; got: {msg}"
+    );
+}
+
+/// An architecture pacman cannot name disqualifies THAT crate only. The
+/// remediation is the same "narrow `publish.aur.ids`" advice, so the entry is
+/// skipped; a hard error here aborts the publisher and strands the crate after
+/// it, which is the defect the ambiguous-archive case already fixed.
+#[test]
+fn an_unmappable_arch_skips_the_entry_and_keeps_the_next_one() {
+    let mut unmappable = aur_crate("alpha");
+    unmappable
+        .publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .homepage = Some("https://example.com/alpha".to_string());
+    let mut next = aur_crate("beta");
+    next.publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .skip_upload = Some(StringOrBool::Bool(true));
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![unmappable, next])
+        .build();
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        "url".to_string(),
+        "https://example.com/alpha-riscv64.tar.gz".to_string(),
+    );
+    metadata.insert("sha256".to_string(), "abc123".to_string());
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/tmp/alpha-riscv64.tar.gz"),
+        name: "alpha-riscv64.tar.gz".to_string(),
+        target: Some("riscv64gc-unknown-linux-gnu".to_string()),
+        crate_name: "alpha".to_string(),
+        metadata,
+        size: None,
+    });
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    AurOurPublisher::new()
+        .run(&mut ctx)
+        .expect("an unmappable architecture must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "aur");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0].reason.contains("riscv64"),
+        "got: {}",
+        events[0].reason
+    );
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("beta"),
+        "the entry after the skipped one must still run; got: {logged}"
     );
 }
 

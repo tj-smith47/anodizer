@@ -174,44 +174,49 @@ pub(crate) fn decode_aur_our_targets(
     }
 }
 
-pub(crate) fn collect_aur_our_run_targets(
+/// The rollback target for ONE crate's AUR repository, or `None` when the
+/// crate carries no `publish.aur` block.
+///
+/// Collected per crate and only after that crate pushed: a target recorded for
+/// a crate the run skipped sends `tag rollback` into a repository this run
+/// never wrote to.
+pub(crate) fn collect_aur_our_target(
     ctx: &Context,
     log: &StageLogger,
-) -> Result<Vec<AurOurTarget>> {
-    let mut out: Vec<AurOurTarget> = Vec::new();
-    let selected = &ctx.options.selected_crates;
-    for c in ctx.config.selected_crates(selected) {
-        let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
-            continue;
-        };
-        // Record the exact remote the live push resolves to (explicit
-        // override, else the canonical derived url) so the rollback target
-        // never drifts from the pushed repo. Reuses the live-push resolver
-        // as the single source of truth.
-        let git_url = aur_resolve_push_git_url(ctx, ac, &c.name, log)?;
-        // Use the package name (or the AUR-default of `<crate>-bin`)
-        // as the human label so log lines say what was rolled back.
-        let raw_pkg = aur_default_package_name(ac, &c.name);
-        let label = util::render_or_warn(ctx, log, "aur.name", &raw_pkg)?;
-        // Render the SSH credentials at collect-time so the recorded
-        // rollback target carries the resolved secret, never a literal
-        // `{{ .Env.AUR_SSH_KEY }}` that would fail ssh at revert time.
-        let private_key = match ac.private_key.as_deref() {
-            Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
-            None => None,
-        };
-        let git_ssh_command = match ac.git_ssh_command.as_deref() {
-            Some(sc) => Some(util::render_or_warn(ctx, log, "aur.git_ssh_command", sc)?),
-            None => None,
-        };
-        out.push(AurOurTarget {
-            target: label,
-            git_url,
-            private_key,
-            git_ssh_command,
-        });
-    }
-    Ok(out)
+    crate_name: &str,
+) -> Result<Option<AurOurTarget>> {
+    let Some(c) = crate::util::find_crate_in_universe(ctx, crate_name) else {
+        return Ok(None);
+    };
+    let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
+        return Ok(None);
+    };
+    // Record the exact remote the live push resolves to (explicit
+    // override, else the canonical derived url) so the rollback target
+    // never drifts from the pushed repo. Reuses the live-push resolver
+    // as the single source of truth.
+    let git_url = aur_resolve_push_git_url(ctx, ac, &c.name, log)?;
+    // Use the package name (or the AUR-default of `<crate>-bin`)
+    // as the human label so log lines say what was rolled back.
+    let raw_pkg = aur_default_package_name(ac, &c.name);
+    let label = util::render_or_warn(ctx, log, "aur.name", &raw_pkg)?;
+    // Render the SSH credentials at collect-time so the recorded
+    // rollback target carries the resolved secret, never a literal
+    // `{{ .Env.AUR_SSH_KEY }}` that would fail ssh at revert time.
+    let private_key = match ac.private_key.as_deref() {
+        Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
+        None => None,
+    };
+    let git_ssh_command = match ac.git_ssh_command.as_deref() {
+        Some(sc) => Some(util::render_or_warn(ctx, log, "aur.git_ssh_command", sc)?),
+        None => None,
+    };
+    Ok(Some(AurOurTarget {
+        target: label,
+        git_url,
+        private_key,
+        git_ssh_command,
+    }))
 }
 
 /// The crate-level `publish.aur` block — the single accessor the
@@ -331,6 +336,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
         ));
         let mut processed = 0usize;
         let mut any_pushed = false;
+        let mut targets: Vec<AurOurTarget> = Vec::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -357,6 +363,12 @@ impl anodizer_core::Publisher for AurOurPublisher {
                     .unwrap_or(false);
             if pushed {
                 any_pushed = true;
+                // The rollback target is taken only for a crate that pushed.
+                // Recording one for a skipped crate would send `tag rollback`
+                // into an AUR repository this run never wrote to.
+                if let Some(target) = collect_aur_our_target(ctx, &log, crate_name)? {
+                    targets.push(target);
+                }
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
@@ -377,11 +389,11 @@ impl anodizer_core::Publisher for AurOurPublisher {
             selected.len(),
         );
         let mut evidence = anodizer_core::PublishEvidence::new("aur");
-        // Only record rollback targets when at least one push was made.
+        // Only the crates that actually pushed carry a rollback target.
         // Phantom evidence causes rollback to git-revert in repos that
-        // were never touched (dry-run, skip_upload, no-op NoChanges).
-        if any_pushed {
-            let targets = collect_aur_our_run_targets(ctx, &log)?;
+        // were never touched (dry-run, skip_upload, no-op NoChanges, or an
+        // entry this run skipped).
+        if !targets.is_empty() {
             evidence.extra = anodizer_core::PublishEvidenceExtra::Aur(
                 anodizer_core::publish_evidence::AurExtra {
                     aur_our_targets: targets.iter().map(Into::into).collect(),
