@@ -1196,6 +1196,40 @@ path = "src/main.rs"
         validate_enrolled_yaml(cfg_file(), &out, &added).unwrap();
     }
 
+    /// One `init --version-files` loads the on-disk config once (the enrolment
+    /// scan) and the rewritten text once (the pre-write guard), so a deprecated
+    /// key warns exactly twice; a third load anywhere in the run shows up here.
+    #[test]
+    #[serial_test::serial(cwd, tracing)]
+    fn enroll_version_files_loads_the_config_once_per_text() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        );
+        write_file(tmp.path(), "README.md", "app 0.1.0\n");
+        write_file(
+            tmp.path(),
+            ".anodizer.yaml",
+            "project_name: app\nsnapshot:\n  name_template: x\n",
+        );
+        anodizer_core::test_helpers::init_git_repo(tmp.path());
+
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(tmp.path()).unwrap();
+        let captured =
+            anodizer_core::test_helpers::tracing_capture::capture_tracing_warnings(|| {
+                enroll_version_files(vec![], true, false, false, true).unwrap();
+            });
+
+        let warnings = captured
+            .matches("snapshot.name_template is deprecated")
+            .count();
+        assert_eq!(warnings, 2, "captured:\n{captured}");
+        let written = fs::read_to_string(".anodizer.yaml").unwrap();
+        assert!(written.contains("- README.md"), "written:\n{written}");
+    }
+
     #[test]
     fn validate_enrolled_yaml_rejects_invalid() {
         // A bogus top-level key under deny_unknown_fields fails to deserialize.
