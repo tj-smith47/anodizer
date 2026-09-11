@@ -35,10 +35,10 @@
 //! directly. Rationale: a) `Context` setup in-process requires re-parsing
 //! the config + re-deriving the SDE + reconciling all the global flags,
 //! reproducing logic that already lives in `main.rs`; b) shelling out
-//! gives true env isolation (we can `env_clear` on the child without
+//! gives true env isolation (the child can be `env_clear`ed without
 //! touching the harness process); c) the binary on disk is what the
-//! release pipeline ships, so byte-stability of *that* binary is what we
-//! actually want to assert.
+//! release pipeline ships, so byte-stability of *that* binary is what the
+//! assertion needs to cover.
 //!
 //! ## Allow-list semantics
 //!

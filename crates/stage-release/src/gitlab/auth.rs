@@ -14,7 +14,7 @@ pub(crate) fn auth_header(use_job_token: bool) -> &'static str {
 /// Decide whether to send a JOB-TOKEN header.
 /// Returns true only when all three hold:
 ///
-/// 1. `CI_JOB_TOKEN` env var is non-empty (we're inside a GitLab runner).
+/// 1. `CI_JOB_TOKEN` env var is non-empty (running inside a GitLab runner).
 /// 2. `gitlab_urls.use_job_token` is true in config.
 /// 3. the token being used equals `CI_JOB_TOKEN` — so secondary clients built
 ///    during the same CI run (e.g. Homebrew publishing with a personal token)

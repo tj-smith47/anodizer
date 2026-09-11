@@ -4,7 +4,7 @@ use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
-/// Replacement marker for the bot token in any error message we surface
+/// Replacement marker for the bot token in any surfaced error message.
 /// upstream. The Telegram URL is `…/bot<TOKEN>/sendMessage`, and the
 /// `reqwest::Error` Display chain echoes the full URL on transport
 /// failure — without redaction the token would leak via every error log.
@@ -69,8 +69,8 @@ pub(crate) fn telegram_payload(
 /// POST to the Telegram Bot API `sendMessage` endpoint.
 ///
 /// Even on HTTP 200, the Telegram API returns `{"ok": false, ...}` for logical
-/// errors.  We parse the response body and surface `error_code` + `description`
-/// when `ok` is false.
+/// errors.  The response body is parsed and `error_code` + `description`
+/// surfaced when `ok` is false.
 pub fn send_telegram(
     bot_token: &str,
     chat_id: &str,

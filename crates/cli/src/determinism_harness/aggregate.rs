@@ -149,7 +149,7 @@ impl Harness {
     /// differing member is itself allow-listed; any unexcused member is a
     /// real regression. Fails closed when the bytes are missing / uncaptured
     /// / unparseable, or when bytes drifted yet no member unit changed
-    /// (structural drift we cannot attribute).
+    /// (structural drift that cannot be attributed).
     pub(crate) fn evaluate_aggregate(
         &self,
         kind: &dyn anodizer_core::determinism::AggregateKind,
@@ -261,8 +261,8 @@ impl Harness {
         let Some(kind) = self.aggregate_kind_for_name(member, combined_markers) else {
             return Ok(false);
         };
-        // Resolve the basename `member` back to the actual artifact key so we
-        // can fetch its full bytes (member came from a parent aggregate's
+        // Resolve the basename `member` back to the actual artifact key so
+        // its full bytes can be fetched (member came from a parent aggregate's
         // member map, where it is recorded as a bare basename).
         let agg_name = per_run_hashes
             .last()

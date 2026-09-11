@@ -300,7 +300,7 @@ pub(crate) fn publish_to_cloudsmith(
             // Pre-check (republish=false only): query Cloudsmith for an
             // existing package with this filename. If found and md5
             // matches, skip (idempotent). If found but md5 differs,
-            // bail — we can't fix the mismatch (the package is immutable
+            // bail — the mismatch is unfixable (the package is immutable
             // on Cloudsmith's side) and silently re-uploading produces
             // duplicate packages with different hashes.
             //
@@ -475,13 +475,13 @@ pub(crate) fn publish_to_cloudsmith(
                     Ok(pair) => pair,
                     Err(err) => {
                         // Race-recovery: a concurrent CI loop can submit the
-                        // same name+version between our pre-check (or
+                        // same name+version between the pre-check (or
                         // first-attempt step-3) and this step-3, returning
                         // 409/422 here. Without recovery, the upload aborts
                         // even though the operator's intent — "land this
                         // artifact on the registry" — was satisfied by the
                         // racing process. Re-query the remote: if it now
-                        // exists with our md5, treat as idempotent skip; if
+                        // exists with the local md5, treat as idempotent skip; if
                         // it exists with a different md5, surface the same
                         // conflict the pre-check would have. Anything else
                         // (transport failure, 5xx after retries) propagates.
@@ -546,7 +546,7 @@ pub(crate) fn publish_to_cloudsmith(
                                 // with no checksum to compare — cannot confirm
                                 // the racing upload landed OUR bytes. Surface
                                 // the conflict rather than claim an idempotent
-                                // skip we can't prove.
+                                // skip that cannot be proven.
                                 log.warn(&format!(
                                     "cloudsmith: step-3 conflict for '{}'; remote reports no md5 to \
                                      verify the landed bytes match local — surfacing the conflict \

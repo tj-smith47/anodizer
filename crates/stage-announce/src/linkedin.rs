@@ -39,9 +39,9 @@ impl StdError for LinkedinFallback {}
 
 /// Loose structural check on a LinkedIn access token. LinkedIn issues
 /// signed JWTs (3 dot-separated base64url segments) and opaque OAuth tokens
-/// (long alphanumeric blobs). We accept either shape and only reject values
-/// that are obviously not credentials so that an early bail beats a 401
-/// from the API.
+/// (long alphanumeric blobs). Either shape is accepted; only values
+/// that are obviously not credentials are rejected, so an early bail beats
+/// a 401 from the API.
 pub fn validate_token_shape(token: &str) -> Result<()> {
     crate::util::validate_token_min_length("linkedin", "LINKEDIN_ACCESS_TOKEN", token, 16)?;
     let dot_segments = token.split('.').count();

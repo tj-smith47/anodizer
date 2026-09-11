@@ -309,7 +309,7 @@ pub fn generate_formula_with_opts(
     ctx.insert("license", license);
 
     // Homepage: explicit > GitHub owner/repo > empty string.
-    // When no github_slug is available we leave homepage blank rather than
+    // When no github_slug is available homepage stays blank rather than
     // producing a broken URL from the bare crate name.
     let default_homepage = opts
         .github_slug
@@ -710,7 +710,7 @@ pub fn render_livecheck(
     };
     if skip || !has_active {
         // Surface a requested-but-ignored active livecheck: the user asked for
-        // `skip: false` yet gave nothing to poll, so we fall back to `skip`.
+        // `skip: false` yet gave nothing to poll, so `skip` is the fallback.
         if cfg.skip == Some(false) && !has_active {
             log.warn(
                 "homebrew livecheck: `skip: false` was set but no \

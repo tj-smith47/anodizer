@@ -603,7 +603,7 @@ fn test_publish_to_aur_empty_linux_archive_set_hard_errors() {
         ..Default::default()
     }];
 
-    // dry_run: false so we reach the archive-set check.
+    // dry_run: false so the archive-set check is reached.
     let ctx = Context::new(config, ContextOptions::default());
     let log = StageLogger::new("publish", Verbosity::Normal);
 

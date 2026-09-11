@@ -2,7 +2,7 @@
 //!
 //! A `.nupkg` is an Open Packaging Conventions archive — a ZIP with
 //! `[Content_Types].xml` and `_rels/.rels` at the root, the nuspec
-//! manifest, and `tools/**` content. Building it natively lets us avoid
+//! manifest, and `tools/**` content. Building it natively avoids
 //! the Windows-only `choco pack` CLI.
 
 use anodizer_core::log::StageLogger;
@@ -145,9 +145,9 @@ pub(crate) enum FeedHashResult {
         /// Chocolatey's unlisted sentinel.
         published: Option<String>,
     },
-    /// Feed has this version but we could not parse a hash for it.
+    /// Feed has this version but no hash could be parsed for it.
     PresentNoHash,
-    /// Feed does not have this version (or we couldn't reach the feed).
+    /// Feed does not have this version (or the feed was unreachable).
     Absent,
 }
 
@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2, "one 503 retry then 200");
     }
 
-    /// Defense-in-depth: a Chocolatey gallery 4xx response that echoes our
+    /// Defense-in-depth: a Chocolatey gallery 4xx response that echoes the
     /// `Authorization: Bearer <PAT>` header back must not leak the token
     /// into the user-visible error chain. Exercises `push_nupkg`'s
     /// `base_err` formatter on the 4xx fast-fail path (the same wrap also

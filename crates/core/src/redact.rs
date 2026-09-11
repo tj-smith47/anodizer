@@ -365,12 +365,12 @@ pub fn redact_process_env(input: &str) -> String {
 /// literal `https://user:pass@host`).
 pub fn redact_url_credentials(input: &str) -> String {
     // Walk the string and rewrite each `<scheme>://<userinfo>@` segment.
-    // For each `://` we find, look up to the next path / query / fragment /
+    // For each `://`, look up to the next path / query / fragment /
     // whitespace boundary; if that authority segment contains an `@`, the
     // text before the LAST `@` is the userinfo (RFC 3986 §3.2.1 allows
     // unreserved `@` in the password subcomponent only when percent-encoded,
-    // but real-world tokens contain literal `@` often enough that we treat
-    // the last `@` as the host separator).
+    // but real-world tokens contain literal `@` often enough that the last
+    // `@` is treated as the host separator).
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(scheme_end) = rest.find("://") {
@@ -477,7 +477,7 @@ pub fn redact_bearer_tokens(input: &str) -> String {
 }
 
 /// Returns Some(prefix_len) if `bytes` starts with case-insensitive
-/// "Bearer " (the trailing space is required so we don't match "Bearertown").
+/// "Bearer " (the trailing space is required so "Bearertown" does not match).
 fn match_bearer_prefix(bytes: &[u8]) -> Option<usize> {
     const KW: &[u8] = b"Bearer ";
     if bytes.len() < KW.len() {
@@ -492,7 +492,7 @@ fn match_bearer_prefix(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Returns Some(prefix_len) if `bytes` starts with case-insensitive
-/// "Basic " (the trailing space is required so we don't match "Basics" or
+/// "Basic " (the trailing space is required so "Basics" and
 /// "Basically"). Covers HTTP Basic auth headers used by GemFury and other
 /// publishers that pass the token as the Basic-auth username.
 fn match_basic_prefix(bytes: &[u8]) -> Option<usize> {
@@ -963,7 +963,7 @@ mod tests {
     #[test]
     fn test_redact_bearer_tokens_no_match_unchanged() {
         // No "Bearer " / "Authorization:" tokens → string unchanged.
-        // Note: we cannot distinguish prose use of "bearer" from a real
+        // Note: prose use of "bearer" is indistinguishable from a real
         // header; the redactor errs on the side of over-redaction (it
         // would treat "bearer of bad news" as "Bearer <redacted> bad
         // news"). Both branches are still safer than leaking a token.

@@ -124,7 +124,7 @@ impl CwdGuard {
 
 impl Drop for CwdGuard {
     fn drop(&mut self) {
-        // Best-effort: ignore the error during unwind so we never double-panic.
+        // Best-effort: ignore the error during unwind so a double-panic is impossible.
         let _ = std::env::set_current_dir(&self.original); // cwd-ok: RAII restore in the blessed CwdGuard
     }
 }
@@ -1113,7 +1113,7 @@ mod tests {
             ctx.template_vars().get("ProjectName"),
             Some(&"test-project".to_string())
         );
-        // Tag should not be set since we skipped populate_git_vars
+        // Tag stays unset because populate_git_vars was skipped
         assert_eq!(ctx.template_vars().get("Tag"), None);
     }
 

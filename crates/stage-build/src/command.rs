@@ -491,7 +491,7 @@ pub(crate) fn build_lib_command(ctx: &BuildContext<'_>) -> BuildCommand {
 /// `*.rs` files in `src/bin/`, AND does not declare any `[[bin]]` block, will
 /// be misclassified as having a binary target. The clean way to opt out is to
 /// declare `[[bin]]` explicitly (which probe (2) honours) — `autobins = false`
-/// without a replacement `[[bin]]` is rare enough that we don't parse the flag
+/// without a replacement `[[bin]]` is rare enough that the flag is not parsed
 /// here.
 pub(crate) fn crate_has_binary_target(crate_path: &str) -> bool {
     let path = Path::new(crate_path);

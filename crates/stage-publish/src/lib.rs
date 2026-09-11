@@ -1218,8 +1218,8 @@ mod tests {
         let mut ctx = Context::new(
             config,
             ContextOptions {
-                // NOT dry_run — we want the skip-path inside
-                // `run_post_publish_pollers` to engage and emit
+                // NOT dry_run — the skip-path inside
+                // `run_post_publish_pollers` must engage and emit
                 // `NotPolled`. dry-run gates the entire pipeline before
                 // ever reaching the post-publish call site.
                 skip_post_publish_poll: true,

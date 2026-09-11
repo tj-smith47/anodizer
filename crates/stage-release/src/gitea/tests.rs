@@ -217,7 +217,7 @@ async fn gitea_create_release_retries_5xx_on_list_releases() {
     );
 }
 
-/// Defense-in-depth: a Gitea API 4xx response that echoes our
+/// Defense-in-depth: a Gitea API 4xx response that echoes the
 /// `Authorization: Bearer <PAT>` header back must not leak the token
 /// into the user-visible error chain. Exercises the
 /// `find_release_by_tag` GET error path on the 401-fast-fail path.

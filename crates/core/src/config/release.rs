@@ -510,7 +510,7 @@ impl_auto_or_bool_serde!(
 
 /// `make_latest` can be the string `"auto"`, a boolean, or a template string.
 /// This field is rendered through the template engine at publish time,
-/// so we accept arbitrary strings (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
+/// so arbitrary strings are accepted (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
 /// and defer resolution to the release stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MakeLatestConfig {

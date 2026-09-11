@@ -40,7 +40,7 @@ pub(crate) fn levenshtein_distance(a: &str, b: &str) -> usize {
 /// Searches for a `DockerImage` artifact whose `tag` metadata matches the given
 /// image reference and returns its `digest` metadata value (e.g.,
 /// `sha256:abc123...`).  The digest may be stored as the full
-/// `registry/repo@sha256:...` string (from `docker inspect`), so we extract
+/// `registry/repo@sha256:...` string (from `docker inspect`), so just the
 /// just the `sha256:...` portion when present.
 pub(crate) fn find_image_digest(artifacts: &[Artifact], image: &str) -> Option<String> {
     for a in artifacts {

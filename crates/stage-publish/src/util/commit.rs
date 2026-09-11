@@ -236,19 +236,19 @@ pub(crate) fn resolve_commit_opts(
 ///    store without this explicit fetch.
 /// 2. Create (or reset) the local branch at the current HEAD — i.e. the
 ///    default branch tip. The caller has already written files to the
-///    working tree; we deliberately do not `checkout -B branch origin/branch`
+///    working tree, so there is deliberately no `checkout -B branch origin/branch`
 ///    because that would either overwrite the caller's writes with stale
 ///    orphan content or fail on untracked-file conflicts.
 /// 3. Stage the caller's files.
-/// 4. If the remote branch exists and its tree hash equals our staged tree
+/// 4. If the remote branch exists and its tree hash equals the staged tree
 ///    hash, the remote already matches desired state — return success
 ///    without committing or pushing.
 /// 5. Commit on top of the default branch base.
 /// 6. Push:
 ///    - When no remote counterpart exists: plain `git push -u origin <branch>`.
 ///    - When a remote orphan exists: `git push --force-with-lease=<branch>:<sha>
-///      --force-if-includes origin <branch>` using the explicit SHA we just
-///      fetched. The lease guarantees we only overwrite the orphan we saw;
+///      --force-if-includes origin <branch>` using the explicit SHA just
+///      fetched. The lease guarantees only the observed orphan is overwritten;
 ///      any racing push between fetch and push invalidates the lease.
 pub(crate) fn commit_and_push_with_opts(
     repo_path: &Path,
@@ -260,13 +260,13 @@ pub(crate) fn commit_and_push_with_opts(
     log: &StageLogger,
 ) -> Result<CommitOutcome> {
     // Pre-fetch the target branch (if any) so `origin/<branch>` is populated
-    // in the local ref store. We must use an explicit refspec: `clone
+    // in the local ref store. An explicit refspec is required: `clone
     // --depth=1` implies `--single-branch`, which restricts the remote's
     // default fetch refspec to just the cloned branch. Without the explicit
     // `+refs/heads/<b>:refs/remotes/origin/<b>` mapping, a plain
     // `git fetch origin <b>` fetches the commit into FETCH_HEAD but never
-    // updates the remote-tracking ref, leaving us unable to detect an
-    // existing remote branch. Ignore failure: the branch genuinely may not
+    // updates the remote-tracking ref, leaving an existing remote branch
+    // undetectable. Ignore failure: the branch genuinely may not
     // exist remotely.
     let remote_sha: Option<String> = if let Some(branch_name) = branch {
         let refspec = format!("+refs/heads/{0}:refs/remotes/origin/{0}", branch_name);
@@ -317,8 +317,8 @@ pub(crate) fn commit_and_push_with_opts(
         )?;
     }
 
-    // Idempotent no-op: if the remote branch's tree matches what we just
-    // staged, there's nothing to push.
+    // Idempotent no-op: if the remote branch's tree matches the freshly
+    // staged tree, there's nothing to push.
     if let Some(ref sha) = remote_sha {
         let remote_tree = Command::new("git")
             .args(["rev-parse", &format!("{}^{{tree}}", sha)])
@@ -431,12 +431,12 @@ pub(crate) fn commit_and_push_with_opts(
     // - Branch, no remote counterpart: plain `push -u` to create it.
     // - Branch with a remote counterpart (orphan from prior failed run, or
     //   an unrelated stale tip): `--force-with-lease=<branch>:<sha>` using
-    //   the SHA captured from our pre-fetch. The explicit lease is
-    //   race-safe: if anything pushed to the branch between our fetch and
-    //   our push, the lease invalidates and we bail without overwriting.
+    //   the SHA captured by the pre-fetch. The explicit lease is
+    //   race-safe: anything pushed to the branch between that fetch and
+    //   this push invalidates the lease and bails without overwriting.
     //
     // Note: `--force-if-includes` would block orphan replacement. The lease
-    // alone is the correct protection here because our local commit is
+    // alone is the correct protection here because the local commit is
     // based on the default branch tip, not on the orphan.
     let lease_arg;
     let push_args: Vec<&str> = match (branch, remote_sha.as_deref()) {

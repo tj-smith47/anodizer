@@ -124,7 +124,7 @@ pub(crate) fn stage_cloudsmith_file(
     // MUST be included as multipart form text parts exactly as given, and the
     // actual file goes under the `file` key (not `package_file`).
     log.verbose(&format!("POST {} (presigned, step 2 of 3)", presigned_url));
-    // Multipart Form is move-only, so we rebuild it on every retry attempt.
+    // Multipart Form is move-only, so it is rebuilt on every retry attempt.
     // Cloning `file_bytes` and `upload_fields` per-attempt is the price of
     // retriability; the bytes are already in memory.
     let _ = retry_request("presigned upload", art_name, policy, deadline, log, || {

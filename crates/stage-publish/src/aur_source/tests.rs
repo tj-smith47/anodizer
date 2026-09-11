@@ -1423,7 +1423,7 @@ fn aur_source_renders_templated_private_key_before_write() {
     // Also verify the full publish path: clone the bare repo with the
     // rendered key so the key file is actually written to disk. Since
     // the clone is local-path, `GIT_SSH_COMMAND` is ignored and the
-    // clone succeeds regardless of key validity, letting us confirm
+    // clone succeeds regardless of key validity, confirming
     // the render → write path end-to-end without a real SSH server.
     let parent = tempfile::tempdir().expect("parent");
     let dest = parent.path().join("clone");

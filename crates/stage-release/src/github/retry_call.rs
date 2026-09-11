@@ -142,7 +142,7 @@ pub(crate) fn octocrab_retry_cause(status: u16) -> String {
 /// `(status_code, retriable)` where `status_code` is `0` for transport-layer
 /// failures with no HTTP response attached.
 fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
-    // Build a throwaway wrapper from a synthetic inner so we can reuse the
+    // Build a throwaway wrapper from a synthetic inner to reuse the
     // existing `is_retriable` predicate without taking ownership of `err`.
     // The wrapper's job is just to set the right "retriable / not" bit for
     // the shared classifier; the actual error returned to the caller is the
@@ -210,7 +210,7 @@ mod tests {
     //! responses. Matches the test convention used by `gitea.rs` /
     //! `gitlab.rs` (see `spawn_oneshot_http_responder`).
     //!
-    //! We point `OctocrabBuilder::base_uri` at the listener and exercise a
+    //! `OctocrabBuilder::base_uri` points at the listener and exercises a
     //! single raw `get` call so the helper's retry + classifier behaviour is
     //! verified end-to-end with a real `octocrab::Error` instead of a mock.
     use super::*;
@@ -432,7 +432,7 @@ mod tests {
     /// default `RetryConfig::Simple(3)` tower middleware intercepts 429s at
     /// the transport layer and retries them internally before `map_github_error`
     /// ever runs. A 403 secondary-RL response is not intercepted by that
-    /// middleware and reaches `map_github_error` unchanged, giving us a typed
+    /// middleware and reaches `map_github_error` unchanged, yielding a typed
     /// `octocrab::Error::GitHub { status_code: 403 }` that `is_secondary_rate_limit`
     /// can inspect. GitHub sends both 403 and 429 for secondary limits; 403 is
     /// the more common form for content-creation bursts.
@@ -456,7 +456,7 @@ mod tests {
         // Secondary-RL body: 403 with the secondary-rate-limit message.
         // NOTE: the `Retry-After: 2` header is present in the wire format
         // for realism (this is what GitHub sends), but it is NOT parsed by
-        // our code. octocrab's typed error layer strips response headers
+        // this code. octocrab's typed error layer strips response headers
         // when it converts a non-2xx response into `GitHubError`, so the
         // header is architecturally inaccessible — see the module header
         // in `secondary_rate_limit.rs` for the full explanation. The retry
@@ -490,8 +490,8 @@ mod tests {
         };
 
         // Set secondary-RL delay to 1 s. With ±20 % jitter the actual sleep
-        // is in [800 ms, 1.2 s); we assert >= 800 ms to prove the delay was
-        // honored without paying a multi-second wall-clock cost per run.
+        // is in [800 ms, 1.2 s); the assertion is >= 800 ms, proving the delay
+        // was honored without paying a multi-second wall-clock cost per run.
         // The delay is read process-globally deep inside the async retry loop
         // (`retry_octocrab_call` → `secondary_rl_delay`), which does not thread
         // an `EnvSource`; the `serial(secondary_rl_env)` attribute serializes

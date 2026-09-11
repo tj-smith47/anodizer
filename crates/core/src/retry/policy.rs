@@ -139,7 +139,7 @@ impl RetryPolicy {
     };
 
     pub fn delay_for(&self, next_attempt: u32) -> Duration {
-        // `next_attempt` is the attempt we're about to run (≥2). The wait
+        // `next_attempt` is the attempt about to run (≥2). The wait
         // before attempt 2 uses base_delay; before attempt 3 uses base_delay*2;
         // i.e. multiplier = 2^(next_attempt - 2).
         let exp = next_attempt.saturating_sub(2);

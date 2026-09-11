@@ -64,7 +64,7 @@ impl PackageType {
 /// succeeded and the version-check is the failing step.
 ///
 /// The classifier matches the marker only when it occupies its own line (the
-/// position our `printf '%s\n'` writes it), so a package that happened to echo
+/// position the `printf '%s\n'` writes it), so a package that happened to echo
 /// the token mid-line during a failing install cannot forge an install-success
 /// signal. The token is also unique and emitted by anodizer, not by any known
 /// package manager — but the own-line anchor is the actual guarantee.
@@ -479,7 +479,7 @@ fn build_copy_create_argv(job: &SmokeJob) -> Vec<String> {
 /// `docker cp` argv: stream the host package into the created container at its
 /// root. `docker cp` transfers over the daemon socket (path-agnostic, like a
 /// buildx context), so it works even when the daemon's filesystem is separate
-/// from ours (dind without a shared work dir).
+/// from the host's (dind without a shared work dir).
 fn build_copy_cp_argv(job: &SmokeJob, container_id: &str) -> Vec<String> {
     vec![
         "cp".to_string(),
@@ -1293,7 +1293,7 @@ mod tests {
 
     /// A package that echoes the marker token MID-LINE during a failing install
     /// must NOT be mistaken for the install-success signal: only an own-line
-    /// marker (the position our `printf` writes it) counts. The failure must
+    /// marker (the position the `printf` writes it) counts. The failure must
     /// still be attributed to the install step.
     #[cfg(unix)]
     #[test]

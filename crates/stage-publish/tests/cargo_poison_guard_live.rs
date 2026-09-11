@@ -96,7 +96,7 @@ fn fetch_index_cksum_for(name: &str, version: &str) -> String {
 fn local_package_reproduces_published_crates_io_cksum() {
     let root = repo_root();
 
-    // Sanity: the index's recorded cksum equals the anchor we proved by hand.
+    // Sanity: the index's recorded cksum equals the hand-proved anchor.
     // A drift here means crates.io changed an immutable version (impossible) or
     // the URL path math is wrong — surface it before blaming the packaging.
     let index_cksum = fetch_index_cksum(PROOF_VERSION);

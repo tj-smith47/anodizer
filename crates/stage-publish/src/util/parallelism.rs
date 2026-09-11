@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn run_revert_targets_parallel_processes_all_chunks() {
         let log = StageLogger::new("test", Verbosity::Quiet);
-        // Pick a count strictly greater than the cap so we exercise
+        // Pick a count strictly greater than the cap to exercise
         // ≥2 chunks. Cap is 4 at time of writing; 6 ⇒ 2 chunks (4 + 2).
         let n = ROLLBACK_PARALLELISM + 2;
         assert!(n > ROLLBACK_PARALLELISM, "must span >1 chunk");

@@ -441,7 +441,7 @@ mod tests {
         let flag = Arc::clone(&in_critical);
         let contender = std::thread::spawn(move || {
             let _second = TufInitLock::acquire(&cache2).expect("second acquire");
-            // If the lock excluded us, the holder cleared the flag before drop.
+            // If the lock excluded this thread, the holder cleared the flag first.
             assert!(
                 !flag.load(Ordering::SeqCst),
                 "second locker entered while the first still held the lock"

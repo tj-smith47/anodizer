@@ -330,7 +330,7 @@ fn group_commits_inner(
 
     'commit: for commit in commits {
         for (idx, (re_opt, _)) in compiled.iter().enumerate() {
-            // Once we reach the catch-all, stop checking further groups.
+            // Once the catch-all is reached, stop checking further groups.
             // The catch-all itself doesn't do regex matching — it collects
             // all remaining unmatched commits below.
             if catch_all_idx == Some(idx) {

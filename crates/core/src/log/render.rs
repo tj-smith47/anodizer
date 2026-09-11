@@ -306,7 +306,7 @@ pub fn strip_ansi(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\u{1b}' {
             // Only a CSI introducer (`ESC [`) starts a parameterized sequence
-            // we must consume to its final byte (0x40–0x7E); any other escape
+            // that must be consumed to its final byte (0x40–0x7E); any other escape
             // form (a lone ESC, a two-char sequence) drops just the introducer.
             if chars.next() == Some('[') {
                 for ec in chars.by_ref() {

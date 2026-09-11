@@ -152,8 +152,8 @@ fn maybe_write_cask_into_tap(
 
     // Honor `cask.directory:` so a tap can place
     // casks in a sub-tree. Defaults to "Casks". The cask config field
-    // takes precedence; without it we land at the conventional
-    // homebrew-cask path.
+    // takes precedence; without it the conventional homebrew-cask path
+    // applies.
     let directory = super::super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
     let casks_dir = repo_path.join(&directory);
     std::fs::create_dir_all(&casks_dir).with_context(|| {

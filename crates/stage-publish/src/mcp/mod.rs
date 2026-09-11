@@ -40,7 +40,7 @@ use manifest::{
 };
 
 /// Serialized shape of a recorded MCP publish. Single-entry per run —
-/// MCP is top-level (one `mcp:` block) — so we still store it as a Vec
+/// MCP is top-level (one `mcp:` block) — but still stored as a Vec
 /// for shape-parity with the krew/homebrew/scoop targets.
 ///
 /// `server_name` is the rendered `mcp.name` (already template-resolved)
@@ -692,8 +692,8 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
 /// message. Cap is byte-based (cheap `len()`) instead of char-based so a
 /// large response body is rejected after a single O(1) length check —
 /// the prior `chars().take(512)` + `chars().count() > 512` shape walked a
-/// 100 KB body twice. The cut walks back to a UTF-8 char boundary so we
-/// never slice through a multi-byte char.
+/// 100 KB body twice. The cut walks back to a UTF-8 char boundary so a
+/// multi-byte char is never sliced through.
 const MAX_RESPONSE_SNIPPET_BYTES: usize = 512;
 
 /// Return `(snippet, truncated_suffix)` for a scrubbed HTTP response
@@ -841,7 +841,7 @@ fn publish_payload(
         },
         |status, response| {
             *last_error.borrow_mut() = Some((status.as_u16(), response.to_string()));
-            // Defense-in-depth: if the registry echoes our Authorization
+            // Defense-in-depth: if the registry echoes the Authorization
             // header back in an error body, scrub the token before it
             // lands in the user-visible log. No evidence the registry
             // does this today, but the cost of redacting is one regex's

@@ -176,7 +176,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
 
     // filter(items=<string|array>, regexp="pattern") — keep elements matching regex
     // Accepts a multiline STRING (splits by newline, filters lines, rejoins).
-    // We also accept an array for convenience.
+    // An array is accepted too, for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
     tera.register_json_function(
@@ -218,7 +218,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
 
     // reverseFilter(items=<string|array>, regexp="pattern") — exclude elements matching regex
     // Accepts a multiline STRING (splits by newline, filters lines, rejoins).
-    // We also accept an array for convenience.
+    // An array is accepted too, for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
     tera.register_json_function(

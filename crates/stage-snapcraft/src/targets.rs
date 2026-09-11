@@ -289,7 +289,7 @@ mod tests {
     fn snapcraft_collect_targets_skips_non_publish_configs() {
         // A snapcrafts entry with `publish: false` (or unset) must NOT
         // surface as an evidence target — the publish path also skips
-        // it, and recording a target we never pushed would mislead
+        // it, and recording a target that was never pushed would mislead
         // operators reading any replay consumer.
         let krate = CrateConfig {
             name: "demo".to_string(),

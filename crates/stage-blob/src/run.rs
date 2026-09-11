@@ -54,7 +54,7 @@ pub(crate) fn validate_only(
 
     // build_store fans out to build_s3_store / build_gcs_store / ... — the
     // provider-keyed validator chain (canned ACLs, KMS scheme match, …)
-    // runs here. We only need the side-effect of validation; the store is
+    // runs here. Only the side-effect of validation matters; the store is
     // dropped immediately.
     let _store = build_store(provider, blob_cfg, &rendered_bucket, ctx)?;
     Ok(())
@@ -662,7 +662,7 @@ impl BlobStage {
                 let store: Arc<dyn ObjectStore> =
                     Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
 
-                // Pre-render put options per item while we still hold &ctx.
+                // Pre-render put options per item while &ctx is still held.
                 let put_opts_per_item: Vec<PutOptions> = upload_items
                     .iter()
                     .map(|(_, key)| build_put_options(blob_cfg, key, ctx))
@@ -712,8 +712,8 @@ impl BlobStage {
 
         // Parallel across configs: each worker runs its own upload loop
         // (which itself has intra-config per-file concurrency via tokio).
-        // Bounded by the global parallelism so we don't fan out unbounded
-        // across both axes simultaneously.
+        // Bounded by the global parallelism so the fan-out is not
+        // unbounded across both axes simultaneously.
         //
         // One tokio runtime is shared across every job — N parallel jobs
         // would otherwise allocate N independent thread pools.
@@ -1261,7 +1261,7 @@ mod run_tests {
     // -------------------------------------------------------------------
     // Dry-run remote-path assembly — the dry-run branch logs the assembled
     // provider://bucket/directory/key for each file WITHOUT building a
-    // store. We assert the captured log lines carry the templated target
+    // store. The captured log lines must carry the templated target
     // (region/endpoint/custom directory all rendered).
     // -------------------------------------------------------------------
 

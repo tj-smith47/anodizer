@@ -145,7 +145,7 @@ pub fn resolve_file_specs(
                 // When src is a non-glob literal, it is used as the prefix
                 // directly, so
                 // Rel(file, file) = "." and the file is effectively renamed
-                // to dst. We always compute LCP, which for a single file
+                // to dst. LCP is always computed, which for a single file
                 // produces dst/filename — more intuitive behavior (e.g.
                 // dst: "licenses/" puts the file inside a licenses directory
                 // rather than renaming it).

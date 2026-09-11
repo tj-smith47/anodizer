@@ -74,7 +74,7 @@ pub(crate) fn disambiguate_by_format<T>(
 
 /// Per-call configuration for the inner sink-injecting variant. Same shape
 /// as [`DisambiguateConfig`] minus the logger (the sink is the only output
-/// path so we don't need both).
+/// path, so both are unnecessary).
 pub(crate) struct InnerConfig<'a> {
     pub preferred_formats: &'a [&'a str],
     pub ids_was_set: bool,
@@ -170,7 +170,7 @@ pub(crate) fn disambiguate_by_format_with_sink<T>(
         // Compute kept label/format once; reuse across the per-dropped loop.
         let kept_label = label_fn(&chosen);
         let kept_fmt = format_fn(&chosen).to_string();
-        // Log the dropped entries so the user knows what we discarded.
+        // Log the dropped entries so the user knows what was discarded.
         for dropped in &group {
             warn(&format!(
                 "{publisher_label}: crate '{crate_name}': platform {key} had multiple \

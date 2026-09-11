@@ -127,7 +127,7 @@ crates:
 
     /// publish_cmd's prelude is `init_publish_stage_ctx`, which calls
     /// `setup_context` (git resolution) BEFORE `load_artifacts_from_dist`.
-    /// Outside a git repo the git step can fail before we reach the
+    /// Outside a git repo the git step can fail before the run reaches the
     /// artifact-load step, so either failure mode is acceptable — both
     /// pin the dispatch wiring through the prelude.
     #[test]

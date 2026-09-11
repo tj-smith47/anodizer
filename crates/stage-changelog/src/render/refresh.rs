@@ -355,7 +355,7 @@ pub(crate) fn insert_unreleased_after_h1(
     }
 
     // Re-attach the post-H1 remainder (skipping a single blank line right after
-    // the H1 so we don't double it).
+    // the H1 so it is not doubled).
     let mut tail_start = h1_idx + 1;
     if lines.get(tail_start).is_some_and(|l| l.trim().is_empty()) {
         tail_start += 1;

@@ -49,7 +49,7 @@ use crate::config::{
 // were `None` for that block.
 //
 // Rather than adding a `is_skipped` accessor on every config struct that
-// happens to carry a `skip` field (24+ types and growing), we inspect the
+// happens to carry a `skip` field (24+ types and growing), the merge inspects the
 // serialized JSON form of the value and look for a `skip` key whose value is
 // truthy. This keeps the suppression rule uniform across every block — adding
 // a new `skip`-bearing config type requires no changes here.
@@ -327,7 +327,7 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
 ///
 /// Defaults merging is best-effort by design — a serialise / deserialise
 /// failure here leaves `target` unchanged rather than failing the whole
-/// pipeline. We still surface the failure via `tracing::warn!` so that
+/// pipeline. The failure is still surfaced via `tracing::warn!` so that
 /// genuinely broken configs surface in CI rather than silently dropping
 /// defaults.
 fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, defaults: &T) {

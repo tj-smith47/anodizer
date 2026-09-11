@@ -598,7 +598,7 @@ fn test_copy_snap_icon_overwrites_existing_destination() {
 #[test]
 fn test_stage_icon_unsupported_extension_errors_before_pack() {
     let tmp = TempDir::new().unwrap();
-    // The file must EXIST so we know the extension check fires, not the
+    // The file must EXIST so the extension check fires, not the
     // existence check.
     let icon = tmp.path().join("logo.jpg");
     std::fs::write(&icon, b"fake-jpg").unwrap();
@@ -1888,7 +1888,7 @@ fn test_invalid_name_template_errors() {
     );
     ctx.template_vars_mut().set("Version", "1.0.0");
 
-    // Register a linux binary so we don't skip before reaching template rendering
+    // Register a linux binary so the run reaches template rendering
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
         name: String::new(),
@@ -2172,7 +2172,7 @@ fn test_confinement_validation() {
     );
     ctx.template_vars_mut().set("Version", "1.0.0");
 
-    // Register a linux binary so we reach the validation
+    // Register a linux binary so the run reaches the validation
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
         name: String::new(),
@@ -3523,8 +3523,8 @@ fn test_extra_files_invalid_mode_errors_during_staging() {
 #[test]
 fn test_extra_files_copies_source_to_prime_dest() {
     // Detailed-form extra_files (source + custom destination) are staged
-    // into the prime dir during the non-dry-run path. We can't peek the
-    // tmp prime dir post-run (TempDir drops at end of staging), but a
+    // into the prime dir during the non-dry-run path. The tmp prime dir
+    // cannot be peeked post-run (TempDir drops at end of staging), but a
     // missing source file fails the copy with a specific error that
     // proves the copy site executed (build_stage.rs:525-527).
     let tmp = TempDir::new().unwrap();
@@ -3901,8 +3901,8 @@ fn test_absolute_icon_path_resolves_directly() {
 fn test_icon_resolution_falls_back_to_cwd_when_project_root_unset() {
     // resolve_icon_path's `unwrap_or(Path::new("."))` branch
     // (build_stage.rs:49): when project_root is None AND the icon path
-    // is relative, validation looks under CWD. We can't easily mutate
-    // CWD safely from a test, so we assert the negative behaviour: a
+    // is relative, validation looks under CWD. Mutating CWD safely from a
+    // test is impractical, so the assertion is the negative behaviour: a
     // nonexistent relative icon with project_root unset fails validation
     // with the "does not exist" error, proving the resolution branch ran.
     let tmp = TempDir::new().unwrap();

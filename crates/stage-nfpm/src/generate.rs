@@ -356,8 +356,8 @@ pub fn generate_nfpm_yaml_with_env(
     };
 
     // Flatten the format-keyed dependencies HashMap into a flat Vec<String>.
-    // When a target format is supplied we take only deps for that format;
-    // otherwise we merge deps from all formats (deduped, order-preserving).
+    // A supplied target format takes only deps for that format; otherwise
+    // deps from all formats are merged (deduped, order-preserving).
     let depends: Option<Vec<String>> = config.dependencies.as_ref().and_then(|m| {
         let mut flat: Vec<String> = Vec::new();
         let mut seen = std::collections::HashSet::new();

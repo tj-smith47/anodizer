@@ -140,7 +140,7 @@ pub(crate) fn revision_missing_channels(
 
 /// After a content-dedup upload rejection, re-query `snapcraft
 /// list-revisions` for the revision whose `Version` column equals `version`
-/// — the revision that collided with the bytes we just tried to upload.
+/// — the revision that collided with the bytes just uploaded.
 ///
 /// A dedup rejection at the SAME version most commonly means an earlier
 /// attempt (this run's own retry loop, or a prior failed run) already

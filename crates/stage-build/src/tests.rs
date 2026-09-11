@@ -1064,7 +1064,7 @@ fn test_universal_binary_copies_full_extras_from_first_source() {
         metadata: arm_meta,
         size: None,
     });
-    // x86_64 source — also valid, but we only assert against arm64's keys.
+    // x86_64 source — also valid, but only arm64's keys are asserted.
     register_binary(
         &mut ctx,
         "myapp",

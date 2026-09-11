@@ -11,7 +11,7 @@ use super::*;
 //
 // Submitter-group; upstream-AUR force-push publisher. Distinct from
 // [`crate::aur::AurOurPublisher`] in `aur.rs` which is Manager group with
-// `git revert`-based rollback against AUR repos we own. This publisher
+// `git revert`-based rollback against owned AUR repos. This publisher
 // covers the **upstream-AUR source-package** flow: it generates a
 // PKGBUILD/.SRCINFO and force-pushes them to an AUR git repo
 // (`ssh://aur@aur.archlinux.org/<package>.git`). The push is irreversible
@@ -21,9 +21,8 @@ use super::*;
 // CREDENTIAL HANDLING: [`AurSourceTarget`] stores no key material. The
 // SSH private key / `GIT_SSH_COMMAND` resolved at publish time
 // (`cfg.private_key`, `cfg.git_ssh_command`) is irrelevant to a
-// warn-only rollback. We only name the env-var scope operators are
-// expected to control (`AUR_SSH_KEY write`) — never the resolved
-// secret.
+// warn-only rollback. The env-var scope operators control
+// (`AUR_SSH_KEY write`) is named — never the resolved secret.
 
 // Submitter-group `Publisher` for the upstream-AUR force-push
 // source-publishing flow. Wraps both `publish_to_aur_source` (per-crate)
@@ -31,7 +30,7 @@ use super::*;
 //
 // Disambiguation: this publisher is NOT the same as
 // `crate::aur::AurOurPublisher`. That one is Manager group, with a
-// `git revert`-based rollback against AUR repos we own. This one is
+// `git revert`-based rollback against owned AUR repos. This one is
 // Submitter group, force-pushes upstream AUR repos, and has no
 // programmatic rollback.
 simple_publisher!(

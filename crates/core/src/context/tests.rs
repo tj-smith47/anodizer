@@ -650,7 +650,7 @@ fn populate_time_vars_uses_source_date_epoch_when_set() {
 #[test]
 fn test_populate_time_vars() {
     // Wall-clock fallback path: empty MapEnvSource has no
-    // SOURCE_DATE_EPOCH, so we exercise the chrono::Utc::now() branch.
+    // SOURCE_DATE_EPOCH, so this drives the chrono::Utc::now() branch.
     let env = crate::MapEnvSource::new();
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1540,7 +1540,7 @@ fn test_populate_metadata_var_full_description_from_file() {
 #[test]
 fn test_populate_metadata_var_full_description_from_url_resolves() {
     // `from_url` routes through the shared `content_source::resolve`
-    // helper. We stand up a oneshot HTTP responder so the test is
+    // helper. A oneshot HTTP responder keeps the test
     // hermetic (no real network) and verify the body lands in the
     // rendered Metadata.FullDescription variable.
     use crate::config::ContentSource;

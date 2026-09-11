@@ -885,7 +885,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     })?;
 
     // The flake the next publish would write merges this package into the
-    // prior set; for validation we render the single-package flake and assert
+    // prior set; validation renders the single-package flake and asserts
     // it is well-formed via the same recovery parser the publish loop trusts.
     let pkg = nix::FlakePackage {
         attr: render.name.clone(),

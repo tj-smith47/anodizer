@@ -3679,9 +3679,8 @@ fn test_conventional_extension_template_var() {
     // Template renders: "myapp_1.0.0_amd64.deb", then ext ".deb" is appended
     // => "myapp_1.0.0_amd64.deb.deb" -- double extension!
     // This means ConventionalExtension should NOT be used together with
-    // the auto-appended extension.  We need to fix the code so that
-    // when the rendered template already ends with the extension, we skip
-    // appending it.
+    // the auto-appended extension: when the rendered template already ends
+    // with the extension, appending it again is skipped.
     assert!(
         filename.ends_with(".deb"),
         "should end with .deb, got: {filename}"
@@ -4736,10 +4735,10 @@ fn test_owner_group_template_rendering_in_stage() {
     NfpmStage.run(&mut ctx).unwrap();
 
     // The stage writes a temp YAML file in non-dry-run mode. In dry-run,
-    // we verify that template rendering happened by checking the rendered
-    // config used for YAML generation. Since the stage modifies the config
-    // clone internally and we can't inspect it directly, we generate YAML
-    // ourselves with the same rendered values to confirm the pattern works.
+    // template rendering is confirmed by checking the rendered config used
+    // for YAML generation. The stage modifies the config clone internally
+    // and it cannot be inspected directly, so the YAML is regenerated here
+    // with the same rendered values to confirm the pattern works.
     // The key verification is that the stage didn't error on template rendering.
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(pkgs.len(), 1, "package should be registered");
@@ -5387,7 +5386,7 @@ fn test_nfpm_if_truthy_runs_config() {
     let mut ctx = nfpm_if_test_ctx(Some("{{ eq .Os \"linux\" }}"));
     // Runs — may or may not emit artifacts depending on whether binaries exist,
     // but must not skip via the `if` gate. Any error here is NOT an `if` render
-    // failure; we only assert the run completes without the if-render bail.
+    // failure; the only assertion is that the run completes without the bail.
     let res = NfpmStage.run(&mut ctx);
     if let Err(e) = &res {
         let msg = format!("{:#}", e);
@@ -5466,7 +5465,7 @@ fn test_nfpm_templated_contents_renders_file_body() {
 
     // Run the stage. The render of `templated_contents` happens before
     // nfpm is exec'd, so a missing-nfpm error on a CI runner still leaves
-    // the rendered file in place — which is what we're asserting here.
+    // the rendered file in place — which is what is asserted here.
     let _ = NfpmStage.run(&mut ctx);
 
     let rendered = tmp
@@ -5763,8 +5762,8 @@ fn test_setup_lintian_overrides_noop_for_rpm() {
         "rpm format must not write a lintian dir under dist"
     );
     assert!(cfg.contents.is_none() || cfg.contents.as_ref().unwrap().is_empty());
-    // The original deb.lintian_overrides is left intact (we only clear it
-    // when we actually emit the override file).
+    // The original deb.lintian_overrides is left intact (it is cleared only
+    // when the override file is actually emitted).
     assert!(cfg.deb.unwrap().lintian_overrides.is_some());
 }
 

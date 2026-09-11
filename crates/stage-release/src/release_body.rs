@@ -361,7 +361,7 @@ fn extra_files_zero_match(pattern: &str, ctx: &Context) -> Result<()> {
     anyhow::bail!("release: extra_files glob '{pattern}' matched no files")
 }
 
-/// Convert our config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.
+/// Convert the config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.
 ///
 /// When the config contains a template string (`MakeLatestConfig::String`), it is
 /// rendered through the provided `render` function first, then resolved:

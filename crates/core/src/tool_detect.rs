@@ -59,7 +59,7 @@ pub fn on_path(name: &str) -> bool {
     }
 
     // On Windows, PATHEXT lists extensions to try (e.g., .COM;.EXE;.BAT;.CMD).
-    // When the caller asks for "upx", we also check for "upx.exe", etc.
+    // When the caller asks for "upx", "upx.exe" and friends are tried too.
     let extensions: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())

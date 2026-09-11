@@ -393,7 +393,7 @@ mod tests {
     ///   [0]   ELF32 header (52 bytes)
     ///   .dynstr   string table: "\0libc.so.6\0GLIBC_2.99\0glibc99\0"
     ///   .dynsym   2 × Sym32 (16 bytes each): index 0 null, index 1 versioned
-    ///   .gnu.version  2 × Versym (u16): [0 (local), 2 (our version index)]
+    ///   .gnu.version  2 × Versym (u16): [0 (local), 2 (the version index)]
     ///   .gnu.version_r  Verneed(16) + Vernaux(16) naming GLIBC_2.99, vna_other=2
     ///   .shstrtab one NUL byte (section names are matched by sh_type, not name)
     ///   section-header table: 6 × SectionHeader32 (40 bytes each)
@@ -418,7 +418,7 @@ mod tests {
 
         // .dynsym — Sym32 is 16 bytes: st_name(4) st_value(4) st_size(4)
         // st_info(1) st_other(1) st_shndx(2). Index 0 is the reserved null
-        // entry; index 1 is our GLOBAL FUNC referencing the version.
+        // entry; index 1 is the GLOBAL FUNC referencing the version.
         let mut dynsym = Vec::new();
         dynsym.extend_from_slice(&[0u8; 16]); // index 0: STN_UNDEF
         le32(&mut dynsym, off_sym); // st_name
@@ -429,7 +429,7 @@ mod tests {
         dynsym.extend_from_slice(&1u16.to_le_bytes()); // st_shndx (any defined)
 
         // .gnu.version — one Versym (u16) per dynsym entry. Symbol 0 is local
-        // (index 0), symbol 1 carries our version index.
+        // (index 0), symbol 1 carries the version index.
         let mut versym = Vec::new();
         versym.extend_from_slice(&0u16.to_le_bytes());
         versym.extend_from_slice(&VER_IDX.to_le_bytes());

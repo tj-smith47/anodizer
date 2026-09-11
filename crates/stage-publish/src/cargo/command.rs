@@ -15,7 +15,7 @@ use super::*;
 /// uncommitted refresh emitted just before `cargo publish`). `--allow-dirty`
 /// lets that uncommitted write through; without it `cargo publish` would reject
 /// the binstall-enabled crate. Users can still set `cargo.allow_dirty: false`
-/// to opt out, but that's surprising enough we force-on by default.
+/// to opt out, but that is surprising enough that it is on by default.
 pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Vec<String> {
     let mut cmd = vec![
         "cargo".to_string(),

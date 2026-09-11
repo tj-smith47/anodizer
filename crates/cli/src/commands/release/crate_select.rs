@@ -226,7 +226,7 @@ pub(crate) fn detect_changed_crates(
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     // Log when ignore_tags/ignore_tag_prefixes contain template expressions
-    // but template_vars are not yet available (we pass None below).
+    // but template_vars are not yet available (None is passed below).
     if let Some(gc) = git_config {
         let has_templates = gc
             .ignore_tags

@@ -84,7 +84,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
         preserved.display()
     );
 
-    // The fixture exercises `build,archive` so we expect at least one
+    // The fixture exercises `build,archive`, so at least one
     // archive file in the preserved tree (the harness's run-0 output
     // for a successful build).
     assert!(
@@ -214,7 +214,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
     );
 
     // Load determinism.json — every deterministic artifact has a `hash`
-    // field. We index by basename (the harness's map key convention).
+    // field. Indexed by basename (the harness's map key convention).
     let report_json = fs::read_to_string(&report_path).expect("reading determinism.json");
     let report: DeterminismReport =
         serde_json::from_str(&report_json).expect("parsing determinism.json");

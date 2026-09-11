@@ -281,7 +281,7 @@ fn test_trailing_pipe_with_no_filter_name_error() {
 fn test_undefined_var_in_concat_coerces_empty() {
     let vars = test_vars();
     // tera 2.0's interpreter coerces an `Undefined` operand of `~`
-    // string-concat to "" (engine semantics, not something we configure) —
+    // string-concat to "" (engine semantics, not a configurable) —
     // it does not error the way top-level `{{ Undefined }}` access does
     // (see test_undefined_variable_error_mentions_variable).
     let result = render("{{ Undefined ~ ' suffix' }}", &vars).unwrap();
@@ -340,8 +340,8 @@ fn test_undefined_dotted_root_in_concat_errors() {
 #[test]
 fn test_invalid_filter_argument_type_error() {
     let vars = test_vars();
-    // trimprefix expects prefix=<string>, but we pass an unquoted value
-    // that Tera will interpret differently
+    // trimprefix expects prefix=<string>; an unquoted value is passed here,
+    // which Tera interprets differently
     let result = render("{{ Tag | trimprefix(prefix=123) }}", &vars);
     assert!(
         result.is_err(),
@@ -361,7 +361,7 @@ fn test_error_message_includes_original_template() {
     let result = render(template, &vars);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    // Our render() adds context with the original template
+    // render() adds context with the original template
     assert!(
         err.contains("Nonexistent") || err.contains(template),
         "error should reference the template or variable name, got: {err}"
@@ -688,7 +688,7 @@ fn test_hash_missing_s_arg_error() {
         result.is_err(),
         "hash function without `s` arg should error"
     );
-    // The anyhow error chain includes the tera error with our message
+    // The anyhow error chain includes the tera error with the helper's message
     let err = format!("{:#}", result.unwrap_err());
     assert!(
         err.contains("requires `s` argument"),
@@ -736,8 +736,8 @@ fn test_incpatch_handles_prerelease() {
 // Q-bump1: non-semver input must hard-error rather than silently
 // returning "0.0.1" / "0.1.0" / "1.0.0". A non-semver input panics on parse.
 //
-// `render()` wraps the underlying Tera error in `anyhow::Error`, so we
-// walk the source chain to find the actual semver-validation message.
+// `render()` wraps the underlying Tera error in `anyhow::Error`, so the
+// source chain is walked to find the actual semver-validation message.
 fn err_chain(err: &anyhow::Error) -> String {
     let mut s = String::new();
     s.push_str(&format!("{}", err));
@@ -1064,7 +1064,7 @@ fn test_reverse_filter_function_invalid_regex_returns_error() {
     );
     assert!(result.is_err(), "invalid regex must produce an error");
     // Mirror the forward-filter sibling: assert the error chain mentions
-    // the specific failure mode so we don't accept a generic Tera error
+    // the specific failure mode, so a generic Tera error
     // (e.g. an arity / arg-name change) as a pass.
     let err = format!("{:?}", result.unwrap_err());
     assert!(
@@ -1114,8 +1114,8 @@ fn test_reverse_filter_pipe_invalid_regex_returns_error() {
 
 #[test]
 fn test_index_or_default_key_exists() {
-    // We need to construct a template that passes a map. Tera doesn't have inline map
-    // literals in templates, so we test the function via the Rust API directly.
+    // The function needs a map argument, and Tera has no inline map
+    // literals in templates, so it is exercised via the Rust API directly.
     let args: HashMap<String, Value> = [
         ("map".to_string(), serde_json::json!({"foo": "bar"})),
         ("key".to_string(), Value::String("foo".to_string())),
@@ -1124,7 +1124,7 @@ fn test_index_or_default_key_exists() {
     .into_iter()
     .collect();
 
-    // Access the function via BASE_TERA - we test it indirectly by calling the logic
+    // The function is reached via BASE_TERA, so the logic is called directly
     let map = args.get("map").unwrap().as_object().unwrap();
     let key = args.get("key").unwrap().as_str().unwrap();
     let default = args
@@ -1323,7 +1323,7 @@ fn test_custom_var_empty_map_conditional() {
 #[test]
 fn test_custom_var_with_template_in_value() {
     // Verify that custom var values can themselves be template-rendered
-    // (this is done in the CLI wiring, but we can test the end result here)
+    // (the render happens in the CLI wiring; the end result is what is pinned here)
     let mut vars = test_vars();
     // Simulate a pre-rendered value (as the CLI would do)
     vars.set_custom_var("version_string", "cfgd v1.2.3");
@@ -1597,7 +1597,7 @@ fn test_in_go_style_positional_with_list_subexpr_not_found() {
 fn test_in_positional_with_variable() {
     // {{ in myList "b" }} where myList is a template variable
     // NOTE: This requires myList to be set as a Tera array in the context.
-    // Since TemplateVars only supports string vars, we test with the list subexpr form instead.
+    // Since TemplateVars only supports string vars, the list subexpr form stands in.
     let vars = test_vars();
     let result = render(
         "{% if in (list \"a\" \"b\" \"c\") \"c\" %}found{% else %}nope{% endif %}",
@@ -1887,8 +1887,8 @@ fn test_re_replace_all_empty_input() {
 #[test]
 fn test_in_set_context_keyword_conflict() {
     // Verify that `in` as a function name works inside `{% set %}` assignment.
-    // Tera's parser uses `in` as a keyword in `{% for x in list %}`, so we need
-    // to confirm it doesn't choke when used as a function call in `{% set %}`.
+    // Tera's parser uses `in` as a keyword in `{% for x in list %}`, so this
+    // confirms it doesn't choke when used as a function call in `{% set %}`.
     let vars = test_vars();
     let result = render(
         "{% set result = in(items=[\"a\"], value=\"a\") %}{{ result }}",
@@ -2928,7 +2928,7 @@ fn test_printf_zero_pad_string_verb() {
     let vars = test_vars();
     let result = render("{{ printf \"%05s\" \"hi\" }}", &vars).unwrap();
     // Go pads strings with spaces, not zeros — zero-pad only applies to numbers.
-    // But our implementation routes through pad() with no sign prefix.
+    // But this implementation routes through pad() with no sign prefix.
     // The format "%05s" with a space-pad/zero-pad branch: since no numeric_sign_prefix
     // the zero branch (line 73) applies → "000hi".
     assert_eq!(result, "000hi");

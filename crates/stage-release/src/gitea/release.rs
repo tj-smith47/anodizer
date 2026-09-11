@@ -216,7 +216,7 @@ pub(crate) async fn find_release_by_tag(
             }
         }
 
-        // If we got fewer results than the page size, there are no more pages.
+        // Fewer results than the page size means there are no more pages.
         if releases.len() < PAGE_SIZE as usize {
             break;
         }

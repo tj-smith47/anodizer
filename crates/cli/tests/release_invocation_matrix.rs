@@ -380,7 +380,7 @@ fn publish_subcommand_dispatches_to_publish_only_pipeline() {
 
 /// Row: `anodizer announce` runs only the announce stage. With no
 /// configured announce providers the stage emits "no announce config
-/// — skipping"; that's the dispatch we want to pin.
+/// — skipping"; that is the dispatch this pins.
 #[test]
 fn announce_subcommand_dispatches_to_announce_pipeline() {
     let tmp = TempDir::new().unwrap();
@@ -392,7 +392,7 @@ fn announce_subcommand_dispatches_to_announce_pipeline() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let merged = format!("{stdout}\n{stderr}");
     // Failure modes are expected (no dist artifacts, no git tag); the
-    // dispatch surface check is that we don't see the heavy stage
+    // dispatch surface check is the ABSENCE of the heavy stage
     // banners that the full release pipeline would emit.
     for forbidden in &["building binaries", "archiving", "building nfpm"] {
         assert!(

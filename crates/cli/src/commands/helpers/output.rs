@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result};
 /// `config.yaml`. The `Config` type carries many `HashMap<String, _>` fields
 /// (`docker.labels`, `docker.build_args`, `variables`, `nfpm.dependencies`,
 /// announcer `extra`, custom headers, …) whose iteration order is randomized
-/// per process. We serialize to a `serde_yaml_ng::Value` first, then
+/// per process. Serialization goes to a `serde_yaml_ng::Value` first, then
 /// recursively sort every mapping's keys alphabetically, then emit the
 /// canonical form. Centralised here so adding a new HashMap field anywhere
 /// in `Config` is automatically covered without a per-field `serialize_with`

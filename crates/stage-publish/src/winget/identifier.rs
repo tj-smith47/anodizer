@@ -10,7 +10,7 @@ use super::*;
 //      rejects them, so anodizer must too.
 //
 // `\x00` (NUL) is also rejected by winget but `regex` interprets `\x00`
-// inside `[^...]` as the empty boundary; we strip NULs explicitly below
+// inside `[^...]` as the empty boundary; NULs are stripped explicitly below
 // before applying the regex to keep the engine happy.
 pub(crate) static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
     static_regex(

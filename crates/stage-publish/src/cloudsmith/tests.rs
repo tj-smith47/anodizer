@@ -648,7 +648,7 @@ fn test_cloudsmith_dry_run_lists_matching_artifacts() {
     assert!(publish_to_cloudsmith(&ctx, &log).is_ok());
 }
 
-/// Defense-in-depth: a Cloudsmith API error response that echoes our
+/// Defense-in-depth: a Cloudsmith API error response that echoes the
 /// `Authorization: Bearer <PAT>` header back must not leak the token
 /// into the user-visible error chain. Exercises the `retry_request`
 /// helper's error-message closure via a one-shot TCP responder.
@@ -836,7 +836,7 @@ fn cloudsmith_classify_skip_when_md5_matches() {
 
 #[test]
 fn cloudsmith_classify_skip_when_md5_matches_case_insensitive() {
-    // Cloudsmith may return uppercase hex; our local computation is
+    // Cloudsmith may return uppercase hex; the local computation is
     // lowercase. The comparator must normalize.
     let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"DEADBEEF"}]"#;
     let result =
@@ -886,7 +886,7 @@ fn cloudsmith_classify_bails_when_md5_differs() {
 #[test]
 fn cloudsmith_classify_handles_non_array_body() {
     // An error envelope or unexpected shape: treat as NotFound rather
-    // than blow up, since we can't fix the mismatch anyway and a false
+    // than blow up, since the mismatch is unfixable anyway and a false
     // upload-attempt is recoverable while a false bail is not.
     let body = r#"{"detail":"not authorized"}"#;
     let result =
@@ -1764,7 +1764,7 @@ fn live_step3_409_recovers_as_idempotent_skip() {
 }
 
 /// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ surface the conflict
-/// (a concurrent uploader landed different bytes under our name).
+/// (a concurrent uploader landed different bytes under the same name).
 #[test]
 fn live_step3_409_recovery_bails_on_md5_mismatch() {
     let (result, _log) = run_deb_with_routes(

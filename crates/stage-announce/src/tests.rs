@@ -1577,9 +1577,9 @@ fn test_telegram_default_template_renders_without_tilde() {
 
 /// Q-disc1: Discord webhook URL must percent-encode the env-derived
 /// id+token segments. The URL join escapes path
-/// segments; we mirror that via `percent_encode_path_segment`. Unit test of
+/// segments; `percent_encode_path_segment` mirrors that. Unit test of
 /// the helper boundary — `crates/core/src/url.rs` already pins the encoding
-/// table; this verifies the segments we feed it round-trip safely.
+/// table; this pins that the fed segments round-trip safely.
 #[test]
 fn test_discord_webhook_url_percent_encodes_id_and_token() {
     let id = "id/with?weird#chars";
@@ -2274,7 +2274,7 @@ fn test_email_smtp_port_defaults_to_587() {
 /// win documented near the mattermost render block). The renderer passes
 /// `channel` raw — no template substitution. Anodizer renders it through
 /// the engine, unlocking per-tag channel routing like
-/// `channel: "release-{{ Tag }}"`. We pin this by feeding a malformed
+/// `channel: "release-{{ Tag }}"`. Pinned by feeding a malformed
 /// template that would only error if rendering is invoked.
 #[test]
 fn test_mattermost_renders_channel_template() {

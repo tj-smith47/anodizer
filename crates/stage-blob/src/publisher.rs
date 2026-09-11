@@ -294,7 +294,7 @@ fn rollback_via_object_store(
     use anodizer_core::config::BlobConfig;
     use object_store::ObjectStoreExt as _;
 
-    // Group by (provider, bucket, region, endpoint) so we reuse one
+    // Group by (provider, bucket, region, endpoint) so one
     // `ObjectStore` handle across every key in the same bucket / region
     // / endpoint scope. The grouping key is deliberately lossless: two
     // targets that differ in `endpoint` (e.g. one cross-account R2

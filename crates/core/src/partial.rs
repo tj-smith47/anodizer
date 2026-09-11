@@ -357,7 +357,7 @@ fn synthesize_triple_with_overrides(
     goos: Option<&str>,
     goarch: Option<&str>,
 ) -> String {
-    // Map alias -> canonical rust component when we recognize it.
+    // Map alias -> canonical rust component for every recognised spelling.
     let arch_token = goarch.map(|a| match a {
         "amd64" | "x86_64" => "x86_64",
         "arm64" | "aarch64" => "aarch64",
@@ -806,7 +806,7 @@ mod tests {
         // peer test reading the process-global cwd never observes a deleted dir.
         let _cwd = crate::test_helpers::CwdGuard::new(scratch.path()).unwrap();
         // Remove the directory the process cwd now points at, mimicking a peer
-        // test that dropped its tempdir while we hold its path as cwd.
+        // test that dropped its tempdir while this one holds its path as cwd.
         scratch.close().unwrap();
 
         let result = detect_host_target();

@@ -757,7 +757,7 @@ mod publisher_tests {
 
     #[test]
     fn mcp_rollback_degrades_to_warn_on_501() {
-        // retry_http_blocking retries 5xx, so we need enough 501s to exhaust
+        // retry_http_blocking retries 5xx, so enough 501s are needed to exhaust
         // the 3-attempt budget.
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n",

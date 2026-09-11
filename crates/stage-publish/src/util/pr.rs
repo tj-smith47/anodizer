@@ -401,8 +401,8 @@ fn create_pr_via_gh_cli(
 /// returns 422 with a body that names the existing-PR case. This holds
 /// whether or not the caller opted into `update_existing_pr`: the API
 /// transport cannot force-push (no working tree handy), so
-/// `update_existing_pr = true` is a no-op here — we warn that the
-/// in-place update needs `gh` CLI but still surface `PendingValidation`
+/// `update_existing_pr = true` is a no-op here — a warn says the in-place
+/// update needs the `gh` CLI, and `PendingValidation` is still surfaced
 /// because the open PR did not advance to the new manifest. Returns
 /// `None` on success. Returns `Some(Failed(msg))` for transport
 /// failure, HTTP-client build failure, and non-success HTTP status —

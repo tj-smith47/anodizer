@@ -150,7 +150,7 @@ pub fn load_token_files_with_env<E: crate::EnvSource + ?Sized>(
     let mut vars = std::collections::HashMap::new();
 
     // Per-token candidate paths. The user's explicit `github_token` / etc.
-    // config value wins if present; otherwise we try anodizer-native first,
+    // config value wins if present; otherwise the anodizer-native path comes first,
     // then the conventional path for users migrating in.
     let github_candidates: Vec<&str> = match config.github_token.as_deref() {
         Some(p) => vec![p],

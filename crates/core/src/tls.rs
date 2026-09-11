@@ -33,7 +33,7 @@
 ///
 /// [`CryptoProvider`]: rustls::crypto::CryptoProvider
 pub fn install_default_crypto_provider() {
-    // `install_default` returns `Err` if a provider is already installed; we
-    // standardise on `ring` and treat an existing install as already-correct.
+    // `install_default` returns `Err` if a provider is already installed;
+    // `ring` is the standard here and an existing install counts as already-correct.
     let _ = rustls::crypto::ring::default_provider().install_default();
 }

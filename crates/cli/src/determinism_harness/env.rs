@@ -196,8 +196,8 @@ fn windows_env_should_drop(key: &str) -> bool {
 }
 
 /// Inputs for [`build_subprocess_env`]. Bundled so the function signature
-/// doesn't grow more positional arguments every time we add an isolated-
-/// path knob.
+/// doesn't grow another positional argument for every new isolated-path
+/// knob.
 pub(crate) struct BuildSubprocessEnv<'a> {
     pub cargo_home: &'a Path,
     pub cargo_target: &'a Path,
@@ -369,7 +369,7 @@ pub(crate) fn build_subprocess_env_with_env(
     // can surface in panic strings via inlined helpers from std / proc
     // macros.
     //
-    // We append to any host-supplied RUSTFLAGS rather than overwriting:
+    // Appended to any host-supplied RUSTFLAGS rather than overwriting:
     // an operator who set RUSTFLAGS for cross-compile linker flags
     // (e.g. `-C linker=<wrapper>`) would silently lose them otherwise.
     let mut rustflags = host_env.var("RUSTFLAGS").unwrap_or_default();
@@ -379,7 +379,7 @@ pub(crate) fn build_subprocess_env_with_env(
     // RUSTFLAGS is a space-delimited token list with no quoting support.
     // A whitespace-bearing path here would be parsed as multiple args by
     // rustc. Worktree::add already rejects whitespace in the worktree
-    // path; we defend cargo_home / cargo_target the same way at this
+    // path; cargo_home / cargo_target are defended the same way at this
     // composition site so the constraint is enforced even when the
     // caller bypassed Worktree (e.g. supplying a CARGO_HOME pointing
     // into a system path with embedded spaces).
@@ -522,8 +522,8 @@ pub(crate) fn build_subprocess_env_with_env(
     // rustup needs RUSTUP_HOME to dispatch a toolchain; on GH Actions
     // runners (and most dev machines) it isn't set in the env — rustup
     // defaults to $HOME/.rustup. Since the child runs with HOME=tmpdir,
-    // we must compute the default from the HOST's HOME (Unix) or
-    // USERPROFILE (Windows) and propagate it explicitly.
+    // the default has to be computed from the HOST's HOME (Unix) or
+    // USERPROFILE (Windows) and propagated explicitly.
     env.entry("RUSTUP_HOME".into()).or_insert_with(|| {
         let host_home = host_env
             .var("HOME")

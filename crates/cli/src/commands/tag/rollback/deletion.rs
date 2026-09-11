@@ -126,8 +126,9 @@ pub(super) fn delete_release_at_tag(
                 return ReleaseCleanup::Cleared;
             }
             // A non-404 lookup failure is inconclusive: an owned release might
-            // still exist. Keep the tag for an attributed rollback so we never
-            // orphan it; an unattributed tag's release was never ours to delete.
+            // still exist. Keep the tag for an attributed rollback so it is
+            // never orphaned; an unattributed tag's release was never this
+            // run's to delete.
             log.warn(&format!(
                 "could not look up the GitHub release at {tag} for cleanup: {msg} (continuing)"
             ));

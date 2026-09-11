@@ -145,8 +145,8 @@ pub(super) fn looks_like_base64(value: &str) -> bool {
 pub(super) struct MaterializedSecret {
     /// Path string the caller passes to the subprocess.
     pub(super) path: String,
-    /// `Some` when we wrote a tempfile; `None` when we passed the user
-    /// path through verbatim. Dropped at the end of the caller's scope
+    /// `Some` when a tempfile was written; `None` when the user path was
+    /// passed through verbatim. Dropped at the end of the caller's scope
     /// to remove the on-disk decode.
     _tempfile: Option<tempfile::NamedTempFile>,
 }

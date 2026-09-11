@@ -223,7 +223,7 @@ fn test_flat_pkg_is_byte_reproducible_across_time() {
     // The whole point of the fix: two builds whose wall-clock differs must
     // produce byte-identical `.pkg`. Builds the same staging twice with a
     // simulated time gap (a real 2nd build re-runs xar, which re-stamps the
-    // TOC wall-clock — here we build twice back to back, which already
+    // TOC wall-clock — the two back-to-back builds here already
     // exercises distinct xar `creation-time`s on most hosts; the normalize
     // pass collapses them). Hermetic: skip-with-pass without the toolchain.
     // Linux-only: bomutils `mkbom -u` is rejected by Apple's homonym `mkbom`,

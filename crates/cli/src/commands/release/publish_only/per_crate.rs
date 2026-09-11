@@ -451,7 +451,7 @@ pub(super) fn run_one_crate_dist(
     //
     // Detect the upload-artifact merge-collision symptom BEFORE
     // loading anything: both un-suffixed AND suffixed manifests
-    // present is a workflow bug we should never silently paper over.
+    // present is a workflow bug that must never be silently papered over.
     check_no_unsuffixed_suffixed_collision(&dist, "context")?;
     check_no_unsuffixed_suffixed_collision(&dist, "artifacts")?;
 
@@ -571,8 +571,8 @@ pub(super) fn run_one_crate_dist(
     // manifest references must actually exist on disk. Missing files
     // means the preserved dist is incomplete — running through to
     // SignStage would fail with a less actionable error from
-    // cosign/gpg, so we surface it here with a manifest-shaped
-    // diagnostic instead. We do NOT flag unreferenced files (the
+    // cosign/gpg, so it surfaces here with a manifest-shaped
+    // diagnostic instead. Unreferenced files are NOT flagged (the
     // dist tree carries metadata.json, harness logs, etc. that aren't
     // in the artifacts manifest).
     //
@@ -678,7 +678,7 @@ pub(super) fn run_one_crate_dist(
 /// out of the `all`/`any` artifacts set so a no-op re-sign wouldn't
 /// emit `.sig.sig`, but the resulting registry would still include
 /// the ephemeral artifacts — which then get UPLOADED by `ReleaseStage`.
-/// We must remove them at the source.
+/// They must be removed at the source.
 ///
 /// Symmetry note: any non-signature/certificate artifact remains
 /// untouched, including any `Checksum` entries — re-signing produces

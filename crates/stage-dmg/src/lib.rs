@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn test_dmg_tool_detection() {
         // dmg_tool() returns an Option<DmgTool>. On CI/Linux it may or may not
-        // find genisoimage/mkisofs. We just verify the return type is correct.
+        // find genisoimage/mkisofs. Only the return type is asserted.
         let result = dmg_tool();
         match result {
             Some(DmgTool::Hdiutil) => assert_eq!(result, Some(DmgTool::Hdiutil)),
@@ -1419,7 +1419,7 @@ crates:
         );
         ctx.template_vars_mut().set("Version", "1.0.0");
 
-        // Add a darwin binary so we actually attempt to render the template
+        // Add a darwin binary so the template is actually rendered
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),

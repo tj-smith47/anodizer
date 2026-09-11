@@ -95,8 +95,8 @@ launch_windows() {
   # in the script (e.g. an em-dash) corrupts a string literal and the whole file
   # fails to parse — powershell exits 1 before running a line, leaving no rc and
   # a stale log that the gate can only resolve as a one-hour timeout.
-  # SC2029: $b64/$SHA/$WINDOWS_USER are MEANT to expand client-side — we inject
-  # this commit's bundled runner + SHA into the remote command.
+  # SC2029: $b64/$SHA/$WINDOWS_USER are MEANT to expand client-side — this
+  # commit's bundled runner + SHA are injected into the remote command.
   # shellcheck disable=SC2029
   ssh "$host" "Stop-ScheduledTask -TaskName 'anodizer-test-gate' -ea 0; Copy-Item (Join-Path \$env:USERPROFILE 'gate.bundle') 'C:\gate.bundle' -Force; if (-not (Test-Path 'C:\anodizer\.git')) { git clone -q 'C:\gate.bundle' 'C:\anodizer' }; [IO.File]::WriteAllText('C:\anodizer\test-os-windows.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64')),[Text.Encoding]::UTF8); Remove-Item C:\anodizer\win_test_gate.rc -ea 0; \$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -File C:\anodizer\test-os-windows.ps1 -Sha $SHA'; \$p=New-ScheduledTaskPrincipal -UserId '$WINDOWS_USER' -LogonType S4U -RunLevel Highest; Register-ScheduledTask -TaskName 'anodizer-test-gate' -Action \$a -Principal \$p -Force | Out-Null; Start-ScheduledTask -TaskName 'anodizer-test-gate'" >"$CACHE/launch-windows.err" 2>&1
 }
@@ -118,8 +118,8 @@ launch_macos() {
 poll_macos() { ssh "$1" "cat ~/anodizer/mac_test_gate.rc 2>/dev/null" 2>/dev/null | rc_of; }
 
 # Roles are fixed; the machine behind each is configuration. A role with no host
-# configured is reported, not silently dropped — "I never ran Windows" and "I ran
-# Windows and it passed" must never look alike in the verdict.
+# configured is reported, not silently dropped — "Windows never ran" and
+# "Windows ran and passed" must never look alike in the verdict.
 ROLES="windows macos"
 HOST_OF[windows]="$WINDOWS_HOST"
 HOST_OF[macos]="$MACOS_HOST"
@@ -177,7 +177,7 @@ say "verdict ($SHORT):"
 fail=0
 ran=0
 for role in local $ROLES; do
-  # Default to FAIL, not SKIP: an unset result for a role we processed is an
+  # Default to FAIL, not SKIP: an unset result for a processed role is an
   # internal bug, and the gate must surface it rather than pass silently.
   v="${R[$role]:-FAIL(internal-unset)}"
   printf '  %-10s %s\n' "$role" "$v"

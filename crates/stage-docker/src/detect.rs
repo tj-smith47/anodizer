@@ -103,7 +103,7 @@ pub fn is_retriable_build(error_msg: &str) -> bool {
 /// Cached result of probing `docker buildx build --help` for `--provenance`.
 ///
 /// Probe `docker build --help` output before unconditionally
-/// adding `--provenance=false` and `--sbom=false`.  We do the same: run the
+/// adding `--provenance=false` and `--sbom=false`.  Same shape here: run the
 /// help command once, cache the result, and only add the flags when the
 /// installed Docker version actually recognises them.
 static DOCKER_SUPPORTS_PROVENANCE: OnceLock<bool> = OnceLock::new();
@@ -134,8 +134,8 @@ pub(crate) fn docker_supports_provenance() -> bool {
 
 /// Cached result of probing `docker info` for daemon availability.
 ///
-/// `docker info` can take several seconds when the daemon is down, so we
-/// cache the result for the lifetime of the process — consistent with how
+/// `docker info` can take several seconds when the daemon is down, so the
+/// result is cached for the lifetime of the process — consistent with how
 /// `DOCKER_SUPPORTS_PROVENANCE` caches its probe result.
 static DOCKER_DAEMON_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
@@ -245,7 +245,7 @@ pub(crate) fn check_buildx_version(log: &StageLogger) {
 /// types ("docker-container" or "docker").
 ///
 /// Validate the driver via `docker buildx inspect` and error
-/// on invalid drivers. We warn rather than error to be lenient, but the
+/// on invalid drivers. A warn rather than an error, to stay lenient, but the
 /// check ensures users know their setup may not work for multi-platform builds.
 pub(crate) fn check_buildx_driver(log: &StageLogger) {
     // Capability probe — no context env injection needed (reads driver info only).

@@ -316,7 +316,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             return Ok(anodizer_core::PublishEvidence::new("cargo"));
         }
         // `record` accumulates one entry per crate whose `cargo publish`
-        // actually succeeds. On the failure path we still build evidence
+        // actually succeeds. On the failure path evidence is still built
         // from whatever was published before the bail and stash it on the
         // context so dispatch can hand it to rollback — otherwise a
         // partial multi-crate publish would leave the succeeded crates

@@ -41,7 +41,7 @@ fn apply_file_info_to_header(
     }
     // A configured owner/group that overflows the 32-byte ustar field (or
     // carries an interior NUL) must fail loudly rather than be silently dropped
-    // to the default — the user asked for an ownership we cannot honor.
+    // to the default — the user asked for an ownership that cannot be honored.
     if let Some(ref owner) = info.owner {
         header
             .set_username(owner)

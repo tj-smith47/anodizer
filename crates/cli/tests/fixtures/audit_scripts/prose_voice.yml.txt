@@ -1,0 +1,8 @@
+# Our release workflow deploys the published artifact.
+name: demo
+on: workflow_dispatch
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

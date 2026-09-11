@@ -119,8 +119,8 @@ pub fn create_tag_local_only(
     if let Err(e) = git_output_in(cwd, &["tag", tag_create_flag(sign), tag, "-m", message]) {
         // A prior `tag` run that committed writeback and created the tag but
         // failed to push leaves this exact debris behind; a re-run must be
-        // idempotent when the leftover tag already points at the commit we
-        // would tag, and actionable (not raw git noise) when it does not.
+        // idempotent when the leftover tag already points at the commit about
+        // to be tagged, and actionable (not raw git noise) when it does not.
         let tag_ref = format!("refs/tags/{}", tag);
         if git_output_in(cwd, &["rev-parse", "--verify", "--quiet", &tag_ref]).is_ok() {
             if tag_points_at_head_in(cwd, tag)? {

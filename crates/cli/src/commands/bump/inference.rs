@@ -8,7 +8,7 @@
 //!
 //! Commit scope is the crate's directory, matched against the last tag
 //! whose name starts with the crate's resolved tag prefix. If no such tag
-//! exists, we walk from the beginning of the repo history for that crate.
+//! exists, the walk starts at the beginning of the repo history for that crate.
 
 use anyhow::Result;
 

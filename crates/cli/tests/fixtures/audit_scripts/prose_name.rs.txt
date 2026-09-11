@@ -1,0 +1,8 @@
+/// The tool is spelled anodize on this line, which is the misspelling.
+pub fn misspelled() {}
+
+/// A config field that still loads the old spelling.
+pub struct Cfg {
+    #[serde(alias = "anodize")]
+    pub anodizer: String,
+}

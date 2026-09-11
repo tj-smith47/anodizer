@@ -21,9 +21,9 @@ pub(crate) fn expand_with_transitive_deps(
     let mut seen: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = seed.to_vec();
     while let Some(name) = stack.pop() {
-        // Skip names we've already visited or that aren't in the config —
+        // Skip already-visited names and names absent from the config —
         // external crates.io deps are resolved by cargo against the real
-        // registry and don't need to appear in our publish graph.
+        // registry and need not appear in the publish graph.
         if !name_to_deps.contains_key(name.as_str()) {
             continue;
         }
@@ -561,7 +561,7 @@ pub(crate) fn check_publish_set_completeness(
 
             // Not in the set — it must already be on crates.io at the version
             // the dependent requires, or the real publish will 404. Without a
-            // resolvable version we cannot probe the exact line; fall back to
+            // resolvable version the exact line cannot be probed; fall back to
             // the dependent's resolved version (lockstep workspaces share one)
             // so the guard still fails loudly on a genuinely-missing sibling
             // rather than silently passing.
@@ -572,8 +572,8 @@ pub(crate) fn check_publish_set_completeness(
             };
 
             if probe_version.is_empty() {
-                // No version to probe AND the dep isn't in the set: we cannot
-                // positively prove absence, so do not hard-fail — but surface
+                // No version to probe AND the dep isn't in the set: absence
+                // cannot be positively proven, so do not hard-fail — but surface
                 // it so a real gap isn't swallowed silently.
                 log.warn(&format!(
                     "crate '{publishing}' depends on workspace crate \

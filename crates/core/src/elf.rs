@@ -78,7 +78,7 @@ pub fn is_dynamically_linked_bytes(bytes: &[u8]) -> bool {
     let is_le = bytes[5] == 1; // 1 = little-endian, 2 = big-endian
 
     // A file too short to hold the program-header fields for its own class is
-    // not an ELF we can inspect — a 32-bit header ends at byte 46, a 64-bit
+    // not an inspectable ELF — a 32-bit header ends at byte 46, a 64-bit
     // one at 58.
     let min_len = if is_64bit { 58 } else { 46 };
     if bytes.len() < min_len {
@@ -97,7 +97,7 @@ pub fn is_dynamically_linked_bytes(bytes: &[u8]) -> bool {
         // header can carry an absurd ph_offset that overflows `usize` (a
         // debug-build panic). Any overflow means the table lies outside the
         // image — stop, reporting "not dynamically linked". A range past the
-        // slice we hold is likewise a truncated/malformed image.
+        // slice in hand is likewise a truncated/malformed image.
         let field = i
             .checked_mul(ph_entry_size)
             .and_then(|rel| rel.checked_add(ph_offset))
@@ -131,9 +131,9 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
     use std::io::Read;
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        // A genuinely-absent path is not our concern (callers guard on
+        // A genuinely-absent path is out of scope (callers guard on
         // `.exists()` / only feed registered artifacts); any OTHER open
-        // failure on a file we were asked to inspect is a real error, not
+        // failure on a file this was asked to inspect is a real error, not
         // "statically linked".
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
@@ -155,9 +155,9 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
     let is_64bit = buf[4] == 2;
     let is_le = buf[5] == 1; // 1 = little-endian, 2 = big-endian
 
-    // The header fields we parse differ by ELF class: a 32-bit header is read
+    // The parsed header fields differ by ELF class: a 32-bit header is read
     // up to byte 46 (`e_phnum`), a 64-bit header up to byte 58. A file too
-    // short to hold the fields for its own class is not an ELF we can inspect;
+    // short to hold the fields for its own class is not an inspectable ELF;
     // treat it as "not dynamically linked" rather than misreading zero-padding
     // as real header data. (A valid 32-bit header is 52 bytes, a 64-bit header
     // 64 — real binaries always satisfy this; only truncated inputs fail it.)
@@ -175,7 +175,7 @@ pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
     }
 
     // Read all program headers. A confirmed-ELF header pointing at program
-    // headers we cannot seek/read is a corrupt or truncated artifact — a defect
+    // headers that cannot be seeked/read is a corrupt or truncated artifact — a defect
     // that propagates rather than masquerading as "statically linked".
     let total_size = ph_entry_size * ph_count as u64;
     let mut ph_buf = vec![0u8; total_size as usize];
@@ -282,7 +282,7 @@ mod tests {
 
     /// A path that EXISTS but errors on read is a real defect, not `Ok(false)`:
     /// a directory opens as a File on Unix but errors (EISDIR) on read. A
-    /// silent `false` here would mask a build artifact we merely failed to
+    /// silent `false` here would mask a build artifact that merely failed to
     /// inspect and, e.g., ship a broken `nix` install.
     #[test]
     #[cfg(unix)]

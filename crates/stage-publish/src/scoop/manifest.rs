@@ -284,8 +284,8 @@ fn resolve_sidecar_suffix(
 
     // Probe the template with sentinel ArtifactName / ArtifactExt values. The
     // checksum stage exposes ArtifactName / ArtifactExt / Algorithm to the
-    // split name_template. Distinct sentinels let us detect, after rendering,
-    // whether the asset extension leaked into the suffix portion.
+    // split name_template. Distinct sentinels make it detectable, after
+    // rendering, whether the asset extension leaked into the suffix portion.
     const SENTINEL: &str = "\u{1}ANODIZER_ASSET\u{1}";
     const SENTINEL_EXT: &str = "\u{1}ANODIZER_EXT\u{1}";
     let mut vars = ctx.template_vars().clone();

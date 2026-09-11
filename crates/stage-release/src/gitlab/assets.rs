@@ -86,11 +86,11 @@ pub(crate) async fn gitlab_upload_asset(
         path_field: direct_asset_path,
     });
 
-    // First attempt at creating the link. We don't use retry_http_async
+    // First attempt at creating the link. `retry_http_async` is not used
     // directly here because the 400/422 "already exists" status is part of
     // the replace-existing control flow: those statuses are 4xx (would
-    // fast-fail under the helper's classifier), but we want to react to
-    // them by deleting the conflicting link and retrying.
+    // fast-fail under the helper's classifier), and the right reaction is to
+    // delete the conflicting link and retry.
     let resp = client
         .post(&links_api)
         .json(&payload)
@@ -450,7 +450,7 @@ async fn upload_via_project_uploads(
 
     // GitLab returns `{ "full_path": "/uploads/...", "url": "/uploads/...", ... }`.
     // Construct: `gitlabBaseURL + "/" + projectFile.FullPath`.
-    // We follow the same simple approach.
+    // The same simple approach applies here.
     let full_path = body["full_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("gitlab: upload response missing 'full_path' field"))?;

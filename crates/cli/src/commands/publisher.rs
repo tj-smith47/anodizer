@@ -1141,9 +1141,9 @@ crates:
 
     #[test]
     fn test_publisher_dir_sets_working_directory() {
-        // This test verifies the dir field is present and would be used.
-        // We can't easily test Command::current_dir in a unit test without running it,
-        // but we verify the config parsing round-trips correctly.
+        // Command::current_dir cannot be observed without running the command,
+        // so this pins the config parsing round-trip instead: the dir field is
+        // present and survives the round-trip.
         let publisher = PublisherConfig {
             name: Some("test".to_string()),
             cmd: "echo hello".to_string(),

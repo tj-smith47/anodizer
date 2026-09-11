@@ -271,7 +271,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
     // release sections. For `--publish-only --dry-run` that's fine —
     // SignStage runs a no-op when `signs:` is empty, ReleaseStage's
     // dry-run path doesn't require GitHub credentials, and the dispatch
-    // we want to observe is the pipeline ORDERING, not the actual
+    // observable dispatch is the pipeline ORDERING, not the actual
     // upload. Asserting on the pipeline's stage-name banners is enough.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
@@ -307,7 +307,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
         "expected publish-only mode banner in output; got:\n{merged}"
     );
 
-    // The pipeline composition we want: sign + release + publish stage
+    // The pipeline composition under test: sign + release + publish stage
     // names must appear in the stage-logger output (they emit a banner
     // each time they run). Build / archive / nfpm stages MUST NOT —
     // those produce artifacts and `--publish-only` is consuming them.
@@ -332,7 +332,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
     }
 
     // The rehydrated artifact list must include the fixture archive (so
-    // we know the loader picked up artifacts.json, not silently emptied
+    // the loader picked up artifacts.json rather than silently emptying
     // the registry).
     assert!(
         merged.contains(&archive_name) || merged.contains("rehydrated 1 artifact"),
@@ -801,8 +801,8 @@ signs:
     )
     .unwrap();
 
-    // Provision a fresh GPG keypair in an isolated GNUPGHOME so we
-    // don't touch the operator's keyring.
+    // Provision a fresh GPG keypair in an isolated GNUPGHOME so the
+    // operator's keyring is untouched.
     let gnupghome = tmp.path().join("gnupg");
     fs::create_dir_all(&gnupghome).unwrap();
     // chmod 700 — gpg refuses to use a homedir with permissive perms.

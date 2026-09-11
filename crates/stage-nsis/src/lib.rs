@@ -1504,7 +1504,7 @@ crates:
         );
         ctx.template_vars_mut().set("Version", "1.0.0");
 
-        // Add a Windows binary so we actually attempt to render the template
+        // Add a Windows binary so the template is actually rendered
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),
@@ -2240,13 +2240,11 @@ SectionEnd
             size: None,
         });
 
-        // dry-run only renders the name template (not the script body), so to
-        // exercise the script-render path we drop out of dry-run by writing a
-        // real `makensis` shim is overkill — instead we directly assert that
-        // the script's required vars are present in the one-shot context the
-        // stage builds. This is verified by the lower-level
-        // `test_default_script_renders_correctly_*` tests above; here we just
-        // ensure the dry-run path accepts the user script without error.
+        // dry-run only renders the name template, not the script body, and
+        // writing a real `makensis` shim to leave dry-run is overkill. The
+        // script's required vars are covered by the lower-level
+        // `test_default_script_renders_correctly_*` tests above; this test
+        // only ensures the dry-run path accepts the user script without error.
         NsisStage.run(&mut ctx).unwrap();
 
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
@@ -2366,7 +2364,7 @@ SectionEnd
         });
 
         // Stage will bail on extra_files before reaching makensis. The bail
-        // is what we're asserting, so the makensis-missing path is irrelevant.
+        // is the assertion, so the makensis-missing path is irrelevant.
         let err = NsisStage
             .run(&mut ctx)
             .expect_err("multi-match glob + name_template must bail");
@@ -2430,7 +2428,7 @@ SectionEnd
         });
 
         // dry-run does not exercise the extra_files copy loop, but multi-match
-        // bail logic is exercised by the prior test. Here we just assert that
+        // bail logic is exercised by the prior test. Here the assertion is that
         // a single-match glob with name_template doesn't trigger any error.
         NsisStage.run(&mut ctx).unwrap();
     }

@@ -793,7 +793,7 @@ fn resolve_child_snapshot_explicit_snapshot_beats_auto() {
 fn resolve_child_snapshot_explicit_no_snapshot_beats_auto() {
     // `--no-snapshot` on an untagged HEAD: legacy workflow override
     // — operator forces release-style artifact names even though
-    // we're not at a tag. Auto would say on; explicit must beat
+    // HEAD is not at a tag. Auto would say on; explicit must beat
     // auto.
     assert!(!resolve_child_snapshot(false, true, false));
     assert!(!resolve_child_snapshot(false, true, true));
@@ -847,7 +847,7 @@ fn read_project_version_prefers_workspace_when_both_present() {
     // Workspace inheritance: the root `[workspace.package].version`
     // is the authoritative version and `[package].version` is
     // usually `version.workspace = true`. When both literal values
-    // are present we still prefer the workspace key because that's
+    // are present the workspace key still wins, because that is
     // what `cargo` itself would propagate via inheritance.
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(

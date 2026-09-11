@@ -469,8 +469,8 @@ fn is_npm_configured(ctx: &Context) -> bool {
 }
 
 /// True when the top-level `gemfury:` (or legacy `furies:`) block has at
-/// least one entry. The alias collapse happens in serde — by the time we
-/// reach this predicate the field is normalized to `gemfury:`.
+/// least one entry. The alias collapse happens in serde — by the time this
+/// predicate runs the field is normalized to `gemfury:`.
 fn is_gemfury_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.gemfury.as_ref())
 }
@@ -487,8 +487,8 @@ fn is_homebrew_core_configured(ctx: &Context) -> bool {
 
 /// True when the top-level `mcp.name` is set and non-empty. Mirrors
 /// the skip-gate in [`crate::mcp::publish_to_mcp`] — an empty / unset
-/// name short-circuits the publisher to a no-op, so we treat the same
-/// state as not-configured here.
+/// name short-circuits the publisher to a no-op, so the same state counts
+/// as not-configured here.
 fn is_mcp_configured(ctx: &Context) -> bool {
     ctx.config
         .mcp
@@ -1366,8 +1366,8 @@ mod tests {
     #[test]
     fn mcp_publisher_skipped_when_name_empty() {
         // mcp's skip-gate triggers on empty `name`. The registry
-        // predicate mirrors that gate so we don't instantiate a
-        // publisher whose run() would no-op anyway.
+        // predicate mirrors that gate so a publisher whose run() would
+        // no-op anyway is never instantiated.
         let mut ctx = Context::test_fixture();
         ctx.config.mcp = anodizer_core::config::McpConfig {
             name: Some("   ".to_string()),

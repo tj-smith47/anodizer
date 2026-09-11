@@ -790,7 +790,7 @@ fn test_find_latest_tag_ignore_tag_prefixes() {
     // Without prefix filtering, the template "v{{ .Version }}" won't match
     // nightly-v* tags anyway (regex mismatch). So test with a broader template
     // or with nightly-prefixed tags that do match a nightly template.
-    // Let's test: filter out "nightly-" prefix from "nightly-v{{ .Version }}"
+    // Filter the "nightly-" prefix out of "nightly-v{{ .Version }}"
     let gc = crate::config::GitConfig {
         ignore_tag_prefixes: Some(vec!["nightly-".to_string()]),
         ..Default::default()
@@ -920,7 +920,7 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
     // (use_git_sort=true). versionsort.suffix=-rc makes -rc tags sort
     // after their base version (so v1.1.1-rc.1 comes after v1.1.1),
     // but v1.1.1-rc.1 is still version 1.1.1 which is > 1.1.0.
-    // Since we take the first (highest) from git's descending sort,
+    // Since the first (highest) from git's descending sort is taken,
     // v1.1.1-rc.1 remains the latest.
     let gc = crate::config::GitConfig {
         prerelease_suffix: Some("-rc".to_string()),
@@ -1202,7 +1202,7 @@ fn test_find_previous_tag_with_ignore_tags() {
 fn test_find_previous_tag_with_ignore_tag_prefixes() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    // Create tags where the previous tag has a prefix we want to ignore
+    // Create tags where the previous tag carries an ignored prefix
     init_repo_with_tagged_commits(dir, &["v1.0.0", "nightly-v2.0.0", "v3.0.0"]);
 
     let _cwd = CwdGuard::new(dir).unwrap();
@@ -1394,11 +1394,11 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
     let secret = "ghp_addpathintestSentinel_123456789";
     let _token = EnvGuard::set("GITHUB_TOKEN", secret);
 
-    // Engineer stderr that mentions the token: we pre-write a file
+    // Engineer stderr that mentions the token: pre-write a file
     // named with the token, then `git add <nonexistent>` to trigger a
-    // bail. The token does not enter stderr naturally, so we test the
-    // redaction wiring by ensuring that any stderr text matching the
-    // token would be scrubbed. We do this by adding a path that
+    // bail. The token does not enter stderr naturally, so the
+    // redaction wiring is exercised by ensuring that any stderr text matching the
+    // token would be scrubbed — by adding a path that
     // git CANNOT add (the secret as a non-existent file name) so that
     // the git error itself names the secret.
     let nonexistent = dir.join(format!("missing-{secret}.txt"));

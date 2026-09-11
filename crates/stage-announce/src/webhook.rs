@@ -55,7 +55,7 @@ pub(crate) fn format_unexpected_status_message(
 /// header. Sort order is irrelevant on the wire because RFC 7230 §3.2.2
 /// forbids semantically meaningful ordering for headers with distinct names;
 /// the user-supplied `headers.Authorization` precedence is enforced at the
-/// builder level (`resolve_webhook_headers`) before we get here.
+/// builder level (`resolve_webhook_headers`) before this point.
 #[allow(clippy::too_many_arguments)]
 pub fn send_webhook(
     endpoint_url: &str,

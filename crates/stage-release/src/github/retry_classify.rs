@@ -11,7 +11,7 @@
 //!   generic ("service error", "error decoding response body") and won't
 //!   match `is_network_error`'s substring needles, so wrapping them in a
 //!   plain `HttpError { status: 0 }` would *under*-classify them as
-//!   non-retriable. Instead we wrap them in
+//!   non-retriable. They are instead wrapped in
 //!   [`anodizer_core::retry::Retriable`] which forces `is_retriable -> true`
 //!   regardless of message. These variants are always known-transient when
 //!   talking to a healthy GitHub origin (typically nginx/HAProxy 502/503
@@ -27,7 +27,7 @@
 //! drift.
 //!
 //! Every non-success
-//! upload as `RetriableError`; we narrow that to "5xx / 429 / transport"
+//! upload as `RetriableError`; that is narrowed here to "5xx / 429 / transport"
 //! so genuine 4xx (auth, validation) still fast-fail.
 
 #[cfg(test)]
@@ -73,8 +73,8 @@ fn classify_octocrab_error(
 mod tests {
     //! Drive real `octocrab::Error` values through the classifier. Because
     //! octocrab's `error` module is private and the `*Snafu` builder
-    //! structs aren't re-exported, we can't synthesize variants directly:
-    //! we coax the live client into producing one.
+    //! structs aren't re-exported, variants cannot be synthesized directly:
+    //! the live client is coaxed into producing one.
     //!
     //! Approach: point `Octocrab` at `http://nonexistent.invalid/` and
     //! `await` a request. The `.invalid` TLD is reserved by RFC 2606 and is

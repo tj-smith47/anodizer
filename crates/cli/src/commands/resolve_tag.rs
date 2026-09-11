@@ -129,7 +129,7 @@ mod tests {
         });
         // Both "v" and "core-v" match, but iteration order matters.
         // In real code, workspace crates come after top-level, and the
-        // longer prefix is more specific. Let's verify both match:
+        // longer prefix is more specific. Both must match:
         assert!(matched.is_some());
     }
 

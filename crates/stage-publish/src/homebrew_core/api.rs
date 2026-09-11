@@ -233,7 +233,7 @@ impl GithubApi {
     /// `PUT /repos/{owner}/{repo}/contents/{path}` — commit the rewritten
     /// formula to `branch`. `prev_sha` is the blob SHA read by
     /// [`Self::get_file`]; the API rejects the update if the file changed
-    /// underneath us (a concurrent bump), which is exactly the safe failure.
+    /// underneath (a concurrent bump), which is exactly the safe failure.
     ///
     /// `author` is the resolved commit identity `(name, email)`. When `None`,
     /// the `author`/`committer` fields are omitted and GitHub attributes the

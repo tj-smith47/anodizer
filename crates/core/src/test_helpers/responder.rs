@@ -65,8 +65,8 @@ use std::time::{Duration, Instant};
 /// localhost loopback but tolerates CI scheduling jitter (the previous
 /// 500 ms timeout occasionally fired on cold-started `ubuntu-latest` and
 /// `macos-latest` runners). The test still completes in a few ms on the
-/// happy path because we break out as soon as we've read the full
-/// request.
+/// happy path because the loop breaks as soon as the full request has been
+/// read.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard ceiling on how long a single request read may take, in case a
@@ -124,8 +124,8 @@ where
 /// Drain phase — soak up any in-flight connect attempts that the client may
 /// have initiated before its retry returned success. Without this, a stray
 /// SYN arriving after the listener is dropped sees `Connection refused (os
-/// error 111)` on Linux and the test goes flaky on slow CI runners. We keep
-/// accepting briefly and serve any straggler an empty 503; the client logic
+/// error 111)` on Linux and the test goes flaky on slow CI runners. Accepting
+/// continues briefly and serves any straggler an empty 503; the client logic
 /// (which has already returned success) ignores it. Drain-phase connections
 /// are NOT counted: tests pin `counter.load() == <canned attempts>` and an
 /// over-eager client middleware (e.g. octocrab's tower retry layer making
@@ -252,13 +252,13 @@ fn force_connection_close(resp: &str) -> std::borrow::Cow<'_, str> {
 /// Read the full HTTP request from `stream`: headers up to the first
 /// `\r\n\r\n`, then exactly `Content-Length` bytes of body if that
 /// header is present. Best-effort and fully fault-tolerant — any I/O
-/// error or timeout simply ends the read; we never propagate.
+/// error or timeout simply ends the read; nothing propagates.
 fn consume_request(stream: &mut TcpStream) {
     let deadline = Instant::now() + REQUEST_READ_DEADLINE;
     let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut chunk = [0u8; 8 * 1024];
 
-    // Read until we've seen \r\n\r\n (end of headers) or hit
+    // Read until \r\n\r\n (end of headers) has been seen, or until
     // the deadline / EOF / I/O error.
     let header_end = loop {
         if Instant::now() >= deadline {
@@ -285,8 +285,8 @@ fn consume_request(stream: &mut TcpStream) {
     let already_have = accum.len() - header_end;
     let Some(total_body) = content_length else {
         // No Content-Length — most non-body requests (GET, HEAD) and
-        // some streaming clients fall here. We've already read at least
-        // the headers, which is sufficient for the responder to write a
+        // some streaming clients fall here. At least the headers have been
+        // read, which is sufficient for the responder to write a
         // canned reply. Don't block further.
         return;
     };
@@ -478,7 +478,7 @@ mod self_tests {
             "HTTP/1.1 201 Created\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok";
         let (addr, calls) = spawn_oneshot_http_responder(vec![canned]);
 
-        // Body large enough to exceed our 8 KiB read chunk so the
+        // Body large enough to exceed the 8 KiB read chunk so the
         // responder MUST do >1 read to consume it.
         let body = vec![b'x'; 32 * 1024];
         let body_len = body.len();
@@ -529,8 +529,8 @@ mod self_tests {
             .expect("read timeout");
         stream.write_all(request.as_bytes()).expect("write");
         stream.flush().expect("flush");
-        // Give the responder thread a beat to capture+write before we
-        // inspect the captured buffer.
+        // Give the responder thread a beat to capture+write before the
+        // captured buffer is inspected.
         std::thread::sleep(Duration::from_millis(50));
         let _ = stream.shutdown(std::net::Shutdown::Both);
 

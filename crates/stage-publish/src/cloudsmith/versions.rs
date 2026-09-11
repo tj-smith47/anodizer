@@ -25,8 +25,8 @@ pub(crate) enum CloudsmithPackageState {
 ///
 /// Pure function so the decision rule can be unit-tested without I/O.
 /// Cloudsmith returns a JSON array of package objects; each entry has at
-/// least `filename` and `checksum_md5`. We look for the first entry whose
-/// `filename` matches `art_name` exactly.
+/// least `filename` and `checksum_md5`. The first entry whose `filename`
+/// matches `art_name` exactly is the answer.
 ///
 /// Field names verified against the live Cloudsmith OpenAPI spec at
 /// `https://api.cloudsmith.io/openapi/` — `Package` definition:

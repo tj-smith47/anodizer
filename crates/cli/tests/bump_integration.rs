@@ -366,7 +366,7 @@ fn workspace_package_inheritance_bumps_root_only() {
         root.contains("version = \"0.4.0\""),
         "root should be bumped to 0.4.0: {root}"
     );
-    // Members must still say version.workspace — we don't rewrite them.
+    // Members must still say version.workspace — the bump does not rewrite them.
     let a = fs::read_to_string(tmp.path().join("crates/a/Cargo.toml")).unwrap();
     assert!(a.contains("version.workspace = true"), "member a: {a}");
 }

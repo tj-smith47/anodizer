@@ -1454,7 +1454,7 @@ crates: []
     /// Build a synthetic `Output` with a non-zero exit and the given stderr,
     /// useful for exercising `is_retriable_notarize_output` without actually
     /// running a process. The exit status is constructed via the os-specific
-    /// `from_raw` helpers so we don't need to depend on a child process.
+    /// `from_raw` helpers, so no child process is needed.
     #[cfg(unix)]
     fn fake_output(stderr: &str, code: i32) -> std::process::Output {
         use std::os::unix::process::ExitStatusExt;
@@ -1587,8 +1587,8 @@ crates: []
 
     /// `refresh_artifact_checksums` must cover signed DMG and PKG artifacts
     /// in addition to binaries — productsign and stapler rewrite bytes
-    /// in place, so any cached `sha256` metadata is stale unless we
-    /// recompute it after the signing pipeline.
+    /// in place, so any cached `sha256` metadata is stale unless recomputed
+    /// after the signing pipeline.
     #[test]
     fn refresh_artifact_checksums_covers_dmg_and_pkg() {
         use anodizer_core::config::Config;

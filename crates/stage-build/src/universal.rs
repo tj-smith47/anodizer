@@ -183,8 +183,8 @@ pub(crate) fn build_universal_binary(
     // Determine output path / name.
     //
     // The default `name_template` is
-    // `{{ .ProjectName }}`, NOT the source binary filename. We render the
-    // default explicitly so `.exe`-suffixed source names and custom
+    // `{{ .ProjectName }}`, NOT the source binary filename. The default is
+    // rendered explicitly so `.exe`-suffixed source names and custom
     // `BuildConfig.binary` values do not leak into the universal output.
     let out_name = if let Some(ref tmpl) = ub.name_template {
         ctx.render_template_strict(tmpl, "universal_binaries name_template", &log)?

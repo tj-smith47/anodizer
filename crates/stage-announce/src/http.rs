@@ -105,8 +105,8 @@ mod tests {
     /// retry, 4xx must fast-fail.
     ///
     /// Replaces an earlier no-op test that exercised only `fast_policy()`
-    /// without asserting any behaviour. We avoid pulling in `wiremock` /
-    /// `mockito` as dev-deps by exercising the classifier directly with
+    /// without asserting any behaviour. `wiremock` / `mockito` are kept out
+    /// of the dev-deps by exercising the classifier directly with
     /// the same wrapping shape `post_json` produces on the wire.
     fn wrap_status_like_post_json(status: u16) -> anyhow::Error {
         let inner = anyhow::anyhow!("provider: HTTP {status} — body");

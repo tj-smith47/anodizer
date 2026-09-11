@@ -105,7 +105,7 @@ pub const BUILDX_ONLY_FLAGS: &[&str] = &[
 /// Accepts both bare-flag (`--sbom`) and key=value (`--sbom=true`) forms.
 pub fn validate_podman_flag_compat(flags: &[String]) -> Result<()> {
     for flag in flags {
-        // Normalise: strip any `=value` suffix so we match the flag prefix.
+        // Normalise: strip any `=value` suffix so the flag prefix matches.
         let head = flag
             .split_once('=')
             .map(|(k, _)| k)

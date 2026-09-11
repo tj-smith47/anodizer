@@ -60,7 +60,7 @@ pub(crate) fn fetch_github_commits_with_binary(
     // otherwise list recent commits (first page).
     //
     // The Compare API returns a single JSON object (not a paginated array),
-    // so we use `gh_api_get` instead of `gh_api_get_paginated` to avoid
+    // so `gh_api_get` is used instead of `gh_api_get_paginated` to avoid
     // corrupting the response by splitting on `]`.
     let upper = ctx.options.changelog_to.as_deref().unwrap_or("HEAD");
     let (items, compare_files) = if let Some(tag) = prev_tag {
@@ -107,9 +107,9 @@ pub(crate) fn fetch_github_commits_with_binary(
     // those that touched files under the specified paths.
     //
     // LIMITATION: The Compare API returns a flat "files" list for the entire
-    // diff, not per-commit file lists. We can only check whether *any* changed
-    // file matches *any* path prefix. If a match is found, ALL commits pass
-    // through (we cannot determine which specific commits touched which files).
+    // diff, not per-commit file lists. Only whether *any* changed
+    // file matches *any* path prefix is knowable. If a match is found, ALL commits pass
+    // through (which specific commits touched which files is not recoverable).
     // If no files match any path prefix, all commits are excluded.
     //
     // This is a coarser filter than the `git log -- path1 path2` approach used
@@ -176,7 +176,7 @@ pub(crate) fn fetch_github_commits_with_binary(
         let co_authors = extract_co_authors(message);
         for co_author in &co_authors {
             // Co-authors don't have GitHub logins in the trailer, just names.
-            // We still add them for visibility in the Logins variable.
+            // They are added anyway, for visibility in the Logins variable.
             logins.insert(co_author.clone());
         }
 

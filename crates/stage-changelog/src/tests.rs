@@ -633,7 +633,7 @@ fn test_changelog_non_snapshot_runs_regardless_of_opt_in() {
 #[test]
 fn test_changelog_snapshot_runs_when_opt_in_true() {
     // Third matrix cell: snapshot mode + `changelog.snapshot: true` →
-    // changelog generation proceeds. We use --release-notes to give the
+    // changelog generation proceeds. --release-notes gives the
     // stage a deterministic content path that doesn't require git history.
     let tmp = tempfile::tempdir().expect("tempdir");
     let dist = tmp.path().join("dist");
@@ -2085,8 +2085,8 @@ fn test_invalid_group_regex_returns_error() {
 #[test]
 fn test_no_previous_tag_uses_all_commits() {
     // When there's no previous tag, the stage falls back to all commits
-    // We test the underlying logic: if prev_tag is None, get_all_commits is used
-    // This tests parse_commit_message on various edge cases
+    // The underlying logic: if prev_tag is None, get_all_commits is used.
+    // parse_commit_message is exercised here on various edge cases
     let empty_msg = parse_commit_message("");
     assert_eq!(empty_msg.kind, "other");
     assert_eq!(empty_msg.description, "");
@@ -3621,7 +3621,7 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
         }])
         // No token — if the API path were taken, fetch_github_commits
         // would attempt resolve_repo_slug() → likely fail, then
-        // strict_guard would log + fall back. Our pre-empt skips that
+        // strict_guard would log + fall back. The pre-empt skips that
         // entire branch.
         .dry_run(true)
         .build();
@@ -4086,7 +4086,7 @@ fn test_render_all_authors_release_wide_unique_set() {
     // co-author trailer name, deduped and alpha-sorted. Templated as a
     // comma-string for footer-style rendering. Per-commit scope is the
     // only template scope anodizer's changelog renderer exposes, so the
-    // value is repeated on every line; here we just sample line 1.
+    // value is repeated on every line; line 1 is the sample taken here.
     let grouped = vec![
         GroupedCommits::new(
             "Features",

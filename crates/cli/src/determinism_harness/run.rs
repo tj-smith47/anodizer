@@ -249,7 +249,7 @@ impl Harness {
             // Sample free space throughout the build + produce stages so the
             // mid-dmg PEAK (the actual ENOSPC moment) is measured, not the
             // post-reclaim net residue. On an error path the sampler's
-            // `Drop` reaps the thread; we only read its minimum on success.
+            // `Drop` reaps the thread; the minimum is read only on success.
             let sampler = anodizer_core::disk::FreeSpaceSampler::start(
                 &worktree_root,
                 anodizer_core::disk::DEFAULT_SAMPLE_INTERVAL,
@@ -369,10 +369,10 @@ impl Harness {
             // earliest deterministic pick — runs 1..N are byte-identical
             // to run-0 once the harness passes, but the next run's
             // `remove_dir_all` at the top of the loop deletes the
-            // worktree wholesale, so we copy from run-0 specifically.
+            // worktree wholesale, so the copy is taken from run-0 specifically.
             //
             // The drift gate happens POST-loop: if drift is detected
-            // after all runs finish, we delete the preserved dir below
+            // after all runs finish, the preserved dir below is deleted
             // so shippable bytes never escape a failed determinism run.
             if run_idx == 0
                 && let Some(dest) = effective_preserve_dest.as_ref()

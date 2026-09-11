@@ -169,7 +169,7 @@ pub fn load_prior_report(
 /// No explicit `fsync`: `fs::write` does not expose a sync hook, and
 /// the in-repo convention (run_summary, every other JSON-emit site
 /// across the stages) does not fsync either. The atomic-rename-style
-/// safety we get from `fs::write` covers the truncation hazard that
+/// safety `fs::write` provides covers the truncation hazard that
 /// motivated the change; a crash mid-`fs::write` is rare enough on
 /// modern filesystems that the divergence from in-repo convention
 /// isn't worth carrying.

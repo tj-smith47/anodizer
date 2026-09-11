@@ -155,7 +155,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let log = ctx.logger("publish");
         // The upload path returns the live target list (with slugs
         // populated when step 3's response carried one) so evidence
-        // records what we actually uploaded — not a post-hoc walk of
+        // records what was actually uploaded — not a post-hoc walk of
         // config + artifacts, which can drift from the upload list and
         // never captures the slug. SkipIdempotent matches (artifact
         // already on Cloudsmith with matching md5) are NOT in `targets`
@@ -194,8 +194,8 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             return Ok(());
         }
 
-        // Resolve the API token once; if it's absent we cannot DELETE
-        // anything, so fall back to the warn-only manual-cleanup
+        // Resolve the API token once; without it nothing can be DELETEd,
+        // so fall back to the warn-only manual-cleanup
         // checklist for every target. `CLOUDSMITH_API_KEY` is the
         // rollback-scope env name declared by `rollback_scope_needed`.
         let token = ctx.env_var("CLOUDSMITH_API_KEY");

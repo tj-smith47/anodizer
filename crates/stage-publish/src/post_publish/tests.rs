@@ -214,7 +214,7 @@ fn winget_poller_resolves_merged_pr() {
         r#"{"total_count":1,"items":[{"number":42,"pull_request":{"url":"__PR_URL__"}}]}"#;
     let pr_body = r#"{"state":"closed","merged":true,"labels":[{"name":"Moderator-Approved"}]}"#;
 
-    // We need to bind two listeners — one for search, one for the PR
+    // Two listeners are needed — one for search, one for the PR
     // fetch — because the URL extracted from the search response must
     // point back to the same loopback for the second request.
     let (pr_addr, _pr_calls) = spawn_oneshot_http_responder(vec![Box::leak(

@@ -134,7 +134,7 @@ pub fn parse_base_image(content: &str) -> String {
 
     // Walk alias chain with a visited set so cyclic aliases terminate
     // deterministically. The chain length is bounded by the number of
-    // distinct aliases; revisiting a name means we've closed a cycle.
+    // distinct aliases; revisiting a name closes a cycle.
     let mut visited: HashSet<String> = HashSet::new();
     loop {
         let key = base.to_ascii_lowercase();
@@ -661,7 +661,7 @@ mod tests {
     fn parse_base_image_alias_cycle_terminates() {
         let got = parse_base_image("FROM alpine:3.20 AS a\nFROM a AS b\nFROM b AS a\n");
         // Final FROM is `b AS a`. Walking aliases: a→b, b→a. From base
-        // `a` we visit a→b, then b→a (revisit `a`) → stop. The walk
+        // `a` the walk goes a→b, then b→a (revisit `a`) → stop. The walk
         // halts without panic or hang.
         assert!(got == "a" || got == "b" || got == "alpine:3.20");
     }

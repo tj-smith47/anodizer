@@ -169,7 +169,7 @@ pub(crate) fn submit_winget_manifests(
 // through *automated validation* + *manual maintainer review*. Auto-closing
 // a PR mid-validation is unreliable — the validation pipeline interacts
 // with PR state in ways that can interfere with `gh pr close` — so unlike
-// the krew publisher we do NOT close the PR programmatically on
+// the krew publisher this one does NOT close the PR programmatically on
 // rollback. Instead, the rollback path warns per recorded target with
 // the upstream coordinates and the operator's fork branch so a human
 // can close the PR via the GitHub UI.
@@ -177,9 +177,9 @@ pub(crate) fn submit_winget_manifests(
 // CREDENTIAL HANDLING: [`WingetTarget`] stores no auth material. The
 // GitHub token feeding the publish path (resolved through
 // `repository.git.access_token` / `ANODIZER_GITHUB_TOKEN` /
-// `GITHUB_TOKEN`) is irrelevant to a warn-only rollback — we only name
-// the env var operators are expected to have set if they want to
-// re-run publish, not the resolved value.
+// `GITHUB_TOKEN`) is irrelevant to a warn-only rollback — only the env
+// var operators are expected to have set to re-run publish is named,
+// not the resolved value.
 
 // Submitter-group `Publisher` for winget. Wraps the existing per-crate
 // `publish_to_winget` entrypoint. Rollback is warn-only — winget PRs

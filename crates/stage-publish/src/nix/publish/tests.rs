@@ -1869,8 +1869,8 @@ mod subprocess {
     #[serial(path_env)]
     fn publish_to_nix_runs_configured_formatter_on_generated_file() {
         // A configured formatter is invoked against the written derivation
-        // before commit; the fake formatter records its argv so we can
-        // assert the generated default.nix path was handed to it.
+        // before commit; the fake formatter records its argv, so the
+        // generated default.nix path can be asserted as handed to it.
         let tools = FakeToolDir::new();
         tools.tool("nixfmt").install();
         let _path = tools.activate();

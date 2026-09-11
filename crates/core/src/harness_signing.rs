@@ -138,7 +138,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
     })
 }
 
-/// Render `path` as the string we pass to gpg's subprocess env vars
+/// Render `path` as the string handed to gpg's subprocess env vars
 /// (`GNUPGHOME`, `GPG_KEY_PATH`) on the host the harness runs on.
 ///
 /// Windows ships gpg in two builds whose accepted path conventions do
@@ -150,7 +150,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
 ///   * native Gpg4win understands only the drive-letter form
 ///     (`C:\` / `C:/`); a `/c/...` path is "No such file or directory".
 ///
-/// We detect which build is on `PATH` (`gpg_on_path_is_msys`, from
+/// Which build is on `PATH` is detected (`gpg_on_path_is_msys`, from
 /// `gpg --version`'s `Home:` line) and emit the matching form. The
 /// drive-letter forward-slash form is also what native cosign/openssl
 /// accept, so it is the correct default for every non-MSYS case.

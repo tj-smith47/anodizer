@@ -168,8 +168,8 @@ fn assets_of_release(rel: octocrab::models::repos::Release) -> Vec<PublishedAsse
 /// release backend's repo-resolution ([`resolve_release_repo`]),
 /// tag-resolution
 /// (`resolve_release_tag`), and
-/// octocrab client/retry path so there is one source of truth for "how do we
-/// talk to the GitHub Releases API".
+/// octocrab client/retry path so there is one source of truth for how the
+/// GitHub Releases API is reached.
 ///
 /// Returns:
 /// - `Ok(Some(assets))` — the release exists; `assets` are its stored assets
@@ -827,8 +827,8 @@ mod get_by_tag_lookup_tests {
 
     /// Synthesize an `octocrab::Error::GitHub` with a chosen status code by
     /// round-tripping a minimal GitHub error body through the live API
-    /// envelope. octocrab's `*Snafu` builders are private, so we cannot
-    /// construct the variant directly; the canonical path is to drive an
+    /// envelope. octocrab's `*Snafu` builders are private, so the variant
+    /// cannot be constructed directly; the canonical path is to drive an
     /// HTTP response through octocrab and capture the resulting `Err`.
     async fn synth_github_error(status: u16) -> octocrab::Error {
         let body = serde_json::json!({

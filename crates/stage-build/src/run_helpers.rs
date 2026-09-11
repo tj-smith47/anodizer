@@ -1815,10 +1815,10 @@ mod run_helpers_tests {
             ctx.determinism.is_some(),
             "state must be seeded so allowlist append runs"
         );
-        // The state was seeded and then append_runtime was called with our pair.
-        // We can't inspect internals directly, but we can assert no panic/error
-        // and that state is present, which is meaningful because the allowlist-
-        // append path (line 292-294) is exercised.
+        // The state was seeded and then append_runtime was called with that pair.
+        // The internals are not inspectable, so the assertion is the absence of
+        // a panic/error plus the presence of state, which is meaningful because
+        // the allowlist-append path (line 292-294) is exercised.
     }
 
     /// Non-snapshot, commit_timestamp = "0" and no SOURCE_DATE_EPOCH: epoch is

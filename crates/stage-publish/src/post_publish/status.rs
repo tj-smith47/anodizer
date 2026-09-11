@@ -17,9 +17,9 @@ use anodizer_core::config::HumanDuration;
 /// publisher/package/version triple.
 ///
 /// `polled_for` is recorded for variants where the duration carries
-/// diagnostic value (operator wants to know "we waited 30 minutes and
+/// diagnostic value (operator wants to know "30 minutes elapsed and
 /// the package is still pending"). It is intentionally omitted from
-/// `NotPolled` (we never waited) and `Approved` / `Rejected` /
+/// `NotPolled` (nothing was waited on) and `Approved` / `Rejected` /
 /// `Error` (the duration is incidental to the result).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -99,7 +99,7 @@ impl PostPublishStatus {
 
     /// True for terminal states (`Approved`, `Rejected`, `Timeout`,
     /// `Error`) — the poller is done and won't change. `NotPolled` is
-    /// also terminal (we never poll). `Pending` is non-terminal.
+    /// also terminal (no poll happens). `Pending` is non-terminal.
     pub fn is_terminal(&self) -> bool {
         !matches!(self, Self::Pending { .. })
     }

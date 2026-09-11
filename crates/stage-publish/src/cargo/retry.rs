@@ -101,7 +101,7 @@ pub(crate) fn is_transient_network_failure(stderr: &str) -> bool {
 /// and transient network/transport faults ([`is_transient_network_failure`]).
 ///
 /// This is defense-in-depth on top of [`poll_crates_io_index`] and cargo's
-/// own internal transport retries. Even after our wait sees the just-published
+/// own internal transport retries. Even after the wait sees the just-published
 /// dep on the crates.io sparse index, the dependent crate's own `cargo publish`
 /// may race against Fastly's inter-edge fan-out and land on a stale edge; and a
 /// momentary TCP/TLS/HTTP blip can exhaust cargo's bounded internal retries

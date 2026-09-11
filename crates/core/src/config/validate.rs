@@ -204,7 +204,7 @@ pub fn validate_on_failure_not_rollback(config: &Config) -> Result<(), String> {
 
 /// Marker prefix for the axis-mismatch validation error class. Existing
 /// validators in this module return `Result<(), String>` rather than a
-/// typed enum, so we expose this constant (instead of a `ConfigError`
+/// typed enum, so this constant (instead of a `ConfigError`
 /// variant) for callers that want to recognise the error class
 /// programmatically.
 ///
@@ -477,7 +477,7 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
             // Empty is stored as "default" for archives via Default-time
             // assignment. Anodizer applies `default_archive_id` at deserialize
             // time, so the option is normally `Some("default")`. A truly empty
-            // / None id here means the user explicitly cleared it; we still
+            // / None id here means the user explicitly cleared it; the dedupe still
             // dedupe across `None` so two None-id'd entries collide just like
             // two "default"-id'd entries would.
             let key = maybe_id.unwrap_or_else(|| "<unset>".to_string());

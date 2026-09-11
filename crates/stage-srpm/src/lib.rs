@@ -1973,8 +1973,8 @@ crates:
             ..Default::default()
         });
 
-        // The stub echoes its $GPG_PASSPHRASE into the created file so we can
-        // confirm the env var crossed the spawn boundary.
+        // The stub echoes its $GPG_PASSPHRASE into the created file, which
+        // confirms the env var crossed the spawn boundary.
         let srpms_file = "myapp-1.0.0-1.src.rpm";
         let tools = FakeToolDir::new();
         tools

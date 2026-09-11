@@ -5,8 +5,8 @@
 //! `"CARGO_REGISTRY_TOKEN yank"` and returns `true` when the env var
 //! named in the first whitespace-separated token is set to a non-empty
 //! value in the process environment. The trailing scope description
-//! after the space is informational only — we cannot verify scope
-//! strings against the actual token's permissions without an API
+//! after the space is informational only — scope strings cannot be
+//! verified against the actual token's permissions without an API
 //! round-trip.
 //!
 //! Special-case: `GITHUB_TOKEN` also accepts the anodizer-specific

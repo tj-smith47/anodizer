@@ -1856,7 +1856,7 @@ crates:
         });
 
         // In dry-run mode, extra_files are only logged, not copied.
-        // We verify the config is accepted and the stage runs successfully.
+        // The assertion is that the config is accepted and the stage runs.
         let stage = MsiStage;
         stage.run(&mut ctx).unwrap();
 
@@ -2217,8 +2217,8 @@ crates:
         let wxs_path = tmp.path().join("app.wxs");
         fs::write(&wxs_path, "<Wix/>").unwrap();
 
-        // A post-hook that writes ArtifactPath into a temp file so we can
-        // assert it was rendered.
+        // A post-hook that writes ArtifactPath into a temp file, so the
+        // render can be asserted.
         let marker = tmp.path().join("artifact_path.txt");
         let hook_cmd = format!("echo '{{{{ ArtifactPath }}}}' > {}", marker.display());
 
@@ -2260,8 +2260,8 @@ crates:
             size: None,
         });
 
-        // In dry-run mode hooks are skipped; we verify the stage completes
-        // and an installer artifact is registered (hook path is exercised).
+        // In dry-run mode hooks are skipped; the assertion is that the stage
+        // completes and registers an installer artifact.
         MsiStage.run(&mut ctx).unwrap();
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
     }

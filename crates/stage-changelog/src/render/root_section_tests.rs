@@ -299,7 +299,7 @@ fn date_orders_newest_first_distinct_from_tag() {
 #[test]
 fn multitrack_footer_derives_tag_from_own_from_tag_not_unreleased_anchor() {
     // The shared `[Unreleased]:` anchor belongs to the `core-` track
-    // (core-v0.5.0), but we tag the `v` track. The new tag and compare
+    // (core-v0.5.0), but the `v` track is the one being tagged. The new tag and compare
     // lower-bound MUST come from this track's from_tag (v0.6.0), not the
     // anchor.
     let groups = feat_fix_groups();

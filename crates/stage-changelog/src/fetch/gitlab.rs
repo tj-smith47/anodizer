@@ -148,7 +148,7 @@ pub(crate) fn fetch_gitlab_commits(
         info.author_name = author_name.to_string();
         info.author_email = author_email.to_string();
         // GitLab's compare API does not include login information,
-        // but we can extract co-authors from commit message trailers.
+        // but co-authors are still recoverable from commit message trailers.
         info.co_authors = extract_co_authors(message);
         all_commit_infos.push(info);
     }
@@ -222,8 +222,8 @@ mod tests {
     fn fetch_gitlab_commits_retries_5xx_then_succeeds() {
         use std::sync::atomic::Ordering;
 
-        // GitLab compare endpoint returns {"commits": [...]}; we return one
-        // commit so the parser has something to chew on.
+        // GitLab compare endpoint returns {"commits": [...]}; one commit is
+        // returned here so the parser has something to chew on.
         let body = r#"{"commits":[{"id":"abcdef1234567890abcdef1234567890abcdef12","message":"feat: add x","author_name":"Ada","author_email":"ada@example.com"}]}"#;
         let body_len = body.len();
         let ok_resp: &'static str = Box::leak(

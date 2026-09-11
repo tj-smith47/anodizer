@@ -44,11 +44,11 @@ use std::path::Path;
 /// `PreservedArtifact` requires `sha256` / `size` to be present, which
 /// they are when written by this module.
 ///
-/// We deliberately do NOT reuse `SplitArtifact` directly: the harness
+/// `SplitArtifact` is deliberately NOT reused: the harness
 /// runs as a subprocess of `anodizer release` and never instantiates the
 /// in-process `Context::artifacts` registry, so it has no `ArtifactKind`
 /// / `crate_name` / `metadata` to populate. Replicating just the fields
-/// we can populate keeps `context.json` honest about what the harness
+/// the harness can populate keeps `context.json` honest about what it
 /// observed.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PreservedArtifact {
@@ -169,7 +169,7 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     // unconditional `remove_dir_all` below, so a fat-fingered path (a
     // source tree, a home dir) would otherwise be silently destroyed.
     // An empty / non-existent dest is the normal case; a dest that
-    // already carries a preserved-dist manifest is a re-run we may
+    // already carries a preserved-dist manifest is a re-run, which may
     // overwrite.
     guard_preserve_dest(dest)?;
     // Clear dest first — defends against a prior aborted preservation
@@ -261,7 +261,7 @@ pub(crate) const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
 /// Collision guard: two artifacts sharing `(triple, basename)` would
 /// silently overwrite each other under
 /// `<dest>/_preserved-bin/<triple>/<basename>`, and the manifest
-/// rewrite would point both entries at the same path. We bail with an
+/// rewrite would point both entries at the same path. It bails with an
 /// explanatory error instead, suggesting the user disambiguate via
 /// `builds[].binary` in their config.
 ///
@@ -439,8 +439,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             // is_file() OR symlink dereferenced via fs::copy. fs::copy
-            // follows symlinks and copies content, which is what we want
-            // for a hermetic preserved artifact set.
+            // follows symlinks and copies content, which is what a hermetic
+            // preserved artifact set needs.
             std::fs::copy(&src_path, &dst_path).with_context(|| {
                 format!("copying {} → {}", src_path.display(), dst_path.display())
             })?;
@@ -641,7 +641,7 @@ fn collect_preserved_entries(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        // Skip context.json itself — we're writing it; it shouldn't
+        // Skip context.json itself — this is the write; it shouldn't
         // describe itself (the chicken-and-egg would force a re-hash
         // anyway). The atomic `.tmp` sibling also lives here mid-
         // write; skip that too so a concurrent enumerator doesn't
@@ -652,8 +652,8 @@ fn collect_preserved_entries(
         // shippable artifacts. The action's post-harness rename step
         // labels them per-shard (`artifacts-<shard>.json`) so that
         // `actions/download-artifact merge-multiple: true` does not
-        // collide when fanning 4 shards back into one `dist/`. If we
-        // record them here under the un-suffixed name, the rename
+        // collide when fanning 4 shards back into one `dist/`. Recording
+        // them here under the un-suffixed name makes the rename
         // leaves dangling path references that `hash_verify_preserved_dist`
         // bails on (`hashing preserved artifact ./dist/artifacts.json:
         // No such file or directory`). The publish-only path
@@ -1491,7 +1491,7 @@ mod tests {
     /// and calls write_preserved_dist_context with that dest, context.json
     /// must land in `<base>/<crate>/context.json` (not at the flat root).
     /// This test simulates that call — the subdir computation is in mod.rs;
-    /// here we verify the write itself lands in whatever dest is passed.
+    /// the write itself is what is pinned: it lands in whatever dest is passed.
     #[test]
     fn write_context_in_subdir_when_called_with_subdir_dest() {
         let tmp = TempDir::new().unwrap();

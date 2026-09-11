@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// Auto-infer `project_name` from Cargo.toml when not set in config.
 ///
 /// The project name is inferred from Cargo.toml,
-/// go.mod, or the git remote. We mirror the Cargo.toml branch here so
+/// go.mod, or the git remote. The Cargo.toml branch is mirrored here so
 /// every pipeline command (release, build, check, continue) resolves the
 /// project name consistently.
 pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
@@ -349,7 +349,7 @@ pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<
         }
     };
     if let Some(p) = config_override {
-        // Config override points at .anodizer.yaml; walk up until we find Cargo.toml.
+        // Config override points at .anodizer.yaml; walk up to the first Cargo.toml.
         if let Some(dir) = p.parent() {
             for ancestor in dir.ancestors() {
                 if absolutize(ancestor).join("Cargo.toml").is_file() {

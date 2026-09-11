@@ -22,7 +22,7 @@ use crate::provider::Provider;
 /// Validate a single Cache-Control directive against the response-directive
 /// set defined in RFC 7234 §5.2.2 plus the `immutable` token added by RFC
 /// 8246. Directives may take a `=token` argument (e.g. `max-age=3600`,
-/// `s-maxage=120`); we accept the directive name regardless of its argument.
+/// `s-maxage=120`); the directive name is accepted regardless of its argument.
 pub(crate) fn validate_cache_control_directive(directive: &str) -> Result<()> {
     const VALID_DIRECTIVES: &[&str] = &[
         "must-revalidate",

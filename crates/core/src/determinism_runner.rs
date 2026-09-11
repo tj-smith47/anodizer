@@ -294,7 +294,7 @@ pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path) -> Result<()> {
     // fixture) gets one WRITTEN into the worktree by `cargo fetch` as a side
     // effect of resolution. Left in place it dirties the worktree and trips the
     // release pipeline's clean-state guard on non-snapshot rebuilds (`git is in
-    // a dirty state; … Use --snapshot to force`). The thing we actually wanted —
+    // a dirty state; … Use --snapshot to force`). The point of the prefetch —
     // a warm registry cache — lives in CARGO_HOME, not the worktree, so drop the
     // stray lock afterward to leave the checkout byte-for-byte as `git worktree
     // add` produced it. The offline rebuild regenerates an identical lock from

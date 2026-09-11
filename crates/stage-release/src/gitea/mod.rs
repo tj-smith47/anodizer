@@ -3,7 +3,7 @@
 //! Gitea's release API is simpler than GitLab's: assets are uploaded directly
 //! via multipart POST to the release endpoint (no package registry indirection).
 //! Draft support is limited (Gitea has it but the release client treats
-//! `PublishRelease` as a no-op), so we follow that same approach.
+//! `PublishRelease` as a no-op), and this backend follows that approach.
 //!
 //! Gitea release backend.
 //!

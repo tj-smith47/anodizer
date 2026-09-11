@@ -808,7 +808,7 @@ fn test_create_nupkg_produces_valid_opc_zip() {
 // -----------------------------------------------------------------
 
 /// OData skeleton mirroring community.chocolatey.org's
-/// `Packages(Id='X',Version='Y')` response. Only the fields we parse
+/// `Packages(Id='X',Version='Y')` response. Only the parsed fields
 /// are populated; everything else is omitted to keep the fixture
 /// readable.
 ///

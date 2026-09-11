@@ -49,8 +49,8 @@ const FLAKE_DESCRIPTION: &str = "Nix flake for release artifacts published by an
 
 /// Indent prefix on each overlay `callPackage` line in the generated
 /// flake. The line shape is fixed by this module, so re-parsing it to
-/// recover the prior package set on the next publish is robust — we
-/// control both the writer and the reader.
+/// recover the prior package set on the next publish is robust — the
+/// writer and the reader both live in this module.
 const OVERLAY_LINE_PREFIX: &str = "        ";
 
 const FLAKE_TEMPLATE: &str = r#"{

@@ -221,7 +221,7 @@ pub(super) fn run_split(
     // Route output to dist subdirectory
     let original_dist = config.dist.clone();
     let split_dist = original_dist.join(&subdir);
-    // We modify the config dist in-place so all stages write to the subdirectory
+    // Modified in place so every stage writes to the subdirectory
     ctx.config.dist = split_dist.clone();
 
     std::fs::create_dir_all(&split_dist)
@@ -599,8 +599,8 @@ pub fn load_split_contexts_into(
     check_split_worker_completeness(dist, &context_files, log)?;
 
     let mut total_loaded = 0;
-    // Map path -> first (ctx_file, crate_name, target) that claimed it, so we
-    // can surface the actual pair of conflicting split jobs on collision.
+    // Map path -> first (ctx_file, crate_name, target) that claimed it, so a
+    // collision can name the actual pair of conflicting split jobs.
     let mut seen_paths: std::collections::HashMap<String, (PathBuf, String, Option<String>)> =
         std::collections::HashMap::new();
     let mut first_vars: Option<BTreeMap<String, String>> = None;

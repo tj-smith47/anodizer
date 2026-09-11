@@ -1118,7 +1118,7 @@ fn test_cask_zap_block_emits_each_directive_as_separate_key() {
     assert!(block.contains("trash: ["), "missing trash key\n{block}");
     assert!(block.contains("\"~/Library/MyApp\""));
     // The prior bug wrote `"launchctl: \"...\""` (a quoted string inside a
-    // `trash:` array). Make sure we never emit that shape again.
+    // `trash:` array). That shape must never be emitted again.
     assert!(
         !block.contains("\"launchctl:"),
         "regression: launchctl directive must not be a quoted string inside trash:\n{block}"
@@ -1679,7 +1679,7 @@ fn test_disambiguate_homebrew_archives_errors_when_no_tar_gz_and_ambiguous() {
 #[test]
 fn test_disambiguate_homebrew_archives_errors_when_multiple_tar_gz_unset_ids() {
     // Two tar.gz archives for the same platform with ids unset — the
-    // preferred-format bucket itself is ambiguous, so we must still error.
+    // preferred-format bucket itself is ambiguous, so this must still error.
     let entries = vec![
         (
             "aarch64-apple-darwin".to_string(),

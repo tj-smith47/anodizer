@@ -36,7 +36,7 @@ pub(super) fn set_own_process_group(cmd: &mut Command) {
 pub(super) fn set_own_process_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt as _;
     // CREATE_NEW_PROCESS_GROUP isolates the child from console control events
-    // aimed at our own group (a stray Ctrl-C won't race the watchdog). The
+    // aimed at anodizer's own group (a stray Ctrl-C won't race the watchdog). The
     // subtree reap itself is done by a Job Object (`TerminateJobObject` in
     // `ChildTree::reap`) — unlike a Unix process group, a Windows process group
     // is NOT a kill target for TerminateProcess, and `taskkill /T` cannot reach
@@ -239,7 +239,7 @@ pub(super) mod windows_job {
         /// by the direct child's exit. Best-effort: an already-terminated/closed
         /// job yields a benign failure.
         pub fn terminate(self) {
-            // SAFETY: `TerminateJobObject` on a job handle we created; a failure
+            // SAFETY: `TerminateJobObject` on a job handle created here; a failure
             // (job already gone) is ignored.
             unsafe {
                 let _ = TerminateJobObject(self.0 as Handle, 1);
@@ -250,7 +250,7 @@ pub(super) mod windows_job {
         /// handle close reaps any straggler still in the job (the last
         /// leak-prevention net). Paired 1:1 with [`enclose_child`].
         pub fn close(self) {
-            // SAFETY: closing a handle we own exactly once.
+            // SAFETY: closing an owned handle exactly once.
             unsafe {
                 let _ = CloseHandle(self.0 as Handle);
             }
@@ -270,7 +270,7 @@ pub(super) mod windows_job {
     /// `git push`) do real work before forking — and the `taskkill` fallback
     /// covers a missing job.
     pub fn enclose_child(child: &Child) -> Option<JobHandle> {
-        // SAFETY: each call uses a job handle we just created plus the child's
+        // SAFETY: each call uses a job handle just created plus the child's
         // own process handle; every failure is checked and unwinds via
         // `CloseHandle` so no handle leaks.
         unsafe {
@@ -450,8 +450,8 @@ mod unix_termination {
         // race a -1 fd.
         WAKE_WRITE_FD.store(write_fd, Ordering::SeqCst);
 
-        // SAFETY: zeroed `sigaction` is a valid empty struct; we then set the
-        // handler and an empty mask. `sigaction(2)` itself is the documented
+        // SAFETY: zeroed `sigaction` is a valid empty struct; the handler and
+        // an empty mask are set next. `sigaction(2)` itself is the documented
         // installation API.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
@@ -473,7 +473,7 @@ mod unix_termination {
     /// WITH its children (correct signal exit code), not before them.
     fn watcher(read_fd: RawFd) -> ! {
         let mut byte = [0u8; 1];
-        // SAFETY: a blocking `read(2)` of one byte from the read end of our own
+        // SAFETY: a blocking `read(2)` of one byte from the read end of this
         // pipe; the buffer outlives the call. EINTR is treated as "woken".
         loop {
             let n = unsafe { libc::read(read_fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };

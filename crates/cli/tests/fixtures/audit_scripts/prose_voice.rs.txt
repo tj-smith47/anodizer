@@ -1,0 +1,29 @@
+//! Module prose. The lexer hands the comment half of every line to the match.
+
+/// We mirror the Cargo.toml branch here.
+pub fn mirrored() {}
+
+/// The status of a us-east-1 bucket is read from the response.
+pub fn hyphenated() {}
+
+/// A parameter written `I`, in a function that performs no I/O.
+pub fn blanked() {}
+
+/// Upstream calls it "our index", and a quoted run is left alone.
+pub fn quoted() {}
+
+/// Reference material lives at https://example.com/en-us/reference.
+pub fn linked() {}
+
+pub fn bound() -> usize {
+    let us = 1;
+    us + 1
+}
+
+pub fn literal() -> String {
+    // The pronoun on the next line is code, not prose.
+    "we own this".to_string()
+}
+
+// Claude wrote the loop; the next reader was not there for it.
+pub fn narrated() {}

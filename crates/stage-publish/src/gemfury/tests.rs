@@ -129,8 +129,8 @@ furies:
 #[test]
 fn warn_on_legacy_furies_alias_detects_legacy_key() {
     // Pure-function check: the raw YAML walker spots `furies:` and the
-    // wrapper emits a tracing warn. We can't assert tracing output here
-    // without a subscriber; just confirm the helper accepts both shapes
+    // wrapper emits a tracing warn. Tracing output cannot be asserted here
+    // without a subscriber; this only confirms the helper accepts both shapes
     // without panicking and that `gemfury:` does not trip the legacy
     // branch when serialized through.
     let yaml_legacy: serde_yaml_ng::Value =

@@ -1875,7 +1875,7 @@ fn publish_to_krew_pr_direct_already_exists_records_pending() {
 /// versioned branch + identical manifest, `commit_and_push_with_opts`
 /// detects the unchanged tree and reports `NoChanges`, so the publish
 /// outcome's `pushed` is false (nothing to roll back). The PR is not
-/// re-submitted side-effect-wise; we assert the no-push outcome.
+/// re-submitted side-effect-wise; the no-push outcome is asserted.
 #[test]
 #[serial(path_env)]
 fn publish_to_krew_pr_direct_idempotent_no_changes() {

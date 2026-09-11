@@ -24,7 +24,7 @@ pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
 
 /// Validate the `compress` value against UPX's accepted set: empty (use UPX
 /// defaults), `best`, or one of `1`..=`9`. Returning `Err` here surfaces the
-/// typo before we shell out and UPX rejects it with an unhelpful exit code.
+/// typo before the shell-out, where UPX rejects it with an unhelpful exit code.
 pub fn validate_compress(level: Option<&str>) -> Result<()> {
     let Some(level) = level else { return Ok(()) };
     if level.is_empty() || level == "best" {
@@ -770,7 +770,7 @@ crates: []
         });
 
         let stage = UpxStage;
-        // In dry-run, we skip the binary existence check and just log
+        // In dry-run the binary existence check is skipped and only logged
         let result = stage.run(&mut ctx);
         assert!(
             result.is_ok(),

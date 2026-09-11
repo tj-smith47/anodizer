@@ -241,8 +241,8 @@ fn resolve_milestone_repo(
 
     // Single pass over crates that prefers a release block matching the
     // active SCM (ctx.token_type) but accepts any block as a fallback.
-    // Earlier we walked the crate list twice — once for the matching
-    // provider, once for any provider — which produced two near-identical
+    // One pass, not two: walking the crate list once for the matching
+    // provider and again for any provider produced two near-identical
     // loops with different short-circuit behaviour.
     let mut fallback: Option<(String, String)> = None;
     for crate_cfg in config.crate_universe() {
@@ -351,7 +351,7 @@ fn close_milestone_github(
                 break;
             }
 
-            // If we got fewer than 100 results, there are no more pages.
+            // Fewer than 100 results means there are no more pages.
             if milestones.len() < 100 {
                 break;
             }
@@ -431,7 +431,7 @@ fn close_milestone_gitlab(
         anyhow::bail!("no authentication token available for GitLab milestone close");
     }
     // Default to GitLab.com's API root; user-supplied api_url already
-    // includes the `/api/vN` path so we just append the resource path.
+    // includes the `/api/vN` path, so only the resource path is appended.
     let base = api_url.unwrap_or("https://gitlab.com/api/v4");
 
     rt.block_on(async {
@@ -523,7 +523,7 @@ fn close_milestone_gitea(
         anyhow::bail!("no authentication token available for Gitea milestone close");
     }
     // Default to Gitea.com's API root; user-supplied api_url already
-    // includes the `/api/vN` path so we just append the resource path.
+    // includes the `/api/vN` path, so only the resource path is appended.
     let base = api_url.unwrap_or("https://gitea.com/api/v1");
 
     rt.block_on(async {
@@ -578,13 +578,13 @@ fn close_milestone_gitea(
             base, owner, repo, milestone_id
         );
         // PATCH only the `state` field. Including `title` would round-trip
-        // the title and assert it hasn't changed under our feet — a
+        // the title and assert it had not changed meanwhile — a
         // surprising side-effect for an API call meant to close, not
         // rename.
         //
         // 404 on the PATCH is a legitimate "milestone already closed /
-        // deleted between list and close" race signal, so we catch it from
-        // the retry helper's Break path and map to NotFound. Other 4xx
+        // deleted between list and close" race signal, taken from the retry
+        // helper's Break path and mapped to NotFound. Other 4xx
         // remain hard errors (the helper Breaks them).
         match retry_http_async_deadline(
             anodizer_core::retry::RetryLog::new("milestone: Gitea close milestone", log),

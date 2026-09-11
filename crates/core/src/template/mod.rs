@@ -1,7 +1,7 @@
 // Template rendering powered by Tera.
 // Supports both Go-style `{{ .Field }}` and Tera-style `{{ Field }}`.
 // Go-style templates are preprocessed (leading dots stripped) before Tera renders them.
-// Tera gives us: if/else/endif, for loops, pipes (| lower, | upper, | replace),
+// Tera supplies: if/else/endif, for loops, pipes (| lower, | upper, | replace),
 // | default, | trim, | title, and many more built-in filters.
 //
 // ## Template-render-error handling policy

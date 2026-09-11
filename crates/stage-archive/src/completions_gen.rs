@@ -356,8 +356,8 @@ fn harvest_from_build_out(
 /// Expand any `{a,b,c}` brace alternations in `pattern` into concrete glob
 /// patterns, then run each through [`resolve_glob_patterns`]. The `glob` crate
 /// does not understand brace alternation, but the canonical clap_complete
-/// build-out pattern (`**/out/<bin>.{bash,fish,zsh}`) relies on it, so we
-/// pre-expand here. Nested/multiple groups are handled by recursing on the
+/// build-out pattern (`**/out/<bin>.{bash,fish,zsh}`) relies on it, so it is
+/// pre-expanded here. Nested/multiple groups are handled by recursing on the
 /// remaining alternations. Patterns with no braces pass straight through.
 fn glob_with_braces(pattern: &str) -> Result<Vec<PathBuf>> {
     let mut results = Vec::new();

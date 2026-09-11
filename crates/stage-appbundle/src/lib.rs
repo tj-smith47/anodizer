@@ -1611,7 +1611,7 @@ mod tests {
         );
         ctx.template_vars_mut().set("Version", "1.0.0");
 
-        // Add a darwin binary so we actually attempt to render the template
+        // Add a darwin binary so the template is actually rendered
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),

@@ -1456,7 +1456,7 @@ stdin_file: "/path/to/password"
 #[test]
 fn test_sign_env_vars_passed_to_command() {
     // Verify that custom env vars reach the signing command.
-    // Use `sh -c` to write the env var value to a file so we can verify it.
+    // Use `sh -c` to write the env var value to a file, making it checkable.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2311,7 +2311,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
         output: None,
         // Render expands to an empty string (UndefinedSymbol unset; the
         // {{ ... }} braces render as nothing in Tera's strict mode would
-        // error — use a literal " " that trims to empty instead so we exercise
+        // error — use a literal " " that trims to empty instead, exercising
         // the trimmed-empty branch).
         authenticode: None,
         verify: None,

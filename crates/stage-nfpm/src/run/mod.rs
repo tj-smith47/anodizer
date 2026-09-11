@@ -274,7 +274,7 @@ fn process_nfpm_format(
         return Ok(());
     }
 
-    // Require the maintainer only once we know a deb/apk WILL be built for
+    // Require the maintainer only once a deb/apk WILL be built for
     // this (format × target): the two early returns above mean no package is
     // produced for an unsupported/skipped arch, so a missing maintainer must
     // not false-fail a config whose only target is skipped. A deb/apk that

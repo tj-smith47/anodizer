@@ -618,7 +618,7 @@ fn crate_binary_name_prefers_build_binary_then_falls_back() {
 #[test]
 fn smoke_disabled_when_no_install_smoke_block() {
     // With install_smoke=None, docker_available() must never be consulted and
-    // the stage must not hard-fail on a docker-less host. We force enabled but
+    // the stage must not hard-fail on a docker-less host. Enabled is forced but
     // dry-run so the whole run is a no-op regardless — the real assertion is
     // that the default config leaves smoke off.
     let cfg = VerifyReleaseConfig {
@@ -677,8 +677,8 @@ fn multi_crate_iteration_covers_all_published_crates() {
 // Asset-existence — the network half of the gate, driven against an
 // in-process scripted GitHub responder. The published_crate fixture targets
 // release.github { owner: me, name: repo }; with the default GitHub token type
-// `find_release_by_tag` issues GET /repos/me/repo/releases/tags/<tag>. We point
-// `github_urls.api` at the loopback so octocrab routes every call there.
+// `find_release_by_tag` issues GET /repos/me/repo/releases/tags/<tag>. Pointing
+// `github_urls.api` at the loopback routes every octocrab call there.
 // ===========================================================================
 
 /// A `200 OK` JSON HTTP response with a correct `Content-Length`. Leaked to

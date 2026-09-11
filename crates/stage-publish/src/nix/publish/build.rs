@@ -413,8 +413,9 @@ pub(super) fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> anyh
             }
             continue;
         }
-        // A registered binary we cannot inspect must fail the nix publish, not
-        // silently drop autoPatchelfHook and ship a broken derivation.
+        // A registered binary that cannot be inspected must fail the nix
+        // publish, not silently drop autoPatchelfHook and ship a broken
+        // derivation.
         if is_dynamically_linked(&a.path)
             .with_context(|| format!("inspecting {} for ELF dynamic linking", a.path.display()))?
         {

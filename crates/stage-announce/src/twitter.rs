@@ -250,8 +250,8 @@ mod tests {
         // Same inputs → same signature because params are sorted into a
         // BTreeMap before being signed. Building the header twice with the
         // same nonce/timestamp must produce the same `oauth_signature`.
-        // We can't fix the timestamp at the public-API level; instead we
-        // verify the underlying signing routine via `hmac_sha1_base64`
+        // The timestamp cannot be fixed at the public-API level, so the
+        // underlying signing routine is exercised via `hmac_sha1_base64`
         // with a hand-built signature base string in lexicographic order.
         let base = "POST&https%3A%2F%2Fapi.x.com%2F2%2Ftweets&\
                     oauth_consumer_key%3Dck%26oauth_nonce%3Dn%26\
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_oauth1_param_lexicographic_ordering() {
         // RFC 5849 §3.4.1.3.2 requires params be sorted ascending by encoded
-        // key (then value). The six oauth_* params we always emit must
+        // key (then value). The six oauth_* params always emitted must
         // satisfy this order — guards against future moves to a non-sorted
         // map type.
         let mut params = BTreeMap::new();

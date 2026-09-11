@@ -88,7 +88,7 @@ end
 }
 
 /// Git-form formula: `url ..., tag:, revision:`. Carries a standalone
-/// `sha256` too so we can prove it is left alone once the tag form is
+/// `sha256` too, proving it is left alone once the tag form is
 /// detected (a git-based bump only moves `tag:`/`revision:`).
 fn git_formula() -> String {
     format!(

@@ -630,8 +630,8 @@ pub(crate) fn publish_to_cargo_with_guard(
                     )?
                 }
                 Err(e) => {
-                    // Fail closed: do not silently skip a version we cannot
-                    // confirm is byte-identical to what shipped.
+                    // Fail closed: do not silently skip a version that cannot
+                    // be confirmed byte-identical to what shipped.
                     anyhow::bail!(
                         "publish: could not reach the crates.io index to verify '{name}-{crate_version}' \
                          is safe to skip ({e}); refusing to skip a possibly-poisoned already-published \
@@ -720,7 +720,7 @@ pub(crate) fn publish_to_cargo_with_guard(
         //
         // When the per-crate manifest was unreadable, crate_version is empty
         // (the skip-decision treats it as "not yet published" to avoid a
-        // false-skip). For the yank record we fall back to the global release
+        // false-skip). The yank record falls back to the global release
         // version so rollback can still attempt a yank. If even that is
         // empty, warn: `cargo yank --version ""` is rejected and a silent
         // under-yank is worse than an explicit manual-cleanup message.
@@ -784,8 +784,8 @@ pub(crate) struct PublishedCrateRef {
 ///
 /// Multi-crate workspaces release many crates in one run; the
 /// [`PublishEvidence`](anodizer_core::PublishEvidence) schema's
-/// `primary_ref` carries one canonical URL. We prefer the crate whose
-/// `name` matches `ctx.config.project_name` so operators see the marquee
+/// `primary_ref` carries one canonical URL. The crate whose `name` matches
+/// `ctx.config.project_name` is preferred, so operators see the marquee
 /// crate (e.g. `anodizer` from the `anodizer-*` workspace) instead of
 /// whichever crate happens to iterate first. If no such match exists
 /// (project_name unset, or no eligible crate matches it), fall back to

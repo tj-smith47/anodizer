@@ -103,10 +103,11 @@ jobs:
 
       # This workflow only deploys off a Release that actually published, so the
       # binary these docs describe is already built, signed and attached to that
-      # release — rebuilding the workspace here would recompile an artifact we
-      # are being handed, the same reasoning that makes release.yml publish the
-      # shards' preserved dist instead of rebuilding it. Falls back to a source
-      # build for the workflow_dispatch path, where no release triggered us.
+      # release — rebuilding the workspace here would recompile an artifact that
+      # is already being handed over, the same reasoning that makes release.yml
+      # publish the shards' preserved dist instead of rebuilding it. Falls back
+      # to a source build for the workflow_dispatch path, where no release
+      # triggered the run.
       - name: "Fetch the released binary (fallback: build from source)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

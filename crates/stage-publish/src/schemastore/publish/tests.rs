@@ -950,7 +950,7 @@ fn write_vendor_schema_allowlists_too_high_dialect_in_same_pr() {
     // A 2020-12 schema must (a) be written AND (b) have its vendored
     // filename appended to `highSchemaVersion` in the SAME clone, so
     // SchemaStore CI accepts the high dialect. Seed an empty allowlist
-    // so we can observe the append.
+    // so the append is observable.
     let repo = tempfile::tempdir().expect("repo");
     let allow_abs = repo.path().join(DIALECT_ALLOWLIST_PATH);
     std::fs::create_dir_all(allow_abs.parent().unwrap()).unwrap();
@@ -1795,8 +1795,8 @@ fn a_probe_with_a_vendor_entry_still_requests_the_dialect_allowlist() {
 // genuinely hermetic seam these gate is the change-decision short-
 // circuit: when EVERY effective schema is already current against the
 // cloned tree, `run_real` returns the "nothing to publish" evidence
-// WITHOUT a push or a PR. We exercise the splice/write/change-decision
-// helpers it orchestrates directly, since the network sync sits between
+// WITHOUT a push or a PR. The splice/write/change-decision helpers it
+// orchestrates are exercised directly, since the network sync sits between
 // the clone and those helpers.
 //
 // These build bare working trees + read the process env, so they are

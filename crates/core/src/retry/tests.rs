@@ -773,7 +773,7 @@ fn network_error_substrings_match() {
         "context deadline exceeded",
         // DNS-resolution failures across platforms (hyper-util connector
         // surfaces these via reqwest as `client error (Connect): dns
-        // error: <platform tail>`). Pin every tail we know about so a
+        // error: <platform tail>`). Every known tail is pinned so a
         // cross-platform CI failure cannot reintroduce the gap.
         "client error (Connect): dns error: failed to lookup address information: Name or service not known",
         "dns error: nodename nor servname provided, or not known",
@@ -1055,8 +1055,8 @@ fn classifier_429_via_anyhow_chain_uses_as_ref() {
 // `reqwest::Error` has no public constructor, so the transport-error
 // branch is exercised indirectly via per-publisher integration tests
 // (which mock at the network layer). The unit tests here drive a tiny
-// hand-rolled TCP server so we can exercise the success / non-success
-// status branches with a real reqwest::blocking::Client end-to-end.
+// hand-rolled TCP server so the success / non-success status branches
+// run against a real reqwest::blocking::Client end-to-end.
 
 use crate::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -1187,7 +1187,7 @@ fn retry_http_blocking_redirect_class_alters_success_predicate() {
     ]);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
-        // Disable redirect-following so the 307 surfaces to our helper.
+        // Disable redirect-following so the 307 surfaces to the helper.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
@@ -1602,7 +1602,7 @@ async fn retry_http_async_429_retries_then_succeeds() {
 // DNS-resolution stage in a few milliseconds on Linux, macOS, and
 // Windows alike.
 //
-// We verify:
+// Pinned here:
 //   1. the helper retries (attempt counter > 1)
 //   2. eventually surfaces an Err with the configured label in the chain
 // The outer attempt counter is incremented inside the closure, so it

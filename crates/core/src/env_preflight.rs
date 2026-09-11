@@ -170,7 +170,7 @@ impl std::fmt::Display for EnvPreflightReport {
         // `checks` counts every evaluated requirement; a failed advisory check
         // is neither a pass nor a hard failure, so it must not inflate the
         // "passed" count. Detail for each warning is emitted separately by the
-        // caller's warning logger — here we only summarise the count.
+        // caller's warning logger — this line only summarises the count.
         let warned = self.warnings.len();
         let advisory_note = if warned > 0 {
             format!(" ({warned} advisory warning(s))")

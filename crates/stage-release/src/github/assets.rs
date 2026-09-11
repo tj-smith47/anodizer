@@ -79,7 +79,7 @@ pub(crate) async fn delete_release_asset_by_name(
             }
         }
 
-        // If we got fewer than 100 results, there are no more pages.
+        // Fewer than 100 results means there are no more pages.
         if assets.len() < 100 {
             break;
         }
@@ -116,7 +116,7 @@ pub(crate) struct RemoteAssetProbe {
 ///
 /// Used by the idempotent-upload path: when GitHub rejects an upload with
 /// `422 already_exists`, comparing the existing asset's size to the local
-/// file size lets us decide whether a prior attempt successfully uploaded
+/// file size decides whether a prior attempt successfully uploaded
 /// the same bytes (outer-retry recovery) or whether the names collided with
 /// different content (real conflict that needs `replace_existing_artifacts`).
 /// The `state` field distinguishes a fully-published asset from a partial
@@ -235,7 +235,7 @@ mod tests {
 
     /// Wrap a JSON body in a `200 OK` HTTP response with a correct
     /// `Content-Length`. The responder helper requires `&'static str`, so
-    /// we `Box::leak` the formatted string — fine in tests, no production
+    /// the formatted string is `Box::leak`ed — fine in tests, no production
     /// cost.
     fn ok_json(body: String) -> &'static str {
         let len = body.len();

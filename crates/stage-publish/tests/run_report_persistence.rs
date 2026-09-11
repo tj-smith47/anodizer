@@ -55,10 +55,10 @@ fn publish_stage_writes_report_and_rollback_run_can_read_it() {
         .build();
 
     // Synthetic publishers — `PublishStage::run` reads the registry
-    // from config, which would skip our fakes, so we drive the
+    // from config, which would skip these fakes, so the test drives the
     // doc-hidden `run_with_publishers` entry point that production
     // also uses (it's the seam every dispatcher test in the crate
-    // takes). Then we call the doc-hidden writer the same way
+    // takes). The doc-hidden writer is then called the same way
     // `PublishStage::run` does, end-of-pipeline.
     let publishers: Vec<Box<dyn Publisher>> = vec![
         Box::new(SuccessPublisher {
@@ -126,7 +126,7 @@ fn publish_stage_writes_report_and_rollback_run_can_read_it() {
     assert_eq!(updated_names, vec!["assets-only", "manager-only"]);
     for r in &updated.results {
         // Either RolledBack (if a matching publisher were in the
-        // registry) or RollbackFailed (registry mismatch — our case).
+        // registry) or RollbackFailed (registry mismatch — the case here).
         // The assertion below pins "not Succeeded" to confirm
         // rollback::run actually walked the entries; an unchanged
         // `Succeeded` would mean the dispatcher didn't see them at

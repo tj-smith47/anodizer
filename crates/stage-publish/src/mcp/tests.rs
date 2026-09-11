@@ -2,7 +2,7 @@
 //!
 //! Strategy: every test that exercises the publish loop runs against a
 //! one-shot HTTP responder bound to an ephemeral port (mirrors the
-//! `dockerhub.rs` test harness — we keep the test surface uniform across
+//! `dockerhub.rs` test harness, keeping the test surface uniform across
 //! HTTP publishers). The `auth.token` field is set non-empty so the
 //! `NoneAuthProvider::get_token` short-circuit returns the token verbatim
 //! without hitting `/v0/auth/none`; the only endpoint a test must serve is
@@ -317,7 +317,7 @@ fn publish_unrecoverable_on_400() {
     // unrecoverable so a bad payload surfaces immediately instead of
     // burning the full retry budget. With responses limited to 1, a
     // second `accept()` would block; the test passing the assert proves
-    // we didn't retry.
+    // no retry happened.
     let _g = warn_once_lock();
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 400 Bad Request\r\nContent-Length: 13\r\n\r\nbad payload\r\n",
@@ -473,13 +473,13 @@ fn oci_rejection_hint_is_empty_for_unrelated_bodies() {
 fn experimental_warning_emitted_once_per_process() {
     // The atomic flag is a process-wide one-shot. `warn_experimental_once`
     // returns `true` exactly when this call flipped the flag (and emitted
-    // the warning). Race-safe: we depend on the function's per-call return
+    // the warning). Race-safe: the check uses the function's per-call return
     // value, not on inspecting the static atomic — which other parallel
     // tests (publish_retries_*, dry_run_*) could already have flipped via
     // their internal call. The reset_experimental_warned_for_test() helper
     // forces a known starting state but offers no protection against a
-    // concurrent test flipping the flag back between our calls, so we
-    // assert the boolean returns instead.
+    // concurrent test flipping the flag back between calls, so the boolean
+    // returns are what get asserted.
     let _g = warn_once_lock();
     reset_experimental_warned_for_test();
     let ctx = mcp_ctx(|_| {});
@@ -502,7 +502,7 @@ fn experimental_warning_emitted_once_per_process() {
 fn dry_run_short_circuits_before_network() {
     // Per mcp/mod.rs:106 — when ctx.is_dry_run() is true the publisher
     // logs the intended POST and returns Ok(()) without contacting the
-    // registry. We bind a listener that intentionally never serves any
+    // registry. The listener bound here intentionally never serves any
     // response; if the publisher tried to POST, accept() would happen
     // and the counter would tick.
     let _g = warn_once_lock();

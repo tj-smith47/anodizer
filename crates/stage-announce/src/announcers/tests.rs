@@ -1033,7 +1033,7 @@ fn render_only_surfaces_broken_message_template() {
 /// that would error (or expand a secret) when rendered passes untouched,
 /// proving email's send/render_only routes its body through the
 /// `render_message` chokepoint rather than a raw `render_template`. Guards
-/// against the leak reopening on a provider we dogfood as an on_error hook.
+/// against the leak reopening on a provider dogfooded as an on_error hook.
 #[test]
 fn email_body_render_is_literal_under_literal_message() {
     let announce = AnnounceConfig {

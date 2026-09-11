@@ -39,7 +39,7 @@
 //!   able to install the package"), so the public scraper only sees
 //!   `404`. The OData-side `PackageStatus=Rejected` signal is already
 //!   handled by `crate::chocolatey::publish` during the publish step
-//!   itself, so we don't need to re-detect rejection here.
+//!   itself, so rejection need not be re-detected here.
 
 use std::time::{Duration, Instant};
 
@@ -67,8 +67,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// resolvable (any HTTP 200) in the same run (regression detection).
 const NOT_FOUND_GRACE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
-/// Verdict of a single HTML scrape — either we resolved to a terminal
-/// state, observed a pending state, or hit a transient/transport issue.
+/// Verdict of a single HTML scrape — either a terminal state was resolved,
+/// a pending state observed, or a transient/transport issue hit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PageVerdict {
     Approved(String),
@@ -245,8 +245,8 @@ fn scrape_once(url: &str) -> PageVerdict {
 /// Search order matters because the page can carry mixed signals:
 ///
 /// 1. **`callout-danger` "This version is in <a>moderation</a>"** —
-///    version-scoped and definitive. When present, the version we're
-///    looking at is in the queue regardless of any other markers.
+///    version-scoped and definitive. When present, the version under
+///    inspection is in the queue regardless of any other markers.
 ///
 /// 2. **`Package Approved`** (callout-header inside callout-success) —
 ///    also version-scoped: it lives on the version page only when
@@ -258,8 +258,8 @@ fn scrape_once(url: &str) -> PageVerdict {
 ///    version of the package is pending (verified live against
 ///    `anodizer/0.2.0`: the warning sits on already-approved version
 ///    pages too while a newer version is in the queue). Only matches
-///    when neither version-scoped marker fired — at that point we're a
-///    freshly-submitted version with no version-scoped callout yet.
+///    when neither version-scoped marker fired — at that point the version
+///    is freshly submitted with no version-scoped callout yet.
 ///
 /// 4. **No marker** → default-safe to `Pending`. The next poll round
 ///    catches the eventual `Package Approved` callout.
@@ -282,7 +282,7 @@ fn classify_html(body: &str) -> PageVerdict {
 
     // (3) package-wide pending — `awaiting moderation` callout-warning.
     // Reached only when no version-scoped marker matched above; means
-    // we're a freshly-submitted version whose own callout hasn't
+    // the version is freshly submitted and its own callout hasn't
     // rendered yet.
     if body.contains("awaiting moderation") {
         return PageVerdict::Pending("awaiting moderation".to_string());

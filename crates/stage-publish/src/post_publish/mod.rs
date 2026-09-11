@@ -182,7 +182,7 @@ impl PollJob {
 /// dependency yet for this crate). Worker panics are mapped to
 /// `PostPublishStatus::Error` rather than killing the publish stage —
 /// the polling result is advisory; the publish step has already reported
-/// HTTP 2xx by the time we get here.
+/// HTTP 2xx by the time this runs.
 pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<PostPublishResult> {
     if jobs.is_empty() {
         return Vec::new();

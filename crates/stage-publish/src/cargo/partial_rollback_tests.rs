@@ -335,7 +335,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let mut evidence = anodizer_core::PublishEvidence::new("cargo");
     evidence.extra = encode_cargo_yank_targets(&record);
 
-    // Wipe the publish argv before rollback so we assert only on the
+    // Wipe the publish argv before rollback so the assertion covers only the
     // yank invocations the rollback issues.
     std::fs::write(&argv_log, b"").expect("truncate argv log");
 
@@ -432,8 +432,8 @@ fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
 
 /// Rollback whose `cargo yank` fails: the publisher must NOT propagate
 /// the error (rollback is best-effort), still record the failure, and
-/// emit the per-target warn. We assert the yank was attempted with the
-/// recorded version and that rollback returns Ok despite the non-zero
+/// emit the per-target warn. The yank must be attempted with the recorded
+/// version and rollback must return Ok despite the non-zero
 /// exit.
 #[test]
 #[serial(cargo_stub_path)]
@@ -708,13 +708,10 @@ fn index_check_error_fails_closed() {
 
 /// `wait_for_workspace_deps` integration: when enabled and the crate has
 /// a literal-pinned workspace dep, the loop polls crates.io for that dep.
-/// We point the dep's expected version at one already on a local index
-/// responder so the gate clears in one probe — proving the gate is wired
-/// into the publish loop (not just unit-tested in isolation). The dep
-/// pin uses a crate name whose sparse-index URL we can serve locally is
-/// impossible (the gate computes the real index URL), so instead we set
-/// a tiny max_wait and assert the gate's TIMEOUT error surfaces through
-/// the publish loop's context — proving the wiring fires.
+/// Serving a crate name whose sparse-index URL points at a local responder
+/// is impossible (the gate computes the real index URL), so the pin instead
+/// uses a tiny max_wait and asserts the gate's TIMEOUT error surfaces
+/// through the publish loop's context — proving the wiring fires.
 #[test]
 #[serial(cargo_stub_path)]
 fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
@@ -900,10 +897,10 @@ fn manifest_read_failure_does_not_skip_publish() {
         .project_root(tmp.path().to_path_buf())
         .build();
 
-    // The "1.0.0" release version IS already on crates.io — if we
-    // incorrectly keyed the skip-decision on it, the crate would be
-    // skipped. The correct behaviour is to attempt publish anyway because
-    // the per-crate version is unresolvable.
+    // The "1.0.0" release version IS already on crates.io — keying the
+    // skip-decision on it would wrongly skip the crate. The correct
+    // behaviour is to attempt publish anyway because the per-crate version
+    // is unresolvable.
     let always_published_1_0_0 =
         |_name: &str,
          _version: &str,

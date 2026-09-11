@@ -1488,8 +1488,8 @@ fn test_flatpak_stage_no_version_falls_back_to_0_0_0() {
         runtime_version: Some("24.08".to_string()),
         sdk: Some("org.freedesktop.Sdk".to_string()),
         // Use a template that does NOT reference {{ Version }} because that
-        // var is absent; we verify the fallback via build_subprocess_args
-        // by asserting the stage completes without error.
+        // var is absent; the fallback is exercised via build_subprocess_args
+        // and asserted by the stage completing without error.
         name_template: Some("myapp-{{ Arch }}.flatpak".to_string()),
         ..Default::default()
     };
@@ -2104,8 +2104,8 @@ fn test_map_to_supported_arches_keeps_distinct_amd64_variants() {
 // -----------------------------------------------------------------------
 
 /// Verifies that when extra_files is configured, the resolved file names
-/// surface in the dry-run artifact path (via the manifest JSON — we can
-/// assert the stage runs without error and produces the artifact).
+/// surface in the dry-run artifact path (via the manifest JSON — the
+/// assertion is that the stage runs without error and produces the artifact).
 /// The extra_file_names collection at lines 627-634 is exercised.
 #[test]
 fn test_flatpak_dry_run_with_extra_files() {

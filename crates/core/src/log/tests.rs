@@ -56,8 +56,8 @@ fn test_group_quiet_still_tracks_local_depth() {
 fn test_group_with_body_flushes_header_once() {
     // A section that emits a real body line flushes its deferred header:
     // the pending entry is marked `flushed` exactly once and stays at its
-    // own depth. (`flush_pending` writes the header to stderr; we assert
-    // the state transition rather than capture the uncapturable eprintln.)
+    // own depth. (`flush_pending` writes the header to stderr, so the
+    // assertion is on the state transition, not the uncapturable eprintln.)
     let _guard = SECTION_TEST_LOCK.lock().unwrap();
     let log = StageLogger::new("build", Verbosity::Normal);
     {

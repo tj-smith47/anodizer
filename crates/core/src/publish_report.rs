@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// always Assets → Manager → Submitter. The one-way-door gate (historically
 /// "the submitter gate") arms once any `required: true` publisher in an
 /// already-run group fails, and from that point skips **both** the Manager
-/// and Submitter groups — every publisher that writes a surface we cannot
+/// and Submitter groups — every publisher that writes a surface that cannot be
 /// cleanly reclaim. Only the reversible Assets group runs ungated. This is
 /// why a botched blob mirror or homebrew tap push cannot burn a crates.io
 /// version slot, and why a failed required blob upload no longer lets the
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PublisherGroup {
-    /// Writes uploadable bytes to systems we control end-to-end. Failures
+    /// Writes uploadable bytes to systems under end-to-end control. Failures
     /// are reversible via API delete (github-release, dockerhub,
     /// artifactory, cloudsmith, blob).
     Assets,
@@ -24,7 +24,7 @@ pub enum PublisherGroup {
     /// belong here — they are Submitter, so the rollback guard sees them.
     Manager,
     /// Writes to a third-party submission queue, an immutable registry
-    /// slot, or a channel position we cannot reclaim. Gated behind the
+    /// slot, or a channel position that cannot be reclaimed. Gated behind the
     /// Submitter gate. Rollback is informational-only for most members
     /// (chocolatey, winget, snapcraft, upstream-AUR force-push); **cargo**,
     /// **npm**, and **pypi** are immutable registries whose landed publish

@@ -250,7 +250,7 @@ fn test_expand_transitive_deps_dedupes_shared_ancestors() {
 fn test_expand_transitive_deps_ignores_external_deps() {
     // Deps on names not present in the config (i.e. external crates.io
     // crates) are silently dropped — cargo verifies them against the
-    // real registry, not our workspace.
+    // real registry, not this workspace.
     let crates = vec![crate_with_deps("cfgd", &["cfgd-core", "serde"])];
     let expanded = expand_with_transitive_deps(&crates, &["cfgd".to_string()]);
     assert!(expanded.contains(&"cfgd".to_string()));
@@ -266,8 +266,8 @@ fn test_expand_transitive_deps_ignores_external_deps() {
 // ~line 489) avoids redundant `cargo publish` calls — and the bogus
 // 422-with-stale-bytes problem they create — when the version already
 // exists on crates.io and the local .crate cksum matches the index. The
-// tests below pin (a) the sparse-index URL shape so we hit the same
-// path cargo itself uses, and (b) the JSONL parser so we keep treating
+// tests below pin (a) the sparse-index URL shape, matching the path
+// cargo itself uses, and (b) the JSONL parser, which must keep treating
 // "version present, no cksum" as a fall-back-to-skip rather than a
 // silently-missed publish.
 // -----------------------------------------------------------------------
@@ -342,7 +342,7 @@ fn test_parse_index_cksum_for_version_empty_string_when_cksum_missing() {
 fn test_parse_index_cksum_for_version_empty_body() {
     // Defensive: an empty/whitespace body parses to None (the function
     // is invoked after a 200-OK status but before further validation,
-    // so we mustn't panic on malformed bodies).
+    // so a malformed body must not panic).
     assert_eq!(parse_index_cksum_for_version("", "1.0.0"), None);
     assert_eq!(parse_index_cksum_for_version("   \n  ", "1.0.0"), None);
 }
@@ -1568,7 +1568,7 @@ fn is_already_published_at_404_maps_to_ok_none() {
 }
 
 /// Defense-in-depth: a crates.io sparse-index 4xx response that echoes
-/// our `Authorization: Bearer <PAT>` header back must not leak the token
+/// the `Authorization: Bearer <PAT>` header back must not leak the token
 /// into the user-visible error chain. The sparse index is unauthenticated
 /// in production, so this is paranoia — but mirror/proxy registries can
 /// gateway through an auth proxy.
@@ -1637,7 +1637,7 @@ fn skip_on_version_exists_no_cksum_comparison() {
 
     // The important invariant: Some(_) from is_already_published now
     // unconditionally skips — the caller must NOT call
-    // compute_local_crate_cksum or bail.  We verify that by checking
+    // compute_local_crate_cksum or bail. That is checked by asserting
     // the value is discarded (any Some triggers skip regardless of content).
     let cksum = result.unwrap();
     // Non-empty cksum in index body: old code would have compared it and
@@ -1722,7 +1722,7 @@ fn poll_index_times_out_after_retrying_non_success_and_transport_errors() {
 // -----------------------------------------------------------------------
 // sparse-index propagation retry on cargo publish
 //
-// Defense in depth on top of poll_crates_io_index: even after our wait
+// Defense in depth on top of poll_crates_io_index: even after the wait
 // sees the just-published dep on the sparse index, cargo's own resolution
 // may hit a stale Fastly edge a beat later. run_cargo_publish_with_retry
 // narrows retry exclusively to the propagation-shaped error signatures
@@ -2049,8 +2049,8 @@ fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure() {
 #[test]
 #[serial_test::serial(stub_counter)]
 fn run_cargo_publish_with_retry_recovers_from_propagation_lag_windows() {
-    // Build the counter stub from an in-test source string. We write
-    // a tiny Rust program to a tempdir and compile it with `rustc`.
+    // Build the counter stub from an in-test source string: a tiny Rust
+    // program written to a tempdir and compiled with `rustc`.
     let tmp = tempfile::tempdir().expect("tempdir");
     let counter = tmp.path().join("counter.txt");
     let src_path = tmp.path().join("stub.rs");
@@ -2689,7 +2689,7 @@ fn probe_dep_on_index_returns_true_when_version_present() {
 /// "dep present."
 #[test]
 fn probe_dep_on_index_returns_false_when_version_absent() {
-    // Index has 0.3.0 but we're waiting for 0.4.0.
+    // Index has 0.3.0 but the wait is for 0.4.0.
     let body = r#"{"name":"cfgd-core","vers":"0.3.0","cksum":"old","yanked":false}"#;
     let body_len = body.len();
     let resp: &'static str = Box::leak(
@@ -3410,7 +3410,7 @@ fn publish_to_cargo_orders_diamond_dependency_graph() {
 // -----------------------------------------------------------------------
 
 /// Quiet logger for plan resolution — the plan emits skip/if status
-/// lines we don't inspect here, so a non-capturing logger suffices.
+/// lines that go uninspected here, so a non-capturing logger suffices.
 fn quiet_log() -> StageLogger {
     StageLogger::new("publish-test", Verbosity::Normal)
 }
@@ -4033,7 +4033,7 @@ fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
     let counter = tmp.path().join("counter");
     let stub = tmp.path().join("cargo");
     // Always fail with a propagation-shaped stderr; bump the counter so
-    // we can assert the exact attempt count.
+    // the exact attempt count can be asserted.
     let script = format!(
         "#!/bin/sh\n\
              n=$(cat {counter} 2>/dev/null || echo 0)\n\

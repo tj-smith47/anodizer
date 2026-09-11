@@ -248,9 +248,9 @@ fn winget_scoped_dependency_attaches_only_to_matching_installer() {
 
 /// Regression for the original bug: an `x64`-scoped VCRedist must NOT
 /// attach to the native `arm64` installer (which would pull the wrong
-/// runtime → STATUS_DLL_NOT_FOUND on a clean arm64 box). We assert the
-/// dependency lands under the x64 installer entry and that the arm64 entry
-/// carries no Dependencies block.
+/// runtime → STATUS_DLL_NOT_FOUND on a clean arm64 box). The dependency
+/// must land under the x64 installer entry, and the arm64 entry must
+/// carry no Dependencies block.
 #[test]
 fn winget_arm64_installer_does_not_get_x64_scoped_dependency() {
     let deps = vec![anodizer_core::config::WingetDependency {

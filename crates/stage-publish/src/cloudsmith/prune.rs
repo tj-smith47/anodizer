@@ -191,7 +191,7 @@ pub(crate) fn list_cloudsmith_package_versions(
         for v in array {
             // Defensively re-filter by exact package name: the `query` is a
             // search term, not an exact match, so a substring sibling could
-            // slip in. Only entries whose `name` equals our package are
+            // slip in. Only entries whose `name` equals the package are
             // candidates for pruning.
             let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
             if name != package_name {

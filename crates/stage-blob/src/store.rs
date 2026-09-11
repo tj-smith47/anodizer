@@ -18,7 +18,7 @@ use crate::provider::Provider;
 /// docs warn that signed S3/GCS/Azure credentials typically expire on the
 /// order of 15 minutes, so a `retry_timeout` longer than ~5 minutes risks
 /// the entire retry budget being spent on a request whose credentials
-/// silently expired mid-flight. We pin 5 minutes — enough for several
+/// silently expired mid-flight. The cap is 5 minutes — enough for several
 /// exponential-backoff cycles, short enough to fail before the credentials
 /// do.
 const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -91,7 +91,7 @@ const OBJECT_STORE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// struct wholesale — so setting `allow_http` on the builder *before* this call
 /// is silently discarded, and an `http://` (disable_ssl) endpoint then fails
 /// every request with an opaque reqwest "builder error" (scheme not allowed).
-/// Owning `allow_http` in the one `ClientOptions` we pass makes it the single
+/// Owning `allow_http` in the one passed `ClientOptions` makes it the single
 /// source of truth and unclobberable.
 fn timed_client_options(
     allow_http: bool,
@@ -174,7 +174,7 @@ pub(crate) fn build_s3_store(
     // KMS server-side encryption: only set SSE-KMS on the S3 builder when the
     // key is a plain ARN/ID (ServerSide). URL-schemed keys (awskms://, gcpkms://,
     // azurekeyvault://) use client-side encryption — the data is encrypted before
-    // upload, so we must NOT also request server-side encryption.
+    // upload, so server-side encryption must NOT also be requested.
     if let Some(ref kms_key) = config.kms_key
         && parse_kms_provider(kms_key) == KmsProvider::ServerSide
     {
@@ -182,7 +182,7 @@ pub(crate) fn build_s3_store(
     }
 
     // S3 canned ACL via x-amz-acl header.
-    // We set it as a default header on the client — since each blob config
+    // Set as a default header on the client — since each blob config
     // gets its own ObjectStore client, this is per-config ACL.
     let acl_headers = if let Some(ref acl) = config.acl {
         // Validate against the S3 canned ACL enum — `log-delivery-write`
@@ -219,7 +219,7 @@ pub(crate) fn build_s3_store(
     // "builder error". Derive it from BOTH the explicit disable_ssl flag AND the
     // endpoint scheme, so a caller that supplies the endpoint but not disable_ssl
     // (the rollback delete path synthesizes a minimal config) still connects.
-    // Threaded through the ClientOptions we pass so it cannot be clobbered (see
+    // Threaded through the passed ClientOptions so it cannot be clobbered (see
     // `timed_client_options`).
     let allow_http = config.disable_ssl.unwrap_or(false)
         || config

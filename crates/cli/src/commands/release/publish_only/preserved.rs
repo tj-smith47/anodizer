@@ -3,8 +3,8 @@ use anodizer_core::log::StageLogger;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Minimal `PreservedDistContext` deserializer. We re-declare the
-/// shape here rather than depending on `determinism_harness::preserve`
+/// Minimal `PreservedDistContext` deserializer. The shape is re-declared
+/// here rather than depending on `determinism_harness::preserve`
 /// to keep this module decoupled from harness internals — the
 /// schema (artifacts + targets + version + commit) is the
 /// load-bearing contract, not the producer module.
@@ -210,7 +210,7 @@ pub(super) fn check_no_unsuffixed_suffixed_collision(dist: &Path, base: &str) ->
 /// - `version` / `commit` — taken from the first non-empty entry; ALL
 ///   non-empty values across shards must agree, else this fails closed.
 ///   An empty `commit` on the merged view is also fatal — without it
-///   we cannot prove the preserved bytes match the current release.
+///   nothing can prove the preserved bytes match the current release.
 ///
 /// Cross-checks live inside this fold so the merge contract has one
 /// home: any caller of `merge_preserved_contexts` receives a view that
@@ -245,8 +245,8 @@ pub(super) fn merge_preserved_contexts(
 
     // ── Cross-checks (fail closed) ────────────────────────────────────
     // Empty merged `commit` means NO shard recorded one. Re-signing
-    // without a commit anchor breaks the determinism guarantee: we
-    // can't prove the preserved bytes match the current release.
+    // without a commit anchor breaks the determinism guarantee: nothing
+    // can prove the preserved bytes match the current release.
     if merged.commit.is_empty() {
         anyhow::bail!(
             "publish-only: no context manifest carried a `commit` field. Cannot verify the \

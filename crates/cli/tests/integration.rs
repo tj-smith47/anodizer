@@ -358,7 +358,7 @@ fn test_timeout_kills_long_running_release() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout).
+    // Config with a before-hook that sleeps for 60 seconds (much longer than the timeout).
     // The git pipe (including the dirty-repo gate) runs BEFORE the before-hooks,
     // so the config file must be committed — otherwise the dirty-repo check aborts
     // with exit 1 before the hook gets a chance to hit the timeout.
@@ -409,7 +409,7 @@ crates:
     // fires from the watchdog thread, the grandchild `sleep 60` may still
     // hold inherited pipe fds open, causing output() to block until that
     // process also exits. By discarding stdout/stderr with Stdio::null()
-    // and polling try_wait(), we detect the exit immediately.
+    // and polling try_wait(), the exit is observed immediately.
     let mut child = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--timeout", "1s"])
         .current_dir(tmp.path())
@@ -561,7 +561,7 @@ fn test_man_renders_roff() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "man output should not be empty");
     // clap_mangen emits a `.ie ` macro on the first line followed by `.TH`
-    // for the program. Either anchor proves we got roff and not help text.
+    // for the program. Either anchor proves the output is roff, not help text.
     assert!(
         stdout.starts_with(".ie ") || stdout.contains(".TH anodizer"),
         "man output should be roff (start with .ie or contain .TH anodizer), got first 200 bytes: {}",
@@ -5030,7 +5030,7 @@ crates:
     );
 
     // Strict-mode sentinel: no `strict_guard` rejection slipped through. A
-    // strict-mode escalation would have failed the run; we assert the
+    // strict-mode escalation would have failed the run; the assertion is that
     // stderr is free of the canonical strict bail-out so a future
     // regression that demotes a strict error to a warn still trips.
     assert!(
@@ -5708,8 +5708,8 @@ fn release_required_publisher_failure_gates_exit_code() {
     create_test_project(tmp.path());
     // Write config BEFORE `init_git_repo` so the initial commit
     // captures `.anodizer.yaml` — otherwise the validate stage trips
-    // the "git is in a dirty state" check and we never reach the
-    // publish gate.
+    // the "git is in a dirty state" check and the publish gate is
+    // never reached.
     create_config(
         tmp.path(),
         r#"
@@ -6010,7 +6010,7 @@ crates:
 /// equivalent lives at `pipeline/builders.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
 ///
 /// Snapshot + dry-run mode keep the test self-contained (no network,
-/// no git tag required). We skip the heavy stages so the test runs
+/// no git tag required). The heavy stages are skipped so the test runs
 /// quickly; the only thing that matters for the assertion is that
 /// the pipeline reaches `emit_summary` regardless of `--skip=announce`.
 #[test]
@@ -6056,8 +6056,8 @@ fn test_release_skip_announce_still_writes_summary_json() {
     let summary_text = std::fs::read_to_string(&summary_path)
         .expect("read summary.json that the binary just wrote");
     // Parse via the canonical struct to confirm the file is valid JSON
-    // with the expected schema, not garbage / a previous file we forgot
-    // to delete.
+    // with the expected schema, not garbage / a stale file left behind by
+    // an earlier run.
     let parsed: anodizer_stage_publish::run_summary::RunSummary =
         serde_json::from_str(&summary_text).expect("summary.json must parse as RunSummary");
     assert_eq!(

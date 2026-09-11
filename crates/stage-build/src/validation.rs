@@ -6,7 +6,7 @@
 ///
 /// Targets like `aarch64-unknown-linux-gnu.2.17` carry a `.X.Y` suffix that
 /// tells cargo-zigbuild which glibc version to link against. Cargo itself
-/// doesn't understand the suffix, so we strip it when constructing the target
+/// doesn't understand the suffix, so it is stripped when constructing the target
 /// directory path. The full target (with suffix) is passed to cargo-zigbuild.
 ///
 /// Returns `(cargo_target, has_suffix)` — when there is no suffix the input

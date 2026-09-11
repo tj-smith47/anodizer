@@ -94,8 +94,8 @@ impl Pipeline {
     /// `emit_summary` post-call runs, so a panicking pipeline body
     /// will skip the summary write. This is an accepted limitation
     /// — a stage that panics is a bug in the stage (or a panic from
-    /// `unwrap`/`expect` we missed in review), not an operator
-    /// error we can recover from. The release pipeline is built
+    /// `unwrap`/`expect` the review missed), not an operator
+    /// error the pipeline can recover from. The release pipeline is built
     /// around `Result`-propagation; a panic means something the
     /// review failed to catch is wrong, and dropping `summary.json`
     /// in that scenario is bug-on-bug (the missing summary is a

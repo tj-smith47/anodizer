@@ -9,8 +9,8 @@
 //!
 //! Named for the immutable-registry Submitters it originally guarded, the
 //! gate protects **every one-way-door group — Manager AND Submitter** —
-//! not just Submitter. Both groups write to surfaces we cannot cleanly
-//! reclaim: Manager pushes package-manager state a consumer may have
+//! not just Submitter. Both groups write to surfaces that cannot be
+//! cleanly reclaimed: Manager pushes package-manager state a consumer may have
 //! already pulled (homebrew tap, scoop bucket, nix-pkgs, AUR, MCP
 //! registry); Submitter writes immutable registry slots / moderation
 //! queues (cargo, chocolatey, winget, snapcraft, upstream-AUR). Only the
@@ -38,11 +38,11 @@
 //! `report.submitter_gated` is set to `true`. This is the load-bearing
 //! protection against firing a one-way door past a known-broken release:
 //! the "chocolatey moderation got submitted, then winget validation
-//! failed and we can't undo the choco upload" failure mode, the "cargo
+//! failed and the choco upload cannot be undone" failure mode, the "cargo
 //! published crate A, failed on crate B, yet winget still submitted"
 //! intra-Submitter variant, and — the case this gate was widened to
-//! cover — the "a required blob mirror upload failed, yet we still pushed
-//! the homebrew tap / posted the MCP registry entry" Manager variant.
+//! cover — the "a required blob mirror upload failed, yet the homebrew tap
+//! was still pushed / the MCP registry entry posted" Manager variant.
 //! Prevention here is the only sound remedy: a Manager rollback is
 //! best-effort (it silently no-ops when its scope credential is absent)
 //! and cannot retract what a consumer has already pulled.
@@ -208,7 +208,7 @@ pub fn dispatch(
         for p in publishers.iter().filter(|p| p.group() == group) {
             // One-way-door gate, re-checked per publisher. It covers BOTH
             // the Manager and Submitter groups — every publisher that
-            // writes a surface we cannot cleanly reclaim — while leaving
+            // writes a surface that cannot be cleanly reclaimed — while leaving
             // the reversible Assets group ungated. The gate closes when a
             // required publisher in ANY already-run group failed: a
             // required Assets failure (e.g. the blob mirror) that ran

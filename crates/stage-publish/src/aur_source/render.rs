@@ -261,8 +261,8 @@ pub(super) fn render_aur_source_inner(
     // An AUR *sources* package is the upstream-build flavor; the canonical
     // conflict is the *upstream* package name (the unsuffixed `<name>`),
     // because `<name>-bin` (the binary AUR variant) exists alongside it.
-    // Defaulting to `[<name>-bin]` only conflicts with our own binary AUR
-    // package — useless. `[ProjectName]` is the correct default.
+    // Defaulting to `[<name>-bin]` only conflicts with this project's own
+    // binary AUR package — useless. `[ProjectName]` is the correct default.
     let conflicts = cfg
         .conflicts
         .clone()

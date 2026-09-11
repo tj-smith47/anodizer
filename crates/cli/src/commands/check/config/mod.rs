@@ -177,9 +177,9 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
         if let Some(deps) = &c.depends_on {
             for dep in deps {
                 if let Some(&j) = name_to_idx.get(dep.as_str()) {
-                    // i depends on j → edge j→i in "needs" direction, but for cycle
-                    // detection we walk: if i depends on j, j must be processed before i.
-                    // We build edges i→j meaning "i needs j" to detect cycles in that graph.
+                    // i depends on j → edge j→i in "needs" direction, but cycle
+                    // detection walks the other way: if i depends on j, j must be
+                    // processed before i, so the edge i→j means "i needs j".
                     adj[i].push(j);
                 }
             }

@@ -185,9 +185,9 @@ pub(crate) fn is_transient_smtp_error(message: &str) -> bool {
 /// Returns `true` when `message` contains a token of the shape `Cyz` (where
 /// `C` is the requested class digit, `y` and `z` are any digits) bordered
 /// by ASCII whitespace, end-of-string, or the dash continuation character
-/// from RFC 5321 §4.2.1 multi-line replies. This keeps us from matching
-/// `5.7.8` reply enhancement codes or arbitrary digit triples inside
-/// freeform prose.
+/// from RFC 5321 §4.2.1 multi-line replies. That boundary keeps
+/// `5.7.8` reply enhancement codes and arbitrary digit triples inside
+/// freeform prose from matching.
 fn has_smtp_response_code(message: &str, class: u8) -> bool {
     let bytes = message.as_bytes();
     if bytes.len() < 3 {
@@ -452,7 +452,7 @@ mod tests {
     fn auth_fail_with_temporarily_disabled_message_does_not_retry() {
         // The exact bug: 5xx auth-rejection messages routinely include the
         // word "temporarily". The old heuristic retried these, hammering
-        // the relay with bad credentials. Now we honor the 5yz code first.
+        // the relay with bad credentials. The 5yz code is now honored first.
         let msg = "535 5.7.8 Username and Password not accepted, account temporarily disabled (try again later)";
         assert!(
             !is_transient_smtp_error(msg),
@@ -492,8 +492,8 @@ mod tests {
 
     #[test]
     fn smtp_no_response_code_does_not_match() {
-        // Without a structured response code we defer to the network-error
-        // matcher (handled at the call-site). This helper alone must not
+        // Without a structured response code the network-error matcher
+        // takes over (handled at the call-site). This helper alone must not
         // false-positive on freeform prose containing the digit "4".
         assert!(!is_transient_smtp_error("connection refused"));
         assert!(!is_transient_smtp_error("4 retries left"));

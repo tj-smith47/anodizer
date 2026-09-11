@@ -457,9 +457,9 @@ impl anodizer_core::Publisher for KrewPublisher {
 
         // Fan out at PR granularity, not target granularity: a single
         // krew target can map to multiple open PRs if the publish path
-        // pushed the same branch twice (idempotent re-publish). We dedup
-        // PR numbers per (upstream, n) so we don't try to close the same
-        // PR twice when two targets share the same fork branch.
+        // pushed the same branch twice (idempotent re-publish). PR numbers
+        // are deduped per (upstream, n) so the same PR is not closed twice
+        // when two targets share the same fork branch.
         struct CloseJob {
             upstream_owner: String,
             upstream_repo: String,

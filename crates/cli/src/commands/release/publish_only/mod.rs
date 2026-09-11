@@ -28,7 +28,7 @@
 //! Pipeline choice: the merge pipeline assumes raw-binary input from
 //! `--split`. `--publish-only` deliberately bypasses that assumption:
 //! input is the FULL artifact set (binaries + archives + packages +
-//! checksums), so we run `build_publish_only_pipeline` (see
+//! checksums), so it runs `build_publish_only_pipeline` (see
 //! `crate::pipeline`), not `build_merge_pipeline`.
 
 use anyhow::{Context as _, Result};

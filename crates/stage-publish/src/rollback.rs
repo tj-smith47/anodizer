@@ -463,8 +463,8 @@ pub(crate) fn execute_rollback_step(
     // yank: the release genuinely failed (crate B never went live) and
     // reporting `RolledBack` would mask that. Only a succeeded-then-reverted
     // Assets/Manager publisher transitions to `RolledBack`. A yank FAILURE
-    // transitions to `RollbackFailed` for both — a live artifact we could not
-    // pull, the manual-intervention signal.
+    // transitions to `RollbackFailed` for both — a live artifact that could
+    // not be pulled, the manual-intervention signal.
     let was_failure = matches!(current, PublisherOutcome::Failed(_));
     log.status(&format!("invoking rollback for '{name}'"));
     // A rollback is its own publisher invocation — the publish budget belonged
@@ -779,7 +779,7 @@ mod tests {
             .push(succeeded("orphan", PublisherGroup::Manager, true));
         write_fixture_report(&ctx, "fixt", &report);
 
-        // Empty registry — the report names a publisher we no longer have.
+        // Empty registry — the report names a publisher that no longer exists.
         let publishers: Vec<Box<dyn Publisher>> = Vec::new();
 
         let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("rollback");
@@ -1282,7 +1282,7 @@ mod tests {
         // Corrupt rollback.json must surface a clear error rather than
         // silently falling back to report.json — that fallback would
         // re-roll every Succeeded entry, which is exactly the regression
-        // we're guarding against.
+        // being guarded against.
         let (mut ctx, _tmp) = ctx_with_dist();
         let mut report = PublishReport::default();
         report

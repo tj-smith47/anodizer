@@ -113,9 +113,9 @@ pub fn poll(
     ));
 
     loop {
-        // Cheap fast-path: once we've located the PR, re-hit the PR
+        // Cheap fast-path: once the PR is located, re-hit the PR
         // endpoint directly. The first iteration (and any iteration
-        // where we lost track of the PR) falls back to the search.
+        // where the PR was lost track of) falls back to the search.
         let verdict = match pr_url.as_deref() {
             Some(url) => check_pr_at(url, token),
             None => match locate_pr(
@@ -226,7 +226,7 @@ fn locate_pr(
     token: Option<&str>,
 ) -> Option<String> {
     // is:pr (state-agnostic, since a freshly-merged PR is closed but
-    // still our PR) — preflight uses `is:open` because it's a pre-check;
+    // still the same PR) — preflight uses `is:open` because it's a pre-check;
     // post-publish needs the closed-too view to detect merge / rejection.
     let query = burn_search_query(upstream_slug, package_identifier, version, search_in_title);
     let encoded = anodizer_core::url::percent_encode_unreserved(&query);
@@ -250,7 +250,7 @@ fn locate_pr(
 /// Pick the manifest PR to poll out of a relevance-ordered search response —
 /// no IO. Removal-titled items are skipped (a "Remove `<id>` `<version>`" PR is
 /// not the submission being tracked); the first remaining item wins. The
-/// search-issues response gives us `pull_request.url` (the API URL) —
+/// search-issues response carries `pull_request.url` (the API URL) —
 /// preferred over `html_url` since the poll loop hits the API on it
 /// directly; falls back to constructing the API URL from `number`.
 fn select_pr_api_url(v: &Value, api_base_url: &str, upstream_slug: &str) -> Option<String> {
@@ -338,7 +338,7 @@ fn classify_pr_json(v: &Value) -> PrVerdict {
     }
     // Validation pipeline passed cleanly — the bot will normally
     // auto-merge after this, but if the PR sits open with this combo
-    // it's effectively a terminal-success signal for our purposes.
+    // it is effectively a terminal-success signal here.
     let validation_completed = labels.iter().any(|l| l == "Validation-Completed");
     let pipeline_passed = labels.iter().any(|l| l == "Azure-Pipeline-Passed");
     if validation_completed && pipeline_passed {

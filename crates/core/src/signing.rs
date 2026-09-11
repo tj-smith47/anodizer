@@ -348,9 +348,9 @@ impl SignConfig {
     ///
     /// The top-level `signs:` driver defaults to gpg when `cmd:` is unset
     /// (see `stage-sign::helpers::default_sign_cmd` which falls back to
-    /// `git config gpg.program` then to literal `"gpg"`). We treat any
+    /// `git config gpg.program` then to literal `"gpg"`). Any
     /// cmd whose basename starts with `gpg` (e.g., `gpg`, `gpg2`,
-    /// `/usr/local/bin/gpg`) as a gpg invocation. A cmd of `"cosign"`,
+    /// `/usr/local/bin/gpg`) counts as a gpg invocation. A cmd of `"cosign"`,
     /// `"notation"`, etc. returns false.
     ///
     /// Entries with `artifacts: "none"` (the default for top-level

@@ -525,8 +525,8 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
         });
     }
 
-    // Convert the base TOML to a YAML Value so we can use the existing
-    // deep-merge logic.
+    // Convert the base TOML to a YAML Value so the existing deep-merge
+    // logic applies.
     let base_yaml: serde_yaml_ng::Value = anodizer_core::config::toml_value_to_yaml(&base_toml)
         .with_context(|| "failed to convert TOML config to YAML for merging")?;
 
@@ -704,7 +704,7 @@ fn canonical_path_key(path: &Path) -> Option<String> {
 /// `~user/...` (POSIX user-home form) is NOT supported — only `~/` and
 /// `$VAR` are recognized. A path like `~bob/foo` is returned unchanged
 /// because resolving an arbitrary user's home requires a `getpwnam(3)`
-/// call (or platform equivalent) which we deliberately avoid for the
+/// call (or platform equivalent) that is deliberately avoided for the
 /// security and cross-platform-portability cost.
 fn expand_path_tilde_and_env(path_str: &str) -> String {
     let expanded = expand_env_vars(path_str);
@@ -1561,7 +1561,7 @@ crates:
     /// `~user/...` (POSIX user-home form) is intentionally NOT expanded
     /// — only `~/` and `$VAR` are recognized. A path like `~bob/foo`
     /// must round-trip unchanged so the downstream `read_to_string`
-    /// surfaces the missing-file error, rather than us guessing at
+    /// surfaces the missing-file error, rather than the expander guessing at
     /// `bob`'s home and silently rewriting the user's path.
     #[test]
     fn test_expand_path_tilde_user_form_not_supported() {
@@ -1953,7 +1953,7 @@ path = "shared.yaml"
             "header value must be expanded"
         );
         // Verify that expanding the key WOULD destroy it (returns empty since
-        // KEY_LITERAL is not set in the lookup), proving we must NOT expand keys.
+        // KEY_LITERAL is not set in the lookup), proving keys must NOT be expanded.
         assert_eq!(
             anodizer_core::env_expand::expand_with(key, lookup),
             "",
@@ -1989,8 +1989,8 @@ path = "shared.yaml"
     #[test]
     fn test_toml_includes_from_url_structured_form() {
         // Verify the TOML [[includes]] / [includes.from_url] syntax parses correctly.
-        // We test via file-based include since we can't easily test HTTP, but we
-        // verify the TOML structure is correctly converted to YAML for resolve_include.
+        // A file-based include stands in for HTTP, which is not exercisable
+        // here; the TOML structure must still convert to YAML for resolve_include.
         let tmp = TempDir::new().unwrap();
 
         // Use a from_file to prove the TOML structured form works (from_url would
@@ -2012,9 +2012,9 @@ url = "https://example.com/config.yaml"
         .unwrap();
 
         // This will fail at fetch time (no server), but the TOML parsing and
-        // IncludeSpec deserialization should work. We test that separately.
+        // IncludeSpec deserialization should work; that is pinned separately.
         let config_result = load_config(&cfg_path);
-        // We expect an error from the URL fetch, not from parsing
+        // The error must come from the URL fetch, not from parsing
         assert!(config_result.is_err());
         let msg = config_result.unwrap_err().to_string();
         assert!(

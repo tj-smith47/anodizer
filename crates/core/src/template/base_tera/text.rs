@@ -273,7 +273,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
 
     // --- trim function ---
     // Function form: trim(s="  hello  ") → "hello"
-    // Tera already has a built-in `trim` filter, so we only add the function form.
+    // Tera already has a built-in `trim` filter, so only the function form is added.
     tera.register_json_function(
         "trim",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -287,7 +287,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
 
     // --- title function ---
     // Function form: title(s="hello world") → "Hello World"
-    // Tera already has a built-in `title` filter, so we only add the function form.
+    // Tera already has a built-in `title` filter, so only the function form is added.
     tera.register_json_function(
         "title",
         |args: &HashMap<String, Value>| -> TeraResult<Value> {

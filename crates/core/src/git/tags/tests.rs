@@ -5,8 +5,8 @@ use std::process::Command;
 mod delete_tag_tests {
     use super::*;
 
-    /// Build a `<bare-repo>` + working clone pair so we can drive
-    /// `delete_remote_tag_in` against a real "origin" without hitting the
+    /// Build a `<bare-repo>` + working clone pair so `delete_remote_tag_in`
+    /// can be driven against a real "origin" without hitting the
     /// network. Returns `(bare, work)`; the working clone has `origin`
     /// pointing at the bare repo.
     fn init_clone_pair() -> (tempfile::TempDir, tempfile::TempDir) {

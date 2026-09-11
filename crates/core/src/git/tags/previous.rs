@@ -282,7 +282,7 @@ fn smartsemver_previous_tag_in(
         .collect();
 
     // Derive the prerelease-skip signal from current_tag itself: when the tag
-    // we're releasing parses as a non-prerelease version, filter prereleases
+    // being released parses as a non-prerelease version, filter prereleases
     // from the candidate list so `v0.2.0` points its changelog at `v0.1.0`
     // rather than `v0.2.0-beta.3`.
     let skip_prereleases = {

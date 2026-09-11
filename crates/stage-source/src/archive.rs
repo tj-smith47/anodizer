@@ -124,8 +124,8 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 
     cmd.arg("--output").arg(&initial_path);
 
-    // For zip format with extra files, we create the base archive first via
-    // git archive, then append extra files under the prefix using the zip crate.
+    // For zip format with extra files, the base archive is created first via
+    // git archive, then extra files are appended under the prefix using the zip crate.
     // (--add-file puts files at root, which is wrong when prefix is set.)
 
     cmd.arg(commit);

@@ -448,7 +448,7 @@ impl PreflightChecker for Aur {
 /// `resultcount: u64`, `type: "multiinfo"`, `version: 5`,
 /// `results: [{ Name, Version, Maintainer, ... }]`. The `Version` field
 /// uses the `<pkgver>-<pkgrel>` format (e.g. `"12.5.7-1"`), so a parser
-/// looking for our semver alone must accept both an exact match and a
+/// looking for the semver alone must accept both an exact match and a
 /// `<version>-` prefix.
 pub(super) fn query_aur_rpc(
     package: &str,

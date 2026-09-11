@@ -162,8 +162,8 @@ pub(crate) fn legacy_homebrew_formula_warnings(config: &Config) -> Vec<String> {
 /// so this function only needs to emit the deprecation warning when the
 /// raw YAML key was the legacy one.
 ///
-/// Because serde collapses the two spellings to a single field on parse, we
-/// lose the information about which key the user wrote. This function
+/// Because serde collapses the two spellings to a single field on parse, the
+/// information about which key the user wrote is gone. This function
 /// therefore consults the raw YAML pre-parse value (when supplied) to decide.
 pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
     if let Some(snap) = raw_yaml.get("snapshot")

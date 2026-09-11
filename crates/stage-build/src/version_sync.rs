@@ -111,7 +111,7 @@ pub fn read_cargo_version_opt(root: &Path, crate_path: &str) -> Result<Option<St
 /// descended into: path-dep version pins only resolve within a single Cargo
 /// workspace, so a bump in this workspace must never rewrite a pin owned by a
 /// sibling workspace on its own release cadence. The starting `root` itself is
-/// always descended (its own `[workspace]` is the boundary we're scoping to).
+/// always descended (its own `[workspace]` is the boundary being scoped to).
 fn find_cargo_tomls(
     repo_root: &Path,
     dir: &Path,
@@ -238,7 +238,7 @@ pub fn sync_workspace_deps(
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                // A manifest we cannot read may hold a path-dep pin to the bumped
+                // An unreadable manifest may hold a path-dep pin to the bumped
                 // crate; skipping it silently would ship a stale version pin.
                 log.warn(&format!(
                     "version sync: skipping unreadable manifest {}: {e}",

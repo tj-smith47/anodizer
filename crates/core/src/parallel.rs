@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn bounded_concurrency() {
         // With parallelism=2 across 10 jobs, no more than 2 workers should
-        // be in-flight at once. We observe this via an AtomicUsize peak
+        // be in-flight at once. Observed via an AtomicUsize peak
         // counter that each worker increments on entry and decrements on
         // exit, with a small sleep to force overlap.
         let jobs: Vec<u32> = (0..10).collect();
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn panic_in_worker_becomes_anyhow_error() {
         // A panicking worker must not take down the whole thread::scope
-        // silently — we want an attributable error with the stage name.
+        // silently — the error must be attributable, carrying the stage name.
         let jobs: Vec<u32> = vec![1, 2, 3];
         let result = run_parallel_chunks(
             &jobs,
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn join_panic_to_err_translates_str_panic() {
-        // The most common panic shape in our codebase is `panic!("msg")`
+        // The most common panic shape in this codebase is `panic!("msg")`
         // which produces a `&'static str` payload — verify the message
         // survives into the surfaced anyhow chain.
         let h = std::thread::spawn(|| -> u32 {

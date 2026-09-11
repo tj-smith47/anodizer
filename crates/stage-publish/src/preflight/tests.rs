@@ -568,7 +568,7 @@ fn crates_io_checker_unknown_on_network_error() {
         "network error must surface as Unknown, got: {:?}",
         checker_state
     );
-    // Sanity: the underlying error mentioned the host/port we used.
+    // Sanity: the underlying error mentioned the host/port in play.
     let msg = err.to_string();
     assert!(!msg.is_empty(), "error message must be non-empty");
 }
@@ -1096,7 +1096,7 @@ fn nightly_skipped_publisher_is_not_preflighted() {
     );
 }
 
-/// Test Publisher that returns a fixed `PreflightCheck` so we can drive
+/// Test Publisher that returns a fixed `PreflightCheck`, driving
 /// the per-publisher self-check path without configuring a real
 /// publisher. Routed through the `configured_publishers` trait registry
 /// is not possible without registry surgery, so this test exercises the

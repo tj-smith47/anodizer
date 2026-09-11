@@ -4,14 +4,14 @@ use super::*;
 // AurOurPublisher — Publisher trait wrapper (git-revert rollback)
 // ---------------------------------------------------------------------------
 
-/// `Publisher` for the AUR repo we own (the per-crate
+/// `Publisher` for an owned AUR repo (the per-crate
 /// `publish.aur:` entry that pushes a binary PKGBUILD to a dedicated
-/// AUR package we control via SSH).
+/// AUR package reached over SSH).
 ///
 /// Named `AurOurPublisher` to disambiguate from the upstream-AUR
 /// force-push publisher (`aur_source:`) — that one is Submitter group,
 /// has no rollback path (irreversible force-push), and writes to
-/// packages we do NOT own.
+/// packages owned by someone else.
 ///
 /// Rollback shape mirrors the other git-revert publishers: re-clone
 /// via the configured SSH key + command, run `git revert HEAD --no-edit`,
@@ -70,7 +70,7 @@ pub(crate) struct AurOurTarget {
     /// Custom `GIT_SSH_COMMAND` override (alternative to
     /// `private_key` — same precedence the publish path uses).
     /// Same `#[serde(skip)]` rationale as `private_key`: the command
-    /// can reference an on-disk key path that we treat as
+    /// can reference an on-disk key path treated as
     /// secret-sensitive.
     #[serde(skip)]
     pub(crate) git_ssh_command: Option<String>,

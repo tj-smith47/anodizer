@@ -125,7 +125,7 @@ fn test_create_tar_xz() {
     let len = fs::metadata(&archive_path).unwrap().len();
     assert!(len > 0, "tar.xz archive should not be empty");
 
-    // Verify we can decompress and read the tar
+    // The tar must decompress and read back
     let file = File::open(&archive_path).unwrap();
     let dec = xz2::read::XzDecoder::new(file);
     let mut tar = tar::Archive::new(dec);
@@ -152,7 +152,7 @@ fn test_create_tar_zst() {
     let len = fs::metadata(&archive_path).unwrap().len();
     assert!(len > 0, "tar.zst archive should not be empty");
 
-    // Verify we can decompress and read the tar
+    // The tar must decompress and read back
     let file = File::open(&archive_path).unwrap();
     let dec = zstd::Decoder::new(file).unwrap();
     let mut tar = tar::Archive::new(dec);
@@ -2456,7 +2456,7 @@ fn test_create_tar_uncompressed() {
     let len = fs::metadata(&archive_path).unwrap().len();
     assert!(len > 0, "uncompressed tar archive should not be empty");
 
-    // Verify we can read the tar directly (no decompression needed)
+    // The tar must read directly (no decompression needed)
     let file = File::open(&archive_path).unwrap();
     let mut tar = tar::Archive::new(file);
     let entries: Vec<_> = tar.entries().unwrap().collect();
@@ -2913,7 +2913,7 @@ fn test_create_gz() {
     let len = fs::metadata(&archive_path).unwrap().len();
     assert!(len > 0, "gz archive should not be empty");
 
-    // Verify we can decompress and get the original content
+    // The archive must decompress back to the original content
     let compressed = fs::read(&archive_path).unwrap();
     let mut dec = flate2::read::GzDecoder::new(&compressed[..]);
     let mut decompressed = Vec::new();
@@ -3723,7 +3723,7 @@ fn test_resolve_file_specs_literal_src_with_dst_preserves_filename() {
     let license = tmp.path().join("LICENSE");
     fs::write(&license, b"MIT License").unwrap();
 
-    // Literal (non-glob) src with a dst directory — our LCP logic should
+    // Literal (non-glob) src with a dst directory — the LCP logic should
     // produce "licenses/LICENSE" rather than renaming the file to "licenses".
     // This is an intentional divergence from the upstream, which would rename
     // the file.
@@ -5085,8 +5085,8 @@ fn test_archive_templated_files_per_format() {
     let staging_root = dist.join(".archive-templated");
 
     // Stand up the source template file referenced by templated_files.src.
-    // It renders to a body that embeds .Format so we can also assert
-    // contents (not just the dst path).
+    // It renders to a body that embeds .Format so the assertion can cover
+    // contents, not just the dst path.
     let tpl_path = tmp.path().join("formats.tpl");
     fs::write(&tpl_path, "format={{ .Format }}\n").unwrap();
 

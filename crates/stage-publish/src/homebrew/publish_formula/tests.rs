@@ -56,8 +56,8 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 /// tempdir. The publisher clones this via the `git.url` SSH branch
 /// (which is a plain `git clone <localpath>` for a filesystem path),
 /// commits the formula, and pushes back to it. The seeded bare repo is
-/// the assertion surface: we inspect its landed `.rb` content + the
-/// commit subject after the publish.
+/// the assertion surface: its landed `.rb` content + the commit subject
+/// are inspected after the publish.
 fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
     let bare = tempfile::tempdir().expect("bare tempdir");
     let seed = tempfile::tempdir().expect("seed tempdir");
@@ -92,7 +92,7 @@ fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
 
 /// Read the rendered formula `.rb` that landed on the bare tap's
 /// `branch` ref (formula lives at the tap root unless `directory:` is
-/// set). Uses `git show <branch>:<path>` so we read the pushed object,
+/// set). Uses `git show <branch>:<path>` to read the pushed object,
 /// not a stale working tree.
 fn tap_show(bare: &Path, branch: &str, path: &str) -> String {
     git_stdout(bare, &["show", &format!("{branch}:{path}")])

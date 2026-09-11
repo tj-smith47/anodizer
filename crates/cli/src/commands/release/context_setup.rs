@@ -322,7 +322,7 @@ pub(crate) fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(St
 /// anchor is almost certainly NOT what the operator meant when they
 /// passed a bare filename: repo-relative file lookups (snapcraft icon
 /// resolution, extra-file globs, etc.) will all hit the process CWD
-/// rather than the repo root. We warn rather than bail because
+/// rather than the repo root. A warn rather than a bail, because
 /// legitimate workflows do invoke anodizer with CWD == project root and
 /// a bare filename; the warn lets a misconfiguration become visible
 /// without breaking the working case.

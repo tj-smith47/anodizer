@@ -120,6 +120,94 @@ fn a_test_reaching_a_registry_is_reported_and_a_bounded_one_is_not() {
     assert_eq!(code, 1, "{out}");
 }
 
+const PROSE_VOICE_RS: &str = include_str!("fixtures/audit_scripts/prose_voice.rs.txt");
+const PROSE_VOICE_SH: &str = include_str!("fixtures/audit_scripts/prose_voice.sh.txt");
+const PROSE_VOICE_YML: &str = include_str!("fixtures/audit_scripts/prose_voice.yml.txt");
+const PROSE_NAME_RS: &str = include_str!("fixtures/audit_scripts/prose_name.rs.txt");
+
+/// `audit-prose.sh` reports both counts in one run, so each pin gets a tree
+/// carrying only its own shapes; a shared tree would make either failure block
+/// depend on the other's fixture.
+fn prose_tree(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    for (rel, body) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("fixture dir");
+        std::fs::write(&path, body).expect("fixture file");
+    }
+    dir
+}
+
+/// The author belongs in neither register: a rustdoc `we` ships to users who
+/// do not know who that is, an inline one narrates a session. A pronoun in a
+/// binding name or a string literal is code; inside a backtick span, a quoted
+/// run or a URL it is someone else's text; and `us` inside `status` or
+/// `us-east-1` is not a pronoun at all. Shell and workflow comments are scanned whole-line only,
+/// because a `#` inside a string or a YAML scalar is data.
+#[test]
+fn first_person_in_a_comment_is_reported_and_code_or_quoted_prose_is_not() {
+    let dir = prose_tree(&[
+        ("crates/demo/src/lib.rs", PROSE_VOICE_RS),
+        (".claude/scripts/demo.sh", PROSE_VOICE_SH),
+        (".github/workflows/demo.yml", PROSE_VOICE_YML),
+    ]);
+    let (code, out) = run_audit("audit-prose.sh", dir.path());
+
+    let (mirrored, _) = at(PROSE_VOICE_RS, "/// We mirror");
+    let (narrated, _) = at(PROSE_VOICE_RS, "// Claude wrote");
+    assert_eq!(
+        hits(&out),
+        vec![
+            format!(
+                "crates/demo/src/lib.rs:{narrated}: // Claude wrote the loop; the next reader was not there for it."
+            ),
+            format!("crates/demo/src/lib.rs:{mirrored}: /// We mirror the Cargo.toml branch here."),
+        ],
+        "{out}"
+    );
+
+    let (sh_line, sh_text) = at(PROSE_VOICE_SH, "# We keep the runner");
+    let (yml_line, yml_text) = at(PROSE_VOICE_YML, "# Our release workflow");
+    assert!(
+        out.contains(&format!(".claude/scripts/demo.sh:{sh_line}: {sh_text}")),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            ".github/workflows/demo.yml:{yml_line}: {yml_text}"
+        )),
+        "{out}"
+    );
+    assert!(
+        !out.contains("trailing comment"),
+        "a trailing `#` is not a whole-line comment: {out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
+/// The tree carries no misspelling today, so this pin holds the rule rather
+/// than reporting a finding: the fixture supplies the hit, and the serde alias
+/// that keeps an old config spelling loadable stays exempt because there the
+/// spelling is data.
+#[test]
+fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
+    let dir = prose_tree(&[("crates/demo/src/lib.rs", PROSE_NAME_RS)]);
+    let (code, out) = run_audit("audit-prose.sh", dir.path());
+
+    let (misspelled, text) = at(PROSE_NAME_RS, "which is the misspelling");
+    assert_eq!(
+        hits(&out),
+        vec![format!("crates/demo/src/lib.rs:{misspelled}:{text}")],
+        "{out}"
+    );
+    let (aliased, _) = at(PROSE_NAME_RS, "serde(alias");
+    assert!(
+        !out.contains(&format!("crates/demo/src/lib.rs:{aliased}:")),
+        "the config alias spells the old name as DATA: {out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
 fn run_audit(script: &str, root: &Path) -> (i32, String) {
     run_audit_with_path(script, root, None)
 }
@@ -1147,7 +1235,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     }
     assert_eq!(
         commit_path.len(),
-        27,
+        28,
         "the set of tasks `task commit` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
     );
 
@@ -1694,7 +1782,7 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
          collect_files; these do not: {forbidden:#?}"
     );
     assert!(
-        scanners >= 14,
+        scanners >= 15,
         "expected every scanning script to be walked, found {scanners}"
     );
 }

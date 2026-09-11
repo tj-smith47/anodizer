@@ -103,8 +103,8 @@ mod tests {
 
     #[test]
     fn test_discord_payload_icon_url_without_author_drops_author() {
-        // Discord requires `author.name`; without it we must not emit an
-        // `author` object at all (an icon-only author is invalid and 400s).
+        // Discord requires `author.name`; without it no `author` object is
+        // emitted at all (an icon-only author is invalid and 400s).
         let opts = DiscordOptions {
             author: None,
             color: None,

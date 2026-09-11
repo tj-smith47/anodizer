@@ -144,8 +144,8 @@ pub(crate) fn run_git_revert_and_push(
 fn revert_head_in(path: &Path) -> Result<()> {
     // Reject a dirty working tree up front. `git revert` would otherwise
     // either succeed against a clean tree or fail with a less actionable
-    // "your local changes would be overwritten" message. We surface the
-    // dirty-tree condition explicitly so the warn line a caller logs
+    // "your local changes would be overwritten" message. The dirty-tree
+    // condition is surfaced explicitly so the warn line a caller logs
     // points at the right cause.
     let status = Command::new("git")
         .args(["status", "--porcelain"])
@@ -325,7 +325,7 @@ mod tests {
             ssh_command: None,
         };
         // The helper re-clones, reverts HEAD, pushes back to the bare
-        // remote. We then verify a fresh clone has HEAD as a revert
+        // remote. A fresh clone must then have HEAD as a revert
         // commit (subject starts with `Revert`).
         run_git_revert_and_push(&target, &TEST_PUSH_RETRY, None, &log).expect("revert+push ok");
 

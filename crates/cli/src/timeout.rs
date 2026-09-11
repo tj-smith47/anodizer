@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "intentional error");
     }
 
-    // Note: we cannot easily test the actual timeout/process::exit path in a
-    // unit test because it kills the process. The timeout behavior is verified
+    // The actual timeout/process::exit path is not exercisable in a unit
+    // test because it kills the process. The timeout behavior is verified
     // via an integration test that spawns a child process.
 }

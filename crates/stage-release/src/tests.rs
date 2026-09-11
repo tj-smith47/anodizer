@@ -979,7 +979,7 @@ fn test_collect_extra_files_skips_directories() {
     let test_file = dir.join("file.txt");
     std::fs::write(&test_file, "content").unwrap();
 
-    // The glob "*" matches both files and directories; we only want files
+    // The glob "*" matches both files and directories; only files qualify
     let pattern = dir.join("*").to_string_lossy().into_owned();
     let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
     assert!(result.iter().all(|(p, _)| p.is_file()));
@@ -1687,7 +1687,7 @@ fn test_make_latest_values_resolve_correctly() {
 #[test]
 fn test_release_name_template_rendering() {
     // Verify the rendered release name matches expected template output.
-    // We simulate the same resolution logic the stage uses: render
+    // Simulates the same resolution logic the stage uses: render
     // name_template via ctx.render_template and check the result.
     use anodizer_core::github_client::{
         CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo,
@@ -1838,7 +1838,7 @@ fn test_prerelease_auto_case_insensitive() {
 fn test_release_missing_token_error_message_is_actionable() {
     // The release stage requires a GitHub token for non-dry-run.
     // test_release_missing_token_errors already covers this,
-    // but we verify the error message is actionable (tells user what to do).
+    // but the error message must be actionable (tells user what to do).
     use anodizer_core::config::GitHubConfig;
 
     let mut ctx = TestContextBuilder::new()
@@ -2163,7 +2163,7 @@ draft: true
 #[test]
 fn test_release_stage_skipped_when_disabled() {
     // When skip: true is set, the release stage should skip
-    // the crate entirely. We test via dry-run to avoid real API calls.
+    // the crate entirely. Driven via dry-run to avoid real API calls.
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .dry_run(true)
@@ -3223,7 +3223,7 @@ fn test_include_meta_collects_dist_files() {
             ..Default::default()
         }])
         .build();
-    // Override the dist path to our temp directory
+    // Override the dist path to the temp directory
     ctx.config.dist = dist_dir.clone();
 
     let stage = ReleaseStage;
@@ -4151,7 +4151,7 @@ fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
         .expect("populate_checksums_var reads pipeline-produced checksum artifacts");
 
     // The map shape lets Tera iterate with `{% for k, v in Checksums %}`.
-    // We verify the rendered output references both artifact names so the
+    // The rendered output must reference both artifact names so the
     // template path through this branch is exercised.
     let rendered = ctx
         .render_template("{% for k, v in Checksums %}{{ k }}:{{ v }}\n{% endfor %}")
@@ -4432,7 +4432,7 @@ fn test_release_skip_template_renders_to_true_skips_crate() {
 #[test]
 fn test_release_skip_template_renders_to_false_proceeds() {
     // Template renders to "false" (snapshot=false), so the crate proceeds.
-    // We deliberately set the conflicting draft pair so the stage MUST
+    // The conflicting draft pair is set deliberately so the stage MUST
     // reach validation and bail — proving the skip branch was not taken.
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
@@ -4641,7 +4641,7 @@ fn test_selected_crates_filter_excludes_unlisted_crate() {
             path: ".".to_string(),
             tag_template: Some("v1.0.0".to_string()),
             release: Some(ReleaseConfig {
-                // Would bail if processed — filter must exclude us first.
+                // Would bail if processed — the filter must exclude it first.
                 replace_existing_draft: Some(true),
                 use_existing_draft: Some(true),
                 ..Default::default()
@@ -4776,8 +4776,8 @@ fn test_include_meta_missing_metadata_json_is_expected_in_dry_run() {
 // ---- release.tag override drifts from pushed git tag (warn) -----------
 //
 // The stage warns when `release.tag` resolves to a value different from
-// the pushed `Tag` template var. The warn is logged, not returned, so we
-// observe the post-state: `ReleaseURL` should be composed from the
+// the pushed `Tag` template var. The warn is logged, not returned, so the
+// post-state is what gets observed: `ReleaseURL` should be composed from the
 // override tag.
 
 #[test]
@@ -5470,7 +5470,7 @@ fn test_release_skip_invalid_template_errors() {
 // ---- release.tag override matches pushed tag → no drift warn ----------
 //
 // When the override resolves to the same value as the pushed Tag, no
-// drift warning should fire. We can't introspect the warn directly but
+// drift warning should fire. The warn is not directly introspectable, but
 // the dry-run still completes ok and the ReleaseURL uses the same tag.
 
 #[test]

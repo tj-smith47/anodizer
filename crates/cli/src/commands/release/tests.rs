@@ -1474,7 +1474,7 @@ fn nightly_version_template_user_override() {
 #[test]
 fn nightly_version_template_supports_nightly_build_and_base() {
     // nushell-style: <base>-nightly.<build>+<sha6>. NightlyBuild + Base
-    // are set by populate_git_vars in production; here we set them
+    // are set by populate_git_vars in production; set here
     // directly to prove the template references resolve.
     let config = Config {
         project_name: "myproj".to_string(),
@@ -1518,7 +1518,7 @@ fn map_head_tags_empty_returns_empty() {
     let crates = vec![make_crate("app", None)];
     let log = make_log();
     // Simulate get_tags_at_head returning empty by calling with an empty list.
-    // We test the core matching logic directly.
+    // The core matching logic is exercised directly.
     let head_tags: &[String] = &[];
     let selected = run_tag_mapping(&crates, head_tags);
     assert!(selected.is_empty(), "no tags → empty selection");
@@ -1727,9 +1727,9 @@ fn resolve_project_root_uses_config_parent() {
 
 /// When the config path has no parent component (rare — bare filename),
 /// the resolver must fall back to CWD so consumers still get *some*
-/// anchor instead of `None`. CWD is process-state we can't override
-/// in tests, so we assert the field is populated rather than match a
-/// specific path.
+/// anchor instead of `None`. CWD is process state a test cannot
+/// override, so the assertion is that the field is populated rather
+/// than a match on a specific path.
 #[test]
 fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
     let bare = std::path::Path::new("anodizer.yaml");

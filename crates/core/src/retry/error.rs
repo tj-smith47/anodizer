@@ -299,7 +299,7 @@ pub fn jitter_duration(base: Duration) -> Duration {
     let seq = JITTER_SEQ.fetch_add(0x9E37_79B9_7F4A_7C15, std::sync::atomic::Ordering::Relaxed);
     let seed = clock ^ seq;
     let offset = seed % (window * 2);
-    // Saturating arithmetic so we never panic on extreme values.
+    // Saturating arithmetic so extreme values cannot panic.
     let jittered = nanos.saturating_sub(window).saturating_add(offset);
     Duration::from_nanos(jittered)
 }

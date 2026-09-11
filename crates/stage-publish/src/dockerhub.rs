@@ -9,12 +9,12 @@ use anyhow::{Context as _, Result, anyhow, bail};
 /// `(entry, image)` cell that was actually mutated this run.
 ///
 /// `snapshot_description` / `snapshot_full_description` are the values
-/// the repo carried BEFORE our PATCH, captured via a GET that runs
+/// the repo carried BEFORE the PATCH, captured via a GET that runs
 /// immediately before the mutation. `rollback()` re-authenticates and
 /// PATCHes the snapshot back. A field that the GET response did not
 /// carry (or carried as `null`) is recorded as `None` and omitted from
-/// the rollback PATCH body so we never invent an empty string the
-/// repo did not have.
+/// the rollback PATCH body, so an empty string the repo did not have is
+/// never invented.
 ///
 /// CREDENTIAL CONTRACT: this struct is the payload that lands in
 /// [`anodizer_core::PublishEvidence::extra`], which is persisted to
@@ -230,7 +230,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
     let api_base = dockerhub_api_base(ctx.env_source());
 
     // JWT cache keyed by `(username, secret_env_name)`. When N entries
-    // share the same login pair we authenticate once and reuse the
+    // share the same login pair, a single authentication supplies the
     // bearer across PATCHes — saves API calls AND reduces the number
     // of times the secret value crosses the wire.
     let mut jwt_cache: std::collections::HashMap<(String, String), String> =
@@ -388,7 +388,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 
         // Authenticate: POST to get JWT token. Reuse a cached JWT when
         // multiple entries share the same (username, secret_env_name)
-        // pair so we don't pay the login round-trip per entry.
+        // pair so the login round-trip is not paid per entry.
         let cache_key = (username.clone(), secret_name.to_string());
         let token = if let Some(cached) = jwt_cache.get(&cache_key) {
             cached.clone()
@@ -449,8 +449,8 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             // same JWT — DockerHub treats GET on a public repo as
             // anonymous-safe but a private repo requires auth, so
             // sending the bearer covers both cases. Failure to read
-            // the snapshot is a failure of the publish itself: if we
-            // cannot read it we cannot honor rollback, and proceeding
+            // the snapshot is a failure of the publish itself: an unread
+            // snapshot means rollback cannot be honored, and proceeding
             // would silently degrade the rollback contract.
             let snapshot_label = format!("dockerhub: GET snapshot for {}", image);
             let (_, snapshot_body) = retry_http_blocking_deadline(
@@ -803,8 +803,8 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             Ok(c) => c,
             Err(e) => {
                 // Building a reqwest client only fails on a malformed
-                // TLS config — vanishingly unlikely, but if it does we
-                // degrade to the warn-only checklist rather than
+                // TLS config — vanishingly unlikely, but it degrades to
+                // the warn-only checklist rather than
                 // bubbling Err and gating rollback of sibling
                 // publishers.
                 log.warn(&format!(
@@ -1413,7 +1413,7 @@ dockerhub:
     }
 
     /// Defense-in-depth: if Docker Hub's GET-full-description endpoint
-    /// echoes our `Authorization: Bearer <PAT>` header back in an error
+    /// echoes the `Authorization: Bearer <PAT>` header back in an error
     /// body, the bearer token must NOT survive into the user-visible
     /// error chain. The retry helper trips on the 500 and the error
     /// message goes through `redact_bearer_tokens`.

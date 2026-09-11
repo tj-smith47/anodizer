@@ -468,7 +468,7 @@ fn no_configured_crates_records_nothing() {
 
 #[test]
 fn dry_run_with_publishable_config_records_nothing() {
-    // Mirrors BlobStage's dry-run contract: we log what WOULD run,
+    // Mirrors BlobStage's dry-run contract: what WOULD run is logged,
     // but no PublisherResult lands because no upload was attempted.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::context::ContextOptions;
@@ -550,8 +550,8 @@ fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
     // without this entry, neither downstream surface knows the
     // snap upload tried and failed.
     let mut ctx = TestContextBuilder::new().build();
-    // Pre-seed something innocuous so we also verify we APPEND
-    // (don't clobber) any existing results.
+    // Pre-seed something innocuous to also prove the write APPENDS to
+    // (rather than clobbers) any existing results.
     let mut report = PublishReport::default();
     report.results.push(PublisherResult {
         name: "github-release".to_string(),

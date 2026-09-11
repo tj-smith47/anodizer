@@ -128,7 +128,7 @@ pub(crate) fn splice_after_h1(existing: &str, new_section: &str, header: &str) -
         tail.push('\n');
     }
     if !consumed_h1 {
-        // No H1 found — synthesize one and place existing content after our
+        // No H1 found — synthesize one and place existing content after the
         // new section.
         return Ok(format!("{}{}\n{}", header, new_section, existing));
     }

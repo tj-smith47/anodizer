@@ -434,12 +434,11 @@ pub(crate) fn render_commit_line(
         commit_logins.push(login.to_string());
     }
     vars.set("Logins", &commit_logins.join(", "));
-    // `Logins` as a structured list too — symmetric with `AuthorsList`
+    // `Logins` as a structured list too — symmetric with `AuthorsList`,
     // so `{{ Logins | englishJoin }}` from a dotted-variable config works
-    // (`.Logins` is a list while ours has historically been a
-    // comma-string for the bare `{{ Logins }}` render. The structured
-    // alias under `LoginsList` lets templates iterate or filter without
-    // re-splitting on commas.
+    // (`.Logins` is a list) while this one stays a comma-string for the
+    // bare `{{ Logins }}` render. The structured alias under `LoginsList`
+    // lets templates iterate or filter without re-splitting on commas.
     let logins_list: Vec<JsonValue> = commit_logins
         .iter()
         .map(|s| JsonValue::String(s.clone()))

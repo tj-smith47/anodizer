@@ -47,8 +47,8 @@ pub fn validate_slug(slug: &str) -> Result<()> {
 
 /// Loose check on the Personal-Token header value. OpenCollective tokens are
 /// long opaque strings; reject anything obviously malformed (whitespace,
-/// non-printable bytes, very short) so we surface the misconfiguration before
-/// the API rejects us with an opaque 401.
+/// non-printable bytes, very short) so the misconfiguration surfaces before
+/// the API returns an opaque 401.
 pub fn validate_token_shape(token: &str) -> Result<()> {
     crate::util::validate_token_min_length("opencollective", "OPENCOLLECTIVE_TOKEN", token, 16)?;
     if token.chars().any(|c| c.is_whitespace() || c.is_control()) {

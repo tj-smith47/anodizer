@@ -123,8 +123,8 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
     // Filter artifacts from the registry based on artifacts type.
     //
-    // For `artifacts: binary` we match Binary + UploadableBinary + UniversalBinary
-    // and dedup by path, preferring UploadableBinary (binary-like
+    // For `artifacts: binary` the match covers Binary + UploadableBinary +
+    // UniversalBinary, deduped by path, preferring UploadableBinary (binary-like
     // artifact selection).
     // Without this, each per-arch Binary *plus* its UploadableBinary registration
     // would produce its own SBOM at the same path, causing file collisions.

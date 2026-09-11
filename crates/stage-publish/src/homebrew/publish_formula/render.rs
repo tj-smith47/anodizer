@@ -159,7 +159,7 @@ pub(super) fn render_install_and_test_blocks(
     // ships shell completions + manpages like ripgrep/fd/bat, not a bare
     // `bin.install`. Only appended to the auto-derived install block — when the
     // user hand-writes `install:`, they own the full block (including any
-    // completions) and we must not double-emit.
+    // completions) and it must not be double-emitted.
     let install_raw = if hb_cfg.install.is_some() {
         install_raw
     } else {

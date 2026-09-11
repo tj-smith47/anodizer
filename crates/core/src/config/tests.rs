@@ -7550,7 +7550,7 @@ workspaces:
 
 #[test]
 fn test_try_evaluates_to_true_plain_literal_invokes_render() {
-    // Records every input the closure sees so we can assert the render step
+    // Records every input the closure sees, so the render step can be asserted to have
     // ran even for the plain-literal "true" case (regression against the old
     // contains('{') short-circuit).
     let calls = std::cell::RefCell::new(Vec::<String>::new());
@@ -7588,8 +7588,8 @@ fn test_try_evaluates_to_true_invalid_template_surfaces_error() {
     // A Tera-syntactically-invalid template must propagate as an Err rather
     // than being silently treated as a literal (which the old short-circuit
     // would have done for any value not containing '{', but a `{{ broken`
-    // string does contain '{' — the regression we're pinning here is the
-    // post-fix invariant: the render closure's error always reaches the caller).
+    // string does contain '{'. The invariant pinned here is the post-fix one:
+    // the render closure's error always reaches the caller.
     let render = |_: &str| -> anyhow::Result<String> { anyhow::bail!("tera parse error") };
 
     let val = StringOrBool::String("{{ broken".to_string());
@@ -7604,7 +7604,7 @@ fn test_try_evaluates_to_true_invalid_template_surfaces_error() {
 
 #[test]
 fn test_try_evaluates_to_true_bool_variant_skips_render() {
-    // The Bool variant has nothing to render — we keep that as a fast path
+    // The Bool variant has nothing to render, and that fast path is kept
     // both for correctness (no template engine for a literal bool) and so
     // configs that set `skip: true` don't pay a render cost per evaluation.
     let render = |_: &str| -> anyhow::Result<String> {

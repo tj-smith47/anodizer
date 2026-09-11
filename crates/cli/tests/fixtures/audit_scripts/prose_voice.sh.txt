@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# We keep the runner pinned to the commit under test.
+set -euo pipefail
+
+# The status line is emitted once per artifact.
+echo "done" # we do not scan a trailing comment

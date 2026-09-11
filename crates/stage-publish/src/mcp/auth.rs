@@ -52,7 +52,7 @@ pub trait McpAuthProvider {
 
 /// The token-response body returned by the registry's
 /// token-exchange endpoints (`/v0/auth/none`, `/v0/auth/github-at`,
-/// `/v0/auth/github-oidc`). `expires_at` is currently unused on our side.
+/// `/v0/auth/github-oidc`). `expires_at` is currently unused here.
 #[derive(Debug, Deserialize)]
 struct RegistryTokenResponse {
     /// Registry JWT to use as the `Bearer` token for `/v0/publish`.

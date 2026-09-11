@@ -205,7 +205,7 @@ fn wait_or_kill(
 /// Spawn `cmd` and collect its output, draining stdout and stderr
 /// concurrently. When `stdin` is `Some`, its bytes are written on a dedicated
 /// thread so the writer and the output readers run in parallel — a child that
-/// fills its stdout pipe buffer (~64 KiB) while we are still feeding it a large
+/// fills its stdout pipe buffer (~64 KiB) while still being fed a large
 /// stdin cannot deadlock, because the readers keep draining. At verbose, each
 /// output line is also teed live (redacted) to stderr.
 ///
@@ -341,7 +341,7 @@ fn capture_inner(
     let readers_done_ref = &readers_done;
     std::thread::scope(|s| {
         // Stdin writer (only when there is stdin): own thread so the readers
-        // below drain concurrently and a full stdout pipe can't wedge us
+        // below drain concurrently and a full stdout pipe cannot wedge the write
         // mid-write. Dropping `pipe` after `write_all` closes stdin → EOF.
         let stdin_handle = child_stdin.map(|mut pipe| {
             let bytes = stdin.expect("child_stdin is Some only when stdin is Some");

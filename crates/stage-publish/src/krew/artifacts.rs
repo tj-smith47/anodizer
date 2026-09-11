@@ -23,7 +23,7 @@ use super::*;
 ///    install (krew validator: "source binary cannot be found in extracted
 ///    archive"). The `.exe` suffix is produced naturally because the
 ///    builder appends it to `binary.Name`; anodizer's archive metadata
-///    stores the suffix-less name, so we normalize here.
+///    stores the suffix-less name, which is normalized here.
 pub(super) fn artifacts_to_platforms(
     artifacts: &[OsArtifact],
     default_binary_name: &str,

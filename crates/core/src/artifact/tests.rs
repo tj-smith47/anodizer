@@ -448,7 +448,7 @@ fn dedupe_targetless_duplicates_collapses_cross_shard_dups() {
     }
     // Plus a couple of per-target archives that are NOT duplicates
     // (same crate, different target → different path expected, but
-    // we use the same path here to exercise the negative case:
+    // the same path is reused here to exercise the negative case:
     // dedupe must leave target-Some duplicates alone for the
     // downstream overlap-detection check).
     for triple in &["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {

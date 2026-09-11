@@ -274,8 +274,8 @@ fn tag_rollback_works_on_identity_less_host() {
 
     // Spawn anodizer WITHOUT inheriting committer env. Manually
     // construct the command (the `anodizer()` helper would inherit
-    // committer env if the test process had it, but we explicitly
-    // clear it here so the fallback path is exercised).
+    // committer env if the test process had it, so it is cleared
+    // explicitly here and the fallback path is exercised).
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
     cmd.current_dir(dir)
         .args(["tag", "rollback", "--no-push"])

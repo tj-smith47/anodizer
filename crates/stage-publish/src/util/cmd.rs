@@ -2,9 +2,9 @@
 //!
 //! Also exposes byte-level token-redaction helpers (`redact_output_token`
 //! and `replace_bytes`) used by [`clone`](super::clone) and by the
-//! `_redacted` variant of [`run_cmd_in`] below. We do this here — rather
-//! than reaching for `core::redact::string` — because the values we need
-//! to scrub are raw `Vec<u8>` from `std::process::Output` and the secret
+//! `_redacted` variant of [`run_cmd_in`] below. It lives here — rather
+//! than reaching for `core::redact::string` — because the scrubbed values
+//! are raw `Vec<u8>` from `std::process::Output` and the secret
 //! is passed in directly (no env-driven heuristic, no key/value mapping).
 
 use anodizer_core::log::StageLogger;
@@ -158,8 +158,8 @@ pub(crate) fn run_cmd_in_redacted(
 /// failure messages that echo a remote URL containing the token.
 ///
 /// `secret = None` and `secret = Some("")` are no-ops: the input is
-/// returned unchanged. We intentionally refuse to redact the empty
-/// string so that an unset token doesn't replace every empty substring
+/// returned unchanged. Redacting the empty string is deliberately refused
+/// so that an unset token doesn't replace every empty substring
 /// in the byte stream.
 pub(crate) fn redact_output_token(mut output: Output, secret: Option<&str>) -> Output {
     if let Some(tok) = secret
@@ -171,7 +171,7 @@ pub(crate) fn redact_output_token(mut output: Output, secret: Option<&str>) -> O
     output
 }
 
-/// String-level twin of [`redact_output_token`] for the `argv` we embed
+/// String-level twin of [`redact_output_token`] for the `argv` embedded
 /// into error messages. Returns the input unchanged when `secret` is
 /// `None` or empty.
 fn redact_str(input: &str, secret: Option<&str>) -> String {

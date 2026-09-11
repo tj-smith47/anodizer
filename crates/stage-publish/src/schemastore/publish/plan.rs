@@ -228,7 +228,7 @@ pub(crate) fn schema_change_needed(
         return false;
     }
 
-    // Vendor: the upstream file must byte-equal what we would write. A missing
+    // Vendor: the upstream file must byte-equal what would be written. A missing
     // upstream file (None) or missing local content is uncertainty ⇒ change.
     let (Some(local), Some(upstream)) = (local_schema, remote.vendor_file) else {
         return true;
@@ -255,7 +255,7 @@ pub(crate) fn schema_change_needed(
     // The per-file validator options must already match: a vendored schema
     // using a `format` ajv does not know fails SchemaStore's `validate` unless
     // `schema-validation.jsonc` carries an `options` block keyed by the
-    // vendored filename. A block we cannot read (jsonc not fetched, name not
+    // vendored filename. An unreadable block (jsonc not fetched, name not
     // derivable) is uncertainty ⇒ change-needed.
     let want_options = desired_options_block(plan, local, remote.jsonc);
     if !want_options.is_empty() {

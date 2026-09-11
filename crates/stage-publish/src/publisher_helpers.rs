@@ -424,7 +424,7 @@ pub(crate) fn rollback_failure_warning_msg(
 ///
 /// Why constants on an inherent impl, not a `Publisher` impl? Rust requires
 /// a trait impl to live in a single `impl Trait for Type { ... }` block,
-/// so we cannot split `name`/`group`/`required`/`rollback_scope_needed`
+/// so `name`/`group`/`required`/`rollback_scope_needed` cannot be split
 /// (constants) away from `run`/`rollback`/`preflight` (per-publisher
 /// bodies). Instead, the macro pins the constants on the struct itself
 /// and each publisher's `impl Publisher for $struct { ... }` block just

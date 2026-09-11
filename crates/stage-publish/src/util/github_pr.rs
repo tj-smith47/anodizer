@@ -338,10 +338,10 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         // The blocking response is consumed at most once. For non-2xx
-        // statuses we drain it into a String for the error carrier; for
-        // 2xx we hand it to serde-json below. `classify_find_pr_status`
-        // takes a body supplier rather than the body up-front so we
-        // don't pay the read for success cases.
+        // statuses it is drained into a String for the error carrier; for
+        // 2xx it goes to serde-json below. `classify_find_pr_status`
+        // takes a body supplier rather than the body up-front so the read
+        // is not paid for success cases.
         if !status.is_success() {
             let body = anodizer_core::http::body_of_blocking(resp);
             return Err(
@@ -553,7 +553,7 @@ mod tests {
     fn close_pr_via_api_treats_422_as_already_closed() {
         // GitHub's actual response code for "PR already in closed
         // state" — observed when a maintainer closed the PR between
-        // our `find_open_pr_numbers` query and our PATCH.
+        // the `find_open_pr_numbers` query and the PATCH.
         let outcome = classify_close_status(reqwest::StatusCode::UNPROCESSABLE_ENTITY, "{}");
         assert_eq!(outcome, CloseOutcome::AlreadyClosed);
     }

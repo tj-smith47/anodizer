@@ -61,9 +61,9 @@ pub(crate) async fn gitlab_create_release(
     let encoded_tag = encode_tag(tag);
 
     // Try to get the existing release for this tag. The success branch needs
-    // to inspect status (403/404 = "create") so we cannot use Strict success
-    // class here — instead, fast-fail on 4xx is unwanted for the GET probe;
-    // we accept 403/404 as a legitimate "not found" signal. The simplest
+    // to inspect status (403/404 = "create"), so the Strict success class
+    // does not fit — fast-fail on 4xx is unwanted for the GET probe, where
+    // 403/404 is a legitimate "not found" signal. The simplest
     // correct shape is a manual classify: route 5xx + transport errors
     // through retry_http_async_deadline (success_class=Strict makes 4xx a Break),
     // catch the Break for 403/404, and treat it as the "create" branch.

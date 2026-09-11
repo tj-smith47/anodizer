@@ -499,8 +499,8 @@ mod tests {
     // -------------------------------------------------------------------
     // encrypt_with_kms — per-provider client-side encryption. Each arm
     // strips the scheme, builds the right argv, and decodes the response.
-    // Stubs emit canned tool output; we assert the argv AND the decoded
-    // ciphertext.
+    // Stubs emit canned tool output; the assertions cover the argv AND the
+    // decoded ciphertext.
     // -------------------------------------------------------------------
 
     #[cfg(unix)]

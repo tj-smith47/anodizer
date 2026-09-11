@@ -21,7 +21,7 @@ pub fn platform_to_arch(platform: &str) -> &str {
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(_), Some(arch), Some(variant), None) => {
             // For "linux/arm/v7" → "armv7", "linux/arm/v6" → "armv6"
-            // We need static strings since the return type is &str.
+            // Static strings are required since the return type is &str.
             match (arch, variant) {
                 ("arm", "v6") => "armv6",
                 ("arm", "v7") => "armv7",

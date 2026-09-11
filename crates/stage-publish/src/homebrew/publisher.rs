@@ -1226,8 +1226,8 @@ mod publisher_tests {
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
         // dry-run publish_to_homebrew returns false (no actual push),
         // so evidence.extra may be empty — but the run path must not error.
-        // The important assertion is that we round-tripped without panic
-        // and the publisher returned Ok.
+        // The important assertion is the round-trip without panic and an
+        // Ok return from the publisher.
         let _ = decode_homebrew_targets(&evidence.extra);
     }
 

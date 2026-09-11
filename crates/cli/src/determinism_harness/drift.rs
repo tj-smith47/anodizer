@@ -161,7 +161,7 @@ pub(super) fn summarize_drift(
 ///
 /// Returns `None` when:
 ///   - `head.len() + tail.len() < size` (real coverage gap — drift
-///     might land in the un-sampled middle and we can't decode it),
+///     might land in the un-sampled middle and cannot be decoded),
 ///   - `size` exceeds `usize::MAX` on the host (a 32-bit corner case
 ///     for hypothetical >4 GiB artifacts; the harness's hashing path
 ///     already buffers the file fully, so 32-bit hosts couldn't get
@@ -177,7 +177,7 @@ fn reconstruct_full(head: &[u8], tail: &[u8], size: u64) -> Option<Vec<u8>> {
     // tail_start = size - tail.len(), guaranteed >= head's covered
     // region by the sampler's construction. If the sampler ever
     // emits an unaligned pair (regression) the strict bounds check
-    // here guards us.
+    // here catches it.
     let tail_start = size.checked_sub(tail.len())?;
     if tail_start > head.len() {
         return None;

@@ -87,14 +87,14 @@ impl Context {
             // monorepo.tag_prefix takes precedence over tag.tag_prefix for
             // PrefixedTag / PrefixedPreviousTag / PrefixedSummary behavior.
             // When monorepo is configured, info.tag and info.summary already
-            // contain the prefix from git, so we strip for the base vars and
+            // contain the prefix from git, so it is stripped for the base vars and
             // use the raw values for the Prefixed variants.
             if let Some(prefix) = monorepo_prefix {
                 // Monorepo mode: the tag in git_info is the FULL prefixed tag.
                 // PrefixedTag = full tag (already has prefix).
                 self.template_vars.set("PrefixedTag", &info.tag);
 
-                // Tag = prefix stripped. Override the Tag we set above.
+                // Tag = prefix stripped. Overrides the Tag set above.
                 let stripped_tag = crate::git::strip_monorepo_prefix(&info.tag, prefix);
                 self.template_vars.set("Tag", stripped_tag);
 
@@ -239,8 +239,8 @@ impl Context {
     /// 2. `chrono::Utc::now()` — wall-clock fallback. The
     ///    legacy semantics for runs without SDE wired in. Note that the
     ///    template docs explicitly call `.Now` "not deterministic"
-    ///    — under SDE-aware reproducible builds we deviate from that
-    ///    behavior intentionally.
+    ///    — under SDE-aware reproducible builds that claim is deliberately
+    ///    not true.
     pub fn populate_time_vars(&mut self) {
         // Resolution order (SDE first, else wall-clock) is centralized in
         // `crate::sde::resolve_now_with_env` so any caller —
@@ -279,7 +279,7 @@ impl Context {
         self.template_vars.set("RuntimeGoos", goos);
         self.template_vars.set("RuntimeGoarch", goarch);
         // Runtime.Goos / Runtime.Goarch — after preprocessing
-        // the dot becomes an underscore-separated flat key. We expose both forms.
+        // the dot becomes an underscore-separated flat key. Both forms are exposed.
         self.template_vars.set("Runtime_Goos", goos);
         self.template_vars.set("Runtime_Goarch", goarch);
         // RustcVersion is a host-environment fact like OS/arch, so it is set in
@@ -346,7 +346,7 @@ impl Context {
     /// - `id` — artifact ID from config, set by docker and build stages
     /// - `binary` — binary name, set by build stage
     pub fn refresh_artifacts_var(&mut self) {
-        // CSV metadata keys we expose as JSON arrays for template iteration.
+        // CSV metadata keys exposed as JSON arrays for template iteration.
         // Storage remains HashMap<String,String> (flat); only the
         // template-exposed view is expanded. The
         // ExtraBinaries / ExtraFiles list semantics.
@@ -414,7 +414,7 @@ impl Context {
     /// headers, fetched through [`crate::content_source::resolve`] which
     /// applies retries, body caps, and CR/LF header-injection guards).
     pub fn populate_metadata_var(&mut self) -> anyhow::Result<()> {
-        // Clone the small scalar fields so we don't hold a borrow on self.config
+        // Clone the small scalar fields so no borrow on self.config is held
         // across the render_template calls below.
         let (
             description,

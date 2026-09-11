@@ -587,7 +587,7 @@ fn cleanup_shard_manifests_removes_only_artifacts_shards_leaves_context() {
     assert!(!dist.join("artifacts-macos-latest.json").exists());
     assert!(!dist.join("artifacts-windows-x86_64.json").exists());
     // Context shards SURVIVE — there's no un-suffixed replacement, so
-    // we must not delete the only manifest the next retry could use.
+    // the only manifest the next retry could use must survive.
     assert!(dist.join("context-ubuntu-latest.json").is_file());
     assert!(dist.join("context-macos-latest.json").is_file());
 }

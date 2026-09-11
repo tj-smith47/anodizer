@@ -531,7 +531,7 @@ mod tests {
     fn available_bytes_probes_real_volume() {
         let dir = tempdir().unwrap();
         // A real filesystem always has *some* notion of available space;
-        // the probe must return Some (we don't assert a floor — CI runners
+        // the probe must return Some (no floor is asserted — CI runners
         // vary — only that the call resolves).
         assert!(
             available_bytes(dir.path()).is_some(),

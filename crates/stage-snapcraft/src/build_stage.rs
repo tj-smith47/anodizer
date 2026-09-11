@@ -22,7 +22,7 @@ use crate::yaml::DEFAULT_SNAP_NAME_TEMPLATE;
 // `BaseDirectory.save_cache_path("snapcraft", "download")` at import time, which
 // calls `os.makedirs(path)` without `exist_ok=True`. Once the first invocation
 // creates that directory, every subsequent snapcraft process crashes at import
-// before it can pack. We wipe the cache dir and serialize invocations so the
+// before it can pack. The cache dir is wiped and invocations serialized so the
 // wipe-then-pack sequence is atomic across parallel workers.
 static SNAPCRAFT_CACHE_LOCK: Mutex<()> = Mutex::new(());
 

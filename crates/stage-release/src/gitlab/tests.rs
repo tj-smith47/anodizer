@@ -421,7 +421,7 @@ async fn gitlab_create_release_retries_5xx_on_get_probe() {
     );
 }
 
-/// Defense-in-depth: a GitLab API 4xx response that echoes our
+/// Defense-in-depth: a GitLab API 4xx response that echoes the
 /// `Authorization: Bearer <PAT>` header back must not leak the token
 /// into the user-visible error chain. Exercises the
 /// `gitlab_create_release` GET-probe error-message closure on the

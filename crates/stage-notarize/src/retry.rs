@@ -71,8 +71,8 @@ pub(super) fn is_retriable_notarize_output(
 }
 
 /// Build a Command from a `[bin, arg, arg, ...]` slice — used by the retry
-/// helper because `Command` is not `Clone`-able and we need to re-execute
-/// the same invocation on each attempt.
+/// helper because `Command` is not `Clone`-able and each attempt must
+/// re-execute the same invocation.
 pub(super) fn build_command_from_args(args: &[String]) -> Command {
     let mut cmd = Command::new(&args[0]);
     cmd.args(&args[1..]);
@@ -158,7 +158,7 @@ fn notarize_backoff(initial_delay: std::time::Duration, attempt: u32) -> std::ti
 /// Variant of `run_with_retry` for callers that only need the exit status
 /// (`.status()` style). Used by `rcodesign sign` which contacts Apple's
 /// RFC 3161 timestamp server (`timestamp.apple.com`) and so is itself a
-/// network-touching call. Without `.output()` we cannot inspect stderr to
+/// network-touching call. Without `.output()` stderr cannot be inspected to
 /// classify failure as transient vs. permanent, so this variant retries on
 /// **any** non-success exit (and on spawn errors). The exponential schedule
 /// matches `run_with_retry`. Callers that have output-classification fidelity

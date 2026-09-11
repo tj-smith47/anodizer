@@ -27,8 +27,8 @@ pub struct ServerJson {
     pub schema: String,
     /// Server name in reverse-DNS format (required).
     pub name: String,
-    /// Clear human-readable description (required by upstream schema; we
-    /// allow empty since the registry does not enforce non-empty here either).
+    /// Clear human-readable description (required by upstream schema; empty
+    /// is allowed since the registry does not enforce non-empty here either).
     pub description: String,
     /// Optional human-readable title.
     #[serde(default, skip_serializing_if = "String::is_empty")]

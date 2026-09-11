@@ -52,10 +52,10 @@ pub enum TeamsWebhookKind {
 /// - host is `outlook.office.com` AND path begins with `/webhook/`
 ///
 /// Everything else (Power Automate `*.logic.azure.com`, APIM
-/// `*.azure-api.net`, corporate proxies) defaults to `Workflow`. We do
-/// not strictly *require* a Workflow URL to match a known host — that
+/// `*.azure-api.net`, corporate proxies) defaults to `Workflow`. A Workflow
+/// URL is not strictly *required* to match a known host — that
 /// would block users who tunnel their webhook through a gateway and lock
-/// us into Microsoft's host-naming choices. The contract is: only
+/// the classifier into Microsoft's host-naming choices. The contract is: only
 /// known-deprecated hosts are flagged Legacy; everything else is treated
 /// as "modern" and emitted silently.
 pub fn classify_teams_webhook(url: &str) -> TeamsWebhookKind {
@@ -99,7 +99,7 @@ pub fn warn_legacy_teams_webhook() {
 /// Build a Microsoft Teams Adaptive Card payload with optional title, color, and icon.
 ///
 /// Color handling: Teams ignores the legacy MessageCard `themeColor` field on
-/// Adaptive Card payloads. When a color is configured we instead wrap the
+/// Adaptive Card payloads. A configured color instead wraps the
 /// title block in a `Container` with `style: "emphasis"` so the configured
 /// color visually accents the header. The raw hex value is emitted as a
 /// `msteams` metadata field on the card so MessageCard-style consumers that

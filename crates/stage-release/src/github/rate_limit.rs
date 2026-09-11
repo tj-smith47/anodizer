@@ -208,12 +208,12 @@ pub(crate) async fn check_github_rate_limit_with_sleep<E: EnvSource + ?Sized>(
 #[cfg(all(test, unix))]
 mod sigterm_tests {
     //! Verify the SIGTERM-aware select arm actually fires when the process
-    //! receives SIGTERM. We can't easily call `check_github_rate_limit`
-    //! end-to-end without a fake GitHub server, but the load-bearing piece
+    //! receives SIGTERM. Calling `check_github_rate_limit` end-to-end
+    //! needs a fake GitHub server, but the load-bearing piece
     //! — `signal(SignalKind::terminate())` returning a stream that yields
     //! on a delivered SIGTERM — is testable in isolation.
     //!
-    //! Sending the signal to our own PID is safe in test context: the
+    //! Sending the signal to the test process's own PID is safe: the
     //! tokio signal driver registers a handler that swallows the default
     //! "terminate the process" disposition. The race is bounded by a
     //! generous timeout so a regression (handler not installed, signal
@@ -228,7 +228,7 @@ mod sigterm_tests {
             .ok()
             .unwrap_or_else(|| panic!("SIGTERM handler install failed"));
 
-        // Spawn a task that delivers SIGTERM to our own PID after a short
+        // Spawn a task that delivers SIGTERM to this process after a short
         // delay (via /usr/bin/kill, which avoids needing libc as a dev-dep
         // — the module-boundaries rule allow-lists `Command::new` in any
         // file under `crates/stage-*`). Tokio's signal driver has already
@@ -272,7 +272,7 @@ mod sigterm_tests {
     /// fails at the transport layer (connection refused), the function
     /// must return promptly instead of propagating or panicking.
     ///
-    /// We point `api.github.com` at a TCP address that has just been
+    /// `api.github.com` is pointed at a TCP address that has just been
     /// closed (bind + drop the listener) so the `client.get(...).send()`
     /// future resolves to `Err(_)`, exercising the first `Err(_) => return`
     /// arm at line 42. The 5 s timeout bounds a regression: if the
@@ -298,7 +298,7 @@ mod sigterm_tests {
 
         let fut = check_github_rate_limit(&client, "fake-token", 100);
         // 5 s upper bound — Linux returns `ECONNREFUSED` synchronously,
-        // so the silent-degrade arm should fire in <1 s. If we hang, the
+        // so the silent-degrade arm should fire in <1 s. A hang means the
         // function violated its no-panic / no-bubble contract.
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
         assert!(
@@ -599,8 +599,8 @@ mod sleep_injection_tests {
 
     /// When `remaining <= threshold` and `reset_epoch > now`, the
     /// function must sleep for `(reset_epoch - now + 1)` seconds. The
-    /// injected recorder captures the duration so we can assert the
-    /// exact value without wall-clock delay.
+    /// injected recorder captures the duration so the exact value is
+    /// assertable without wall-clock delay.
     #[tokio::test]
     async fn sleep_until_future_reset_records_correct_duration() {
         let now = std::time::SystemTime::now()

@@ -172,7 +172,7 @@ fn glob_less_upstream_entry_is_updated_in_place_not_duplicated() {
 }
 
 /// The name half of the identity rule is case-insensitive: an upstream entry
-/// renamed in review (`CFGD Profile`) and carrying no `fileMatch` is still ours.
+/// renamed in review (`CFGD Profile`) and carrying no `fileMatch` still matches.
 #[test]
 fn glob_less_upstream_entry_matches_name_case_insensitively() {
     let catalog = r#"{ "schemas": [
@@ -546,7 +546,7 @@ fn add_high_schema_version_handles_empty_array() {
 
 /// SchemaStore rollback closes the registration PR and nothing else: it must
 /// never edit `catalog.json`, because a name-matched upstream entry the publish
-/// UPDATED in place was not created by us and unwinding it would delete
+/// UPDATED in place was not created here, and unwinding it would delete
 /// somebody else's registration.
 ///
 /// Pinned two ways — running the rollback path leaves a catalog file's bytes

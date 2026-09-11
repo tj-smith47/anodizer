@@ -920,7 +920,7 @@ mod redact_output_token_tests {
     /// Build a synthetic `Output` for the redaction test cases.
     ///
     /// `redact_output_token` only reads `output.stderr` / `output.stdout`,
-    /// so any concrete `ExitStatus` works here. We spawn `true` (Unix) or
+    /// so any concrete `ExitStatus` works here. Spawning `true` (Unix) or
     /// `cmd /c exit 0` (Windows) just to obtain a real `ExitStatus` value,
     /// since `ExitStatus` cannot be constructed directly in stable Rust.
     fn failing_output(stderr: &[u8], stdout: &[u8]) -> Output {
@@ -1136,7 +1136,7 @@ mod commit_opts_tests {
     fn test_resolve_commit_opts_no_config_uses_defaults() {
         let ctx = ctx_for_template_tests();
         let opts = resolve_commit_opts(&ctx, None, &super::test_log()).unwrap();
-        // We can't assert the exact value because it depends on the local
+        // The exact value can't be asserted because it depends on the local
         // git config of the test environment, but it must be Some(...).
         assert!(opts.author_name.is_some());
         assert!(opts.author_email.is_some());

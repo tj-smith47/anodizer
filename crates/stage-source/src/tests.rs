@@ -606,7 +606,7 @@ fn test_stage_dry_run_does_not_create_files() {
 /// `git rev-parse --show-toplevel` aborted with "Unable to read current
 /// working directory".
 ///
-/// Here we point the process cwd at a directory that is NOT a git repo
+/// Here the process cwd points at a directory that is NOT a git repo
 /// (`/`) and prove the stage still resolves the workspace via the
 /// explicit `project_root`. The test is `#[serial(cwd)]` (the
 /// workspace-canonical cwd serial group) because it mutates the
@@ -1515,7 +1515,7 @@ fn test_source_archive_zip_extras_match_source_compression_default_deflated() {
 /// Q-src2 (Stored-source variant) — when the source zip uses Stored,
 /// extras must too. Exercised against a hand-rolled Stored zip via the
 /// SAME copy+append loop the production code uses (re-implemented here so
-/// we can pre-stage a Stored zip; otherwise git archive's default Deflate
+/// a Stored zip can be pre-staged; otherwise git archive's default Deflate
 /// path applies).
 #[test]
 fn test_source_archive_zip_extras_match_stored_source_compression() {

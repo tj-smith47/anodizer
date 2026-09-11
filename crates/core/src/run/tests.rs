@@ -253,7 +253,7 @@ fn big_stdin() -> Vec<u8> {
 fn run_checked_with_stdin_large_in_and_out_no_deadlock() {
     let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
     let stdin = big_stdin();
-    // `cat` echoes the full stdin to stdout; then we emit 100k extra lines
+    // `cat` echoes the full stdin to stdout, then 100k extra lines follow
     // so the child's stdout far exceeds one pipe buffer while stdin is
     // still being fed.
     let out = run_checked_with_stdin(
@@ -596,7 +596,7 @@ fn err_path_does_not_leak_registered_child_tree() {
 /// ([`terminate_all_child_trees`]) must reach a registered, group-isolated
 /// child: spawn a real long-lived `sleep` in its own process group, register
 /// its pgid, fire the routine, and assert the child is reaped (not orphaned
-/// to outlive us — the CI-cancel hang this fix targets). Unix-only: the
+/// beyond the run — the CI-cancel hang this fix targets). Unix-only: the
 /// assertion uses `waitpid`/`kill` semantics.
 ///
 /// Serialized against the timeout tests: `terminate_all_child_trees`

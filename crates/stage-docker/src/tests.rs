@@ -567,8 +567,8 @@ fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
     assert_eq!(m, Some(Duration::from_secs(7)));
 
     // Case 3: per-pipe set (overrides top-level, fires deprecation warn).
-    // We can't easily intercept tracing output here without a subscriber,
-    // so we verify the values are taken from per-pipe and rely on the
+    // Intercepting tracing output here would need a subscriber,
+    // so the assertion covers the values taken from per-pipe and relies on the
     // OnceLock + tracing::warn! contract documented in retry.rs.
     let per_pipe = Some(DockerRetryConfig {
         attempts: Some(2),
@@ -592,7 +592,7 @@ fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
 // Captures the intent that `resolve_retry_params` must fire its deprecation
 // warning at most once per process when a per-pipe `DockerRetryConfig` is
 // supplied. Verifying this end-to-end requires a `tracing-subscriber` test
-// fixture that captures the warn event, which we deliberately do not pull in
+// fixture that captures the warn event, deliberately not pulled in
 // just for one assertion. The contract is enforced by the `OnceLock` guard
 // in `retry::warn_docker_retry_deprecated_once` and reviewed at code-review.
 #[test]
@@ -966,8 +966,8 @@ fn test_docker_manifest_create_push_flags_template_rendering() {
 
     // Inline-render the flags through the same ctx to assert templating
     // resolves — dry-run doesn't expose rendered flags in artifact metadata,
-    // but the stage ran without template errors, and we verify the engine
-    // handles the exact strings the stage passes it.
+    // but the stage ran without template errors, and the engine is asserted
+    // to handle the exact strings the stage passes it.
     assert_eq!(
         ctx.render_template("--annotation=tag={{ .Tag }}").unwrap(),
         "--annotation=tag=v1.2.3"
@@ -1943,7 +1943,7 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
     // The BaseImage / BaseImageDigest template vars must be live when
     // annotations / labels / tags render. Failure mode: a typo like
     // `{{ .BaseImag }}` would raise a render error in strict mode, but
-    // here we verify the var is *populated* (not just defined) by
+    // the assertion here is that the var is *populated* (not just defined), by
     // rendering it through a tag template and checking the resulting
     // artifact name.
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
@@ -2001,9 +2001,9 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
 /// `image@digest` blob.
 ///
 /// Capturing `tracing` output here would need a full `tracing_subscriber`
-/// fixture, which adds dev-dep weight. Instead, we extract the
-/// human-readable status line into a pure helper
-/// (`format_v2_created_images_log`) and assert its shape directly. The
+/// fixture, which adds dev-dep weight. Instead, the human-readable status
+/// line is split into a pure helper
+/// (`format_v2_created_images_log`) whose shape is asserted directly. The
 /// `tracing::info!(images = …, digest = …)` macro at the call site uses
 /// the same two-field shape — verified by code inspection in build.rs.
 #[test]
@@ -2054,7 +2054,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
     let tmp = TempDir::new().unwrap();
     // Note: NO dockerfile written — if the skip logic is broken and the
     // pipe attempts to copy, the missing-file error would surface as a
-    // distinct failure mode than the clean skip we expect.
+    // distinct failure mode from the clean skip under test.
 
     let v2_cfg = DockerV2Config {
         id: Some("myapp-v2".to_string()),
@@ -3846,7 +3846,7 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
     // fails this test instead of silently shelling out to `docker` in tests.
     //
     // `dry_run` is intentionally `false` so the probe gate fires
-    // (`!dry_run && any docker_v2`). To stay sandbox-clean we still need to
+    // (`!dry_run && any docker_v2`). Staying sandbox-clean still means
     // avoid spawning real `docker buildx build`; the `disable: "true"` skip
     // on the v2 config short-circuits each config before any subprocess is
     // launched. The probe gate, however, runs once before the per-config
@@ -3906,7 +3906,7 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
     // The stage may still bail later (e.g. on the per-config skip path or a
     // template render), but the probe gate runs first and unconditionally
     // invokes the injected closure exactly once. The counter assertion is
-    // what we care about; the stage's `Result` is incidental.
+    // what matters; the stage's `Result` is incidental.
     let _ = stage.run(&mut ctx);
 
     assert_eq!(
@@ -5429,7 +5429,7 @@ fn docker_v2_pre_hook_does_not_expose_digest() {
 /// Post-hook fires AFTER the build with all pre-hook vars PLUS `.Digest`
 /// (empty-string in dry-run, real digest otherwise — see
 /// `docker_v2_post_hook_with_empty_digest_errors_loudly` for the real
-/// path's hard-bail semantic). In dry-run we only need to confirm
+/// path's hard-bail semantic). In dry-run the only thing to confirm is that
 /// `.Digest` resolves without error in the template.
 #[test]
 fn docker_v2_post_hook_receives_digest_in_dry_run() {
@@ -5533,7 +5533,7 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
         ..Default::default()
     };
 
-    // dry_run=false so the hook actually executes. We do NOT push or
+    // dry_run=false so the hook actually executes. No push and no
     // load — the only spawn that would occur if pre-hook succeeded is
     // the `docker buildx build` call inside `execute_docker_build`,
     // which would error with a different message (docker missing or
