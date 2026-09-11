@@ -3241,7 +3241,7 @@ fn publish_to_cargo_per_crate_workspace_orders_across_members() {
         .dry_run(true)
         .build();
     // cfgd-core lives in a DIFFERENT workspace than cfgd, yet the cross-
-    // workspace depends_on edge still forces it published first.
+    // workspace depends_on edge still forces it to publish first.
     assert_eq!(dry_run_publish_order(&mut ctx), vec!["cfgd-core", "cfgd"]);
 }
 
@@ -3560,7 +3560,7 @@ fn disk_crate_manifest_deps(
 
 /// Regression: with config `depends_on` UNSET, the publish order is derived
 /// from each crate's `Cargo.toml` — never left empty, which made
-/// `topological_sort` fall back to an alphabetical order that published a
+/// `topological_sort` fall back to an alphabetical order that would publish a
 /// dependent before its dependency and hard-failed on crates.io. Names are
 /// chosen so the alphabetical fallback would be WRONG (`aaa-app` sorts before
 /// its `zzz-lib` dependency), so a correct dependency-first order must invert
