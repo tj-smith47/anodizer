@@ -6456,11 +6456,19 @@ mod archive_name_guard {
         assert_eq!(bins.len(), 1, "{bins:?}");
         assert_eq!(bins[0].path, dist.join("myapp_1.0.0_linux_amd64"));
         assert!(!bins[0].path.exists(), "dry run must copy nothing");
+        // The registered artifact path is normalised to `/`, the message
+        // prints the destination as joined, so the expectation is built from
+        // the same join.
+        let expected = format!(
+            "(dry-run) would create {}",
+            dist.join("myapp_1.0.0_linux_amd64").display()
+        );
         let lines = cap.all_messages();
         assert!(
-            lines.iter().any(|(l, m)| *l == LogLevel::Status
-                && m == &format!("(dry-run) would create {}", bins[0].path.display())),
-            "{lines:?}"
+            lines
+                .iter()
+                .any(|(l, m)| *l == LogLevel::Status && m == &expected),
+            "expected {expected:?} got {lines:?}"
         );
     }
 
