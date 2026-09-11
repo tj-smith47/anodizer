@@ -562,6 +562,12 @@ fn krew_short_description_falls_back_to_cargo_toml_description() {
     config.populate_derived_metadata(tmp.path());
 
     let mut ctx = Context::new(config, ContextOptions::default());
+    // The PR flow resolves the GitHub REST base from the env source; a dead
+    // loopback port keeps a downstream failure that stops firing off
+    // github.com.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1"),
+    );
     let log = StageLogger::new("publish", Verbosity::Quiet);
     // No artifacts registered → fails downstream, but NOT on the gate.
     let err = publish_to_krew(&mut ctx, "mytool", &log)

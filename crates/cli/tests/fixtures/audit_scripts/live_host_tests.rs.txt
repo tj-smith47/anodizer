@@ -1,0 +1,63 @@
+//! Four shapes of a test that drives a publisher entry point, and one
+//! function that is not a test at all.
+
+use super::*;
+
+/// The fixture idiom the tree actually uses: the helper builds the config and
+/// names the endpoint, so every test driving it is bounded.
+fn local_cfg() -> ChocolateyConfig {
+    ChocolateyConfig {
+        source_repo: Some("http://127.0.0.1:1/api/v2/package".to_string()),
+        ..Default::default()
+    }
+}
+
+fn ambient_cfg() -> ChocolateyConfig {
+    ChocolateyConfig::default()
+}
+
+fn ctx_with(cfg: ChocolateyConfig) -> Context {
+    Context::new(cfg)
+}
+
+#[test]
+fn a_helper_naming_the_loopback_bounds_the_test() {
+    let mut ctx = ctx_with(local_cfg());
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap());
+}
+
+#[test]
+fn a_body_naming_the_loopback_bounds_the_test() {
+    let mut ctx = ctx_with(ChocolateyConfig {
+        source_repo: Some("http://127.0.0.1:9/api/v2/package".to_string()),
+        ..Default::default()
+    });
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap());
+}
+
+#[test]
+fn a_marker_states_what_else_keeps_the_run_offline() {
+    // live-host-ok: fake
+    let mut ctx = ctx_with(ambient_cfg());
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap());
+}
+
+#[test]
+fn a_forged_marker_in_a_string_literal_bounds_nothing() {
+    let why = "live-host-ok: fake";
+    let mut ctx = ctx_with(ambient_cfg());
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap(), "{why}");
+}
+
+#[test]
+fn nothing_bounds_the_endpoint_here() {
+    let mut ctx = ctx_with(ambient_cfg());
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap());
+}
+
+/// Not a `#[test]`: a helper reaches a host only when a test drives it, and
+/// that test is judged on its own body.
+fn drive_the_publisher() {
+    let mut ctx = ctx_with(ambient_cfg());
+    let _ = publish_to_chocolatey(&mut ctx, "demo");
+}

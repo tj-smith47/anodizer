@@ -59,6 +59,67 @@ fn fixture_tree() -> TempDir {
     dir
 }
 
+const LIVE_HOST_CONSTS_RS: &str = include_str!("fixtures/audit_scripts/live_host_consts.rs.txt");
+const LIVE_HOST_TESTS_RS: &str = include_str!("fixtures/audit_scripts/live_host_tests.rs.txt");
+
+/// `audit-test-live-host.sh` gets a tree of its own: its first scan fails on
+/// any unregistered default-host constant, so a constant placed in the shared
+/// fixture would stop the audit before its second scan ever ran.
+fn live_host_tree(with_consts: bool) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let mut files = vec![("crates/demo/src/tests.rs", LIVE_HOST_TESTS_RS)];
+    if with_consts {
+        files.push(("crates/demo/src/hosts.rs", LIVE_HOST_CONSTS_RS));
+    }
+    for (rel, body) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("fixture dir");
+        std::fs::write(&path, body).expect("fixture file");
+    }
+    dir
+}
+
+/// A compiled-in host nobody registered is a way to reach a live registry that
+/// the second scan cannot see, so the first scan refuses the tree by name. A
+/// loopback default needs no row, and a URL written in prose is not a
+/// declaration.
+#[test]
+fn an_unregistered_default_host_constant_stops_the_audit() {
+    let dir = live_host_tree(true);
+    let (code, out) = run_audit("audit-test-live-host.sh", dir.path());
+
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("DEMO_PUSH_SOURCE"), "{out}");
+    assert!(!out.contains("DEMO_LOCAL_SOURCE"), "{out}");
+    assert!(!out.contains("DEMO_DOC_SOURCE"), "{out}");
+    assert!(!out.contains("COMMUNITY_PUSH_SOURCE"), "{out}");
+}
+
+/// A test proves it stays local by naming a loopback endpoint in its own body
+/// or in a same-file fixture helper it calls, or by stating in a comment what
+/// else keeps the run offline. A marker spelled inside a string literal is
+/// code, not a comment, so it proves nothing; and a helper that is not itself
+/// a `#[test]` never runs on its own.
+#[test]
+fn a_test_reaching_a_registry_is_reported_and_a_bounded_one_is_not() {
+    let dir = live_host_tree(false);
+    let (code, out) = run_audit("audit-test-live-host.sh", dir.path());
+
+    let (forged_line, _) = at(LIVE_HOST_TESTS_RS, "fn a_forged_marker_in_a_string_literal");
+    let (unbounded_line, _) = at(LIVE_HOST_TESTS_RS, "fn nothing_bounds_the_endpoint_here");
+    assert_eq!(
+        hits(&out),
+        vec![
+            format!(
+                "crates/demo/src/tests.rs:{forged_line}: a_forged_marker_in_a_string_literal_bounds_nothing"
+            ),
+            format!("crates/demo/src/tests.rs:{unbounded_line}: nothing_bounds_the_endpoint_here"),
+        ],
+        "{out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
 fn run_audit(script: &str, root: &Path) -> (i32, String) {
     run_audit_with_path(script, root, None)
 }
@@ -1086,7 +1147,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     }
     assert_eq!(
         commit_path.len(),
-        26,
+        27,
         "the set of tasks `task commit` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
     );
 
@@ -1633,7 +1694,7 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
          collect_files; these do not: {forbidden:#?}"
     );
     assert!(
-        scanners >= 13,
+        scanners >= 14,
         "expected every scanning script to be walked, found {scanners}"
     );
 }

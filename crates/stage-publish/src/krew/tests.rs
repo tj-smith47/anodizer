@@ -1221,6 +1221,19 @@ fn build_ctx(crates: Vec<CrateConfig>, version: &str) -> Context {
     ctx.template_vars_mut().set("Version", version);
     ctx.template_vars_mut().set("RawVersion", version);
     ctx.template_vars_mut().set("Tag", &format!("v{version}"));
+    // Both krew network paths resolve their host from the env source — the
+    // GitHub REST base for the PR flows, `KREW_RELEASE_BOT_WEBHOOK_URL` for
+    // the bot flow. Seeding a closed map with a dead loopback port for each
+    // means a fixture whose short-circuit stops firing gets a refused
+    // connection instead of reaching github.com or the hosted bot.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
+            .with(
+                "KREW_RELEASE_BOT_WEBHOOK_URL",
+                "http://127.0.0.1:1/github-action-webhook",
+            ),
+    );
     ctx
 }
 

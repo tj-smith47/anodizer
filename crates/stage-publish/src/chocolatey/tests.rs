@@ -927,6 +927,9 @@ fn publish_to_chocolatey_skip_true_returns_false() {
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 skip: Some(StringOrBool::Bool(true)),
+                // The skip is what this test pins; the dead loopback port is
+                // what keeps a skip that stops firing off the community feed.
+                source_repo: Some("http://127.0.0.1:1/api/v2/package".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

@@ -634,8 +634,15 @@ fn add_binary(
 fn publish_ctx(
     tmp: &std::path::Path,
     crates: Vec<CrateConfig>,
-    cfg: PypiConfig,
+    mut cfg: PypiConfig,
 ) -> anodizer_core::context::Context {
+    // Every upload resolves its host from `index_url`, defaulting to real
+    // PyPI. A fixture that leaves the field unset uploads to upload.pypi.org
+    // the moment the error it expects stops firing, so the fixture pins a
+    // dead loopback port unless the caller named its own responder.
+    if cfg.index_url.is_none() {
+        cfg.index_url = Some("http://127.0.0.1:1/legacy/".to_string());
+    }
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
@@ -1084,7 +1091,10 @@ fn unmappable_prerelease_version_errors() {
         .dist(tmp.path().join("dist"))
         .env("PYPI_TOKEN", "tok")
         .build();
-    ctx.config.pypis = Some(vec![PypiConfig::default()]);
+    ctx.config.pypis = Some(vec![PypiConfig {
+        index_url: Some("http://127.0.0.1:1/legacy/".to_string()),
+        ..Default::default()
+    }]);
     add_binary(
         &mut ctx,
         tmp.path(),
@@ -1423,7 +1433,16 @@ fn oidc_mint_errors_without_request_env() {
         .project_name("demo")
         .tag("v1.2.3")
         .crates(vec![demo_crate("demo", ".")])
+        // Closed env: without it the ambient `ACTIONS_ID_TOKEN_REQUEST_URL` a
+        // GitHub-hosted runner exports would satisfy the gate under test and
+        // send the id-token request for real.
+        .sealed_env()
         .build();
+    // live-host-ok: the mint URL is derived from the repository, and only
+    // pypi.org/test.pypi.org derive one at all — a loopback repository would
+    // fail the derivation instead of the env gate this test pins. The sealed
+    // env above is what makes the run unreachable: hop 1 needs
+    // ACTIONS_ID_TOKEN_REQUEST_URL, which the closed map does not hold.
     let err = super::oidc::mint_trusted_publishing_token(
         &ctx,
         "https://upload.pypi.org/legacy/",

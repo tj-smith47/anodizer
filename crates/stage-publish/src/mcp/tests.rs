@@ -1039,6 +1039,11 @@ fn owning_ctx(selected: Vec<&str>, mcp_identifier: &str) -> Context {
                 ..McpTransport::default()
             },
         }],
+        // A non-owning pass is expected to short-circuit before the registry
+        // is contacted; pointing the base at a dead loopback port means a
+        // short-circuit that stops working fails locally instead of POSTing
+        // to the live MCP registry.
+        registry: Some("http://127.0.0.1:1".to_string()),
         ..Default::default()
     };
     let opts = ContextOptions {

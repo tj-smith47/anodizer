@@ -352,6 +352,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-test-exec-writer.sh
 
+  audit:test-live-host:
+    desc: "Guard: no test drives a publisher entry point without binding a loopback endpoint (live-registry reach)."
+    cmds:
+      - .claude/scripts/audit-test-live-host.sh
+
   audit:job-timeouts:
     desc: "Guard: every .github/workflows job declares a positive-integer timeout-minutes (reusable-workflow callers exempt)."
     cmds:
@@ -390,6 +395,7 @@ tasks:
       - task: audit:test-isolation
       - task: audit:test-spawn
       - task: audit:test-exec-writer
+      - task: audit:test-live-host
       - task: audit:repo-identity
       - task: audit:god-files
       - task: audit:serial-groups

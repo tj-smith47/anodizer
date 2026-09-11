@@ -1,0 +1,18 @@
+//! Production constants, one of them a live push endpoint nobody registered.
+
+/// Registered in the audit's table under the real name, so the scan is quiet
+/// about it here too.
+pub const COMMUNITY_PUSH_SOURCE: &str = "https://push.chocolatey.org/";
+
+/// Unregistered: a new publisher's compiled-in host.
+pub const DEMO_PUSH_SOURCE: &str = "https://push.demo-registry.dev/";
+
+/// A loopback default is reachable only by the developer who started the
+/// responder, so it needs no row.
+pub const DEMO_LOCAL_SOURCE: &str = "http://127.0.0.1:8080/api/v2/package";
+
+/// A URL in prose is not a declaration:
+/// `const DEMO_DOC_SOURCE: &str = "https://push.doc-registry.dev/";`
+pub fn push_source(custom: Option<&str>) -> &str {
+    custom.unwrap_or(DEMO_PUSH_SOURCE)
+}

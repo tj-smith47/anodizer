@@ -35,6 +35,7 @@ CLAUDE.local.md
 !.claude/scripts/audit-tag-family.sh
 !.claude/scripts/audit-binary-name.sh
 !.claude/scripts/audit-serial-groups.sh
+!.claude/scripts/audit-test-live-host.sh
 !.claude/scripts/test-os.sh
 !.claude/scripts/test-os-windows.ps1
 !.claude/scripts/test-os-suite.sh
