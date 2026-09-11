@@ -73,6 +73,7 @@ pub use status::{
     is_shallow_clone, is_shallow_clone_in, list_tracked_files_in, local_git_user_email,
     local_git_user_email_in, local_git_user_name, local_git_user_name_in,
 };
+pub(crate) use tags::per_crate_tag_family_template;
 pub use tags::{
     AtomicPushSpec, RepositoryUnreadable, TagPosition, compose_prefix, create_and_push_tag,
     create_and_push_tag_in, create_tag_local_only, delete_local_tag_in, delete_remote_tag_in,
@@ -84,10 +85,9 @@ pub use tags::{
     get_branch_semver_tags, get_branch_semver_tags_in, get_first_commit, get_first_commit_in,
     get_tags_at_head, get_tags_at_head_in, get_tags_at_sha_in, has_version_placeholder,
     head_is_at_tag, is_nightly_tag, list_remote_tag_names_in, list_tags_with_prefix,
-    per_crate_tag_family_template, per_crate_tag_prefix, push_branch_and_tags_atomic_in,
-    render_ignore_patterns, strip_monorepo_prefix, tag_family_glob, tag_family_prefix,
-    tag_in_family, tag_in_family_excluding_siblings, tag_points_at_head, tag_points_at_head_in,
-    tag_position_in,
+    per_crate_tag_prefix, push_branch_and_tags_atomic_in, render_ignore_patterns,
+    strip_monorepo_prefix, tag_family_glob, tag_family_prefix, tag_in_family,
+    tag_in_family_excluding_siblings, tag_points_at_head, tag_points_at_head_in, tag_position_in,
 };
 pub use worktree::Worktree;
 

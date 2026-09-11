@@ -484,7 +484,7 @@ mod per_crate_family {
 
     /// The prefix helper's fallback and the accessor's fallback template are
     /// two views of one convention: the prefix must be exactly the template
-    /// with the version placeholder stripped, or a crate mints tags under a
+    /// with the version placeholder stripped, or a crate creates tags under a
     /// family nothing else scans.
     #[test]
     fn the_fallback_family_and_the_fallback_prefix_agree() {

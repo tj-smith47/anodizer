@@ -430,7 +430,7 @@ fn default_per_crate_tag_prefix(name: &str) -> String {
 /// is what consumers read; this is the fallback it returns, kept here so the
 /// template and the prefix extracted from it cannot spell the convention
 /// differently.
-pub fn per_crate_tag_family_template(name: &str) -> String {
+pub(crate) fn per_crate_tag_family_template(name: &str) -> String {
     format!("{}{{{{ Version }}}}", default_per_crate_tag_prefix(name))
 }
 

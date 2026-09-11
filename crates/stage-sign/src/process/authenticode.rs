@@ -216,7 +216,7 @@ pub(crate) fn process_authenticode_config(
         //   1. `env_remove` strips the inherited `password_env` var so the
         //      child cannot read the secret from its environment at all.
         //   2. `redact_extra` scrubs the value from captured stdout/stderr
-        //      under a synthetic key that always trips `is_secret`, so a tool
+        //      under a synthetic key that always trips `is_secret_env`, so a tool
         //      echoing the argv on error is masked regardless of the
         //      user-chosen env-var name.
         let redact_extra: Vec<(String, String)> = password

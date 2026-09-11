@@ -39,13 +39,17 @@ const SECRET_VALUE_PREFIXES: &[&str] = &[
     "xox",
 ];
 
-/// Returns true if this env entry looks like it contains a secret.
+/// Whether an environment entry looks like it holds a credential.
+///
+/// The one heuristic behind both the redacted log lines and the surfaces that
+/// write env into a FILE rather than into output (the `--split` context), so a
+/// value that logs as `$OPENAI_KEY` is never written in clear beside it.
 ///
 /// The empty string is the only excluded value — every non-empty value
 /// matching the heuristics is redacted, mirroring upstream
 /// Secret-detection heuristic after the
 /// length-floor was removed (commit `d1cdbb2`).
-fn is_secret(key: &str, value: &str) -> bool {
+pub fn is_secret_env(key: &str, value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
@@ -57,16 +61,6 @@ fn is_secret(key: &str, value: &str) -> bool {
         return true;
     }
     SECRET_VALUE_PREFIXES.iter().any(|p| value.starts_with(p))
-}
-
-/// Whether an environment entry looks like a credential.
-///
-/// The public form of the heuristic every redacted log line already uses, for
-/// the surfaces that write env into a FILE rather than into output — the
-/// `--split` context. One rule keeps a value that logs as `$OPENAI_KEY` from
-/// being written in clear next to it.
-pub fn is_secret_env(key: &str, value: &str) -> bool {
-    is_secret(key, value)
 }
 
 /// A value that shares a `*_TOKEN`/`*_KEY`/`*_SECRET`/`*_PASSWORD` key name
@@ -185,7 +179,7 @@ fn mask_from<'a>(
 fn secret_pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     let mut secrets: Vec<(&str, &str)> = env
         .iter()
-        .filter(|(k, v)| !v.is_empty() && is_secret(k, v))
+        .filter(|(k, v)| !v.is_empty() && is_secret_env(k, v))
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
@@ -749,33 +743,33 @@ mod tests {
 
     #[test]
     fn test_is_secret_key_suffixes() {
-        assert!(is_secret("DOCKER_PASSWORD", "longvalue1234"));
-        assert!(is_secret("API_TOKEN", "longvalue1234"));
-        assert!(is_secret("signing_key", "longvalue1234")); // case insensitive
-        assert!(is_secret("MY_SECRET", "longvalue1234"));
-        assert!(!is_secret("MY_CONFIG", "longvalue1234"));
+        assert!(is_secret_env("DOCKER_PASSWORD", "longvalue1234"));
+        assert!(is_secret_env("API_TOKEN", "longvalue1234"));
+        assert!(is_secret_env("signing_key", "longvalue1234")); // case insensitive
+        assert!(is_secret_env("MY_SECRET", "longvalue1234"));
+        assert!(!is_secret_env("MY_CONFIG", "longvalue1234"));
     }
 
     #[test]
     fn test_is_secret_value_prefixes() {
-        assert!(is_secret("ANYTHING", "ghp_1234567890"));
-        assert!(is_secret("ANYTHING", "sk-1234567890"));
-        assert!(is_secret("ANYTHING", "dckr_pat_1234567890"));
-        assert!(is_secret("ANYTHING", "glpat-1234567890"));
+        assert!(is_secret_env("ANYTHING", "ghp_1234567890"));
+        assert!(is_secret_env("ANYTHING", "sk-1234567890"));
+        assert!(is_secret_env("ANYTHING", "dckr_pat_1234567890"));
+        assert!(is_secret_env("ANYTHING", "glpat-1234567890"));
         // Fine-grained GitHub PAT and Google API/OAuth keys, exported under a
         // name the suffix list does not catch, are matched by exact-case value
         // prefix. `AIza`/`ya29.` casing is load-bearing: the match is
         // case-sensitive, so an `AIZA` prefix would catch zero real keys.
-        assert!(is_secret("GH_PAT", "github_pat_11ABCDE0000000000"));
-        assert!(is_secret(
+        assert!(is_secret_env("GH_PAT", "github_pat_11ABCDE0000000000"));
+        assert!(is_secret_env(
             "GOOGLE_CREDS",
             "AIzaSyA00000000000000000000000000000000"
         ));
-        assert!(is_secret(
+        assert!(is_secret_env(
             "GOOGLE_CREDS",
             "ya29.a0Af00000000000000000000000"
         ));
-        assert!(!is_secret("ANYTHING", "regular_value1234"));
+        assert!(!is_secret_env("ANYTHING", "regular_value1234"));
     }
 
     #[test]

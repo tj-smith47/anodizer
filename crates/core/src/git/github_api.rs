@@ -235,7 +235,7 @@ pub fn resolve_github_token(explicit: Option<&str>) -> Option<String> {
 /// message. `token` is the `GITHUB_TOKEN` value passed to the
 /// subprocess; if the user-supplied token leaks (e.g. via a verbose `gh`
 /// error that echoes the auth header), it is replaced with `$GITHUB_TOKEN`
-/// regardless of whether the value matches the `redact::is_secret`
+/// regardless of whether the value matches the `redact::is_secret_env`
 /// heuristics. Also strips inline URL credentials and any other secret
 /// env-var values reachable from the parent process env.
 fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {

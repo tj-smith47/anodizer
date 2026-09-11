@@ -60,7 +60,7 @@ struct SignJob {
     /// of whether they are exported as child env. Each entry is a
     /// `(synthetic_key, value)` pair fed to [`anodizer_core::redact::string`];
     /// the key only governs the masked replacement spelling, so it is chosen to
-    /// always trip `is_secret` (e.g. a `*_PASSWORD` suffix). The Authenticode
+    /// always trip `is_secret_env` (e.g. a `*_PASSWORD` suffix). The Authenticode
     /// path uses this for the cert password — which is passed in argv, never
     /// deliberately exported to the child env — so a tool echoing it on error
     /// is still masked even when the user's `password_env` key carries no
@@ -206,7 +206,7 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     // The scrub set is the child env PLUS `redact_extra` (secrets passed via
     // argv, e.g. the Authenticode cert password, which the child env never
     // carries) PLUS the process environment. `redact::string` masks each entry
-    // whose key trips `is_secret`; `redact_extra` keys are chosen to always
+    // whose key trips `is_secret_env`; `redact_extra` keys are chosen to always
     // trip it, so the value is masked regardless of the user's env-var name.
     let env_pairs: Vec<(String, String)> = job
         .env
