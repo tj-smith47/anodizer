@@ -35,7 +35,8 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DeterminismReport {
-    /// Schema version — currently `1`. See [`CURRENT_SCHEMA_VERSION`].
+    /// Schema version. See [`CURRENT_SCHEMA_VERSION`] for the value this
+    /// release emits.
     pub schema_version: u32,
     /// The anodizer version that produced the report. Read also under the
     /// pre-v2 spelling `anodize_version`, so a report written by an older

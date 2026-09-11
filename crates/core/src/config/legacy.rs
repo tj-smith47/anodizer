@@ -471,11 +471,14 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
 }
 
 /// Fold the deprecated singular Homebrew Cask fields into their canonical
-/// plural lists and emit a one-time deprecation warning per folded field:
+/// plural lists and emit a one-time deprecation warning per tripped field:
 ///
 /// - `binary: <name>` → [`HomebrewCaskConfig::binaries`] (the upstream
 ///   renamed `binary:` to `binaries:`).
 /// - `manpage: <page>` → [`HomebrewCaskConfig::manpages`].
+/// - `url.verified: <host>` — nothing to fold: Homebrew removed the stanza,
+///   so anodizer drops it from the rendered cask and warns that it is dead
+///   config.
 ///
 /// anodizer accepts both spellings so imported configs keep parsing.
 /// The captured values are moved out of [`HomebrewCaskConfig::legacy_binary`]
@@ -497,15 +500,17 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
     }
 }
 
-/// Perform the folds of [`apply_homebrew_cask_legacy_singulars`] and return the
-/// deprecation warnings instead of logging them, so a caller — or a test — can
-/// read what a config tripped.
+/// Perform the folds and the `url.verified:` check of
+/// [`apply_homebrew_cask_legacy_singulars`] and return the deprecation warnings
+/// instead of logging them, so a caller — or a test — can read what a config
+/// tripped.
 pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
-    /// Fold both deprecated singular fields (`binary:` → `binaries`,
-    /// `manpage:` → `manpages`) on one cask, returning a warning per folded
-    /// field. The singular `binary` is prepended to `binaries` so an explicit
+    /// Fold the deprecated singular fields (`binary:` → `binaries`,
+    /// `manpage:` → `manpages`) on one cask and warn on the removed
+    /// `url.verified:` stanza, returning one warning per tripped field. The
+    /// singular `binary` is prepended to `binaries` so an explicit
     /// `binaries[0]` ordering is preserved at the tail; the singular `manpage`
-    /// is appended to `manpages`.
+    /// is appended to `manpages`; `url.verified:` folds nothing.
     fn fold_one(location: &str, cask: &mut HomebrewCaskConfig) -> Vec<String> {
         let mut warnings = Vec::new();
         if let Some(legacy) = cask.legacy_binary.take() {
