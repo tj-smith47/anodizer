@@ -54,10 +54,7 @@ run_scanner violations -v allow="$allow_keys" -f "$LIB_DIR/rust-lex.awk" -v skip
 
     FNR == 1 { fname = "" }
 
-    /^[[:space:]]*(pub(\([a-z]+\))? )?(async )?(const )?fn [A-Za-z0-9_]+/ {
-        match($0, /fn [A-Za-z0-9_]+/)
-        fname = substr($0, RSTART + 3, RLENGTH - 3)
-    }
+    { fn_name = fn_header($0); if (fn_name != "") fname = fn_name }
 
     (/\.get\("binary"\)/ || /\["binary"\]/ || /contains_key\("binary"\)/ || /remove\("binary"\)/) && $0 !~ /^[[:space:]]*\/\// {
         key = FILENAME "::" fname

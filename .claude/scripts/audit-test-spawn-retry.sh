@@ -25,10 +25,13 @@
 #     or the line directly above it) for a legitimately-unconvertible site
 #     (e.g. an availability probe whose Err means "skip", not "retry").
 #
-# TEST context = a `Command::new` after a `#[cfg(test)]` / `mod tests {`
-# boundary in a `crates/*/src/**` file, OR any file under `crates/*/tests/**`,
-# OR a file named `tests.rs` or `<name>_tests.rs`. Production spawns (the real
-# release path, which runs serially and not under nextest) are OUT OF SCOPE.
+# TEST context (per lib/test-regions.awk, the shared rule) = a `Command::new`
+# inside the brace block of a test-only `#[cfg(…)]` item in a
+# `crates/*/src/**` file, OR anywhere in a file named `tests.rs` or
+# `<name>_tests.rs`, OR anywhere under `crates/*/tests/**`. A bare
+# `mod tests {` with no test-only attribute is production. Production spawns
+# (the real release path, which runs serially and outside nextest) are OUT OF
+# SCOPE.
 # The helper's own home (crates/core/src/test_helpers/) is exempt — it IS the
 # helper.
 set -euo pipefail

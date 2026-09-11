@@ -8,7 +8,7 @@
 # `tag.tag_prefix` / a Cargo lockstep workspace); a consumer that reads the raw
 # field supplies its own fallback for `None`, and every such fallback has drifted
 # from the accessor at least once — crate selection that matched no crate, a
-# per-crate tag engine that minted one colliding `v<version>` for every group.
+# per-crate tag engine that issued one colliding `v<version>` for every group.
 #
 # This audit fails (exit 1) on every `.tag_template` read in production code
 # under crates/*/src that is neither
@@ -89,10 +89,7 @@ run_scanner violations -v allow="$allow_keys" -v pallow="$prefix_keys" -f "$LIB_
     # carries the line above's comment so a marker may sit there instead.
     { cmt = comment_part($0) }
 
-    /^[[:space:]]*(pub(\([a-z]+\))? )?(async )?(const )?fn [A-Za-z0-9_]+/ {
-        match($0, /fn [A-Za-z0-9_]+/)
-        fname = substr($0, RSTART + 3, RLENGTH - 3)
-    }
+    { fn_name = fn_header($0); if (fn_name != "") fname = fn_name }
 
     /\.tag_template/ && $0 !~ /^[[:space:]]*\/\// {
         key = FILENAME "::" fname

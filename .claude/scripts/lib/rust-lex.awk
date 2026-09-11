@@ -21,7 +21,7 @@ function strip_code(l) { lex_scan(l); return lex_code }
 
 # Returns the comment half of l: the `//` tail that opens outside a string
 # literal (the slashes included) plus the body of any block comment on the
-# line. An audit marker spelled inside a string literal lands in the CODE
+# line. An audit marker spelled inside a string literal ends up in the CODE
 # half, so reading a marker from here is what stops a literal from forging it.
 function comment_part(l) { lex_scan(l); return lex_comment }
 
@@ -148,4 +148,21 @@ function pred_is_test_only(p,   n, i, depth, c, end_at, inner, start) {
         }
     }
     return pred_is_test_only(substr(inner, start, n - start + 1))
+}
+
+# The name of the function an `fn` header line declares, or "" when the line
+# is not one. Covers every modifier order Rust allows before `fn`: visibility
+# (`pub`, `pub(crate)`, `pub(in path::to)`), `default`, `const`, `async`,
+# `unsafe` and `extern "C"`. One spelling serves every audit that attributes a
+# finding to its enclosing function; three hand-copied regexes had already
+# drifted on `unsafe fn` and `pub(in …) fn`.
+function fn_header(l,   s) {
+    s = l
+    sub(/^[[:space:]]+/, "", s)
+    while (s ~ /^(pub([[:space:]]*\([^)]*\))?|default|const|async|unsafe|extern([[:space:]]+"[^"]*")?)[[:space:]]+/)
+        sub(/^(pub([[:space:]]*\([^)]*\))?|default|const|async|unsafe|extern([[:space:]]+"[^"]*")?)[[:space:]]+/, "", s)
+    if (s !~ /^fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/) return ""
+    sub(/^fn[[:space:]]+/, "", s)
+    match(s, /^[A-Za-z_][A-Za-z0-9_]*/)
+    return substr(s, 1, RLENGTH)
 }

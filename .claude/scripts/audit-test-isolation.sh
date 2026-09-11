@@ -13,11 +13,11 @@
 # variables. The npm #111 flake and the
 # `close_pr_via_api_failed_when_target_unreachable` flake were both this class.
 # The fix the codebase standardises on, in order of preference:
-#   1. Route the var through an `EnvSource` seam: call the fn's `*_with_env`
+#   1. Route the var through an `EnvSource` point: call the fn's `*_with_env`
 #      variant with an `anodizer_core::MapEnvSource`. The test injects the value
 #      and contains NO `set_var`/`remove_var` — invisible to this audit, the
 #      preferred outcome.
-#   2. No injection seam (`PATH` for binary stubbing, `GIT_*` identity, a var a
+#   2. No injection point (`PATH` for binary stubbing, `GIT_*` identity, a var a
 #      spawned child reads): annotate the enclosing test
 #      `#[serial_test::serial(<group>)]`, grouped by shared resource.
 #   3. Provably-safe-without-serialisation (an idempotent `OnceLock` set of
@@ -66,8 +66,9 @@
 # `#[serial_test::serial(cwd)]` (the shared restore-race group) and neither
 # class above caught it. This class enforces, per allow-listed helper, that
 # every `#[test]` fn calling it carries `#[serial_test::serial(cwd)]`, plus
-# `#[cfg(unix)]` for the helpers that are unix-only. See
-# `report_cwd_helper_pairing` below for the state machine.
+# `#[cfg(unix)]` for the helpers that are unix-only. The state machine is the
+# cwd-helper pairing scanner below — the awk program handed to `run_scanner`,
+# which tracks `fn` headers and their `#[test]` attribute runs.
 #
 # Detection limit, stated plainly: this class matches a helper by NAME at the
 # call site, so it catches a REGRESSION of a fixed site (someone deleting the
@@ -217,7 +218,7 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
             this_cwdok = (cmt ~ /\/\/[[:space:]]*cwd-ok:[[:space:]]*[^[:space:]]/) ? 1 : 0
         }
 
-        code ~ /^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?fn[[:space:]]+[A-Za-z0-9_]+/ {
+        fn_header(code) != "" {
             flush_fn()
         }
 
@@ -299,7 +300,7 @@ if [[ ${#HELPER_FILES[@]} -gt 0 ]]; then
         # has already advanced), so the ended file is named via `cur_file`.
         function check_counts(f) {
             if (file_test_attrs != file_tracked_test_fns) {
-                printf("%s: unexpected test-module structure: %d #[test] attrs but %d attributed to a flat fn; the cwd-helper pairing scanner assumes a flat test module — 0-space in a sibling `tests.rs`, or 4-space in an inline `mod tests` (no deeper nested `mod`) — flatten the nested module or extend report_cwd_helper_pairing\n", f, file_test_attrs, file_tracked_test_fns)
+                printf("%s: unexpected test-module structure: %d #[test] attrs but %d attributed to a flat fn; the cwd-helper pairing scanner assumes a flat test module — 0-space in a sibling `tests.rs`, or 4-space in an inline `mod tests` (no deeper nested `mod`) — flatten the nested module or extend the cwd-helper pairing scanner in this script\n", f, file_test_attrs, file_tracked_test_fns)
             }
         }
 

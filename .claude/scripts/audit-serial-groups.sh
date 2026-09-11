@@ -8,7 +8,7 @@
 # not, which is exactly how a `#[serial(cwd)]` test moved the working directory
 # out from under a plain `#[serial]` one (fixed in 06b87d6e).
 #
-# The failure is order-dependent — green locally, red at a different shard
+# The failure is order-dependent — passing locally, red at a different shard
 # count — so it does not reproduce on demand and cannot be relied on to surface
 # in review. Naming the group is what makes the protection real, and it is a
 # purely syntactic property, so it is enforced here rather than remembered.
@@ -39,7 +39,7 @@ cd "$ROOT"
 # or a string that merely mentions the attribute is not a finding.
 UNKEYED_RE='^[[:space:]]*#\[(serial_test::)?(file_)?serial(\(\))?\][[:space:]]*$'
 
-collect_files KEYED_ATTRS -rhoE --include='*.rs' \
+collect_files KEYED_ATTRS -rhoE --include='*.rs' --exclude-dir=target \
     -- '#\[(serial_test::)?(file_)?serial\([a-z_, ]+\)\]' crates/
 
 # Every group key the collected attributes name, one per line. A tree with no
@@ -60,7 +60,7 @@ fi
 # an exemption: the list may only shrink, and the audit fails if a pinned line
 # no longer holds an unkeyed attribute (it was converted — drop the entry) or if
 # any unlisted one appears. That blocks every NEW unkeyed attribute while the
-# remaining conversions land.
+# remaining conversions are done.
 SERIAL_PENDING=()
 
 collect_files ALL_UNKEYED -rnE --include='*.rs' --exclude-dir=target -- "$UNKEYED_RE" crates/
