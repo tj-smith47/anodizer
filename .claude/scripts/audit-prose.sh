@@ -214,8 +214,20 @@ run_scanner jargon_prose \
         gsub(/\$\{[^}]*\}/, " ", t)
         gsub(/\$[A-Za-z_][A-Za-z0-9_]*/, " ", t)
         gsub(/--[A-Za-z0-9_-]+/, " ", t)
-        gsub(/[A-Za-z0-9_.-]*\/[A-Za-z0-9_.\/-]+/, " ", t)
+        t = blank_paths(t)
         gsub(/[A-Za-z0-9_]*(mint|seam|drain|land|green)[A-Za-z0-9_]*[:=]/, " ", t)
+        return t
+    }
+
+    # Only a slash run carrying a real path signal is blanked: an absolute or
+    # `./`-relative path, a known repository root, a dotted file name, or three
+    # or more segments. A bare `pass/fail` is prose — blanking it would hide a
+    # banned token spelled `green/red`.
+    function blank_paths(t) {
+        gsub(/(^|[^A-Za-z0-9_.-])\.?\/[A-Za-z0-9_.\/-]+/, " ", t)
+        gsub(/(crates|docs|target|dist|\.claude|\.github)\/[A-Za-z0-9_.\/-]*/, " ", t)
+        gsub(/[A-Za-z0-9_.-]*\/[A-Za-z0-9_.\/-]*\.[A-Za-z0-9]+/, " ", t)
+        gsub(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+/, " ", t)
         return t
     }
 
