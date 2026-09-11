@@ -9,6 +9,7 @@
 
 use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, ReleaseConfig};
 use anodizer_core::context::Context;
+use anodizer_core::text::truncate_with_ellipsis;
 use anyhow::{Context as _, Result};
 use std::borrow::Cow;
 
@@ -199,32 +200,6 @@ pub(crate) fn build_release_body(
         s.push('\n');
         s
     }
-}
-
-/// The marker anodizer appends where it cut an over-long release body.
-/// GoReleaser's is the same three-dot ellipsis.
-const TRUNCATION_ELLIPSIS: &str = "...";
-
-/// Cut `s` down to at most `max_len` bytes, ending it with
-/// [`TRUNCATION_ELLIPSIS`], never splitting a UTF-8 character.
-///
-/// A `max_len` too small to hold even the marker yields an empty string —
-/// nothing of the original survives, and a partial marker would read as
-/// content.
-fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        return s.to_string();
-    }
-    let Some(max_content) = max_len.checked_sub(TRUNCATION_ELLIPSIS.len()) else {
-        return String::new();
-    };
-    let safe_end = s
-        .char_indices()
-        .map(|(i, c)| i + c.len_utf8())
-        .take_while(|&end| end <= max_content)
-        .last()
-        .unwrap_or(0);
-    format!("{}{}", &s[..safe_end], TRUNCATION_ELLIPSIS)
 }
 
 /// Render the "Non-deterministic exemptions:" block injected above the

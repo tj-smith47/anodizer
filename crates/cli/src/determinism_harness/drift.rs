@@ -6,6 +6,7 @@
 //! - [`pick_first_artifact_for_stage`] + [`inject_drift_byte`] back
 //!   the `--inject-drift=<stage>` test-harness flag.
 
+use anodizer_core::text::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -257,23 +258,14 @@ fn append_text_diff(
     };
     let (ln0, line0) = line_at_offset(&bytes0, abs_offset);
     let (ln_n, line_n) = line_at_offset(&bytes_n, abs_offset);
-    // Truncate at a generous 240 chars so a long minified JSON line
-    // still leaves the offset summary visible. The CI artifact tarball
-    // still contains the raw files for full inspection.
-    let line0 = truncate_for_summary(&line0, 240);
-    let line_n = truncate_for_summary(&line_n, 240);
+    // Cut at a generous 240 bytes so a long minified JSON line still leaves
+    // the offset summary visible. The CI artifact tarball still contains the
+    // raw files for full inspection.
+    let line0 = truncate_with_ellipsis(&line0, 240);
+    let line_n = truncate_with_ellipsis(&line_n, 240);
     format!(
         "{base}\ntext drift detected:\n  run0 line {ln0}: {line0}\n  run{idx} line {ln_n}: {line_n}"
     )
-}
-
-fn truncate_for_summary(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max).collect();
-    out.push_str("...");
-    out
 }
 
 /// Pick the first artifact whose inferred stage matches `stage_name`,
