@@ -458,17 +458,14 @@ pub fn config_time_amd64_variant(
 /// does — a skipped build compiles nothing, so its env must not decide the
 /// group's variant.
 fn build_skipped(build: &BuildConfig, ctx: &Context) -> Result<bool> {
-    match build.skip.as_ref() {
-        Some(s) => s
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| {
-                format!(
-                    "build: render skip template for build '{}'",
-                    build.id.as_deref().unwrap_or("<unnamed>")
-                )
-            }),
-        None => Ok(false),
-    }
+    crate::build_plan::try_build_is_skipped(build, |tmpl| ctx.render_template(tmpl)).with_context(
+        || {
+            format!(
+                "build: render skip template for build '{}'",
+                build.id.as_deref().unwrap_or("<unnamed>")
+            )
+        },
+    )
 }
 
 /// Project one build's per-target env exactly as the build planner resolves

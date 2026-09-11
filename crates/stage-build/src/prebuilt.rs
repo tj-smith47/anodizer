@@ -53,17 +53,14 @@ pub(crate) fn plan_prebuilt_build(
 ) -> Result<()> {
     let binary_field: String = binary_or_crate_name(crate_cfg, build);
 
-    let should_skip = match build.skip.as_ref() {
-        Some(s) => s
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+    let should_skip =
+        anodizer_core::build_plan::try_build_is_skipped(build, |tmpl| ctx.render_template(tmpl))
             .with_context(|| {
                 format!(
                     "build: render skip template for prebuilt build '{}'",
                     build.id.as_deref().unwrap_or(&binary_field)
                 )
-            })?,
-        None => false,
-    };
+            })?;
     if should_skip {
         log.status(&format!(
             "skipped prebuilt build '{}' — skip: true",

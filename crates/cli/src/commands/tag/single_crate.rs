@@ -17,10 +17,7 @@ pub(crate) fn sync_single_crate_manifests(
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<(Option<String>, Vec<String>)> {
-    let abs_crate_dir = workspace_root
-        .join(crate_path)
-        .to_string_lossy()
-        .into_owned();
+    let abs_crate_dir = workspace_root.join(crate_path);
     anodizer_stage_build::version_sync::sync_version(
         workspace_root,
         crate_path,
@@ -33,7 +30,7 @@ pub(crate) fn sync_single_crate_manifests(
     // sibling dep-spec update: the crate's own version was just rewritten, so a
     // skipped propagation leaves siblings pinned to the version before it.
     let crate_name = crate::commands::bump::cargo_edit::parse_member_manifest(
-        &Path::new(&abs_crate_dir).join("Cargo.toml"),
+        &abs_crate_dir.join("Cargo.toml"),
     )?
     .map(|m| m.name);
 
@@ -43,7 +40,7 @@ pub(crate) fn sync_single_crate_manifests(
     // release group on a different cadence.
     let mut dep_modified: Vec<String> = match crate_name {
         Some(ref name) => anodizer_stage_build::version_sync::sync_workspace_deps(
-            &workspace_root.to_string_lossy(),
+            workspace_root,
             &abs_crate_dir,
             name,
             new_version,
@@ -62,7 +59,7 @@ pub(crate) fn sync_single_crate_manifests(
     // old sibling at the next publish.
     let heal_scope = anodizer_stage_build::version_sync::cargo_workspace_root_for(
         workspace_root,
-        Path::new(&abs_crate_dir),
+        &abs_crate_dir,
     );
     // Under `--dry-run` the manifest still holds the old version, so the map is
     // what makes the preview resolve this crate to the version the real run

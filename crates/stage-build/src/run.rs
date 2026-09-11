@@ -288,18 +288,15 @@ fn plan_build_jobs(
             // The value every derived-name consumer validates against, so it
             // is resolved by the shared helper rather than re-spelled here.
             let binary_field: String = binary_or_crate_name(crate_cfg, build);
-            // Skip builds marked with skip: true/template
-            let should_skip = match build.skip.as_ref() {
-                Some(s) => s
-                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .with_context(|| {
-                        format!(
-                            "build: render skip template for build '{}'",
-                            build.id.as_deref().unwrap_or(&binary_field)
-                        )
-                    })?,
-                None => false,
-            };
+            let should_skip = anodizer_core::build_plan::try_build_is_skipped(build, |tmpl| {
+                ctx.render_template(tmpl)
+            })
+            .with_context(|| {
+                format!(
+                    "build: render skip template for build '{}'",
+                    build.id.as_deref().unwrap_or(&binary_field)
+                )
+            })?;
             if should_skip {
                 log.status(&format!(
                     "skipped build '{}' — skip: true",

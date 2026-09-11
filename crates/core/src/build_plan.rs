@@ -283,10 +283,23 @@ pub fn build_is_skipped(
     build: &BuildConfig,
     render: impl Fn(&str) -> anyhow::Result<String>,
 ) -> bool {
-    build
-        .skip
-        .as_ref()
-        .is_some_and(|s| s.try_evaluates_to_true(render).unwrap_or(false))
+    try_build_is_skipped(build, render).unwrap_or(false)
+}
+
+/// Whether a build entry's `skip:` evaluates truthy, keeping a render error as
+/// an error.
+///
+/// The planner surfaces a broken `skip:` expression instead of building the
+/// entry it could not decide about; [`build_is_skipped`] is the lenient
+/// reading of the same rule for callers that only need the predicate.
+pub fn try_build_is_skipped(
+    build: &BuildConfig,
+    render: impl Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<bool> {
+    match build.skip.as_ref() {
+        Some(s) => s.try_evaluates_to_true(render),
+        None => Ok(false),
+    }
 }
 
 /// [`build_is_skipped`] bound to a live context — the `skip:` gate with the
@@ -487,20 +500,18 @@ mod tests {
 
     /// A build entry's `skip:` is evaluated in two shapes: leniently, where a
     /// render failure means "not skipped" ([`build_is_skipped`]), and
-    /// strictly, where it is an error the caller propagates. The lenient shape
-    /// has ONE spelling, and a hand-written copy of it is how a caller drifts
-    /// from the planner it is supposed to mirror — which is what
-    /// `cross_requirements` did until it routed here.
+    /// strictly, where it is an error the caller propagates
+    /// ([`try_build_is_skipped`]). Each shape has ONE spelling, and a
+    /// hand-written copy of either is how a caller drifts from the planner it
+    /// is supposed to mirror — which is what `cross_requirements` did until it
+    /// routed here.
     ///
     /// The named owners each read `build.skip` for a reason that is not a
-    /// second lenient gate:
+    /// second copy of a gate:
     ///
     /// | Owner | Why it reads the field directly |
     /// |---|---|
-    /// | `build_is_skipped` | it IS the lenient gate |
-    /// | `build_skipped` (`build_env.rs`) | propagates the render error |
-    /// | `plan_prebuilt_build` (`stage-build`) | propagates the render error |
-    /// | `plan_build_jobs` (`stage-build`) | propagates the render error |
+    /// | `try_build_is_skipped` | it IS the strict gate; the callers that propagate a render error (`build_skipped`, `plan_prebuilt_build`, `plan_build_jobs`) route through it |
     /// | `configured_build_targets` (`env_preflight.rs`) | hands the field to the shared `entry_inactive` predicate |
     #[test]
     fn every_build_skip_read_belongs_to_a_named_owner() {
@@ -508,13 +519,7 @@ mod tests {
             function_bodies, production_half, workspace_production_sources,
         };
 
-        const OWNERS: &[&str] = &[
-            "build_is_skipped",
-            "build_skipped",
-            "plan_prebuilt_build",
-            "plan_build_jobs",
-            "configured_build_targets",
-        ];
+        const OWNERS: &[&str] = &["try_build_is_skipped", "configured_build_targets"];
 
         let sources = workspace_production_sources();
 
@@ -557,6 +562,8 @@ mod tests {
     /// `build_is_skipped(build, |t| ctx.render_template(t))` at a consumer is
     /// how "which builds does this run release" drifts from the planner it
     /// mirrors. Six consumers spelled it themselves before they routed here.
+    /// The strict gate is exempt: every caller of [`try_build_is_skipped`]
+    /// names the entry in its own error context, so there is nothing to share.
     #[test]
     fn the_context_skip_adapter_is_spelled_once() {
         use crate::test_helpers::test_sources::{
@@ -569,7 +576,12 @@ mod tests {
         for source in &sources {
             let text = std::fs::read_to_string(source).expect("read source");
             for body in function_bodies(production_half(&text)) {
-                if !body.contains("build_is_skipped(") || !body.contains("render_template(") {
+                // `try_build_is_skipped` is the STRICT gate: each caller
+                // wraps it in its own error context, so it has no single
+                // context adapter and its call sites are not strays.
+                let lenient_calls = body.matches("build_is_skipped(").count()
+                    - body.matches("try_build_is_skipped(").count();
+                if lenient_calls == 0 || !body.contains("render_template(") {
                     continue;
                 }
                 let name = body
@@ -589,6 +601,25 @@ mod tests {
             "bind the skip gate to a context through `build_plan::skipped_in`, \
              not a local closure: {strays:#?}"
         );
+    }
+
+    /// The planner must not build an entry whose `skip:` it could not
+    /// evaluate, so the strict gate keeps the render error the lenient gate
+    /// reads as "not skipped".
+    #[test]
+    fn the_strict_skip_gate_keeps_a_render_error_the_lenient_one_swallows() {
+        use crate::config::StringOrBool;
+
+        let build = BuildConfig {
+            skip: Some(StringOrBool::String("{{ missing_var }}".to_string())),
+            ..Default::default()
+        };
+        let render = |_: &str| anyhow::bail!("render failed");
+
+        let err = try_build_is_skipped(&build, render)
+            .expect_err("a skip: that cannot render is an error, not a false");
+        assert!(err.to_string().contains("render failed"), "got: {err}");
+        assert!(!build_is_skipped(&build, render));
     }
 
     #[test]

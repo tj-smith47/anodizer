@@ -435,7 +435,6 @@ pub(crate) fn run_per_crate_tag(
         // Each propagation is scoped to the Cargo workspace that owns the
         // bumped crate, so a bump in one release group never rewrites a pin in
         // an independent group whose crates live in a separate Cargo workspace.
-        let workspace_root_str = workspace_root.to_string_lossy().into_owned();
         let mut intra_ws_modified: Vec<String> = Vec::new();
         for group_result in &tag_results {
             for (crate_name, (crate_path, new_version)) in group_result
@@ -443,12 +442,9 @@ pub(crate) fn run_per_crate_tag(
                 .iter()
                 .zip(group_result.version_updates.iter())
             {
-                let abs_crate_dir = workspace_root
-                    .join(crate_path)
-                    .to_string_lossy()
-                    .into_owned();
+                let abs_crate_dir = workspace_root.join(crate_path);
                 let modified = anodizer_stage_build::version_sync::sync_workspace_deps(
-                    &workspace_root_str,
+                    &workspace_root,
                     &abs_crate_dir,
                     crate_name,
                     new_version,

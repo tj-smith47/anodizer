@@ -214,16 +214,15 @@ pub fn cargo_workspace_root_for(repo_root: &Path, crate_dir: &Path) -> PathBuf {
 ///
 /// Returns a list of modified file paths (for staging).
 pub fn sync_workspace_deps(
-    repo_root: &str,
-    crate_dir: &str,
+    repo_root: &Path,
+    crate_dir: &Path,
     crate_name: &str,
     version: &str,
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     let mut modified = Vec::new();
-    let repo_root = Path::new(repo_root);
-    let scope_root = cargo_workspace_root_for(repo_root, Path::new(crate_dir));
+    let scope_root = cargo_workspace_root_for(repo_root, crate_dir);
 
     // Find all Cargo.toml files under the owning workspace root, stopping at
     // any nested independent workspace boundary.
@@ -487,15 +486,7 @@ edition = "2024"
         ] {
             let (log, capture) =
                 StageLogger::with_capture("build", anodizer_core::log::Verbosity::Verbose);
-            sync_workspace_deps(
-                root.to_str().unwrap(),
-                root.join("core").to_str().unwrap(),
-                "core",
-                "0.2.0",
-                dry_run,
-                &log,
-            )
-            .unwrap();
+            sync_workspace_deps(root, &root.join("core"), "core", "0.2.0", dry_run, &log).unwrap();
             let messages: Vec<String> =
                 capture.all_messages().into_iter().map(|(_, m)| m).collect();
             assert!(
@@ -604,15 +595,9 @@ edition = "2024"
         );
 
         let crate_dir = root.join("group-a/core");
-        let modified = sync_workspace_deps(
-            root.to_str().unwrap(),
-            crate_dir.to_str().unwrap(),
-            "a-core",
-            "0.2.0",
-            false,
-            &test_logger(),
-        )
-        .unwrap();
+        let modified =
+            sync_workspace_deps(root, &crate_dir, "a-core", "0.2.0", false, &test_logger())
+                .unwrap();
 
         // Within-group-A dependent IS updated.
         assert_eq!(
@@ -671,15 +656,7 @@ edition = "2024"
         );
 
         let crate_dir = root.join("core");
-        sync_workspace_deps(
-            root.to_str().unwrap(),
-            crate_dir.to_str().unwrap(),
-            "core",
-            "1.1.0",
-            false,
-            &test_logger(),
-        )
-        .unwrap();
+        sync_workspace_deps(root, &crate_dir, "core", "1.1.0", false, &test_logger()).unwrap();
 
         assert_eq!(
             version_of_dep(&root.join("cli/Cargo.toml"), "dependencies", "core").as_deref(),
@@ -728,15 +705,9 @@ edition = "2024"
         );
 
         let crate_dir = root.join("core");
-        let modified = sync_workspace_deps(
-            root.to_str().unwrap(),
-            crate_dir.to_str().unwrap(),
-            "r-core",
-            "0.2.0",
-            false,
-            &test_logger(),
-        )
-        .unwrap();
+        let modified =
+            sync_workspace_deps(root, &crate_dir, "r-core", "0.2.0", false, &test_logger())
+                .unwrap();
 
         // Same-workspace dependent IS updated.
         assert_eq!(
