@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::artifact::{Artifact, ArtifactKind, FORMAT_BINARY};
 use anodizer_core::config::NpmConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -280,7 +280,7 @@ pub(crate) fn collect_platform_binaries(
     // A `binary`-format archive is a single raw binary per platform; it cannot
     // satisfy a multi-command `bins:` map (only one command's binary would ship,
     // and the other launchers would resolve a file that was never written).
-    if format == "binary" {
+    if format == FORMAT_BINARY {
         let commands = postinstall_commands(cfg, pkg_name);
         if commands.len() > 1 {
             bail!(

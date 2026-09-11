@@ -398,7 +398,7 @@ impl Config {
     /// are what keeps them apart.
     ///
     /// Run after `defaults_merge::apply_defaults`, so an explicit
-    /// `defaults.crates.tag_template` has already landed. Records the family in
+    /// `defaults.crates.tag_template` has already been applied. Records the family in
     /// `derived_tag_template` when at least one crate was filled.
     pub fn populate_derived_tag_templates(&mut self, base_dir: &std::path::Path) {
         if self.workspaces.as_ref().is_some_and(|w| !w.is_empty()) {
@@ -412,7 +412,7 @@ impl Config {
         for c in self.crates.iter_mut() {
             // Empty-as-unset, the same predicate `tag_family_template` reads
             // with: a crate written as `tag_template: ""` would otherwise skip
-            // every rung and land on the per-crate `<name>-v` family while its
+            // every rung and fall to the per-crate `<name>-v` family while its
             // siblings share the repo one.
             if c.tag_template.as_deref().is_none_or(str::is_empty) {
                 c.tag_template = Some(template.clone());

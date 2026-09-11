@@ -123,7 +123,7 @@ const ALWAYS_MASK_LEN: usize = 8;
 /// a word character, so a short secret that begins or ends in punctuation — a
 /// PEM block's `-----BEGIN`, a URL — is masked wherever it appears.
 fn stands_alone(before: Option<char>, value: &str, after: Option<char>) -> bool {
-    if value.len() >= ALWAYS_MASK_LEN {
+    if value.chars().count() >= ALWAYS_MASK_LEN {
         return true;
     }
     let edge_ok = |edge: Option<char>, value_edge: Option<char>| {
@@ -1203,6 +1203,18 @@ mod tests {
             "dev2x",
             "below the always-mask length the boundary rule still protects \
              unrelated text"
+        );
+    }
+
+    #[test]
+    fn the_always_mask_length_counts_characters_not_bytes() {
+        // Four Cyrillic letters are eight bytes: a byte count would put this
+        // value over the always-mask length and rewrite the glued occurrence.
+        let env = vec![("SHORT_TOKEN".to_string(), "ключ".to_string())];
+        assert_eq!(
+            string("xключx", &env),
+            "xключx",
+            "a four-character value is below the always-mask length whatever its byte width"
         );
     }
 
