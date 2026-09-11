@@ -684,11 +684,6 @@ const RANK_ARCH_SPECIFIC: u8 = 1;
 /// `curl | sh` user relies on.
 const RANK_UNIVERSAL: u8 = 2;
 
-/// Record `asset` under `key`, keeping the lowest-ranked asset when several
-/// release targets collapse onto one arm. The only remaining collision is a
-/// darwin universal asset landing on a key a native build already claimed; an
-/// equal-rank collision holds the incumbent, which is the
-/// lexicographically-smaller target (assets arrive in sorted-target order).
 /// The libc classes each `os-arch` key holds an arm for.
 ///
 /// One fold, asked three times as `arms` shrinks: to decide which keys carry
@@ -708,6 +703,11 @@ fn libcs_per_key(
     )
 }
 
+/// Record `asset` under `key`, keeping the lowest-ranked asset when several
+/// release targets collapse onto one arm. The only remaining collision is a
+/// darwin universal asset falling on a key a native build already claimed; an
+/// equal-rank collision holds the incumbent, which is the
+/// lexicographically-smaller target (assets arrive in sorted-target order).
 fn record_arm(
     arms: &mut BTreeMap<(String, &'static str), (u8, String, String)>,
     key: (String, &'static str),

@@ -419,7 +419,7 @@ pub fn redact_url_credentials(input: &str) -> String {
 }
 
 /// Strip bearer / authorization tokens that may have been echoed by a
-/// remote endpoint into a response body before that body lands in an
+/// remote endpoint into a response body before that body reaches an
 /// error message. Defense in depth — if a misbehaving registry mirrors
 /// the request's `Authorization` header back in an error response, this
 /// helper prevents the token from showing up in user-visible logs.
