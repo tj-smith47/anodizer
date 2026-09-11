@@ -1013,29 +1013,16 @@ mod tests {
         );
     }
 
-    /// Walk the crate's production sources and pair the two halves of the
-    /// entry-skip contract: a publisher that can disqualify one entry must
-    /// also evaluate its skips at the end of the run, or a misconfigured
-    /// entry reads as a successful publisher in the run summary. A new
-    /// entry-skipping publisher fails this until its `run()` calls
-    /// `evaluate_entry_skips`.
-    ///
-    /// The pairing is [`skip_label_belongs_to`] — the same rule
-    /// [`entry_skip_reasons`] collects by, so a label this accepts as covered
-    /// really is the label that publisher collects.
-    /// The publisher/stage label a call site passes: the first string literal
-    /// inside the call's OWN argument list, `tail` starting just after its
-    /// opening parenthesis. Bounded by the call's parentheses, never by a line
-    /// count — a lookahead that runs past the closing paren attributes the
-    /// next statement's literal to this publisher, which is how the helper
-    /// DEFINITIONS' parameter names were arriving.
-    /// The LAST string literal in an argument list, for a call whose reason
-    /// comes after the publisher and the entry label.
-    fn last_literal_argument(tail: &str) -> Option<String> {
+    /// Every string literal inside one call's OWN argument list, `tail`
+    /// starting just after its opening parenthesis. Bounded by the call's
+    /// parentheses, never by a line count — a lookahead that runs past the
+    /// closing paren attributes the next statement's literal to this call,
+    /// which is how the helper DEFINITIONS' parameter names were arriving.
+    fn literal_arguments(tail: &str) -> Vec<String> {
         let mut depth = 1usize;
         let mut chars = tail.char_indices();
         let mut lit_start = None;
-        let mut last = None;
+        let mut out = Vec::new();
         while let Some((i, c)) = chars.next() {
             if let Some(start) = lit_start {
                 match c {
@@ -1043,7 +1030,7 @@ mod tests {
                         chars.next();
                     }
                     '"' => {
-                        last = Some(tail[start..i].to_string());
+                        out.push(tail[start..i].to_string());
                         lit_start = None;
                     }
                     _ => {}
@@ -1056,43 +1043,25 @@ mod tests {
                 ')' => {
                     depth -= 1;
                     if depth == 0 {
-                        return last;
+                        break;
                     }
                 }
                 _ => {}
             }
         }
-        last
+        out
     }
 
+    /// The publisher/stage label a call site passes: the FIRST literal in its
+    /// argument list.
     fn first_literal_argument(tail: &str) -> Option<String> {
-        let mut depth = 1usize;
-        let mut chars = tail.char_indices();
-        let mut lit_start = None;
-        while let Some((i, c)) = chars.next() {
-            if let Some(start) = lit_start {
-                match c {
-                    '\\' => {
-                        chars.next();
-                    }
-                    '"' => return Some(tail[start..i].to_string()),
-                    _ => {}
-                }
-                continue;
-            }
-            match c {
-                '"' => lit_start = Some(i + 1),
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return None;
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        literal_arguments(tail).into_iter().next()
+    }
+
+    /// The reason a `record_entry_skip` call files: the LAST literal, after the
+    /// publisher and the entry label.
+    fn last_literal_argument(tail: &str) -> Option<String> {
+        literal_arguments(tail).pop()
     }
 
     /// The label extractor must stop at the call's own closing parenthesis.
@@ -1119,6 +1088,16 @@ mod tests {
         );
     }
 
+    /// Walk the crate's production sources and pair the two halves of the
+    /// entry-skip contract: a publisher that can disqualify one entry must
+    /// also evaluate its skips at the end of the run, or a misconfigured
+    /// entry reads as a successful publisher in the run summary. A new
+    /// entry-skipping publisher fails this until its `run()` calls
+    /// `evaluate_entry_skips`.
+    ///
+    /// The pairing is [`skip_label_belongs_to`] — the same rule
+    /// [`entry_skip_reasons`] collects by, so a label this accepts as covered
+    /// really is the label that publisher collects.
     #[test]
     fn every_entry_skipping_publisher_evaluates_its_skips() {
         let files = anodizer_core::test_helpers::test_sources::rust_sources(
