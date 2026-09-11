@@ -584,9 +584,11 @@ fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
         .as_mut()
         .unwrap()
         .repository = None;
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![broken, scoop_crate("beta")])
         .dry_run(true)
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
         "publish",

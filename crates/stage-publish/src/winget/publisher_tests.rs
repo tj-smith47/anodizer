@@ -1048,9 +1048,11 @@ fn guard_counts_windows_portable_binary() {
 #[test]
 fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
     let crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "Acme.bad id");
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![crate_cfg])
         .dry_run(true)
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("RawVersion", "1.0.0");
@@ -1099,12 +1101,14 @@ fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
 /// reached, not of submissions.
 #[test]
 fn a_dry_run_winget_submission_records_no_landed_entry() {
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![
             winget_crate_with("broken", "v{{ .Version }}", "Acme.bad id"),
             winget_crate_with("healthy", "v{{ .Version }}", "Acme.healthy"),
         ])
         .dry_run(true)
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("RawVersion", "1.0.0");
@@ -1143,6 +1147,7 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
 /// set and the rollback answer are one property, asserted from both ends.
 #[test]
 fn a_dry_run_records_no_winget_rollback_evidence() {
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![winget_crate_with(
             "healthy",
@@ -1150,6 +1155,7 @@ fn a_dry_run_records_no_winget_rollback_evidence() {
             "Acme.healthy",
         )])
         .dry_run(true)
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("RawVersion", "1.0.0");
@@ -1738,8 +1744,10 @@ fn a_skipped_crate_records_no_pull_request_target() {
         .if_condition = Some("false".to_string());
 
     let capture = anodizer_core::log::LogCapture::new();
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![gated, conditional])
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     ctx.with_log_capture(capture.clone());
     ctx.template_vars_mut().set("Version", "1.0.0");

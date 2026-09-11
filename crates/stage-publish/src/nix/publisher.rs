@@ -498,10 +498,12 @@ mod publisher_tests {
             .as_mut()
             .unwrap()
             .repository = None;
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![alpha, beta])
             .dry_run(true)
             .show_skipped(true)
+            .project_root(scope_repo.path().to_path_buf())
             .build();
         let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
             "publish",
@@ -554,9 +556,11 @@ mod publisher_tests {
             .as_mut()
             .unwrap()
             .repository = None;
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![alpha, beta])
             .dry_run(true)
+            .project_root(scope_repo.path().to_path_buf())
             .build();
         let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
             "publish",
@@ -618,9 +622,11 @@ mod publisher_tests {
             .as_mut()
             .unwrap()
             .repository = None;
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![alpha, beta])
             .dry_run(true)
+            .project_root(scope_repo.path().to_path_buf())
             .build();
         let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
             "publish",
@@ -663,9 +669,11 @@ mod publisher_tests {
             .as_mut()
             .unwrap()
             .repository = None;
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![broken, nix_crate("beta")])
             .dry_run(true)
+            .project_root(scope_repo.path().to_path_buf())
             .build();
         let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
             "publish",

@@ -1235,6 +1235,8 @@ fn an_unmappable_target_skips_the_entry_and_records_no_rollback_target() {
 
     let (bare_url, bare) = make_bare_aur_repo();
     let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
+    let scope_repo = crate::testing::hermetic_tagged_repo();
+    ctx.options.project_root = Some(scope_repo.path().to_path_buf());
     let mut unmappable = crate_with_aur_source(
         "alpha",
         AurSourceConfig {

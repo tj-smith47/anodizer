@@ -1525,6 +1525,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
         .project_name(&config.project_name)
         .crates(config.crates.clone())
         .dist(config.dist.clone())
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = config.changelog;
 
@@ -1675,6 +1676,7 @@ fn aggregate_release_body_spans_non_release_crate() {
         .project_name("myproj")
         .crates(crates.clone())
         .dist(repo.join("dist"))
+        .project_root(repo.to_path_buf())
         .build();
     ctx_pc.config.changelog = changelog.clone();
     ChangelogStage.run(&mut ctx_pc).unwrap();
@@ -1701,6 +1703,7 @@ fn aggregate_release_body_spans_non_release_crate() {
         .project_name("myproj")
         .crates(crates.clone())
         .dist(repo.join("dist"))
+        .project_root(repo.to_path_buf())
         .build();
     ctx_agg.config.changelog = changelog.clone();
     ctx_agg.options.changelog_aggregate_set = Some(vec![aggregate_entry]);
@@ -1775,6 +1778,7 @@ fn test_changelog_dist_write_gated_on_preview_flag() {
             .project_name(&config.project_name)
             .crates(config.crates.clone())
             .dist(config.dist.clone())
+            .project_root(repo.to_path_buf())
             .build();
         ctx.config.changelog = config.changelog.clone();
         let _cwd = CwdGuard::new(repo).unwrap();
@@ -1799,6 +1803,7 @@ fn test_changelog_dist_write_gated_on_preview_flag() {
             .crates(config.crates.clone())
             .dist(config.dist.clone())
             .changelog_preview(true)
+            .project_root(repo.to_path_buf())
             .build();
         ctx.config.changelog = config.changelog.clone();
         let _cwd = CwdGuard::new(repo).unwrap();
@@ -2027,6 +2032,7 @@ fn test_changelog_written_to_correct_output_location() {
         .project_name(&config.project_name)
         .crates(config.crates.clone())
         .dist(config.dist.clone())
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = config.changelog;
 
@@ -2260,6 +2266,7 @@ fn test_changelog_create_dist_dir_failure() {
         .project_name(&config.project_name)
         .crates(config.crates.clone())
         .dist(config.dist.clone())
+        .project_root(repo.to_path_buf())
         .build();
 
     // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
@@ -2331,6 +2338,7 @@ fn test_changelog_write_failure_on_readonly_path() {
         .project_name(&config.project_name)
         .crates(config.crates.clone())
         .dist(config.dist.clone())
+        .project_root(repo.to_path_buf())
         .build();
 
     // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
@@ -2397,6 +2405,7 @@ fn test_changelog_dry_run_writes_nothing_to_dist() {
         .crates(config.crates.clone())
         .dist(config.dist.clone())
         .dry_run(true)
+        .project_root(repo.to_path_buf())
         .build();
 
     // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
@@ -3443,6 +3452,8 @@ fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
     let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo, &["feat: initial commit"]);
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .dist(tmp.path().to_path_buf())
@@ -3454,12 +3465,14 @@ fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
             tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = Some(ChangelogConfig {
         use_source: Some("gitlab".to_string()),
         ..Default::default()
     });
 
+    let _cwd = CwdGuard::new(repo).unwrap();
     let stage = ChangelogStage;
     // Should not bail with "unsupported use source". It will either succeed
     // with git fallback or produce a git-based changelog.
@@ -3480,6 +3493,8 @@ fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
     let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo, &["feat: initial commit"]);
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .dist(tmp.path().to_path_buf())
@@ -3490,12 +3505,14 @@ fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
             tag_template: Some("v{{ .Version }}".to_string()),
             ..Default::default()
         }])
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = Some(ChangelogConfig {
         use_source: Some("gitea".to_string()),
         ..Default::default()
     });
 
+    let _cwd = CwdGuard::new(repo).unwrap();
     let stage = ChangelogStage;
     let result = stage.run(&mut ctx);
     assert!(
@@ -3624,6 +3641,7 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
         // strict_guard would log + fall back. The pre-empt skips that
         // entire branch.
         .dry_run(true)
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = Some(ChangelogConfig {
         use_source: Some("github".to_string()),
@@ -3724,6 +3742,7 @@ fn test_lockstep_resolves_prev_tag_once_not_full_history() {
             lockstep_crate("alpha", "crates/alpha"),
             lockstep_crate("beta", "crates/beta"),
         ])
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.changelog = Some(ChangelogConfig {
         use_source: Some("git".to_string()),
@@ -3840,6 +3859,7 @@ fn test_prev_tag_skips_sibling_track_tag_on_the_same_commit() {
         .dist(repo.join("dist"))
         .tag("v0.2.0")
         .crates(vec![crate_cfg.clone()])
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.git = Some(smartsemver_git());
 
@@ -3869,6 +3889,7 @@ fn test_prev_tag_skips_intervening_sibling_tag_on_default_sort() {
         .dist(repo.join("dist"))
         .tag("v0.2.0")
         .crates(vec![crate_cfg.clone()])
+        .project_root(repo.to_path_buf())
         .build();
 
     let _cwd = CwdGuard::new(repo).unwrap();
@@ -3898,6 +3919,7 @@ fn test_prev_tag_bare_version_template_is_still_family_scoped() {
             .dist(repo.join("dist"))
             .tag("0.2.0")
             .crates(vec![crate_cfg.clone()])
+            .project_root(repo.to_path_buf())
             .build();
         if tag_sort.is_some() {
             ctx.config.git = Some(smartsemver_git());
@@ -3938,6 +3960,7 @@ fn test_multitrack_changelog_body_is_not_empty() {
         .dist(repo.join("dist"))
         .tag("v0.2.0")
         .crates(vec![track_crate("cfgd", "crates/core", "v{{ .Version }}")])
+        .project_root(repo.to_path_buf())
         .build();
     ctx.config.git = Some(smartsemver_git());
     ctx.config.changelog = Some(ChangelogConfig {

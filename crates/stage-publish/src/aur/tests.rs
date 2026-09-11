@@ -2121,6 +2121,8 @@ fn the_rollback_target_is_rendered_in_the_crate_scope() {
         ..Default::default()
     }];
     let mut ctx = Context::new(config, ContextOptions::default());
+    let scope_repo = crate::testing::hermetic_tagged_repo();
+    ctx.options.project_root = Some(scope_repo.path().to_path_buf());
     ctx.template_vars_mut()
         .set("ProjectName", "workspace-project");
     ctx.artifacts.add(linux_amd64_archive(
@@ -2178,6 +2180,8 @@ fn a_skipped_crate_records_no_rollback_target() {
         aur_crate_at("beta", &bare_url),
     ];
     let mut ctx = Context::new(config, ContextOptions::default());
+    let scope_repo = crate::testing::hermetic_tagged_repo();
+    ctx.options.project_root = Some(scope_repo.path().to_path_buf());
     // Two linux archives on one architecture: alpha disqualifies itself
     // before any clone is attempted, so its ssh url is never contacted.
     ctx.artifacts.add(linux_amd64_archive(

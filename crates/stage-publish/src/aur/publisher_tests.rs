@@ -544,8 +544,10 @@ fn an_unmappable_arch_skips_the_entry_and_keeps_the_next_one() {
         .as_mut()
         .unwrap()
         .skip_upload = Some(StringOrBool::Bool(true));
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![unmappable, next])
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
@@ -630,8 +632,10 @@ fn ambiguous_arch_skips_the_entry_and_keeps_the_next_one() {
         .as_mut()
         .unwrap()
         .skip_upload = Some(StringOrBool::Bool(true));
+    let scope_repo = crate::testing::hermetic_tagged_repo();
     let mut ctx = TestContextBuilder::new()
         .crates(vec![ambiguous, next])
+        .project_root(scope_repo.path().to_path_buf())
         .build();
     ctx.artifacts
         .add(amd64_archive("alpha", "alpha-one.tar.gz"));

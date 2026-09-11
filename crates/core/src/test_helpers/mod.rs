@@ -459,6 +459,14 @@ impl TestContextBuilder {
     }
 
     /// Set explicit project root directory (avoids process-wide CWD mutation in tests).
+    ///
+    /// Without this call the built context roots itself at a directory that does
+    /// not exist, so a tag or file lookup finds nothing. The production fallback
+    /// for an unset root is the working directory, and a test run inside the
+    /// anodizer checkout would read the checkout's own release tags through it:
+    /// sixteen publisher tests passed on a developer machine and failed on a
+    /// tagless CI checkout before this default existed. A test that needs a
+    /// repository passes one, for example `hermetic_tagged_repo()`.
     pub fn project_root(mut self, root: PathBuf) -> Self {
         self.project_root = Some(root);
         self
@@ -576,7 +584,7 @@ impl TestContextBuilder {
             merge: false,
             publish_only: self.publish_only,
             preflight_secrets: false,
-            project_root: self.project_root,
+            project_root: Some(self.project_root.unwrap_or_else(no_repo_project_root)),
             strict: false,
             resume_release: false,
             replace_existing_artifacts: false,
@@ -865,6 +873,16 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
 // ---------------------------------------------------------------------------
 // Module-level tests
 // ---------------------------------------------------------------------------
+
+/// A per-process path that is never created, for a test context that names no
+/// project root: git and file lookups under it fail closed instead of reading
+/// the working directory.
+fn no_repo_project_root() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "anodizer-test-no-project-root-{}",
+        std::process::id()
+    ))
+}
 
 #[cfg(test)]
 mod tests {
