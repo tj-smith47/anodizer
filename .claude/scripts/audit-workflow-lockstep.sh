@@ -14,7 +14,8 @@
 #   2. Publish secret env block: the preflight gate and the release job carry
 #      an identical env map (so the pre-tag gate validates exactly what the
 #      post-tag publish consumes), plus identical gpg/apk key `with:` inputs.
-#   3. Release trigger gate: preflight and blob-preflight share one trigger if:.
+#   3. Release trigger gate: preflight and blob-preflight share one trigger if:,
+#      and ci.yml's RELEASE_BOOTSTRAP env equals the snapshot job's own if:.
 #   4. Release/nightly mutex: both concurrency groups are identical AND both
 #      set cancel-in-progress: false.
 #   5. CI-bootstrap artifact: every literal `from-artifact:` and the
@@ -114,6 +115,27 @@ if [[ "$pf_if" != "$blob_if" ]]; then
     fail "trigger gate drift: preflight if [${pf_if}] != blob-preflight if [${blob_if}]."
 fi
 
+# ci.yml's test job gates the release-binary bootstrap build/upload on
+# RELEASE_BOOTSTRAP, and the snapshot job that consumes the uploaded artifact
+# gates itself on the same expression. When the two drift, `snapshot` (needs:
+# test) waits on an `anodizer-linux` artifact the test job never uploaded.
+# Compare with the `${{ }}` wrapper and the `&& matrix.os == …` tail stripped,
+# so only the trigger half has to match.
+strip_gate() { sed -E 's/^\$\{\{[[:space:]]*//; s/[[:space:]]*\}\}$//; s/^\(//; s/\)[[:space:]]*&&.*$//; s/[[:space:]]+/ /g; s/^ //; s/ $//'; }
+boot_env=$(yqr -r '.jobs.test.env.RELEASE_BOOTSTRAP' "$CI")
+snap_if=$(yqr -r '.jobs.snapshot.if' "$CI")
+if [[ -z "$boot_env" || "$boot_env" == "null" ]]; then
+    fail "bootstrap gate: could not read .jobs.test.env.RELEASE_BOOTSTRAP from ${CI}."
+elif [[ -z "$snap_if" || "$snap_if" == "null" ]]; then
+    fail "bootstrap gate: could not read .jobs.snapshot.if from ${CI}."
+else
+    boot_gate=$(printf '%s' "$boot_env" | strip_gate)
+    snap_gate=$(printf '%s' "$snap_if" | strip_gate)
+    if [[ "$boot_gate" != "$snap_gate" ]]; then
+        fail "bootstrap gate drift: ${CI} RELEASE_BOOTSTRAP [${boot_gate}] != snapshot if [${snap_gate}] — snapshot would wait on an artifact the test job never uploaded."
+    fi
+fi
+
 # --- 4. Release/nightly mutex ----------------------------------------------
 rel_grp=$(yqr -r '.concurrency.group' "$REL")
 ngt_grp=$(yqr -r '.concurrency.group' "$NIGHTLY")
@@ -176,9 +198,9 @@ done
 
 # --- 6. Atomic tag topology ------------------------------------------------
 # `--push-tags-only` leaves the version-sync bump commit reachable only from the
-# tag and needs a separate post-publish branch fast-forward; any push landing on
+# tag and needs a separate post-publish branch fast-forward; any push reaching
 # master inside that window makes the fast-forward impossible (422, release half
-# landed). `--push` is atomic — branch HEAD and tag land together, or the tag job
+# published). `--push` is atomic — branch HEAD and tag are pushed together, or the tag job
 # fails before anything publishes.
 # Matched as a whole word (the args are space-padded first): `--push` is a
 # prefix of `--push-tags-only` and `--push-dry-run`, and both of those leave the
@@ -253,4 +275,4 @@ if [[ -n "$failures" ]]; then
     exit 1
 fi
 
-echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, and skip_publishers prose are in lockstep."
+echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, CI bootstrap gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, and skip_publishers prose are in lockstep."

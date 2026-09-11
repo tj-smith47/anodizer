@@ -332,7 +332,7 @@ jobs:
         run: |
           command -v clang-cl >/dev/null 2>&1 || choco install llvm -y --no-progress
           command -v nasm     >/dev/null 2>&1 || choco install nasm -y --no-progress
-          # choco installs land in fixed prefixes that are not on PATH for the next
+          # choco installs end up in fixed prefixes that are not on PATH for the next
           # step; append both so `require_on_path` in the guard sees them.
           printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
           printf '%s\n' 'C:\Program Files\NASM'     >> "$GITHUB_PATH"
@@ -350,13 +350,21 @@ jobs:
 
   coverage:
     name: Coverage
+    # Same guard as `snapshot`: `github.ref` on a pull_request is
+    # `refs/pull/N/merge`, so a master-only guard would skip the floor on the
+    # pull request that breaches it. Scratch `session-*` pushes skip the
+    # 75-minute instrumented run entirely.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     # Provisions the runtime-probed toolchain (coverage-tools) and therefore
     # actually executes the ~780 probe sites a bare runner skips; the run is
     # strictly longer than when those tests no-oped.
     timeout-minutes: 75
+    # Measuring needs no write access; the badge push lives in the separate
+    # `coverage-publish` job so a pull-request run never holds a write token
+    # while it executes the whole suite.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -373,9 +381,38 @@ jobs:
           coverage-tools: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # `coverage:gate` measures and enforces the floor; `coverage:publish` is
-      # that plus the badge push to origin/badges. Splitting by target rather
-      # than gating the whole job is what lets the floor fail the pull request
-      # that would breach it instead of the master push that already merged it.
       - name: Run coverage
-        run: task ${{ github.ref == 'refs/heads/master' && 'coverage:publish' || 'coverage:gate' }}
+        run: task coverage:gate
+
+      # The badge job publishes the number this run measured; re-measuring
+      # there would double a 75-minute job and could publish a percentage the
+      # gate never saw.
+      - name: Upload coverage report
+        if: github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cobertura-coverage
+          path: cobertura.xml
+          retention-days: 1
+
+  coverage-publish:
+    name: Coverage badge
+    if: github.ref == 'refs/heads/master'
+    needs: [coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The only job in this workflow that writes to the repository: it commits
+    # the Shields.io endpoint payload onto the orphan `badges` branch.
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download coverage report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cobertura-coverage
+
+      - name: Publish the coverage badge
+        run: bash .claude/scripts/publish-coverage.sh cobertura.xml

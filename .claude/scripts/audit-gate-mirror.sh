@@ -41,7 +41,11 @@ declare -A JOB_MIRROR=(
     [msrv]="check:msrv"
     [docs-check]="docs:check"
     [native-object-determinism]="check:native-object-determinism"
+    # Both coverage jobs mirror `coverage:gate`: the measurement is the part a
+    # local pre-push can reproduce, and `coverage-publish` only pushes the
+    # badge, which publish-coverage.sh refuses to do outside CI.
     [coverage]="coverage:gate"
+    [coverage-publish]="coverage:gate"
 )
 
 # Capture yq's output (and exit status) BEFORE the loop — a `while … < <(yq)`
