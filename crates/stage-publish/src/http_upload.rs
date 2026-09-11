@@ -19,10 +19,10 @@ use crate::artifactory::{UploadAuth, UploadHeaders, UploadOutcome, render_artifa
 /// anonymous uploads from upload's tolerance for them, plus the env-var
 /// prefix used to look up secrets.
 pub(crate) struct CredentialResolveSpec<'a> {
-    /// Publisher label the recorded skip is filed under ("artifactory" /
-    /// "upload").
+    /// Publisher label prefixing the render-failure error ("artifactory" /
+    /// "upload"); the entry skip itself is filed by the caller's absorb.
     pub publisher: &'a str,
-    /// Entry name; labels the recorded skip and is joined into env-var keys.
+    /// Entry name; joined into the env-var keys and named in that error.
     pub entry_name: &'a str,
     /// Optional `username:` value from the publisher entry config.
     pub config_username: Option<&'a str>,
