@@ -15,7 +15,7 @@ use anodizer_core::EnvRequirement;
 use anodizer_core::config::{BuilderKind, CrossStrategy};
 use anodizer_core::context::Context;
 
-use anodizer_core::build_plan::{build_is_skipped, build_produces, planned_builds};
+use anodizer_core::build_plan::{build_produces, planned_builds};
 
 use crate::command::{cross_gnu_cargo_gcc, detect_cross_strategy_for_target_impl};
 use crate::targets::is_target_ignored;
@@ -63,6 +63,7 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
         .unwrap_or_default();
 
     let mut tools: BTreeSet<String> = BTreeSet::new();
+    let is_skipped = anodizer_core::build_plan::skipped_in(ctx);
 
     for krate in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&krate.name) {
@@ -89,7 +90,7 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
             // back to "not skipped" so the hint over-reports rather than
             // silently dropping a toolchain a real build would need — which is
             // exactly what the shared gate decides.
-            if build_is_skipped(build, |tmpl| ctx.render_template(tmpl)) {
+            if is_skipped(build) {
                 continue;
             }
             // A materialized `binary: None` build on a crate with no matching

@@ -415,7 +415,23 @@ pub fn compose_prefix(prefix: &str, value: &str) -> String {
 /// the last-tag probe come up empty and silently widens the commit range
 /// to full history.
 pub fn per_crate_tag_prefix(name: &str, tag_template: &str) -> String {
-    extract_tag_prefix(tag_template).unwrap_or_else(|| format!("{name}-v"))
+    extract_tag_prefix(tag_template).unwrap_or_else(|| default_per_crate_tag_prefix(name))
+}
+
+/// The `<name>-v` convention itself, spelled once.
+fn default_per_crate_tag_prefix(name: &str) -> String {
+    format!("{name}-v")
+}
+
+/// The tag family a crate with no `tag_template:` falls back to —
+/// [`default_per_crate_tag_prefix`] with the version placeholder appended.
+///
+/// [`CrateConfig::tag_family_template`](crate::config::CrateConfig::tag_family_template)
+/// is what consumers read; this is the fallback it returns, kept here so the
+/// template and the prefix extracted from it cannot spell the convention
+/// differently.
+pub fn per_crate_tag_family_template(name: &str) -> String {
+    format!("{}{{{{ Version }}}}", default_per_crate_tag_prefix(name))
 }
 
 /// Strip a monorepo tag prefix from a tag string.

@@ -385,11 +385,10 @@ pub(super) fn apply_per_crate_tag(
     let Some(crate_cfg) = config.find_crate(crate_name).cloned() else {
         return;
     };
-    let release_tag_override = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
     let tag = match anodizer_core::release_tag::resolve_release_tag(
         ctx,
         &crate_cfg,
-        release_tag_override.as_deref(),
+        crate_cfg.release_tag_override(),
     ) {
         Ok(t) => t,
         Err(e) => {

@@ -165,11 +165,10 @@ pub(crate) fn apply_nightly_template_vars(
     // release stage, and a `--skip=release` run must not die for a tag it
     // never uses.
     if let Some(crate_cfg) = first_covered_crate(ctx, config).cloned() {
-        let override_tag = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
         match anodizer_core::release_tag::resolve_release_tag(
             ctx,
             &crate_cfg,
-            override_tag.as_deref(),
+            crate_cfg.release_tag_override(),
         ) {
             Ok(tag) => ctx.template_vars_mut().set("Tag", &tag),
             Err(e) => log.verbose(&format!("nightly tag not resolvable yet: {e}")),

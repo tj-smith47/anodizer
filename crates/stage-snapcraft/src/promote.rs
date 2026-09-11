@@ -244,23 +244,17 @@ fn resolve_snap_names(ctx: &Context) -> Vec<String> {
             if !proceed {
                 continue;
             }
-            let name = snap_name_for(snap_cfg, project_name, &primary_binary(ctx, krate));
+            let name = snap_name_for(
+                snap_cfg,
+                project_name,
+                &anodizer_core::build_plan::crate_primary_binary_name_in(ctx, krate),
+            );
             if !names.contains(&name) {
                 names.push(name);
             }
         }
     }
     names
-}
-
-/// The crate's primary binary name, as the build-planning SSOT resolves it:
-/// the first build the run actually releases — one that produces an artifact
-/// and that `skip:` does not veto — falling back to the crate name. Last
-/// resort of the snap-name resolution chain.
-fn primary_binary(ctx: &Context, krate: &anodizer_core::config::CrateConfig) -> String {
-    anodizer_core::build_plan::crate_primary_binary_name(krate, |build| {
-        anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
-    })
 }
 
 /// `snapcrafts[].name` → project name → primary binary, mirroring
@@ -884,7 +878,10 @@ Rev    Uploaded              Arches  Version  Channels
             ..Default::default()
         };
         let ctx = ctx_with_snapcrafts("demo", vec![Some("mysnap")]);
-        assert_eq!(primary_binary(&ctx, &with_build), "mybin");
+        assert_eq!(
+            anodizer_core::build_plan::crate_primary_binary_name_in(&ctx, &with_build),
+            "mybin"
+        );
         // No builds ⇒ the crate name is the last resort.
         let no_build = CrateConfig {
             name: "app".to_string(),
@@ -892,7 +889,10 @@ Rev    Uploaded              Arches  Version  Channels
             builds: None,
             ..Default::default()
         };
-        assert_eq!(primary_binary(&ctx, &no_build), "app");
+        assert_eq!(
+            anodizer_core::build_plan::crate_primary_binary_name_in(&ctx, &no_build),
+            "app"
+        );
     }
 
     /// A build the release never runs must not name the snap, whichever way it
@@ -925,7 +925,7 @@ Rev    Uploaded              Arches  Version  Channels
             snap_name_for(
                 &SnapcraftConfig::default(),
                 "",
-                &primary_binary(&ctx, &krate)
+                &anodizer_core::build_plan::crate_primary_binary_name_in(&ctx, &krate)
             ),
             "real"
         );

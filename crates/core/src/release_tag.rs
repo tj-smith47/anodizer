@@ -165,8 +165,9 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
 /// reconstruct the tag from it. They deliberately stop short of the
 /// `nightly.tag_name` rung: both point at whatever the project's newest STABLE
 /// release is, which is never the rolling tag a nightly run mints.
-pub fn release_tag_template(crate_cfg: &CrateConfig, release_tag_override: Option<&str>) -> String {
-    release_tag_override
+pub fn release_tag_template(crate_cfg: &CrateConfig) -> String {
+    crate_cfg
+        .release_tag_override()
         .map(str::to_string)
         .unwrap_or_else(|| crate_cfg.tag_family_template())
 }
@@ -249,6 +250,20 @@ mod tests {
             tag_template: Some(tmpl.to_string()),
             ..Default::default()
         }
+    }
+
+    /// The template resolver reads `release.tag:` off the crate config itself,
+    /// so an installer or a `pkg_url` derived from it honours the override
+    /// without every caller re-deriving where the override lives.
+    #[test]
+    fn release_tag_template_reads_the_crate_release_override() {
+        let mut cfg = crate_cfg("app", "v{{ Version }}");
+        assert_eq!(release_tag_template(&cfg), "v{{ Version }}");
+        cfg.release = Some(crate::config::ReleaseConfig {
+            tag: Some("release-{{ Version }}".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(release_tag_template(&cfg), "release-{{ Version }}");
     }
 
     /// An operator-declared tag IS the tag being released. Re-rendering the

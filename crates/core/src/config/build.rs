@@ -319,12 +319,24 @@ impl CrateConfig {
     /// answer here (a bare `v`) would put the release stage's tag outside the
     /// family every other surface looks in, so the tag it created is the one
     /// nothing else can find.
+    /// The crate's `release.tag:` override, if it set one.
+    ///
+    /// The override is the first rung of
+    /// [`release_tag_template`](crate::release_tag::release_tag_template) and
+    /// the second of
+    /// [`resolve_release_tag`](crate::release_tag::resolve_release_tag);
+    /// reading it through this accessor keeps "where does the override come
+    /// from" one answer rather than one per caller.
+    pub fn release_tag_override(&self) -> Option<&str> {
+        self.release.as_ref().and_then(|r| r.tag.as_deref())
+    }
+
     pub fn tag_family_template(&self) -> String {
         self.tag_template
             .as_deref()
             .filter(|t| !t.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("{}-v{{{{ Version }}}}", self.name))
+            .unwrap_or_else(|| crate::git::per_crate_tag_family_template(&self.name))
     }
 }
 

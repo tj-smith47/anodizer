@@ -480,14 +480,6 @@ pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
     }
 }
 
-/// Resolve the binary name to version-check for a crate: the crate's primary
-/// binary, as the build-planning SSOT resolves it.
-fn crate_binary_name(ctx: &Context, crate_cfg: &CrateConfig) -> String {
-    anodizer_core::build_plan::crate_primary_binary_name(crate_cfg, |build| {
-        anodizer_core::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
-    })
-}
-
 /// The produced (upload-candidate) asset NAMES for one crate.
 ///
 /// Derived from the SAME canonical upload-candidate enumeration the release

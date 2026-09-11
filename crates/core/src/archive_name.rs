@@ -21,11 +21,43 @@ use anyhow::{Context as _, Result};
 use crate::context::Context;
 use crate::target::map_target;
 
+/// The micro-architecture variant suffix as a literal, so a default template
+/// that ends in it can be built with `concat!` instead of re-typing the clause.
+///
+/// `concat!` takes literals only, which is why this is a macro rather than a
+/// second `const`; [`MICRO_ARCH_VARIANT_SUFFIX`] is the value every non-literal
+/// consumer should read.
+macro_rules! micro_arch_variant_suffix {
+    () => {
+        "{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+    };
+}
+
+/// The `format: binary` default name template as a literal, so a default that
+/// appends an extension to it (the SBOM document path) can be built with
+/// `concat!` rather than re-typing the stem.
+///
+/// [`DEFAULT_BINARY_NAME_TEMPLATE`] is the value every non-literal consumer
+/// should read.
+macro_rules! default_binary_name_template {
+    () => {
+        concat!(
+            "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
+            $crate::archive_name::micro_arch_variant_suffix!()
+        )
+    };
+}
+
+pub(crate) use {default_binary_name_template, micro_arch_variant_suffix};
+
 /// Canonical archive name template used when a crate sets no
 /// `archive.name_template:`. The default
 /// (`{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}…`) with the
 /// micro-architecture variant suffixes appended.
-pub const DEFAULT_NAME_TEMPLATE: &str = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+pub const DEFAULT_NAME_TEMPLATE: &str = concat!(
+    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
+    micro_arch_variant_suffix!()
+);
 
 /// Multi-crate variant of [`DEFAULT_NAME_TEMPLATE`]. Identical in shape; the
 /// archive stage rebinds `ProjectName` to the per-crate name so each crate's
@@ -34,7 +66,7 @@ pub const DEFAULT_NAME_TEMPLATE_MULTI_CRATE: &str = DEFAULT_NAME_TEMPLATE;
 
 /// Default name template for `format: binary` archives (uses `{{ .Binary }}`
 /// rather than `{{ .ProjectName }}` so each binary is named individually).
-pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = default_binary_name_template!();
 
 /// The full micro-architecture variant suffix — the `Arm` / `Mips` / `Amd64`
 /// tail shared by the Linux-capable asset namers: the archive stage's
@@ -50,7 +82,7 @@ pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = "{{ .Binary }}_{{ .Version }}_{{ 
 /// while the makeself default uses the bare `{{ ProjectName }}…` form, so the
 /// prefixes differ by design. Each consumer carries a drift test pinning its own
 /// default to this const so the shared tail cannot drift between them.
-pub const MICRO_ARCH_VARIANT_SUFFIX: &str = "{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+pub const MICRO_ARCH_VARIANT_SUFFIX: &str = micro_arch_variant_suffix!();
 
 /// The amd64-only subset of [`MICRO_ARCH_VARIANT_SUFFIX`] — the suffix the
 /// macOS/Windows OS-installer family (`app_bundles`, `dmgs`, `pkgs`, `msis`,

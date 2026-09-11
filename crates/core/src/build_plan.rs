@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use crate::config::{BuildConfig, BuilderKind, CrateConfig};
+use crate::context::Context;
 
 /// True when the crate at `crate_path` exposes a binary *target* named
 /// `wanted` — i.e. `cargo build --bin <wanted>` would resolve. Mirrors
@@ -288,6 +289,31 @@ pub fn build_is_skipped(
         .is_some_and(|s| s.try_evaluates_to_true(render).unwrap_or(false))
 }
 
+/// [`build_is_skipped`] bound to a live context — the `skip:` gate with the
+/// context's own template renderer already supplied.
+///
+/// Every consumer of the "which builds does THIS run release" question needs
+/// the same adapter, so it is spelled here rather than at each call site:
+/// pass the result straight to [`crate_primary_binary_name`],
+/// [`crate_target_list`] or [`crate_build_target_entries`].
+pub fn skipped_in(ctx: &Context) -> impl Fn(&BuildConfig) -> bool + '_ {
+    move |build| build_is_skipped(build, |t| ctx.render_template(t))
+}
+
+/// [`crate_primary_binary_name`] resolved against a live context.
+pub fn crate_primary_binary_name_in(ctx: &Context, krate: &CrateConfig) -> String {
+    crate_primary_binary_name(krate, skipped_in(ctx))
+}
+
+/// [`crate_target_list`] resolved against a live context.
+pub fn crate_target_list_in(
+    ctx: &Context,
+    krate: &CrateConfig,
+    default_targets: &[String],
+) -> Vec<String> {
+    crate_target_list(krate, default_targets, skipped_in(ctx))
+}
+
 /// The binary an archive's assets are named after on one target — the value
 /// bound to `{{ .Binary }}` while rendering its `name_template`.
 ///
@@ -535,6 +561,56 @@ mod tests {
             strays.is_empty(),
             "a build entry's skip: is read by one of {OWNERS:?}; these read it \
              themselves and will drift from the planner: {strays:#?}"
+        );
+    }
+
+    /// The adapter that turns a live [`Context`] into the lenient `skip:` gate
+    /// is [`skipped_in`], and nothing else: a hand-written
+    /// `build_is_skipped(build, |t| ctx.render_template(t))` at a consumer is
+    /// how "which builds does this run release" drifts from the planner it
+    /// mirrors. Six consumers spelled it themselves before they routed here.
+    #[test]
+    fn the_context_skip_adapter_is_spelled_once() {
+        use crate::test_helpers::test_sources::{function_bodies, production_half, rust_sources};
+
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ above crates/core");
+        let mut sources: Vec<std::path::PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
+            let src = entry.expect("crate entry").path().join("src");
+            if src.is_dir() {
+                sources.extend(rust_sources(&src));
+            }
+        }
+        assert!(
+            sources.len() > 100,
+            "the walk must cover every crate's production sources, found {}",
+            sources.len()
+        );
+
+        let mut strays: Vec<String> = Vec::new();
+        for source in &sources {
+            let text = std::fs::read_to_string(source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                if !body.contains("build_is_skipped(") || !body.contains("render_template(") {
+                    continue;
+                }
+                let name = body
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split("fn ").nth(1))
+                    .and_then(|l| l.split(['(', '<', ' ']).next())
+                    .unwrap_or("<unnamed>")
+                    .to_string();
+                if name != "skipped_in" {
+                    strays.push(format!("{}: {name}", source.display()));
+                }
+            }
+        }
+        assert!(
+            strays.is_empty(),
+            "bind the skip gate to a context through `build_plan::skipped_in`,              not a local closure: {strays:#?}"
         );
     }
 

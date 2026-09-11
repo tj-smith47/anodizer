@@ -351,11 +351,7 @@ fn resolve_checksums_filename(ctx: &mut Context, crate_cfg: &CrateConfig) -> Res
 /// version-infix template (e.g. `{{ Version }}-stable`) is rejected with a
 /// clear error rather than silently baking a broken `tag=` into the script.
 fn resolve_tag_prefix(ctx: &mut Context, crate_cfg: &CrateConfig) -> Result<String> {
-    let release_tag_override = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
-    let template = anodizer_core::release_tag::release_tag_template(
-        crate_cfg,
-        release_tag_override.as_deref(),
-    );
+    let template = anodizer_core::release_tag::release_tag_template(crate_cfg);
 
     let rendered = ctx
         .render_template(&template)

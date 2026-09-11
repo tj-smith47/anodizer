@@ -258,18 +258,18 @@ impl ToolSpec<'_> {
              printf '%s{rec}' \"$__r\" >> {log}\n",
             arg = ARG_SEP,
             rec = REC_SEP,
-            log = sh_quote(&calls.to_string_lossy()),
+            log = crate::shell::shell_single_quote(&calls.to_string_lossy()),
         ));
         for (rel, contents) in &self.creates {
             // mkdir -p the parent so relative nested outputs work.
             s.push_str(&format!(
                 "mkdir -p \"$(dirname {p})\" 2>/dev/null || true\n",
-                p = sh_quote(rel)
+                p = crate::shell::shell_single_quote(rel)
             ));
             s.push_str(&format!(
                 "printf '%s' {c} > {p}\n",
-                c = sh_quote(contents),
-                p = sh_quote(rel),
+                c = crate::shell::shell_single_quote(contents),
+                p = crate::shell::shell_single_quote(rel),
             ));
         }
         if let Some(custom) = &self.script {
@@ -279,10 +279,16 @@ impl ToolSpec<'_> {
             }
         } else {
             if !self.stdout.is_empty() {
-                s.push_str(&format!("printf '%s' {}\n", sh_quote(&self.stdout)));
+                s.push_str(&format!(
+                    "printf '%s' {}\n",
+                    crate::shell::shell_single_quote(&self.stdout)
+                ));
             }
             if !self.stderr.is_empty() {
-                s.push_str(&format!("printf '%s' {} 1>&2\n", sh_quote(&self.stderr)));
+                s.push_str(&format!(
+                    "printf '%s' {} 1>&2\n",
+                    crate::shell::shell_single_quote(&self.stderr)
+                ));
             }
             s.push_str(&format!("exit {}\n", self.exit));
         }
@@ -346,12 +352,6 @@ fn make_executable(path: &Path) {
 
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) {}
-
-/// Single-quote a string for safe interpolation into an `sh` script.
-#[cfg(unix)]
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
 
 /// Marker env var that makes a script written by [`write_executable_script`]
 /// exit before its body runs.

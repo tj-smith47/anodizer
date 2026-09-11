@@ -60,7 +60,6 @@ use crate::log::{StageLogger, Verbosity};
 use crate::retry::RetryLog;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // CwdGuard — panic-safe cwd restore
@@ -788,36 +787,16 @@ pub fn create_fake_binary(dir: &Path, name: &str) -> std::path::PathBuf {
 // Git helpers
 // ---------------------------------------------------------------------------
 
-/// Run a git command in `dir`, panicking on failure.
-fn run_git(dir: &Path, args: &[&str]) {
-    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    let output = output_with_spawn_retry(
-        || {
-            let mut cmd = Command::new("git");
-            cmd.args(&owned).current_dir(dir);
-            cmd
-        },
-        "git",
-    );
-    assert!(
-        output.status.success(),
-        "git {:?} failed with status {}: {}",
-        args,
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 /// Initialize a git repository with a config, initial commit, and `v0.1.0` tag.
 ///
 /// Expects that the directory already has files to commit (e.g. from [`create_test_project`]).
 pub fn init_git_repo(dir: &Path) {
-    run_git(dir, &["init"]);
-    run_git(dir, &["config", "user.email", "test@test.com"]);
-    run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["add", "-A"]);
-    run_git(dir, &["commit", "-m", "initial"]);
-    run_git(dir, &["tag", "v0.1.0"]);
+    git_test_ok(dir, &["init"]);
+    git_test_ok(dir, &["config", "user.email", "test@test.com"]);
+    git_test_ok(dir, &["config", "user.name", "Test"]);
+    git_test_ok(dir, &["add", "-A"]);
+    git_test_ok(dir, &["commit", "-m", "initial"]);
+    git_test_ok(dir, &["tag", "v0.1.0"]);
 }
 
 /// Initialize a git repository with multiple commits.
@@ -826,20 +805,20 @@ pub fn init_git_repo(dir: &Path) {
 /// created for each so that there is always something to commit. A `v0.1.0` tag
 /// is placed on the first commit.
 pub fn init_git_repo_with_commits(dir: &Path, commits: &[&str]) {
-    run_git(dir, &["init"]);
-    run_git(dir, &["config", "user.email", "test@test.com"]);
-    run_git(dir, &["config", "user.name", "Test"]);
+    git_test_ok(dir, &["init"]);
+    git_test_ok(dir, &["config", "user.email", "test@test.com"]);
+    git_test_ok(dir, &["config", "user.name", "Test"]);
 
     for (i, message) in commits.iter().enumerate() {
         let filename = format!("commit_{}.txt", i);
         fs::write(dir.join(&filename), format!("content for commit {}", i))
             .unwrap_or_else(|e| panic!("failed to write commit file: {e}"));
-        run_git(dir, &["add", "-A"]);
-        run_git(dir, &["commit", "-m", message]);
+        git_test_ok(dir, &["add", "-A"]);
+        git_test_ok(dir, &["commit", "-m", message]);
 
         // Tag the first commit
         if i == 0 {
-            run_git(dir, &["tag", "v0.1.0"]);
+            git_test_ok(dir, &["tag", "v0.1.0"]);
         }
     }
 }
@@ -912,7 +891,7 @@ mod tests {
     fn transient_spawn_classifier_non_windows_always_false() {
         // On Unix no exit status is a process-creation init failure; a real
         // program error (here `false`, which exits 1) must classify as false.
-        let status = Command::new("false")
+        let status = std::process::Command::new("false")
             .status()
             .expect("spawn `false` to obtain a known-failing status");
         assert!(!status.success(), "`false` is expected to exit non-zero");
@@ -1213,5 +1192,24 @@ mod tests {
         // The assertion targets the unset-var branch so the test stays
         // deterministic across CI / dev shells.
         assert_eq!(ctx.env_var("ANODIZER_T3_UNSET_VAR_X"), None);
+    }
+}
+
+#[cfg(test)]
+mod git_fixture_identity {
+    use super::*;
+
+    /// The repo fixtures spawn git through the shared pinned helper, so a host
+    /// whose global config demands a signature or supplies no identity still
+    /// gets a committed fixture. The pinned identity is observable on the
+    /// commit itself: `-c user.name=` on the invocation outranks the repo-local
+    /// `user.name` the fixture also writes.
+    #[test]
+    fn the_fixture_commit_carries_the_pinned_test_identity() {
+        let dir = tempfile::tempdir().expect("tempdir for git fixture");
+        fs::write(dir.path().join("a.txt"), "a").expect("seed a file to commit");
+        init_git_repo(dir.path());
+        let author = git_test_stdout(dir.path(), &["log", "-1", "--format=%an <%ae>"]);
+        assert_eq!(author, "Anodizer Test <test@anodizer.local>");
     }
 }

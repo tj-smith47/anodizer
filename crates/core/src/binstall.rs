@@ -529,18 +529,14 @@ fn derive_target_list(
     default_targets: &[String],
     ctx: &Context,
 ) -> Vec<String> {
-    crate::build_plan::crate_target_list(crate_cfg, default_targets, |build| {
-        crate::build_plan::build_is_skipped(build, |t| ctx.render_template(t))
-    })
+    crate::build_plan::crate_target_list_in(ctx, crate_cfg, default_targets)
 }
 
 /// Render the crate's tag template with the version expressed as
 /// cargo-binstall's `{ version }` token. Stamps the [`VERSION_SENTINEL`] as the
 /// version, renders, then swaps the sentinel for `{ version }`.
 fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> Result<String> {
-    let release_tag_override = crate_cfg.release.as_ref().and_then(|r| r.tag.clone());
-    let tag_template =
-        crate::release_tag::release_tag_template(crate_cfg, release_tag_override.as_deref());
+    let tag_template = crate::release_tag::release_tag_template(crate_cfg);
 
     let prior = stamp_sentinel_version(ctx);
     let rendered = ctx.render_template(&tag_template);

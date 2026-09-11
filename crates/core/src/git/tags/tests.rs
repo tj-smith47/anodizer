@@ -478,3 +478,25 @@ mod repository_unreadable_tests {
         );
     }
 }
+
+mod per_crate_family {
+    use crate::config::CrateConfig;
+
+    /// The prefix helper's fallback and the accessor's fallback template are
+    /// two views of one convention: the prefix must be exactly the template
+    /// with the version placeholder stripped, or a crate mints tags under a
+    /// family nothing else scans.
+    #[test]
+    fn the_fallback_family_and_the_fallback_prefix_agree() {
+        let crate_cfg = CrateConfig {
+            name: "core".to_string(),
+            ..Default::default()
+        };
+        let family = crate_cfg.tag_family_template();
+        assert_eq!(family, "core-v{{ Version }}");
+        assert_eq!(
+            crate::git::per_crate_tag_prefix(&crate_cfg.name, ""),
+            crate::git::extract_tag_prefix(&family).expect("fallback family carries a placeholder")
+        );
+    }
+}

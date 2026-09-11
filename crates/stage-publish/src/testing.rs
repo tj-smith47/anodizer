@@ -531,22 +531,13 @@ pub fn hermetic_tagged_repo() -> tempfile::TempDir {
 ///
 /// `#[cfg(test)]`-only for the same reason as [`hermetic_tagged_repo`]:
 /// `init_git_repo_with_commits` is behind anodizer-core's dev-only
-/// `test-helpers` feature. The `git tag` spawns sit in a `#[cfg(test)]` helper,
-/// covered by the module-boundaries test exemption.
+/// `test-helpers` feature.
 #[cfg(test)]
 pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
     let repo = tempfile::tempdir().expect("tempdir for hermetic per-crate repo");
     anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
     for tag in tags {
-        let out = anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = std::process::Command::new("git");
-                cmd.args(["tag", tag]).current_dir(repo.path());
-                cmd
-            },
-            "git",
-        );
-        assert!(out.status.success(), "git tag {tag} exited non-zero");
+        anodizer_core::test_helpers::git_test_ok(repo.path(), &["tag", tag]);
     }
     repo
 }

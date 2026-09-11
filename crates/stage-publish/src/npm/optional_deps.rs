@@ -310,10 +310,11 @@ fn expected_platform_identities(
             continue;
         }
 
-        let skip_evaluator = |build: &anodizer_core::config::BuildConfig| {
-            anodizer_core::build_plan::build_is_skipped(build, |tmpl| ctx.render_template(tmpl))
-        };
-        let entries = crate_build_target_entries(c, &default_targets, skip_evaluator);
+        let entries = crate_build_target_entries(
+            c,
+            &default_targets,
+            anodizer_core::build_plan::skipped_in(ctx),
+        );
 
         let mut crate_targets: BTreeSet<String> = BTreeSet::new();
         let mut per_build: Vec<(String, BTreeSet<String>)> = Vec::new();

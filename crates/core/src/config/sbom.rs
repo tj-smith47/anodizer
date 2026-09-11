@@ -56,7 +56,10 @@ impl SbomConfig {
     /// — so two `amd64_variant` builds of one binary catalog into two
     /// documents instead of overwriting a single one. A single-variant build
     /// renders the suffix empty and keeps its historical name.
-    pub const DEFAULT_DOCUMENT_BINARY: &'static str = "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.sbom.json";
+    pub const DEFAULT_DOCUMENT_BINARY: &'static str = concat!(
+        crate::archive_name::default_binary_name_template!(),
+        ".sbom.json"
+    );
 
     /// Default document-path template for any non-binary, non-any
     /// `artifacts:` filter.
