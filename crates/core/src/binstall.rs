@@ -302,7 +302,7 @@ fn derive_overrides(
     // `pkg_url` and an installer URL for the same target can never disagree.
     let prior = stamp_sentinel_version(ctx);
     let assets = crate_archive_asset_names(crate_cfg, default_targets, ctx);
-    restore_version(ctx, prior);
+    crate::crate_scope::restore_var_overrides(ctx, prior);
     let Some(assets) = assets? else {
         return Ok(None);
     };
@@ -426,7 +426,7 @@ pub fn crate_archive_asset_names(
                 default_targets,
                 ctx,
             )?;
-            let template = if format == "binary" {
+            let template = if format == crate::artifact::FORMAT_BINARY {
                 &binary_name_template
             } else {
                 &name_template
@@ -448,14 +448,9 @@ pub fn crate_archive_asset_names(
     // there whatever the format. Binding it only for `format: binary` here made
     // the derived installer arms and `pkg_url` fail on a template the producer
     // accepts — the same drift class this module exists to close.
-    let prior = ctx.template_vars().get("Binary").cloned();
+    let prior = vec![("Binary", ctx.template_vars().get("Binary").cloned())];
     let rendered = render_all(ctx);
-    match prior {
-        Some(v) => ctx.template_vars_mut().set("Binary", &v),
-        None => {
-            ctx.template_vars_mut().unset("Binary");
-        }
-    }
+    crate::crate_scope::restore_var_overrides(ctx, prior);
     Ok(Some(rendered?))
 }
 
@@ -549,7 +544,7 @@ fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> 
 
     let prior = stamp_sentinel_version(ctx);
     let rendered = ctx.render_template(&tag_template);
-    restore_version(ctx, prior);
+    crate::crate_scope::restore_var_overrides(ctx, prior);
     let rendered = rendered
         .with_context(|| format!("failed to render binstall tag template: {tag_template}"))?;
     if rendered.trim().is_empty() {
@@ -566,7 +561,8 @@ fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> 
 }
 
 /// Stamp the version-related template vars (`Version`, `RawVersion`, `Tag`) to
-/// the sentinel and return the prior values for [`restore_version`]. Tag is
+/// the sentinel and return the prior values for
+/// [`crate::crate_scope::restore_var_overrides`]. Tag is
 /// stamped too so a `name_template` referencing `{{ Tag }}` also picks up the
 /// sentinel.
 fn stamp_sentinel_version(ctx: &mut Context) -> Vec<(&'static str, Option<String>)> {
@@ -582,19 +578,6 @@ fn stamp_sentinel_version(ctx: &mut Context) -> Vec<(&'static str, Option<String
     // with the `v{ version }` tag the download URL targets.
     vars.set("Tag", &format!("v{VERSION_SENTINEL}"));
     prior
-}
-
-/// Restore the version vars captured by [`stamp_sentinel_version`].
-fn restore_version(ctx: &mut Context, prior: Vec<(&'static str, Option<String>)>) {
-    let vars = ctx.template_vars_mut();
-    for (key, value) in prior {
-        match value {
-            Some(v) => vars.set(key, &v),
-            None => {
-                vars.unset(key);
-            }
-        }
-    }
 }
 
 /// The default `archive.name_template` the archive stage uses for this crate:

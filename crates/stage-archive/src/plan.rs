@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anodizer_core::arch_path_guard::Claim;
-use anodizer_core::artifact::{Artifact, matches_id_filter};
+use anodizer_core::artifact::{Artifact, FORMAT_BINARY, matches_id_filter};
 use anodizer_core::config::{ArchiveConfig, FormatOverride};
 use anodizer_core::context::Context;
 use anodizer_core::target::map_target;
@@ -117,7 +117,7 @@ impl CratePlan {
                             binary: tp.binary.as_deref(),
                             exposed: &fp.exposed,
                         };
-                        if fp.format == "binary" {
+                        if fp.format == FORMAT_BINARY {
                             Box::new(fp.binary_outputs.iter().map(move |out| Claim {
                                 path: &out.dest,
                                 artifact: "binary",
@@ -315,7 +315,7 @@ pub(crate) fn plan_crate(
                     Some(format!(
                         "skipped archive for {crate_name}/{target} — format: none"
                     ))
-                } else if format == "binary" && selected_bins.is_empty() {
+                } else if format == FORMAT_BINARY && selected_bins.is_empty() {
                     // A meta entry carries no binaries, so `binary` has
                     // nothing to emit for it.
                     Some(format!(
@@ -326,7 +326,8 @@ pub(crate) fn plan_crate(
                     None
                 };
                 let bin_refs: Vec<&Artifact> = selected_bins.iter().collect();
-                let binary_outputs: Vec<BinaryOutput> = if skip.is_none() && format == "binary" {
+                let binary_outputs: Vec<BinaryOutput> = if skip.is_none() && format == FORMAT_BINARY
+                {
                     render_binary_outputs(
                         ctx,
                         &bin_refs,
@@ -347,7 +348,7 @@ pub(crate) fn plan_crate(
                 } else {
                     Vec::new()
                 };
-                let archive_filename = if format == "binary" {
+                let archive_filename = if format == FORMAT_BINARY {
                     binary_outputs
                         .first()
                         .map(|out| out.stem.clone())
@@ -357,7 +358,7 @@ pub(crate) fn plan_crate(
                 };
                 let archive_path = dist.join(&archive_filename);
                 formats.push(FormatPlan {
-                    replacing: format != "binary" && archive_path.exists(),
+                    replacing: format != FORMAT_BINARY && archive_path.exists(),
                     exposed: ctx.template_vars().defined_names(),
                     format,
                     skip,
@@ -369,7 +370,7 @@ pub(crate) fn plan_crate(
 
             plan.targets.push(TargetPlan {
                 target: target.clone(),
-                binary_only: formats.iter().all(|f| f.format == "binary"),
+                binary_only: formats.iter().all(|f| f.format == FORMAT_BINARY),
                 binary: selected_bins.first().and_then(|b| b.binary_name()),
                 selected_bins,
                 group_variant: group_variant.clone(),
@@ -462,7 +463,7 @@ fn group_binaries_by_target(
     let is_binary_format = archive_cfg
         .formats
         .as_ref()
-        .map(|fs| fs.iter().any(|f| f == "binary"))
+        .map(|fs| fs.iter().any(|f| f == FORMAT_BINARY))
         .unwrap_or(false);
     if !is_binary_format
         && !archive_cfg.allow_different_binary_count.unwrap_or(false)

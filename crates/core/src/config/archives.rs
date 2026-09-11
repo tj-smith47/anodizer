@@ -489,7 +489,18 @@ pub fn parse_octal_mode(s: &str) -> Option<u32> {
 /// Used for early validation so typos are caught at config load time rather
 /// than mid-pipeline.
 pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
-    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "xz", "binary", "none",
+    "tar.gz",
+    "tgz",
+    "tar.xz",
+    "txz",
+    "tar.zst",
+    "tzst",
+    "tar",
+    "zip",
+    "gz",
+    "xz",
+    crate::artifact::FORMAT_BINARY,
+    "none",
 ];
 
 // ---------------------------------------------------------------------------

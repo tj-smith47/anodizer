@@ -70,6 +70,14 @@ pub const FORMAT_META: &str = "format";
 /// single file.
 pub const FORMAT_APPBUNDLE: &str = "appbundle";
 
+/// The archive format that publishes the built executable itself rather than a
+/// container: `archives[].formats: [binary]`.
+///
+/// Named because the string is compared across the archive stage, the derived
+/// asset-name module, binstall and the installer generator; a typo at any one of
+/// those compiles and silently routes that path down the container branch.
+pub const FORMAT_BINARY: &str = "binary";
+
 /// `true` when `artifact` is a packaging BUNDLE that lives on disk as a
 /// DIRECTORY rather than a single file — currently the macOS `.app` bundle
 /// (registered as [`ArtifactKind::Installer`] with `format = appbundle`).

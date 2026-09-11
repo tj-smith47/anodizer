@@ -639,7 +639,7 @@ fi\n";
 /// script renames it to the binary it holds — well-defined only when the
 /// install script carries exactly one binary. The generator refuses the
 /// combination rather than emitting a script that guesses.
-pub const SINGLE_FILE_ARCHIVE_FORMATS: &[&str] = &["gz", "xz", "binary"];
+pub const SINGLE_FILE_ARCHIVE_FORMATS: &[&str] = &["gz", "xz", crate::artifact::FORMAT_BINARY];
 
 /// Rank of an asset built for one concrete architecture — the rank every
 /// release target carries, since libc variants now key separate arms.

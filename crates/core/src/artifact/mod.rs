@@ -7,7 +7,7 @@ mod size_report;
 mod tests;
 
 pub use filter::{
-    COMBINED_CHECKSUM_META, COMBINED_CHECKSUM_VALUE, FORMAT_APPBUNDLE, FORMAT_META,
+    COMBINED_CHECKSUM_META, COMBINED_CHECKSUM_VALUE, FORMAT_APPBUNDLE, FORMAT_BINARY, FORMAT_META,
     SUBJECT_KIND_META, exclude_filter_eliminated_all, ids_filter_eliminated_all,
     is_binary_sign_output, is_combined_checksum_artifact, is_directory_bundle_artifact,
     matches_id_filter, name_passes_exclude_filter, passes_exclude_filter, subject_verdict_record,

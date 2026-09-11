@@ -264,16 +264,26 @@ pub fn render_archive_asset_name_with_variant(
     // writes the rendered stem (plus the Windows `.exe` suffix) with no format
     // extension. Appending `.binary` here would derive an asset name no
     // release ever uploads — the 404 class this module exists to prevent.
-    if format == "binary" {
-        return Ok(
-            if crate::target::is_windows(target) && !stem.ends_with(".exe") {
-                format!("{stem}.exe")
-            } else {
-                stem
-            },
-        );
+    if format == crate::artifact::FORMAT_BINARY {
+        return Ok(binary_output_name(stem, target));
     }
     Ok(format!("{stem}.{format}"))
+}
+
+/// The file name a `format: binary` archive entry writes for `stem` on
+/// `target`: the stem itself, carrying `.exe` on a Windows target unless it
+/// already ends in one.
+///
+/// THE spelling of that rule. The archive stage names the file it produces with
+/// it and this module derives the asset name consumers (binstall, the installer
+/// script) download with it, so a second spelling on either side is a download
+/// URL pointing at a name no release carries.
+pub fn binary_output_name(stem: String, target: &str) -> String {
+    if crate::target::is_windows(target) && !stem.ends_with(".exe") {
+        format!("{stem}.exe")
+    } else {
+        stem
+    }
 }
 
 /// Map an archive `format` string to cargo-binstall's `pkg_fmt` value.

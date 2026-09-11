@@ -111,11 +111,7 @@ pub(crate) fn render_binary_outputs<'a>(
                 target
             );
         }
-        let stem = if anodizer_core::target::is_windows(target) && !stem.ends_with(".exe") {
-            format!("{stem}.exe")
-        } else {
-            stem
-        };
+        let stem = anodizer_core::archive_name::binary_output_name(stem, target);
         let dest = dist.join(&stem);
         outs.push((stem, dest, *bin));
     }

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::artifact::{Artifact, ArtifactKind, FORMAT_BINARY};
 use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
@@ -349,7 +349,7 @@ pub(crate) fn write_crate_archives(
                 // / `.Arch` / `.Target` are wired but before the archive
                 // is written. Skipped for binary: the hook expects an archive
                 // to post-process and this branch creates none.
-                if format != "binary"
+                if format != FORMAT_BINARY
                     && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
                 {
                     // Overlay the archive-identity vars onto the hook's snapshot
@@ -417,7 +417,7 @@ pub(crate) fn write_crate_archives(
                 let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
                 let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                if format == "binary" {
+                if format == FORMAT_BINARY {
                     // Extra files never travel with a raw binary: there is no
                     // container to put them in, and the consumer downloads one
                     // executable. On a binary-only target they were never
@@ -515,7 +515,7 @@ pub(crate) fn write_crate_archives(
                     &archive_extra_files,
                 );
 
-                if format == "binary" {
+                if format == FORMAT_BINARY {
                     // `format=binary` emits one UploadableBinary artifact per
                     // source binary, not a single Archive: registering an
                     // Archive would point downstream stages
@@ -555,7 +555,7 @@ pub(crate) fn write_crate_archives(
                 // hook can reference the freshly-built archive (e.g.,
                 // `cosign sign-blob {{ ArtifactPath }}`). Skipped for
                 // `binary`.
-                if format != "binary"
+                if format != FORMAT_BINARY
                     && let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref())
                 {
                     let hook_vars = ctx.template_vars().clone();
@@ -628,7 +628,7 @@ fn archive_metadata(
     // a `files:` extraction list gated on each file's actual presence. Kept
     // in the raw `extra_entries` order, not the archive's sorted order;
     // krew re-selects by basename and never relies on the order.
-    if !archive_extra_files.is_empty() && format != "binary" {
+    if !archive_extra_files.is_empty() && format != FORMAT_BINARY {
         metadata.insert("archive_files".to_string(), archive_extra_files.join(","));
     }
 

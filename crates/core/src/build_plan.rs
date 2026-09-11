@@ -248,7 +248,7 @@ pub fn crate_primary_binary_name(
                 .find(|b| build_produces(krate, b) && !is_skipped(b))
                 .map(|b| binary_or_crate_name(krate, b))
         })
-        .unwrap_or_else(|| krate.name.clone())
+        .unwrap_or_else(|| binary_or_crate_name(krate, &BuildConfig::default()))
 }
 
 /// Whether an archive's `ids:` filter selects a build entry's id. The
@@ -273,8 +273,9 @@ fn archive_packs_binary(binary: &str, archive_binaries: Option<&[String]>) -> bo
 }
 
 /// Whether a build entry's `skip:` evaluates truthy. An expression that fails
-/// to render does not skip the build, matching every other consumer of the
-/// build-planning gate. THE spelling of that gate for callers supplying the
+/// to render does not skip the build — the lenient reading, shared with
+/// preflight's `entry_inactive`; the build stage itself propagates such a
+/// render error. THE spelling of that gate for callers supplying the
 /// `is_skipped` predicate [`crate_build_target_entries`],
 /// [`crate_target_list`] and [`crate_primary_binary_name`] take.
 pub fn build_is_skipped(
@@ -331,7 +332,7 @@ pub fn archive_binary_name(
             && archive_packs_binary(&binary, archive_binaries))
         .then_some(binary)
     })
-    .unwrap_or_else(|| krate.name.clone())
+    .unwrap_or_else(|| binary_or_crate_name(krate, &BuildConfig::default()))
 }
 
 /// The de-duplicated, order-preserving list of target triples a crate's builds
