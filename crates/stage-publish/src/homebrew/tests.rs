@@ -4147,7 +4147,7 @@ fn uninstall_zap_debug_format_stays_valid_ruby() {
 
 /// Run `ruby -c` on Ruby source expected to be INVALID, asserting a non-zero
 /// exit. Gated on `ruby` being on `PATH` (visible SKIP when absent). Used to
-/// prove the escaping is load-bearing: the un-escaped equivalent must be
+/// prove the escaping does real work: the un-escaped equivalent must be
 /// rejected by the same validator that accepts the escaped form.
 fn assert_ruby_syntax_err(label: &str, source: &str) {
     match anodizer_core::tool_detect::runs("ruby") {
@@ -4179,7 +4179,7 @@ fn assert_ruby_syntax_err(label: &str, source: &str) {
 /// Discrimination test: `ruby_escape_str` is non-vacuous. For a value carrying
 /// `"` and `\`, the escaped output differs from the naive un-escaped splice,
 /// the naive form is REJECTED by `ruby -c`, and the escaped form is ACCEPTED.
-/// This proves the escaping is load-bearing rather than a no-op the suite
+/// This proves the escaping does real work rather than being a no-op the suite
 /// would pass even if the filter were deleted.
 #[test]
 fn ruby_escape_is_load_bearing_not_a_noop() {
@@ -4209,7 +4209,7 @@ fn ruby_escape_is_load_bearing_not_a_noop() {
 /// `"…"` literals, so a name carrying `"`/`\` would stay valid Ruby. Proves
 /// the rename fragment's two sides are escaped INDIVIDUALLY (the structural
 /// `" => "` quotes survive, yielding a valid Ruby hash argument), and that the
-/// un-escaped name produces invalid Ruby — so the escaping is load-bearing.
+/// un-escaped name produces invalid Ruby — so the escaping does real work.
 #[test]
 fn install_fragment_escapes_each_side_keeps_structure() {
     use anodizer_core::template::ruby_escape_str;
@@ -4227,7 +4227,7 @@ fn install_fragment_escapes_each_side_keeps_structure() {
     assert_ruby_syntax_ok("install-fragment", &source);
 
     // No escaping at all (a name with a raw `"` ending the literal early) is
-    // rejected by `ruby -c`, proving the escaping above is load-bearing.
+    // rejected by `ruby -c`, proving the escaping above does real work.
     let naive_line = format!("bin.install \"{name}\" => \"{bin}\"");
     let broken = format!("class T < Formula\n  def install\n    {naive_line}\n  end\nend\n");
     assert_ruby_syntax_err("install-fragment-unescaped", &broken);

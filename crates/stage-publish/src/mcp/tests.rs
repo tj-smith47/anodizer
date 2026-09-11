@@ -881,7 +881,7 @@ fn mcp_explicit_description_wins_over_meta() {
 
 #[test]
 fn resolve_registry_url_fallback_matrix() {
-    // The fallback chain is load-bearing: empty/whitespace/None all must
+    // The fallback chain matters: empty/whitespace/None all must
     // collapse to DEFAULT_REGISTRY_URL so a user who left `mcp.registry`
     // commented out (or templated to an empty string under a conditional)
     // still gets a working publish. An explicit override wins verbatim.

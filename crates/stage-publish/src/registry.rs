@@ -1152,7 +1152,7 @@ mod tests {
             assert!(!p.required(), "{} should not be required", expected);
         }
         // Pin: BlobPublisher must NOT register from the stage-publish
-        // registry. `BlobStage` is the load-bearing runner and writes
+        // registry. `BlobStage` is the runner that actually uploads and writes
         // its own entry into `ctx.publish_report`; registering the
         // publisher here would double-publish every blob target.
         assert!(
@@ -1455,7 +1455,7 @@ mod tests {
     fn snapcraft_unconditionally_unregistered_regardless_of_publish_flag() {
         // Pin: SnapcraftPublisher must NOT register from the
         // stage-publish registry under any `publish:` flag value.
-        // `SnapcraftPublishStage` is the load-bearing runner and writes
+        // `SnapcraftPublishStage` is the runner that actually publishes and writes
         // its own entry into `ctx.publish_report`; a trait-based
         // wrapper here would double-publish every snap target (parallel
         // to the BlobPublisher fix in commit 026c854). The

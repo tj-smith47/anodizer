@@ -231,7 +231,7 @@ impl Context {
     /// 1. `SOURCE_DATE_EPOCH` env var — the standard reproducibility contract
     ///    (set by the determinism harness on every child release subprocess,
     ///    and the conventional way external CI / packagers signal a fixed
-    ///    epoch). This is load-bearing for byte-stability of `metadata.json`
+    ///    epoch). This is required for byte-stability of `metadata.json`
     ///    (which embeds `Date`) and any user template that consumes `Date` /
     ///    `Timestamp` / `Now`. Without this branch, two from-clean runs of
     ///    the same commit emit metadata.json files that differ in the `date`

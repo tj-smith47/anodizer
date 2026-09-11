@@ -3,7 +3,7 @@
 //! An Arch package has no JSON/YAML schema: a PKGBUILD is a Bash script that
 //! `makepkg` sources, and the `.SRCINFO` is a flat `key = value` metadata
 //! sidecar. `makepkg` builds, and the AUR accepts an upload, only when the
-//! PKGBUILD is syntactically-valid Bash carrying the load-bearing variables
+//! PKGBUILD is syntactically-valid Bash carrying the required variables
 //! (`pkgname` / `pkgver` / `pkgrel`, an `arch=(…)` array, at least one
 //! `source=`/`source_<arch>=` entry, a matching checksum array, and a
 //! `package()` function) and the `.SRCINFO` mirrors the package identity

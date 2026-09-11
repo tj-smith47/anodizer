@@ -3864,7 +3864,7 @@ fn test_gitea_missing_token_errors() {
 //   - include `prerelease = true` whenever `prerelease` is true,
 //   - send `discussion_category_name` only when configured.
 //
-// These are the load-bearing invariants for the un-draft flow.
+// These are the essential invariants for the un-draft flow.
 
 #[test]
 fn test_build_publish_patch_body_basic_undraft() {

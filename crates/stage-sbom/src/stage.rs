@@ -418,7 +418,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 ///   the workspace dependency graph), so it is archive-independent; emitting N
 ///   differently-named copies of identical bytes would only multiply the
 ///   downstream checksum + signature object count. The matched-artifact scan
-///   is still load-bearing: it gates the strict-guard (an `archive` SBOM
+///   still does real work: it gates the strict-guard (an `archive` SBOM
 ///   configured against a build that produced none is a config bug) and the
 ///   first match supplies the subject verdict record the release `ids:` filter
 ///   inherits. The emitted document is target-independent (`target: None`) for
@@ -469,7 +469,7 @@ pub(crate) fn run_sbom_builtin(
     // Resolution order:
     //   1. `ctx.determinism.sde` — the canonical SOURCE_DATE_EPOCH seeded by
     //      `BuildStage` (or whatever stage runs first under
-    //      `resolve_reproducible_epoch`). This is the load-bearing path
+    //      `resolve_reproducible_epoch`). This is the primary path
     //      under the release-resilience determinism contract.
     //   2. `CommitDate` template var — fallback for runs where the
     //      determinism state was not seeded (e.g. SBOM-only commands).
@@ -593,7 +593,7 @@ pub(crate) fn run_sbom_builtin(
     // would write the SAME bytes to N differently-named files (N redundant
     // checksum + signature objects). So emit ONE workspace SBOM regardless of
     // `artifacts:` mode, named `<project>-<version>.<ext>` (the `any`
-    // filename). The matched-artifact scan above is still load-bearing: it
+    // filename). The matched-artifact scan above still does real work: it
     // gates the strict-guard (an `archive` SBOM configured against a build that
     // produced none is a config bug) and the first matched subject carries the
     // verdict record the release `ids:` filter inherits. External (syft)

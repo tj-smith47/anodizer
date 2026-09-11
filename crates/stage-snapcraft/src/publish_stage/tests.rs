@@ -102,7 +102,7 @@ fn upload_policy_applies_idempotent_floor() {
 #[test]
 fn build_snapcraft_evidence_pins_success_wire_shape() {
     // Success-path evidence is what `anodizer tag rollback`
-    // and any replay consumer reads back. Pin the three load-bearing
+    // and any replay consumer reads back. Pin the three essential
     // fields: publisher name, primary_ref pointing at the first
     // package's snapcraft.io listing, and the full per-target
     // snapshot in extra.snapcraft_targets.
@@ -543,7 +543,7 @@ fn record_snapcraft_result_initializes_report_if_missing() {
 
 #[test]
 fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
-    // Load-bearing invariant: a failed snap upload lands as a
+    // Required invariant: a failed snap upload lands as a
     // `Failed(_)` entry, NOT a stage-error bail. This is the
     // property the announce gate (`AnnounceGate::AllPublishers`)
     // and `anodizer tag rollback` consumers depend on —

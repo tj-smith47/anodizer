@@ -50,7 +50,6 @@ pub(crate) fn write_crate_archives(
         let archive_id = cfg_plan.archive_id.as_str();
         let is_meta = cfg_plan.is_meta;
 
-        // strip_binary_directory: place binaries at archive root
         let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
 
         // Generate (or harvest/copy) completion + man files ONCE for this
@@ -100,7 +99,6 @@ pub(crate) fn write_crate_archives(
             );
             let archive_stem = target_plan.archive_stem.as_str();
 
-            // Render wrap_in_directory (template-aware)
             // WrapInDirectory::Bool(true)  -> use the archive stem as the wrap dir
             // WrapInDirectory::Bool(false) -> no wrapping
             // WrapInDirectory::Name(s)     -> treat as a template string to render
@@ -136,7 +134,6 @@ pub(crate) fn write_crate_archives(
             }
             let wrap_dir = wrap_dir_rendered.as_deref();
 
-            // Collect binary files — unless meta archive
             let mut binary_paths: Vec<PathBuf> = Vec::new();
             if !is_meta {
                 for b in &selected_bins {
@@ -157,7 +154,6 @@ pub(crate) fn write_crate_archives(
             // discarded either way.
             let binary_only_target = target_plan.binary_only;
 
-            // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support.
             // When no files are configured, auto-include common files
             // (LICENSE*, README*, CHANGELOG*) default set.
             // File spec source patterns are rendered through the
@@ -413,7 +409,6 @@ pub(crate) fn write_crate_archives(
                     );
                 }
 
-                // For gz/binary formats, collect flat path refs.
                 let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
                 let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 

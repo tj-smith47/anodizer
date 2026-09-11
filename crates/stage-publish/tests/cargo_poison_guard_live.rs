@@ -316,14 +316,14 @@ fn binstall_crate_guard_requires_the_prepublish_mutation() {
     // 1. The tag's COMMITTED source (no binstall table) does NOT reproduce the
     //    published cksum — this is the live false-poison: a guard that packages
     //    the pre-binstall tree mismatches the index and hard-fails a clean
-    //    re-cut. Load-bearing: it proves the binstall write is NOT optional.
+    //    re-cut. This matters: it proves the binstall write is NOT optional.
     let cksum_without_binstall = package_cli_at_tag(&root, None);
     eprintln!("without-binstall cksum: {cksum_without_binstall}");
     eprintln!("published index cksum : {index_cksum}");
     assert_ne!(
         cksum_without_binstall, index_cksum,
         "the tag's committed source (no binstall table) must NOT match the published cksum — \
-         if it did, the binstall mutation would not be load-bearing and this proof is vacuous"
+         if it did, the binstall mutation would not matter and this proof is vacuous"
     );
 
     // 2. Apply the SAME binstall table the release wrote (extracted verbatim
@@ -368,7 +368,7 @@ fn binstall_crate_guard_requires_the_prepublish_mutation() {
     // even when a newer sibling (e.g. anodizer-core 0.11.3) exists, and
     // guard-cksum == publish-cksum holds there (the leaf
     // `local_package_reproduces_published_crates_io_cksum` proves the byte-exact
-    // path on a dep-stable crate). What this test proves is the load-bearing
+    // path on a dep-stable crate). What this test proves is the central
     // claim the unit tests assert at the seam: the binstall mutation changes the
     // cksum and must be applied — deterministically — before the guard packages.
 }

@@ -5,7 +5,7 @@
 //! `dist/run-<commit>/determinism.json`. The shape is fixed by the
 //! release-resilience spec ([determinism harness report]) — every
 //! field is consumed by downstream CI parsers, so the serde contract is
-//! load-bearing:
+//! fixed:
 //!
 //! - `schema_version: 2` (constant; bump only on a breaking shape change).
 //! - `#[serde(deny_unknown_fields)]` enforced on every struct so a typo'd

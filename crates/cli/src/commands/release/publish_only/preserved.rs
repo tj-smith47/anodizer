@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// here rather than depending on `determinism_harness::preserve`
 /// to keep this module decoupled from harness internals — the
 /// schema (artifacts + targets + version + commit) is the
-/// load-bearing contract, not the producer module.
+/// contract that matters, not the producer module.
 ///
 /// `#[serde(default)]` on every field so a partially-written
 /// `context.json` from a buggy producer doesn't kill the load — the

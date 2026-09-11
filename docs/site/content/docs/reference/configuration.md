@@ -1067,7 +1067,7 @@ Notable surface: - `images` + `tags` (cleaner separation than a single `image_te
 ## `crates[].docker_manifests` {#crates-docker-manifests}
 Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `dockers_v2` in the same run.
 
-The v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.
+The v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is what carries the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `create_flags` | list of string | — | Extra flags for `docker manifest create`. |

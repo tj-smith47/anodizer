@@ -82,7 +82,7 @@ pub(super) fn run_cross_platform(
     // `key_secret` below is held (never read) purely so its Drop — which
     // deletes the base64-decoded key tempfile — is deferred until the
     // notary-submit subprocess has launched. The name is kept (not
-    // underscore-prefixed) so it reads as load-bearing rather than
+    // underscore-prefixed) so it reads as in-use rather than
     // discardable; the lint allow is the only honest way to say "held only
     // for its Drop" without the misleading `_` prefix.
     #[allow(unused_variables)]

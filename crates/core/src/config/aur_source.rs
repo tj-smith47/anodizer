@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn amd64_variant_deserializes_snake_case() {
-        // The `snake_case` serde rename is the load-bearing contract: a
+        // The `snake_case` serde rename is the contract that matters: a
         // `v3` in YAML must parse to the typed variant so a typo fails at
         // parse time instead of rendering an invalid PKGBUILD.
         let v: Amd64Variant = serde_json::from_str("\"v3\"").expect("v3 parses");

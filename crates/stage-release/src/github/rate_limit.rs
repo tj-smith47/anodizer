@@ -209,7 +209,7 @@ pub(crate) async fn check_github_rate_limit_with_sleep<E: EnvSource + ?Sized>(
 mod sigterm_tests {
     //! Verify the SIGTERM-aware select arm actually fires when the process
     //! receives SIGTERM. Calling `check_github_rate_limit` end-to-end
-    //! needs a fake GitHub server, but the load-bearing piece
+    //! needs a fake GitHub server, but the essential piece
     //! — `signal(SignalKind::terminate())` returning a stream that yields
     //! on a delivered SIGTERM — is testable in isolation.
     //!

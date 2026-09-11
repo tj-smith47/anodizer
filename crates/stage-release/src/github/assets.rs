@@ -192,7 +192,7 @@ mod tests {
     /// JSON for a single Asset matching octocrab's `models::repos::Asset`
     /// shape. The struct requires every field (no `#[serde(default)]`), so
     /// the fixture has to populate all of them — only `name`, `size`, and
-    /// `state` are load-bearing for the function under test; the rest are
+    /// `state` are what the function under test reads; the rest are
     /// stub values.
     fn asset_json(name: &str, size: u64, id: u64) -> String {
         asset_json_with_state(name, size, id, "uploaded")

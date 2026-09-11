@@ -75,7 +75,7 @@ pub(crate) fn decode_cloudsmith_targets(
 /// The per-target warn line a rollback emits as a FALLBACK when no slug is
 /// available in evidence (legacy evidence written before B13 added slug
 /// capture, or a step-3 `packages/upload/<format>/` response that didn't
-/// surface a slug). Operator-readable; renders the load-bearing
+/// surface a slug). Operator-readable; renders the
 /// `<org>/<repo>` location plus the filename to remove. Exposed as a
 /// helper so tests can pin the wording without intercepting stderr.
 ///

@@ -117,7 +117,7 @@ fn run_anodizer(tmp: &Path, args: &[&str]) -> std::process::Output {
 /// Assert every `must_skip` stage appears as `[<stage>] skipped` in
 /// stderr; assert every `must_not_skip` does NOT. Tests pin "did the
 /// stage skip" instead of "did the stage run" because skip is the
-/// load-bearing contract (a run that produces no artifacts is
+/// contract that matters (a run that produces no artifacts is
 /// ambiguous in dry-run / heavy-skip mode).
 fn assert_skip_matrix(stderr: &str, must_skip: &[&str], must_not_skip: &[&str], label: &str) {
     let skipped = extract_skipped_stages(stderr);

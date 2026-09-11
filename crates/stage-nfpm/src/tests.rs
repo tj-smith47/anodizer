@@ -6370,7 +6370,7 @@ fn test_nfpm_offline_yaml_seeds_amd64_field_like_live_build() {
 /// Loop-level guard: drive the SHARED production path
 /// (`render_and_generate_nfpm_yaml`) — the same function the stage loop calls
 /// for every (config × target) — and assert the EMITTED nfpm YAML carries the
-/// musl conflict. The per-target var set inside that function is load-bearing:
+/// musl conflict. The per-target var set inside that function is required:
 /// if `set_nfpm_per_target_template_vars(ctx, …)` is removed, `Libc` is unset
 /// at render time and the YAML ships either the literal `{% if Libc … %}` text
 /// or the bare-`fd` fallback — either way THIS assertion fails. Unlike a
@@ -7693,7 +7693,7 @@ fn signed_apk_repro_despite_varying_script_disk_mtime() {
     assert_ne!(
         mixed_a, mixed_b,
         "control: an unpinned apk preupgrade mtime MUST still leak even when \
-         postinstall is pinned — so pinning apk.scripts is load-bearing"
+         postinstall is pinned — so pinning apk.scripts does real work"
     );
 }
 

@@ -664,7 +664,7 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
 // drive Docker Hub description sync alongside every other publisher.
 //
 // Group: [`anodizer_core::PublisherGroup::Assets`] (description sync is a
-// non-load-bearing publisher; not required for the release to succeed).
+// best-effort publisher; not required for the release to succeed).
 //
 // Rollback shape: DockerHub publishes a PATCH against the repo's
 // `description` and `full_description` fields. Before each PATCH the

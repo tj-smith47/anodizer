@@ -1006,7 +1006,7 @@ mod tests {
         }
         assert!(
             !windows_env_should_drop("WINDIR"),
-            "WINDIR is a load-bearing system var and MUST NOT be dropped"
+            "WINDIR is a required system var and MUST NOT be dropped"
         );
     }
 
@@ -1060,7 +1060,7 @@ mod tests {
         assert_eq!(
             env.get("PROGRAMFILES").map(String::as_str),
             Some(r"C:\fake\Program Files"),
-            "Windows pass must inherit non-credential host system vars (PROGRAMFILES is load-bearing for cc-rs link.exe discovery)"
+            "Windows pass must inherit non-credential host system vars (PROGRAMFILES is required for cc-rs link.exe discovery)"
         );
     }
 
@@ -1292,7 +1292,7 @@ mod tests {
         );
     }
 
-    /// Keystone regression: when EVERY resolved target is windows-msvc the
+    /// Core regression: when EVERY resolved target is windows-msvc the
     /// global RUSTFLAGS must carry the MSVC determinism flags DESPITE the
     /// host probe returning `false`. The probe (`rustc -vV`) is fallible and
     /// returns `false` on any spawn error; an intermittent false on the

@@ -449,7 +449,7 @@ fn guard_skips_binstall_crate_when_recut_matches_published() {
     );
 }
 
-/// Negative control proving the fix is load-bearing: if the index recorded
+/// Negative control proving the fix does real work: if the index recorded
 /// the WITHOUT-binstall content (a crate published BEFORE anodizer started
 /// writing the table), the guard — which now packages WITH the table — would
 /// see a genuine content divergence and hard-fail. This demonstrates the

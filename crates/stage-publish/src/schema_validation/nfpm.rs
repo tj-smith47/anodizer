@@ -165,7 +165,7 @@ struct ExpectedControl {
     /// The architecture the built package's `Architecture` control field must
     /// equal, already translated from the generic nfpm arch into the
     /// packager's control nomenclature (deb keeps `arm64`, rpm uses
-    /// `aarch64`). This is the load-bearing regression guard for the arch bug:
+    /// `aarch64`). This is the regression guard for the arch bug:
     /// a package whose control arch drifts from the resolved arch bites here.
     arch: String,
     /// `Some` when the config sets `maintainer`; the control-field check then
@@ -279,7 +279,7 @@ fn validate_built_packages(
     Ok(findings)
 }
 
-/// Read the load-bearing control values (`name`, `version`, `arch`,
+/// Read the control values that matter (`name`, `version`, `arch`,
 /// `maintainer`) from a generated nfpm YAML for cross-checking against the
 /// built package. `format` selects the packager-specific arch nomenclature the
 /// built package stamps, so the expected `Architecture` matches what the tool
@@ -387,7 +387,7 @@ fn check_rpm_control(path: &Path, expected: &ExpectedControl) -> Result<Vec<Sche
 }
 
 /// Compare parsed control `fields` against the `expected` config values,
-/// returning one finding per load-bearing mismatch.
+/// returning one finding per mismatch that matters.
 fn compare_control(
     format: &str,
     path: &Path,

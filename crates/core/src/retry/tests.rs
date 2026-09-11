@@ -1595,7 +1595,7 @@ async fn retry_http_async_429_retries_then_succeeds() {
 //
 // The transport-error arm (Err(reqwest::Error): DNS failure, connection
 // refused, EOF, TLS handshake failure, etc.) is the single most
-// reviewer-load-bearing path: it is the one the helper claims to retry
+// important path to prove: it is the one the helper claims to retry
 // and that publishers rely on for resilience against transient network
 // blips. The pattern below dials the RFC 2606-reserved `.invalid` TLD,
 // which is guaranteed never to resolve, so every attempt fails at the

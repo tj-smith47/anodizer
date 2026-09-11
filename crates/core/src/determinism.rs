@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn raw_windows_binary_is_not_allowlisted_or_misclassified() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
-        // The raw windows binary `anodizer.exe` is the load-bearing build
+        // The raw windows binary `anodizer.exe` is the primary build
         // output — it must be byte-reproducible (the /Brepro RUSTFLAGS make it
         // so) and is therefore GATED. It must never be swept into an installer
         // allow-list class by a bare `*.exe` pattern (there is none; only the

@@ -32,7 +32,7 @@ release-pipeline incident in their own project.
 | Class | Definition | Example |
 |---|---|---|
 | **SEV-1 — Critical** | A signing key or a long-lived registry/forge token is exposed, OR a published artifact is known-tampered. A one-way door is, or may be, compromised. | Cosign private key printed to a public CI log; a malicious binary published to crates.io. |
-| **SEV-2 — High** | A vulnerability in anodizer that can leak a secret or tamper an artifact, not yet exploited; or a short-lived/OIDC credential exposure with bounded blast radius. | A code path that echoes a token into an unredacted error; an OIDC misconfiguration. |
+| **SEV-2 — High** | A vulnerability in anodizer that can leak a secret or tamper an artifact, not yet exploited; or a short-lived/OIDC credential exposure with a bounded reach. | A code path that echoes a token into an unredacted error; an OIDC misconfiguration. |
 | **SEV-3 — Moderate** | A defect with security impact but no direct path to credential loss or artifact tampering. | A template that can leak a non-secret env var into release notes. |
 | **SEV-4 — Low** | Hardening gap with no demonstrated exploit. | A missing `permissions:` scope in an example workflow. |
 
@@ -149,7 +149,7 @@ release can be undone.
 
 ## 7. Investigation & Mitigation
 
-- Determine root cause and full blast radius (which versions, which registries,
+- Determine root cause and everything affected (which versions, which registries,
   which credentials).
 - Patch the underlying defect in anodizer if the incident stemmed from one.
 - Add a regression test or pipeline gate so the same class of incident is caught

@@ -275,7 +275,7 @@ fn count_commits_since_last_tag_respects_monorepo_prefix() {
     );
     // Without filtering (None): describe picks the nearer api/v2.0.0,
     // so the count is only 1 (d). This is the mutation-check baseline
-    // proving the --match arg is load-bearing.
+    // proving the --match arg does real work.
     assert_eq!(
         count_commits_since_last_tag_in(dir, None).unwrap(),
         1,
@@ -585,7 +585,7 @@ fn git_output_in_error_falls_back_to_stdout_when_stderr_empty() {
 
 /// `CommitterIdentity::default_for_rollback` produces a populated
 /// (name + email) identity. The exact host-derived suffix isn't
-/// load-bearing — what matters is that both fields are present so
+/// important — what matters is that both fields are present so
 /// `apply_to` produces all four `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
 /// envs on the spawn.
 #[test]

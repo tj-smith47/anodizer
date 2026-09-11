@@ -188,10 +188,10 @@ pub(crate) fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<St
 
 /// Resolve the effective SMTP port from (config, SMTP_PORT env, default).
 ///
-/// Anodizer-additive UX win (locked 2026-04-28): when both `cfg.port` and
+/// Anodizer-additive UX win: when both `cfg.port` and
 /// `SMTP_PORT` are unset the port defaults to **587** — the IETF submission port,
 /// the conventional STARTTLS endpoint exposed by virtually every modern
-/// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …). The
+/// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …).
 /// An unset port would otherwise be an error; the default-587 path is
 /// tradeoff-free because operators who need a
 /// different port set it explicitly, and the `auto` encryption mode then

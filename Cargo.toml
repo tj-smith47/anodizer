@@ -156,12 +156,13 @@ tempfile = "3"
 # Windows) for the determinism harness's disk-headroom guard. `sync` only —
 # no async runtime, no file-locking surface pulled in.
 fs4 = { version = "1", default-features = false, features = ["sync"] }
-# RustCrypto hash/MAC stack — one `digest` line on purpose.
+# RustCrypto hash/MAC stack. anodizer's own sha1/sha2/sha3/md-5/hmac/blake2
+# deps share one `digest` line (0.11); a transitive `digest 0.10` (crc-fast)
+# never enters `hash_file_with`'s trait graph and coexists harmlessly.
 # `stage-checksum`'s `hash_file_with::<D: Digest>` unifies every algorithm
-# (blake2b/s, md5, sha1, sha2, sha3) under one `digest` trait version, so
-# ANODIZER'S OWN sha1/sha2/sha3/md-5/hmac/blake2 workspace deps must all move
-# together: a partial bump splits the trait graph and fails the build (the
-# v0.12.3 group bump did exactly that). Dependabot groups them so a bump
+# (blake2b/s, md5, sha1, sha2, sha3) under that one `digest` trait version, so
+# those workspace deps must all move together: a partial bump splits the trait
+# graph and fails the build (the v0.12.3 group bump did exactly that). Dependabot groups them so a bump
 # arrives as one PR (.github/dependabot.yml).
 sha1 = "0.11"
 sha2 = "0.11"

@@ -291,7 +291,7 @@ impl PublishReport {
     ///
     /// A required failure in Assets, Manager, **or the Submitter group
     /// itself** closes the gate. Both the intra-Manager and intra-Submitter
-    /// checks are load-bearing: each group runs sequentially, and a
+    /// checks are required: each group runs sequentially, and a
     /// required failure partway through must stop the remaining
     /// irreversible publishers in that group and every later group from
     /// pushing against an incomplete release — the gate is not a single
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn submitter_gate_closes_on_required_intra_submitter_failure() {
-        // The load-bearing case for the v0.8.0 fix: a required cargo
+        // The case that matters for the v0.8.0 fix: a required cargo
         // (Submitter) failure must close the gate so later irreversible
         // submitters (winget, snapcraft) are skipped.
         let mut r = PublishReport::default();

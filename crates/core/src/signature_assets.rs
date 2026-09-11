@@ -25,7 +25,7 @@ use crate::config::{Config, SignConfig};
 ///
 /// Returns `None` when there is no usable dotted extension to anchor a
 /// `*.<ext>` match on (empty tail, a bare `.`, or a template that signs
-/// in place without adding an extension). The guard is load-bearing: a
+/// in place without adding an extension). The guard is required: a
 /// tail of `""` would yield a bare `*` (matching every artifact) and a
 /// tail of `"."` would yield `*.` (matching any name ending in a dot) —
 /// both would silently over-match. Require at least one extension

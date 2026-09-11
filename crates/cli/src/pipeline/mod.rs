@@ -535,7 +535,7 @@ mod tests {
 
     /// A failing `prepublish-guard` aborts the pipeline BEFORE `PublishStage`
     /// (an irreversible one-way-door publisher) is ever invoked. This is the
-    /// load-bearing guarantee: a broken template must abort with no publisher
+    /// essential guarantee: a broken template must abort with no publisher
     /// having fired.
     #[test]
     fn failing_prepublish_guard_aborts_before_publish_runs() {

@@ -574,7 +574,7 @@ struct ConfiguredProducer {
 /// with the host OS that natively builds it and the config predicate that
 /// decides whether the project configures it.
 ///
-/// Order within each OS group is load-bearing for [`os_native_producer_tokens`]:
+/// Order within each OS group matters for [`os_native_producer_tokens`]:
 /// on macOS `appbundle` precedes `dmg`/`pkg` so their `use: appbundle` finds a
 /// source `.app`. The always-on base stages (`build` / `source` / `archive` /
 /// `checksum` / `sbom` / `sign` / `upx`) are deliberately absent — they carry

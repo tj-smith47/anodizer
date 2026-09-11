@@ -19,6 +19,8 @@
 #   1. A first-person pronoun in the COMMENT half of a Rust line, or in a
 #      whole-line `#` comment in a shell script, a workflow, or the Taskfile.
 #   2. The tool name spelled `anodize`.
+#   3. A figurative metaphor from the banned list (`load-bearing`, `blast
+#      radius`, `bolted on`, `keystone`), in a comment or a doc page.
 #
 # Prose in markdown is NOT scanned: rule 8 governs comments, and the docsite's
 # first person is deliberate project voice.
@@ -117,6 +119,25 @@ for hit in "${NAME_HITS[@]}"; do
     name_violations+="$hit"$'\n'
 done
 
+# Scan 3, figurative jargon. `load-bearing`, `blast radius`, `bolted on` and
+# `keystone` are metaphors that say nothing the plain word does not: a field a
+# comment calls "load-bearing" is required, a rollback with a small "blast
+# radius" touches less state. They read as filler to anyone who has not heard
+# them, and rustdoc ships them to users. Markdown IS scanned here (unlike the
+# voice scan) because the docsite renders the same metaphors to the same
+# readers. The audit's own path is excluded: the pattern necessarily spells
+# every word it looks for.
+collect_files JARGON_HITS -rnEi --exclude-dir=target --exclude-dir=.git \
+    --exclude-dir=fixtures --exclude='audit-prose.sh' \
+    -- 'load[- ]bearing|blast radius|bolted on|keystone' \
+    crates docs/site/content .github/workflows .claude/scripts .claude/rules \
+    Taskfile.yml README.md INCIDENT_RESPONSE.md .anodizer.yaml
+
+jargon_violations=""
+if ((${#JARGON_HITS[@]} > 0)); then
+    printf -v jargon_violations '%s\n' "${JARGON_HITS[@]}"
+fi
+
 status=0
 
 if [[ -n "$rust_voice$shell_voice" ]]; then
@@ -144,8 +165,20 @@ if [[ -n "$name_violations" ]]; then
     status=1
 fi
 
+if [[ -n "$jargon_violations" ]]; then
+    [[ $status -eq 1 ]] && echo
+    echo "FIGURATIVE JARGON — say the plain word instead."
+    echo
+    printf '%s' "$jargon_violations"
+    echo
+    echo "A field is required, not 'load-bearing'; a change touches less state, it"
+    echo "does not have a smaller 'blast radius'; a feature was added, not 'bolted"
+    echo "on'; a test pins an invariant, it is not a 'keystone'."
+    status=1
+fi
+
 if [[ $status -eq 1 ]]; then
     exit 1
 fi
 
-echo "audit-prose: every comment speaks in the third person; the tool is spelled anodizer."
+echo "audit-prose: every comment speaks in the third person, in plain words; the tool is spelled anodizer."

@@ -45,7 +45,7 @@ pub(super) struct InstallerToolGate {
 /// Tool binaries each tool-gated producer stage needs reachable on
 /// `PATH` to produce its artifact. When the FIRST tool in the list is
 /// missing, the stage is dropped from the effective stage set — every
-/// stage here treats its primary tool as load-bearing.
+/// stage here treats its primary tool as required.
 ///
 /// Most entries are installer-family stages (members of
 /// [`installer_stages`]); `appimage` (`linuxdeploy`), `flatpak`

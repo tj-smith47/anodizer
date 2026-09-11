@@ -33,8 +33,6 @@ pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
 /// True when a rendered sign argv is keyless cosign AND the determinism
 /// harness is active.
 ///
-/// Shared by the `signs` / `binary_signs` loop here and the `docker_signs`
-/// loop in `lib.rs`; both call it per job on the argv that job will spawn.
 /// The discriminator is purely `cmd == cosign` + absence of `--key`, so it is
 /// config-mode-agnostic (single-crate, workspace-lockstep, workspace
 /// per-crate all flow through these loops). The harness signal mirrors the

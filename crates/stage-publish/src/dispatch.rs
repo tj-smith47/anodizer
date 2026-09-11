@@ -35,7 +35,7 @@
 //!
 //! When gated, the remaining Manager and Submitter publishers record
 //! `Skipped(SubmitterGated)` instead of running and
-//! `report.submitter_gated` is set to `true`. This is the load-bearing
+//! `report.submitter_gated` is set to `true`. This is the essential
 //! protection against firing a one-way door past a known-broken release:
 //! the "chocolatey moderation got submitted, then winget validation
 //! failed and the choco upload cannot be undone" failure mode, the "cargo

@@ -9,7 +9,7 @@
 # for the reader, and a rename — or a symbol that never existed — leaves a claim
 # that is simply false while every test still passes.
 #
-# Two recurring causes, one shared blast radius:
+# Two recurring causes, one shared effect:
 #   * the god-file split (a `foo.rs` becoming `foo/` with mod.rs + siblings)
 #     invalidates every citation of the old path at once;
 #   * moving a `#[cfg(test)]` body into a sibling `tests.rs` keeps the path

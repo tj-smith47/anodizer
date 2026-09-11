@@ -100,7 +100,7 @@ pub(super) fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> boo
 ///    base64 blob routinely contains it — so it is NOT treated as a path
 ///    separator. A backslash (`\`), absent from the alphabet, still
 ///    disqualifies the value (it is a Windows path separator).
-/// 5. Value decodes cleanly as standard base64. This is the load-bearing
+/// 5. Value decodes cleanly as standard base64. This is the decisive
 ///    discriminator: a filesystem path that happens to clear the alphabet
 ///    guard almost never decodes to a whole number of base64 quanta, whereas
 ///    a real encoded blob always does.

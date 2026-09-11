@@ -1,7 +1,7 @@
 //! Where a ref sits: tag-versus-`HEAD` position, tags at a commit, and the
 //! first commit in the repository.
 //!
-//! [`TagPosition`] is the load-bearing type — a release gate needs to tell a
+//! [`TagPosition`] is the type that carries this — a release gate needs to tell a
 //! version not yet cut from one being resumed at `HEAD` from one `HEAD` has
 //! already moved past, and folding those into a boolean loses the distinction.
 //! Everything here is a read-only revision query; the write side lives in

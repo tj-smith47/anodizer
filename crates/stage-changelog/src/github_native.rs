@@ -12,7 +12,7 @@
 //!
 //! Calling this endpoint up front (vs. the lazier
 //! `generate_release_notes: true` toggle on the create-release POST) is the
-//! load-bearing parity decision: the dedicated endpoint accepts an
+//! parity decision that matters: the dedicated endpoint accepts an
 //! explicit `previous_tag_name`, which lets monorepos and re-releases pin
 //! the commit range. The create-release POST flag silently uses GitHub's
 //! "most recent published release" as the base — wrong for tag-prefixed
@@ -129,7 +129,7 @@ mod tests {
         // When `previous_tag_name` is set, it is sent as a
         // top-level string field. GitHub's `/releases/generate-notes`
         // endpoint uses this as the "since" boundary for the commit range
-        // — which is the load-bearing parity decision over the
+        // — which is the parity decision that matters over the
         // create-release `generate_release_notes: true` flag (which uses
         // the most-recent published release as the base).
         assert_eq!(body["tag_name"], "v2.0.0");

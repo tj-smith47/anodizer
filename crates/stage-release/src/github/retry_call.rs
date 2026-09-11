@@ -532,11 +532,11 @@ mod tests {
     async fn secondary_rate_limit_sleep_is_bounded_by_the_deadline() {
         use std::time::Instant;
 
-        // A secondary-RL slot is 60–600s (here overridden to 1s), far larger
-        // than the exp-backoff delay the non-RL path projects. With a deadline
-        // only 100ms out, projecting the real 1s slot must stop the ladder
-        // BEFORE the sleep — proving the guard bounds the dedicated RL sleep,
-        // not just the exp-backoff path.
+        // A secondary-RL slot is the server's Retry-After, else 60s, capped at
+        // 600s (here overridden to 1s), far larger than the exp-backoff delay
+        // the non-RL path projects. With a deadline only 100ms out, projecting
+        // the real 1s slot must stop the ladder BEFORE the sleep — proving the
+        // guard bounds the dedicated RL sleep, not just the exp-backoff path.
         let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
         let resp_403 = Box::leak(
             format!(

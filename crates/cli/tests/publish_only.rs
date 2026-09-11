@@ -106,7 +106,7 @@ fn bootstrap_preserved_dist(
     )
     .unwrap();
 
-    // metadata.json — what the post-pipeline writes; not load-bearing
+    // metadata.json — what the post-pipeline writes; not needed
     // here but matches the production preserved-dist shape so the
     // fixture stays close to reality.
     let metadata_json = serde_json::json!({
@@ -314,7 +314,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
     //
     // The Pipeline runner emits a per-stage banner of the shape `name`
     // via StageLogger; relying on stage name substrings is the
-    // load-bearing assertion. A future formatting change to that
+    // essential assertion. A future formatting change to that
     // banner should update this test alongside.
     for must_appear in &["sign", "release", "publish"] {
         assert!(
@@ -1070,7 +1070,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
         "publish-only must report loading exactly 2 shard manifests; output was:\n{merged_log}"
     );
 
-    // Post-pipeline-rewritten artifacts.json is the load-bearing
+    // Post-pipeline-rewritten artifacts.json is the essential
     // assertion: it's what the next consumer of `dist/` (a re-run, a
     // downstream `anodizer publish` invocation, or operator inspection)
     // sees, and a regression that dropped a shard would surface here

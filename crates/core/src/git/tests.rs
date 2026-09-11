@@ -2390,7 +2390,7 @@ fn tag_position_in_derefs_annotated_tags() {
     tags_run_git(tmp.path(), &["tag", "-a", "-m", "current", "ann-current"]);
 
     // The tag ref resolves to a tag object, not the commit — the premise that
-    // makes the deref load-bearing rather than incidental.
+    // makes the deref necessary rather than incidental.
     let tag_obj =
         anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "ann-current"]);
     let head = anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "HEAD"]);

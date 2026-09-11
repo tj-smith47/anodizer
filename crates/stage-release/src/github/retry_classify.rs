@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn retriable_wrapper_overrides_message_classification() {
-        // Pin the load-bearing invariant the helper relies on: wrapping
+        // Pin the invariant the helper relies on: wrapping
         // any error in `Retriable` forces is_retriable -> true regardless
         // of the inner Display message. If this contract changes upstream,
         // the helper's transport arm silently mis-classifies.

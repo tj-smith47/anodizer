@@ -440,7 +440,7 @@ fn crate_has_homebrew_archives_true_even_when_metadata_incomplete() {
 
 /// The rendered formula carries the PascalCase class name, the version,
 /// each archive url + sha256, and a dependency declaration. Pins the
-/// load-bearing formula content the tap commit would carry.
+/// essential formula content the tap commit would carry.
 #[test]
 fn render_formula_for_crate_emits_class_url_sha_and_deps() {
     let hb = HomebrewConfig {

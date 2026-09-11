@@ -2,7 +2,7 @@
 //!
 //! Homebrew has no JSON/YAML schema: a tap file is Ruby DSL that
 //! `brew audit` / `brew style` accept only when it is, at minimum, syntactically
-//! valid Ruby carrying the load-bearing stanzas (`class … < Formula` / `cask "…"
+//! valid Ruby carrying the required stanzas (`class … < Formula` / `cask "…"
 //! do`, plus `url`, `sha256`, an install/artifact directive, …). anodizer
 //! renders that Ruby per crate (formula, same-tap cask, standalone cask) and per
 //! top-level `homebrew_casks:` entry; this validator renders the exact Ruby a
@@ -159,7 +159,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
 }
 
 /// The always-on, hermetic structural floor: scan the rendered Ruby for the
-/// load-bearing stanzas Homebrew requires and assert each is present and
+/// stanzas Homebrew requires and assert each is present and
 /// non-empty. Returns one [`SchemaFinding`] per violation; an empty Vec means
 /// the document clears the floor. Runs with no external tools, so it holds even
 /// where `ruby` is absent.

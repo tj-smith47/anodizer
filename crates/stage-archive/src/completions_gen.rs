@@ -252,9 +252,9 @@ fn host_missing_error(crate_name: &str, kind: &str) -> anyhow::Error {
 /// `templated_files` renders for the rest of the crate. (`Binary` is re-set
 /// per-target before those renders, so it is intentionally left bound here.)
 ///
-/// The planning pass calls this before rendering the names of an entry that
-/// generates completions or man pages, so the names it claims are the ones
-/// the same templates render after generation has run.
+/// Must run before any archive name is rendered for an entry that generates
+/// completions or man pages, so a claimed name and the later render see the
+/// same (cleared) `Shell` / `ArtifactPath`.
 pub(crate) fn clear_generate_vars(ctx: &mut Context) {
     let tvars = ctx.template_vars_mut();
     tvars.set("Shell", "");

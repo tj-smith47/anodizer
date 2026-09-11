@@ -674,7 +674,7 @@ crates:
             file_info:
               mode: 0644
               mtime: "{{ CommitDate }}"
-        # Same postinstall as deb/rpm — load-bearing here: this is the SIGNED apk
+        # Same postinstall as deb/rpm — it matters here: this is the SIGNED apk
         # whose script-mtime drift the determinism harness must now catch on
         # anodizer's own release (see the deb/rpm entry for the full rationale).
         scripts:
@@ -740,7 +740,7 @@ crates:
       # release CLI that, once installed, execs the host's cargo/git/docker/
       # cosign/gpg against the user's project. Strict Flatpak sandboxing blocks
       # all of that, so these finish_args open the same broad host surface the
-      # classic snap relies on — each is load-bearing, not a toy bundle:
+      # classic snap relies on — each one is needed, not a toy bundle:
       #   --share=network            registry/git/notary I/O (cargo publish, gh)
       #   --share=ipc                X11/dbus shared-memory many host tools use
       #   --filesystem=host          read .git + write dist/ in the user's repo

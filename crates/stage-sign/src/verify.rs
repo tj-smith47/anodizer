@@ -211,10 +211,10 @@ pub(crate) fn resolve_keyless_identity(
 /// rendered, hardened argv, and the ambient environment. Pure — no
 /// subprocess, no filesystem — so it is fully unit-testable offline.
 ///
-/// The argv must be the one a job will spawn: a `--key` supplied through a
-/// template is visible only after rendering, and every caller passes the
-/// first rendered job's argv (or, with nothing to spawn, the template argv
-/// that merely feeds the skip line).
+/// `sign_args` must be a rendered argv — the first job's, or the
+/// config-level render from `render_args_without_artifact` when nothing will
+/// be spawned. A `--key` supplied through a template is visible only after
+/// rendering.
 pub(crate) fn resolve_config_verify_mode(
     verify_cfg: Option<&SignVerifyConfig>,
     cmd: &str,

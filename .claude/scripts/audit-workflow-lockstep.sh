@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guard: cross-file / cross-job workflow invariants that GitHub Actions cannot
 # express as a shared constant (no anchors, no cross-file variables) and that
-# therefore live as hand-synced copies. Each copy is load-bearing only while it
+# therefore live as hand-synced copies. Each copy is correct only while it
 # stays byte-identical to its sibling; GHA fails SILENTLY when they drift (a
 # stale concurrency group stops serializing, a missing shard is never asserted,
 # a forgotten publish secret aborts post-tag). This audit turns each such
@@ -20,7 +20,7 @@
 #   5. CI-bootstrap artifact: every literal `from-artifact:` and the
 #      resolve-release-target default equal the producer's upload name, AND
 #      every literal `artifact-workflow:` names the producer workflow's own
-#      filename (the NAME and the producing FILE are both load-bearing). Scans
+#      filename (the NAME and the producing FILE both matter). Scans
 #      release.yml AND publish-oidc.yml (both install anodizer from the CI build).
 #   6. Atomic tag topology: the auto-tag step pushes the bump commit and the
 #      tag together (`--push`, never `--push-tags-only`) and no job re-introduces

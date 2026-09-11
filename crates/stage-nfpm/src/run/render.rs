@@ -195,7 +195,7 @@ pub(crate) fn resolve_format_os_arch(
 ///
 /// This is the single per-target render+generate path shared by the live and
 /// dry-run branches of `process_nfpm_format`. The `set_nfpm_per_target_template_vars`
-/// call here is load-bearing: it must run BEFORE `render_nfpm_config_fields`
+/// call here is required: it must run BEFORE `render_nfpm_config_fields`
 /// so `conflicts`/`provides`/`replaces`/`recommends`/`suggests` resolve
 /// `{{ .Libc }}` (and `Os`/`Arch`/`Target`) against this target. Removing it
 /// would silently ship the literal template text.

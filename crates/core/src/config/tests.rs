@@ -7264,7 +7264,7 @@ crates:
 
 #[test]
 fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
-    // Load-bearing: the real workspace config, post-dedup, must resolve every
+    // The real workspace config, post-dedup, must resolve every
     // crate to the identical tag_template it carried before the 32 repeated
     // per-crate lines were collapsed into one `defaults.crates.tag_template`.
     let yaml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.anodizer.yaml"));

@@ -1762,7 +1762,7 @@ fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
         warns
             .iter()
             .any(|m| m.contains("repo-relative file lookups")),
-        "expected the warn to call out the load-bearing repo-relative file lookups; \
+        "expected the warn to call out the repo-relative file lookups; \
              got warns: {warns:?}"
     );
 }

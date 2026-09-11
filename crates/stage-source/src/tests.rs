@@ -906,7 +906,7 @@ fn test_deterministic_uuid_from_format_and_stability() {
         uuid
     );
 
-    // Same seed → identical output (load-bearing for release-asset idempotency)
+    // Same seed → identical output (required for release-asset idempotency)
     assert_eq!(uuid, deterministic_uuid_from("proj-1.0.0"));
     // Different seed → different output (avoids namespace collisions)
     assert_ne!(uuid, deterministic_uuid_from("proj-1.0.1"));
@@ -914,7 +914,7 @@ fn test_deterministic_uuid_from_format_and_stability() {
 
 #[test]
 fn test_sbom_byte_identical_across_runs() {
-    // Load-bearing for release-asset idempotency: anodizer-action's outer
+    // Required for release-asset idempotency: anodizer-action's outer
     // retry wrapper may regenerate the SBOM between `release` uploads; if
     // the bytes differ, GitHub's ReleaseAsset API rejects the re-upload
     // with `already_exists` (size mismatch).
@@ -1588,7 +1588,7 @@ fn test_source_archive_zip_extras_deterministic_under_sde() {
     init_git_repo(tmp.path());
 
     // Several untracked extras whose `src` order differs from any plausible
-    // filesystem-walk order, so the sort is load-bearing.
+    // filesystem-walk order, so the sort is required.
     let extras_dir = tmp.path().join("extras");
     std::fs::create_dir_all(&extras_dir).unwrap();
     for name in ["zeta.txt", "alpha.txt", "mid.txt"] {

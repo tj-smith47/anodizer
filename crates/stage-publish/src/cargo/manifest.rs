@@ -157,7 +157,7 @@ pub(crate) fn find_workspace_root_manifest(start: &std::path::Path) -> Option<st
 ///   `[workspace.package].version`, returns that.
 /// - No version anywhere → `None`.
 ///
-/// The workspace-inheritance branch is load-bearing for multi-cadence
+/// The workspace-inheritance branch is required for multi-cadence
 /// workspaces (one crate at v0.2.x while siblings are at v0.3.x).
 /// Falling back to the release-context version in that case would
 /// poll the wrong version on the crates.io index → either a timeout

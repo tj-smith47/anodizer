@@ -156,7 +156,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         anodizer_core::PublisherGroup::Assets
     }
 
-    /// Forward-compat trait surface only. The load-bearing
+    /// Forward-compat trait surface only. The effective
     /// `required` flag for the blob stage's outcome is derived
     /// per-run from `BlobConfig.required` in
     /// `crate::run::record_blob_result` (called by
@@ -615,7 +615,7 @@ mod publisher_tests {
         assert!(is_configured(&ctx));
     }
 
-    /// `BlobTarget` is the load-bearing structured shape persisted to
+    /// `BlobTarget` is the structured shape persisted to
     /// `PublishEvidence.extra.blob_targets`. A serde roundtrip must
     /// preserve every field — losing `region` / `endpoint` would force
     /// the rollback DELETE through `build_store`'s `from_env()` fallback

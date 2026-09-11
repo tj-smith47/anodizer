@@ -182,7 +182,7 @@ pub struct DockerDigestConfig {
 ///
 /// The v1 docker / docker
 /// manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc
-/// here is the load-bearing surface for the deprecation: it flows into the
+/// here is what carries the deprecation: it flows into the
 /// schemars-generated JSON Schema (consumed by IDEs / editor tooling) and
 /// rustdoc HTML, both of which are how downstream config authors discover
 /// that the v2 pipe is the preferred entry point.

@@ -129,7 +129,7 @@ jobs:
       # configures (tag_name/publish_release/keep_single_release) — every other
       # publisher belongs to a real release. `--publishers github-release` is a
       # whitelist rather than a `--skip` denylist so that adding a publisher to
-      # .anodizer.yaml later cannot silently widen the nightly's blast radius.
+      # .anodizer.yaml later cannot silently widen what the nightly touches.
       # `--skip` covers the two STAGES a whitelist cannot reach: blob targets an
       # in-cluster MinIO endpoint no GitHub-hosted runner can resolve (release.yml
       # runs its publish leg on arc-anodizer for exactly this reason), and a

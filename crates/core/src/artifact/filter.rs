@@ -35,7 +35,7 @@ pub const COMBINED_CHECKSUM_VALUE: &str = "true";
 /// [`ArtifactKind::Checksum`] carrying the [`COMBINED_CHECKSUM_META`] marker,
 /// as opposed to a per-artifact split `.sha256` sidecar.
 ///
-/// This is the SINGLE definition shared by the two sides of a load-bearing
+/// This is the SINGLE definition shared by the two sides of one
 /// invariant. `refresh_combined_checksums` (stage-checksum) rewrites exactly
 /// these artifacts at release-upload time to fold in PUBLISH-TIME artifacts
 /// (docker `.digest` files registered by the publish leg's docker push), so
@@ -58,7 +58,7 @@ pub fn is_combined_checksum_artifact(artifact: &Artifact) -> bool {
 }
 
 /// Metadata key recording the on-disk packaging format of an artifact whose
-/// [`ArtifactKind`] alone is ambiguous. The load-bearing case is the macOS
+/// [`ArtifactKind`] alone is ambiguous. The case that matters is the macOS
 /// `.app` bundle, registered as [`ArtifactKind::Installer`] (shared with
 /// `.msi`/`.exe`) but distinguished by [`FORMAT_APPBUNDLE`] because it is a
 /// DIRECTORY, not a file. Read by [`is_directory_bundle_artifact`] and by the

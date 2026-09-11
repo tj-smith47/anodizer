@@ -9,7 +9,7 @@
 //! 1. The dist tree was copied to <tmp>.
 //! 2. `<tmp>/context.json` is present and round-trips through serde.
 //! 3. Each file in `<tmp>/` has a SHA256 that matches the corresponding
-//!    entry in `determinism.json:artifacts[].hash` — the load-bearing
+//!    entry in `determinism.json:artifacts[].hash` — the essential
 //!    "preserved bytes match the determinism check" safety property.
 //!
 //! On hosts without `cargo` or `git` on PATH, these tests print a SKIP
@@ -169,7 +169,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
 /// Each file in `<preserved-dist>/` has a SHA256 that matches the
 /// corresponding `determinism.json:artifacts[].hash` entry.
 ///
-/// This pins the load-bearing safety property: the bytes the publish-
+/// This pins the safety property: the bytes the publish-
 /// only flow ships are byte-identical to the bytes the determinism
 /// check verified. A divergence here means the preservation copy lost
 /// or corrupted a file.

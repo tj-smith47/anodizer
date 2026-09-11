@@ -67,7 +67,7 @@ pub(super) fn preprocess_strip_dots(template: &str) -> String {
                 && (bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_')
             {
                 // A preceding word char makes this chained access
-                // (e.g., `Env.VAR`), where the dot is load-bearing.
+                // (e.g., `Env.VAR`), where the dot is part of the expression.
                 // A preceding `?` is tera 2.0's optional-chaining operator
                 // (`?.`, lexed as one token): stripping this dot would
                 // silently corrupt `Some?.Missing` into `Some?Missing`,

@@ -4,7 +4,7 @@
 //! producing a `stdenvNoCC.mkDerivation { … }` attrset, and the root
 //! `flake.nix` is a `{ description; inputs; outputs; }` expression. `nix-build`
 //! / `nix flake check` accept them only when the expression parses and carries
-//! the load-bearing attributes — a derivation needs `pname` / `version` / a
+//! the required attributes — a derivation needs `pname` / `version` / a
 //! `src = fetchurl { url …; sha256 …; }` / a `meta` attrset / the
 //! `mkDerivation` call; a flake needs `description` / `inputs` / `outputs` and
 //! overlay `callPackage` lines that round-trip. anodizer renders that pair per
@@ -252,7 +252,7 @@ pub(crate) fn validate_derivation_structural(text: &str) -> Vec<SchemaFinding> {
     // template emits `src = fetchurl { url = selectSystem urlMap; sha256 =
     // selectSystem shaMap; }` over a `urlMap`/`shaMap` keyed by Nix system —
     // so assert the binding, the fetcher, a `url`, and a `sha256`/`hash`
-    // independently (each is load-bearing: without the url there is nothing to
+    // independently (each is required: without the url there is nothing to
     // fetch, without the hash the fixed-output derivation cannot verify).
     if !has_attr_binding(text, "src") {
         findings.push(finding("src", "a derivation must bind `src = …`"));
@@ -315,7 +315,7 @@ pub(crate) fn validate_flake_structural(text: &str) -> Vec<SchemaFinding> {
 
     // `description` / `inputs` / `outputs` — the top-level attributes a flake
     // must expose. `nix flake check` errors without `outputs`; `description`
-    // and `inputs` are the load-bearing identity/dependency attributes the
+    // and `inputs` are the identity/dependency attributes the
     // template always emits.
     for attr in ["description", "inputs", "outputs"] {
         if !has_attr_binding(text, attr) {

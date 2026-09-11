@@ -18,7 +18,7 @@
 //! cosign), the per-artifact signature/certificate output paths, and the
 //! rendered `env:` — so no additional configuration exists to drift.
 //!
-//! ## Failure semantics (load-bearing)
+//! ## Failure semantics
 //!
 //! Only a signature the verifier POSITIVELY rejected reports as
 //! [`SignatureCryptoOutcome::Invalid`]. Every environmental shortfall — the

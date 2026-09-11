@@ -987,7 +987,7 @@ fn test_merge_env_with_defaults_top_level_wins_on_collision() {
 
 use anodizer_core::config::Defaults;
 
-/// `setup_env` mutates process env via the load-bearing
+/// `setup_env` mutates process env via the
 /// `set_env_var_single_threaded` path so child commands (docker /
 /// rustup / git hooks) inherit user-supplied entries. These two
 /// tests assert the template-context wiring only — they never

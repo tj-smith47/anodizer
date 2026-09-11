@@ -66,7 +66,7 @@ fn http_201(body: String) -> &'static str {
 const HTTP_204: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
 
 /// Build a minimal Release JSON octocrab can deserialize into
-/// `models::repos::Release`. The `upload_url` field is the load-bearing
+/// `models::repos::Release`. The `upload_url` field is the essential
 /// one: `upload_asset(...).send()` does a GET on the release and reads
 /// `upload_url` to determine where to POST the asset bytes.
 fn release_json(addr: SocketAddr, id: u64, draft: bool, name: &str) -> String {

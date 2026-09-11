@@ -5,7 +5,7 @@
 //! * **Group**: Manager — Fury repositories are mutable state in a
 //!   third-party system but are programmatically reversible via the
 //!   per-version delete API.
-//! * **Required default**: `true` — a failed Fury push is load-bearing
+//! * **Required default**: `true` — a failed Fury push matters
 //!   for users who install via `apt-get` / `dnf` / `apk` against the
 //!   Fury repo; the operator should know the release is half-shipped.
 //! * **Rollback scope**: `FURY_API_TOKEN delete` — the env var the

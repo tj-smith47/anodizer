@@ -146,7 +146,7 @@ impl Harness {
         // (cargo test running multiple determinism integration tests
         // concurrently) don't collide on the same path. WITHIN one
         // invocation every run reuses the same path — that's the
-        // load-bearing invariant for /Brepro and UTF-16 cargo-registry
+        // essential invariant for /Brepro and UTF-16 cargo-registry
         // paths embedded into binaries (drift otherwise cascades from
         // a 2-byte path diff). Across invocations the path must be
         // unique because git worktree add refuses a populated target.
@@ -155,7 +155,7 @@ impl Harness {
 
         // Shared, lock-pinned CARGO_HOME for the WHOLE invocation, hoisted
         // OUT of the per-run worktree (which the loop wipes each iteration).
-        // This is the load-bearing change that makes every rebuild network-
+        // This is the change that makes every rebuild network-
         // free: the run-0 prefetch warms this registry cache once, and it
         // survives into runs 1..N instead of being re-downloaded from clean
         // each time. Determinism-safe to share — `.crate` tarballs + their

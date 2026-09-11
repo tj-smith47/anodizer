@@ -25,7 +25,7 @@ pub(crate) use crate::command::{SNAPCRAFT_PROBE_TIMEOUT, SNAPCRAFT_UPLOAD_TIMEOU
 // SnapcraftPublishStage — uploads previously built .snap artifacts
 // ---------------------------------------------------------------------------
 //
-// `SnapcraftPublishStage` is the load-bearing snapcraft runner. Following
+// `SnapcraftPublishStage` is the snapcraft runner that actually publishes. Following
 // the `BlobStage` pattern (commit 026c854), the stage writes its own
 // `PublisherResult` directly into `ctx.publish_report` so the Submitter gate
 // (and any downstream consumers, e.g. announce-gating,

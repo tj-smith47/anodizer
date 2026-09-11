@@ -11,7 +11,7 @@
 //!   same-version re-cut that would silently `skip_existing` the stale
 //!   wheels. (It is NOT Manager: Manager is server-side-deletable
 //!   package-manager state — homebrew/scoop/nix — which pypi is not.)
-//! * **Required default**: `true` — a failed PyPI publish is load-bearing
+//! * **Required default**: `true` — a failed PyPI publish matters
 //!   for users who install via `pip install`; the operator should know the
 //!   release is half-shipped.
 //! * **Rollback scope**: none. A published filename can NEVER be

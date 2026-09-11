@@ -128,7 +128,7 @@ pub(crate) struct DockerBuildJob {
     pub(crate) digest_name_template: Option<String>,
     /// Context environment variables to inject into docker commands.
     /// These come from .env files and config `env:` sections. Ordered map
-    /// so iteration order is stable across runs (load-bearing for the
+    /// so iteration order is stable across runs (required by the
     /// determinism harness: any env-iteration leak into command argv or
     /// log lines would otherwise drift).
     pub(crate) env_vars: BTreeMap<String, String>,

@@ -559,7 +559,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
             // Endpoint reachability is emitted for EVERY entry carrying a
             // `target`, regardless of `skip`/`if` — exactly mirroring the blob
             // stage, which probes its endpoint unconditionally. This is
-            // load-bearing, not incidental: the standalone `preflight` command
+            // deliberate, not incidental: the standalone `preflight` command
             // forces `snapshot = true` so the canary can run from any untagged
             // commit, so an entry that skips on `{{ .IsSnapshot }}` (the real
             // `.anodizer.yaml` mirror does) would look INACTIVE under that
@@ -1429,7 +1429,7 @@ mod tests {
 
     /// A `skip`-ed entry STILL emits its endpoint — reachability is independent
     /// of the entry's skip state, exactly like the blob stage. This is the
-    /// load-bearing case: the standalone `preflight` command forces
+    /// case that matters: the standalone `preflight` command forces
     /// `snapshot = true`, so the real mirror's `skip: {{ .IsSnapshot }}` would
     /// otherwise mark the entry inactive and hide the reachability gap the gate
     /// exists to catch. The entry's CREDENTIALS, by contrast, stay gated (a

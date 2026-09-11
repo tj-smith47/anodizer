@@ -594,7 +594,7 @@ pub struct NfpmIpkAlternative {
 mod is_empty_tests {
     use super::*;
 
-    /// `arch_variant` is the load-bearing single field that, when set in
+    /// `arch_variant` is the single field that, when set in
     /// isolation, must keep the deb block alive — otherwise the "drop empty
     /// blocks" path silently dropped microarch tagging (`amd64v3` collapsing to
     /// plain `amd64`).

@@ -197,7 +197,7 @@ anodizer release --no-gate-submitter
 ```
 
 Use this only when you have manually verified the failed publisher is not
-load-bearing for the release. The default keeps you from burning a crates.io
+required for the release. The default keeps you from burning a crates.io
 version slot because a homebrew tap push happened to hit a branch-protection
 glitch.
 

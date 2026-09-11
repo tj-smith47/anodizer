@@ -31,7 +31,7 @@ pub fn resolve_backend(
     // branch (multi-platform podman writes a local manifest list via
     // `--manifest <name>`, single-platform podman uses `--tag <name>`); the
     // subcommand vector itself is identical for both arities. Reading it here
-    // keeps the parameter load-bearing rather than silently ignored, and a
+    // keeps the parameter in use rather than silently ignored, and a
     // future backend whose *subcommand* depends on arity has the value ready.
     let _ = multi_platform;
     match use_backend {
@@ -83,7 +83,7 @@ pub fn enforce_podman_linux_only() -> Result<()> {
 /// rather than at podman's argv parser with a generic "unknown flag".
 ///
 /// The list is conservative: only flags whose presence under podman is a
-/// load-bearing UX bug (`--rewrite-timestamp` for byte-stable layers,
+/// real UX bug (`--rewrite-timestamp` for byte-stable layers,
 /// `--sbom` / `--provenance` / `--attest` for attestation, `--output` for
 /// the OCI exporter, `--cache-from` / `--cache-to` for BuildKit cache).
 /// Bare `--build-arg`, `--label`, `--platform`, `--tag` are buildx-aligned

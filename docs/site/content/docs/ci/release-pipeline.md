@@ -155,7 +155,7 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
   release:
     name: Publish Release
     needs: [tag, determinism-check]
-    # !cancelled() is load-bearing: it lets the explicit gate govern when
+    # !cancelled() matters: it lets the explicit gate govern when
     # determinism-check is skipped (the re-publish path) rather than GHA
     # applying an implicit success() and skipping the publish. Exclude both
     # failure AND cancelled — a cancelled shard leaves the merged dist partial.

@@ -12,7 +12,7 @@
 //! `{repo_url, branch, ssh hints}` in
 //! [`anodizer_core::PublishEvidence::extra`] and re-cloning at rollback
 //! time keeps the publish path intact and trades one extra `git clone`
-//! (rare, only on rollback) for a smaller blast radius.
+//! (rare, only on rollback) for less risk of touching unrelated state.
 //!
 //! The helper itself shells out to real `git` via
 //! [`std::process::Command`]. The tests use a tempdir-backed real repo

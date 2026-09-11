@@ -582,7 +582,7 @@ fn generate_default_spec(
     if let Some(epoch) = cfg.epoch.as_deref()
         && !epoch.is_empty()
     {
-        // `Epoch:` is load-bearing for upgrade ordering when users
+        // `Epoch:` is required for upgrade ordering when users
         // migrate from a `1:x.y.z`-style version scheme. Silently
         // dropping it lets rpm compute the wrong "newer than" order
         // during `dnf upgrade`, pinning operators on an old release

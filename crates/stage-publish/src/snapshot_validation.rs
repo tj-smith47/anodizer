@@ -685,7 +685,7 @@ fn asset_filename(url: &str) -> String {
 /// Decide whether a binstall-resolved asset filename matches a produced
 /// archive. cargo-binstall's own `{ target }` / `{ version }` / `{ name }`
 /// tokens (which anodizer deliberately leaves intact) are substituted with the
-/// produced asset's facts before comparison; the load-bearing `{ target }` is
+/// produced asset's facts before comparison; the `{ target }` token is
 /// the field that distinguishes the 404 class (a `pkg_url` baking
 /// `linux-amd64` while the release produces `x86_64-unknown-linux-gnu`).
 ///

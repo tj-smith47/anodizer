@@ -187,7 +187,7 @@ pub(crate) struct LocalCrate {
 /// tarball bytes even with identical sources — `decide_already_published`'s
 /// slow path (`crates_equal_modulo_vcs`) is what tells that apart from a real
 /// content change. Seeding `SOURCE_DATE_EPOCH` would be a no-op that misleads
-/// a reader into thinking it is load-bearing.
+/// a reader into thinking it affects the output.
 pub(crate) fn local_crate_cksum(
     crate_name: &str,
     crate_cfg: &CrateConfig,

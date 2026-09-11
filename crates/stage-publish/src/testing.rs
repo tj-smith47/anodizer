@@ -395,7 +395,7 @@ pub fn fake_config_fully_inactive(
 ///    `publisher.name()`.
 /// 2. At least three `status` log lines were emitted — the standard
 ///    start + per-crate-start + done pattern every per-crate publisher
-///    uses. This is the load-bearing assertion that the publisher
+///    uses. This is the assertion that proves the publisher
 ///    actually visited its crates rather than silently `continue`-ing
 ///    through every iteration.
 /// 3. Either:
@@ -465,7 +465,7 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
     assert!(
         verbose_count >= 1,
         "publisher '{}': expected ≥1 verbose log line (per-crate-start), got {}. \
-         This is the load-bearing proof the publisher visited a crate rather \
+         This is the proof the publisher visited a crate rather \
          than silently continuing. Captured: {:?}",
         publisher.name(),
         verbose_count,

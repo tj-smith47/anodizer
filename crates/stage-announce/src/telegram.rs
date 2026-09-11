@@ -4,7 +4,7 @@ use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
-/// Replacement marker for the bot token in any surfaced error message.
+/// Replacement marker for the bot token in any error message surfaced
 /// upstream. The Telegram URL is `…/bot<TOKEN>/sendMessage`, and the
 /// `reqwest::Error` Display chain echoes the full URL on transport
 /// failure — without redaction the token would leak via every error log.

@@ -513,7 +513,7 @@ mod tests {
             "independent-version multi-crate manifests must conform, got: {findings:?}"
         );
 
-        // Prove the load-bearing claim: rendering beta UNDER ITS OWN SCOPE stamps
+        // Prove the central claim: rendering beta UNDER ITS OWN SCOPE stamps
         // beta's version (3.1.0), NOT the global first-crate 2.0.0. Without the
         // per-crate scope this asserts `PackageVersion: 2.0.0` and fails.
         let rendered_beta = crate::schema_validation::with_validated_crate_scope(

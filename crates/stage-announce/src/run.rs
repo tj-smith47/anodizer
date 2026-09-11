@@ -903,7 +903,7 @@ mod gate_tests {
     }
 
     /// Pins that the deselect short-circuit is driven by `announce_decision`
-    /// itself (the `Deselected` enum arm), NOT a predicate bolted on ahead of
+    /// itself (the `Deselected` enum arm), NOT a predicate added ahead of
     /// it. `Deselected` must be the FIRST arm evaluated — it wins even when the
     /// `skip` template would error — so a deselected announce never renders a
     /// template for a channel that will not fire.

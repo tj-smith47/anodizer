@@ -642,7 +642,7 @@ pub(super) fn run_one_crate_dist(
         // run_post_pipeline writes the canonical un-suffixed
         // artifacts.json from the merged registry. The per-shard
         // manifests (artifacts-*.json, context-*.json) that fed the
-        // merge are no longer load-bearing, and their continued
+        // merge are no longer needed, and their continued
         // presence next to the new un-suffixed file would trip
         // check_no_unsuffixed_suffixed_collision on a retry. Delete
         // them so a second invocation (operator-driven workflow rerun)

@@ -1660,9 +1660,10 @@ mod publisher_tests {
         );
     }
 
-    /// Multitrack shape — the one C1's sweep and C2's double-create both
-    /// bite hardest. Three tracks, one publisher dispatch: every track's id
-    /// is captured and NONE of them is released a second time.
+    /// Multitrack shape — the one the family-scoped retention sweep and the
+    /// double-create both bite hardest. Three tracks, one publisher dispatch:
+    /// every track's id is captured and NONE of them is released a second
+    /// time.
     #[test]
     fn publisher_run_captures_every_track_without_re_releasing_any() {
         let track = |name: &str, tmpl: &str| {

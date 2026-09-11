@@ -702,7 +702,7 @@ fn retry_request_redacts_bearer_in_error_body() {
 /// Two distributions ⇒ each needs its own (files/create + presigned +
 /// package-create) = 6 served connections. The bug (file stage hoisted
 /// out of the loop) would serve only 4 (1 files/create + 1 presigned +
-/// 2 package-creates). The connection count is the load-bearing assertion.
+/// 2 package-creates). The connection count is the assertion that matters.
 #[test]
 fn cloudsmith_multi_distribution_stages_one_file_per_distro() {
     use anodizer_core::MapEnvSource;

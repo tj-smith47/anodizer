@@ -12,7 +12,7 @@ use super::*;
 /// Crate names per cargo are restricted to ASCII alphanumerics plus `-`/`_`
 /// (cargo reference: "Crate names ... must be ASCII"), so the byte slices
 /// below are guaranteed to land on character boundaries. The debug_assert
-/// makes the invariant load-bearing — any caller passing a non-ASCII name
+/// enforces the invariant — any caller passing a non-ASCII name
 /// would surface the violation in a debug build long before the slice
 /// could panic at runtime.
 pub(crate) fn sparse_index_url(crate_name: &str) -> String {

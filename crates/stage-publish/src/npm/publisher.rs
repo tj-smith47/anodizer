@@ -11,7 +11,7 @@
 //!   same-version tag re-cut. (It is NOT Manager: Manager is
 //!   server-side-deletable package-manager state — homebrew/scoop/nix — that
 //!   a same-version re-cut can cleanly overwrite; npm cannot.)
-//! * **Required default**: `true` — a failed npm publish is load-bearing for
+//! * **Required default**: `true` — a failed npm publish matters for
 //!   users who install via `npm i -g`; the operator should know the release is
 //!   half-shipped.
 //! * **Rollback scope**: `NPM_TOKEN unpublish` — the 72h-window `npm
