@@ -208,6 +208,17 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
     assert_eq!(code, 1, "{out}");
 }
 
+/// The bash the scanners run under. Every scanner asserts the 4.4 floor
+/// (`.claude/scripts/lib/require-bash.sh`), and macOS ships 3.2 at `/bin/bash`,
+/// so a Homebrew bash is preferred wherever one is installed; elsewhere `PATH`
+/// answers.
+fn bash() -> Command {
+    let homebrew = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).is_file());
+    Command::new(homebrew.unwrap_or("bash"))
+}
+
 fn run_audit(script: &str, root: &Path) -> (i32, String) {
     run_audit_with_path(script, root, None)
 }
@@ -219,7 +230,7 @@ fn run_audit_with_path(script: &str, root: &Path, shim: Option<&Path>) -> (i32, 
         .join("../..")
         .join(".claude/scripts")
         .join(script);
-    let mut command = Command::new("bash");
+    let mut command = bash();
     command.arg(&path).arg(root);
     if let Some(shim) = shim {
         let inherited = std::env::var("PATH").unwrap_or_default();
@@ -473,7 +484,7 @@ fn run_collector(dir: &Path, body: &str, stdin: &str) -> (i32, String) {
         lib.display(),
         lib.display()
     );
-    let mut child = Command::new("bash")
+    let mut child = bash()
         .arg("-c")
         .arg(&script)
         .current_dir(dir)
@@ -723,7 +734,7 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
         checked += 1;
         let copy = dir.path().join(&name);
         std::fs::copy(&src, &copy).expect("copy the script beside an empty lib dir");
-        let out = Command::new("bash")
+        let out = bash()
             .arg(&copy)
             .arg(&repo)
             .output()
@@ -1943,7 +1954,7 @@ fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
     let copy = dir.path().join(SCRIPT);
     std::fs::write(&copy, broken).expect("write the broken copy");
 
-    let out = Command::new("bash")
+    let out = bash()
         .arg(&copy)
         .arg(&repo)
         .output()

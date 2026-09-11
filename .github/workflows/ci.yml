@@ -211,6 +211,12 @@ jobs:
           # MSI determinism test silently revert to its skip-with-pass path.
           dotnet tool install --global wix || dotnet tool update --global wix
 
+      # The audit-scanner integration tests run every `.claude/scripts` scanner,
+      # and each asserts the bash 4.4 floor. macOS ships 3.2 at /bin/bash.
+      - name: Install a bash that meets the scanners' floor
+        if: runner.os == 'macOS'
+        run: brew install bash
+
       - name: Tests
         run: task test
 

@@ -2075,7 +2075,6 @@ fn with_two_tagged_commits_repo_cwd(older_tag: &str, head_tag: &str, body: impl 
 /// resolves to nothing. anodizer's own CI runs under GitHub Actions, which
 /// exports `GITHUB_REF_*`; without this isolation those would leak in as a
 /// tag override and mask the no-tag branches under test.
-#[cfg(unix)]
 fn empty_env_ctx(config: &Config, opts: ContextOptions) -> Context {
     let mut ctx = Context::new(config.clone(), opts);
     ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
@@ -2912,7 +2911,6 @@ fn resolve_git_context_nightly_base_resolves_with_unset_tag_templates() {
 }
 
 /// Three tracks whose first-declared crate is the laggard.
-#[cfg(unix)]
 fn multi_family_config() -> Config {
     let track = |name: &str, template: &str| CrateConfig {
         name: name.to_string(),
