@@ -209,12 +209,8 @@ pub fn default_download_base(ctx: &Context) -> String {
                     .gitea_urls
                     .as_ref()
                     .and_then(|u| u.api.as_deref())
-                    .map(|api| {
-                        api.trim_end_matches('/')
-                            .trim_end_matches("/api/v1")
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "https://gitea.com".to_string())
+                    .map(|api| crate::gitea_url::gitea_instance_url(api).to_string())
+                    .unwrap_or_else(|| crate::gitea_url::DEFAULT_GITEA_INSTANCE.to_string())
             }),
     }
 }

@@ -34,10 +34,7 @@ pub(crate) fn fetch_gitea_commits(
         .ok_or_else(|| anyhow::anyhow!("gitea changelog: no token available"))?;
 
     let gitea_urls = ctx.config.gitea_urls.clone().unwrap_or_default();
-    let api_url = gitea_urls
-        .api
-        .unwrap_or_else(|| "https://gitea.com/api/v1".to_string());
-    let api = api_url.trim_end_matches('/');
+    let api = anodizer_core::gitea_url::gitea_api_base(gitea_urls.api.as_deref());
     let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
 
     let cfg = ctx.config.release.as_ref().and_then(|r| r.gitea.as_ref());

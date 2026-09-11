@@ -14,22 +14,7 @@ pub(crate) fn gitea_release_url(download_url: &str, owner: &str, repo: &str, tag
     )
 }
 
-/// The Gitea instance root behind a configured `gitea_urls.api`.
-///
-/// Every request builder appends its own `/api/v1/…`, so a value that already
-/// ends in `/api/v1` — the form Gitea's own API docs hand out — would send
-/// `/api/v1/api/v1/…` and 404. Exactly one trailing slash and exactly one
-/// terminal `/api/v1` are trimmed, so a self-hosted deployment subpath
-/// (`https://example.com/forge`) survives.
-pub(crate) fn gitea_instance_url(api: &str) -> &str {
-    let trimmed = api.strip_suffix('/').unwrap_or(api);
-    trimmed.strip_suffix("/api/v1").unwrap_or(trimmed)
-}
-
-/// The built-in Gitea instance — used when `gitea_urls.api` / `.download` are
-/// unset. Named once so the default cannot drift between the two fields and
-/// the tests that pin them.
-pub(crate) const DEFAULT_GITEA_INSTANCE: &str = "https://gitea.com";
+pub(crate) use anodizer_core::gitea_url::{DEFAULT_GITEA_INSTANCE, gitea_instance_url};
 
 /// Whether a configured base URL carries both a scheme and a host.
 ///
