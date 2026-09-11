@@ -234,18 +234,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate aur publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_aur` on (not the
-/// count of successful AUR pushes — `publish_to_aur` has its own skip
-/// paths for skip_upload/dry-run/etc., each of which logs its own status
-/// line).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished aur publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
 /// Decision predicate for the no-eligible-crates warning. True when the
 /// publisher walked the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
@@ -255,26 +243,6 @@ pub(crate) fn run_done_message(considered: usize) -> String {
 /// `selected_len` is the size of the implicit-all-resolved selection.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
-}
-
-/// Warning emitted when the publisher was registered (at least one crate
-/// has a `publish.aur` block at the config level) but the run path
-/// processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a `publish.aur`
-/// block — so a zero-processed run means `--crate`/`--all` matrix
-/// selection was non-empty AND filtered every aur-configured crate out.
-/// Operators must see this — otherwise the publisher's `succeeded` status
-/// hides the fact that nothing was pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "aur publisher registered but 0 of {} effective crate(s) had an aur \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.aur block is set.",
-        selected_total
-    )
 }
 
 /// Aur (Manager-group) entries across the crate universe whose
@@ -378,21 +346,36 @@ impl anodizer_core::Publisher for AurOurPublisher {
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered PKGBUILD `pkgver` carries the crate's version, not the
             // first crate's (workspace per-crate independent-version mode).
-            let pushed = crate::publisher_helpers::with_published_crate_scope(
+            let outcome = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| publish_to_aur(ctx, crate_name, &log),
-            )?;
+            );
+            let pushed =
+                crate::publisher_helpers::absorb_entry_skip(ctx, &log, "aur", crate_name, outcome)?
+                    .unwrap_or(false);
             if pushed {
                 any_pushed = true;
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "aur",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "aur", processed,
+            ));
         }
+        crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "aur",
+            crate::publisher_helpers::RunLanding::from_landed(any_pushed),
+            selected.len(),
+        );
         let mut evidence = anodizer_core::PublishEvidence::new("aur");
         // Only record rollback targets when at least one push was made.
         // Phantom evidence causes rollback to git-revert in repos that

@@ -98,13 +98,14 @@ pub(crate) fn aur_build_sources(
             )
         })?;
         if !seen_arches.insert(pkgbuild_arch.to_string()) {
-            anyhow::bail!(
-                "aur: one aur can handle only one archive of each architecture \
-                 — crate '{}' has more than one linux archive for '{}'. Narrow \
-                 `publish.aur.ids` to one archive per architecture.",
-                crate_name,
-                pkgbuild_arch,
-            );
+            // One crate's ambiguous archive set disqualifies THAT crate only:
+            // a hard error here would abort the publisher and leave every
+            // crate after it in the selection unpublished.
+            return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                "one aur can handle only one archive of each architecture — \
+                 more than one linux archive for '{pkgbuild_arch}'. Narrow \
+                 `publish.aur.ids` to one archive per architecture."
+            )));
         }
         let download_url = if let Some(tmpl) = url_template {
             // Extract the archive filename from the artifact URL (or

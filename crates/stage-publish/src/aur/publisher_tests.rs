@@ -325,14 +325,14 @@ fn run_per_crate_start_message_names_crate() {
 
 #[test]
 fn run_done_message_reports_considered_count() {
-    let msg = run_done_message(2);
+    let msg = crate::publisher_helpers::run_done_message("aur", 2);
     assert!(msg.starts_with("finished aur publish"), "{msg}");
     assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
 }
 
 #[test]
 fn run_no_eligible_crates_warning_names_remediation() {
-    let msg = run_no_eligible_crates_warning(5);
+    let msg = crate::publisher_helpers::run_no_eligible_crates_warning("aur", 5);
     assert!(msg.starts_with("aur publisher registered"), "{msg}");
     assert!(msg.contains("0 of 5 effective"), "{msg}");
     assert!(msg.contains("nothing pushed"), "{msg}");
@@ -521,5 +521,82 @@ fn aur_sha256_empty_metadata_bails_with_actionable_error() {
     assert!(
         msg.contains("checksum stage"),
         "error must mention the checksum stage; got: {msg}"
+    );
+}
+
+/// Two linux archives on one PKGBUILD architecture disqualify THAT crate
+/// only. Reverting the entry-skip makes the `?` in the run loop abort the
+/// publisher, so the sibling crate after it never runs.
+#[test]
+fn ambiguous_arch_skips_the_entry_and_keeps_the_next_one() {
+    fn amd64_archive(crate_name: &str, file: &str) -> anodizer_core::artifact::Artifact {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("url".to_string(), format!("https://example.com/{file}"));
+        metadata.insert("sha256".to_string(), "abc123".to_string());
+        anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/tmp/{file}")),
+            name: file.to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    let mut ambiguous = aur_crate("alpha");
+    ambiguous
+        .publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .homepage = Some("https://example.com/alpha".to_string());
+    let mut next = aur_crate("beta");
+    next.publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .skip_upload = Some(StringOrBool::Bool(true));
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![ambiguous, next])
+        .build();
+    ctx.artifacts
+        .add(amd64_archive("alpha", "alpha-one.tar.gz"));
+    ctx.artifacts
+        .add(amd64_archive("alpha", "alpha-two.tar.gz"));
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    AurOurPublisher::new()
+        .run(&mut ctx)
+        .expect("an ambiguous archive set must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "aur");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("one aur can handle only one archive of each architecture"),
+        "got: {}",
+        events[0].reason
+    );
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("beta"),
+        "the entry after the skipped one must still run; got: {logged}"
     );
 }
