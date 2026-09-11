@@ -555,7 +555,7 @@ mod tests {
         for source in workspace_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
             for _ in 0..text.matches(&needle).count() {
-                defs.push(source.display().to_string());
+                defs.push(crate::path_util::slash_display(&source));
             }
         }
         assert_eq!(
@@ -662,7 +662,10 @@ unsafe impl Send for NotAFn {
                     .and_then(|(_, rest)| rest.split(['(', '<']).next())
                     .unwrap_or_default()
                     .to_string();
-                walks.push(format!("{}: {name}", source.display()));
+                walks.push(format!(
+                    "{}: {name}",
+                    crate::path_util::slash_display(&source)
+                ));
             }
         }
         // `crate_has_binary_target` lists one crate's `src/bin` to answer

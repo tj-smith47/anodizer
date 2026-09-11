@@ -767,11 +767,7 @@ pub(crate) fn heal_dep_floors(
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| scope_root.to_path_buf()),
-            manifest_rel: manifest
-                .strip_prefix(scope_root)
-                .unwrap_or(manifest.as_path())
-                .display()
-                .to_string(),
+            manifest_rel: anodizer_core::path_util::display_under_root(scope_root, &manifest),
             dry_run,
         };
 

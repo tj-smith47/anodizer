@@ -22,6 +22,7 @@ fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
 
 /// The spelling of `path` relative to the repo root it lives under: what
 /// anodizer prints for a repo-committed file, and what it hands `git add`.
+/// Components are joined with `/` on every platform ([`slash_display`]).
 ///
 /// Every path anodizer prints for a repo-committed file is the spelling the
 /// user wrote (or would write) in their config, never the absolute path the
@@ -52,9 +53,21 @@ pub fn display_under_root(root: &Path, path: &Path) -> String {
         .components()
         .filter(|c| !matches!(c, std::path::Component::CurDir))
         .collect();
-    let rendered = cleaned.display().to_string();
+    let rendered = slash_display(&cleaned);
     if rendered.is_empty() {
         ".".to_string()
+    } else {
+        rendered
+    }
+}
+
+/// `path` rendered with `/` between components on every platform: the
+/// spelling a config, a git pathspec and a log line share, so a message or a
+/// structural test compares the same text on Windows as on Unix.
+pub fn slash_display(path: &Path) -> String {
+    let rendered = path.display().to_string();
+    if cfg!(windows) {
+        rendered.replace('\\', "/")
     } else {
         rendered
     }

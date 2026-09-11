@@ -617,7 +617,7 @@ fn package_identifier_is_rendered_at_one_seam_only() {
         let text = std::fs::read_to_string(&source).expect("readable source");
         let prod = anodizer_core::test_helpers::test_sources::production_half(&text);
         for _ in 0..prod.matches("\"winget.package_identifier\"").count() {
-            sites.push(source.display().to_string());
+            sites.push(anodizer_core::path_util::slash_display(&source));
         }
     }
     assert_eq!(

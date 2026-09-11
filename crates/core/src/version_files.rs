@@ -467,11 +467,7 @@ mod tests {
                     .find_map(|l| item_name(l))
                     .unwrap_or_else(|| panic!("no owning item for {}:{}", source.display(), i + 1));
                 owners.push((
-                    source
-                        .strip_prefix(repo_root)
-                        .unwrap_or(source)
-                        .display()
-                        .to_string(),
+                    crate::path_util::display_under_root(repo_root, source),
                     owner,
                 ));
             }
