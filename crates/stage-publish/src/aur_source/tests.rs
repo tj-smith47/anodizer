@@ -4,6 +4,9 @@ use anodizer_core::config::AurSourceConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 
+// Used only by unix-gated tests; the gate must match or the import reads as
+// unused on a Windows build.
+#[cfg(unix)]
 use crate::util;
 
 #[test]

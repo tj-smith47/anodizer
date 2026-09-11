@@ -11,6 +11,7 @@ use super::process_tree::*;
 use crate::log::{LogLevel, StageLogger, Verbosity};
 
 /// `sh -c` wrapper so the tests run a portable shell snippet.
+#[cfg(unix)]
 fn sh(script: &str) -> Command {
     let mut c = Command::new("sh");
     c.arg("-c").arg(script);
@@ -30,6 +31,7 @@ fn cmd_c(script: &str) -> Command {
 /// Count capture records at a given level (the public `LogCapture`
 /// surface exposes per-level counters for status/warn/error but not for
 /// verbose, so derive it from the message snapshot here).
+#[cfg(unix)]
 fn count_level(cap: &crate::log::LogCapture, level: LogLevel) -> usize {
     cap.all_messages()
         .into_iter()
@@ -234,6 +236,7 @@ fn run_checked_with_stdin_verbose_roundtrips() {
 }
 
 /// Build a >128 KiB stdin payload distinct from the child's own chatter.
+#[cfg(unix)]
 fn big_stdin() -> Vec<u8> {
     // ~192 KiB of `A` plus a trailing newline so `head -c` style readers
     // and `cat` both terminate cleanly.

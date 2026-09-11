@@ -6,12 +6,13 @@ use anodizer_core::config::{
     StringOrBool, UniversalBinaryConfig,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
-use anodizer_core::test_helpers::env::EnvGuard;
 use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
-// Inspected only by unix-gated tests here; the gate must match or the import
-// reads as unused on a Windows build.
+// Used only by unix-gated tests here; the gates must match or the imports
+// read as unused on a Windows build.
 #[cfg(unix)]
 use anodizer_core::PublisherOutcome;
+#[cfg(unix)]
+use anodizer_core::test_helpers::env::EnvGuard;
 
 use super::manifest::{
     PlatformBinary, collect_platform_binaries, effective_provenance_override, npm_triple,
