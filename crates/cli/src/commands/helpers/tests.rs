@@ -450,7 +450,9 @@ fn test_load_artifacts_from_dist_unknown_kind() {
     let mut ctx = Context::new(config, ContextOptions::default());
     let result = load_artifacts_from_dist(&mut ctx, dir.path());
     assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    // The chain: the loader names the manifest it could not parse, the parser
+    // names the kind it did not recognise.
+    let msg = format!("{:#}", result.unwrap_err());
     assert!(
         msg.contains("unknown artifact kind"),
         "error should mention unknown kind: {msg}"

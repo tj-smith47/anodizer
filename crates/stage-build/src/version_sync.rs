@@ -80,9 +80,9 @@ pub fn read_cargo_version(root: &Path, crate_path: &str) -> Result<String> {
     Ok(read_cargo_version_opt(root, crate_path)?.unwrap_or_else(|| "0.0.0".to_string()))
 }
 
-/// Read the literal `[package].version` from a crate's Cargo.toml, returning
-/// `None` when the manifest is present but carries no literal version string
-/// (a virtual manifest, or one using `version.workspace = true`).
+/// Read a crate's `[package].version` from its Cargo.toml, returning `None`
+/// when the manifest declares no version on either its own table or (for
+/// `version.workspace = true`) the workspace root's.
 ///
 /// Unlike [`read_cargo_version`] this does NOT substitute a `"0.0.0"` sentinel:
 /// callers that must distinguish "no version declared here" from a real version
@@ -90,18 +90,20 @@ pub fn read_cargo_version(root: &Path, crate_path: &str) -> Result<String> {
 /// preserved so a versionless member is skipped rather than compared as
 /// `0.0.0`.
 pub fn read_cargo_version_opt(root: &Path, crate_path: &str) -> Result<Option<String>> {
-    let cargo_toml_path = root.join(crate_path).join("Cargo.toml");
+    let crate_dir = root.join(crate_path);
+    let cargo_toml_path = crate_dir.join("Cargo.toml");
     let shown = display_under_root(root, &cargo_toml_path);
+    // Read and parse here only to report a missing or malformed manifest BY
+    // PATH — `check version-files` prints these strings to a human, and the
+    // shared reader answers `None` for both cases instead. The version itself
+    // comes from that reader so workspace inheritance resolves identically
+    // everywhere.
     let content = std::fs::read_to_string(&cargo_toml_path)
         .with_context(|| format!("failed to read {shown}"))?;
-    let doc = content
+    content
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("failed to parse {shown}"))?;
-    Ok(doc
-        .get("package")
-        .and_then(|p| p.get("version"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string()))
+    Ok(anodizer_core::config::package_version(&crate_dir))
 }
 
 /// Recursively find all Cargo.toml files, excluding root and target dirs.
@@ -314,6 +316,38 @@ mod tests {
 
     fn test_logger() -> StageLogger {
         StageLogger::new("build", Verbosity::Normal)
+    }
+
+    /// A member declaring `version.workspace = true` HAS the workspace's
+    /// version; reading it as "no version" reported a versionless crate and
+    /// made the caller substitute a `0.0.0` sentinel.
+    #[test]
+    fn an_inheriting_member_reads_the_workspace_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/core\"]\n\n[workspace.package]\nversion = \"2.4.6\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("crates/core")).unwrap();
+        std::fs::write(
+            tmp.path().join("crates/core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_cargo_version_opt(tmp.path(), "crates/core").unwrap(),
+            Some("2.4.6".to_string())
+        );
+        assert_eq!(
+            read_cargo_version(tmp.path(), "crates/core").unwrap(),
+            "2.4.6"
+        );
+        assert_eq!(
+            anodizer_core::config::package_version(&tmp.path().join("crates/core")),
+            Some("2.4.6".to_string())
+        );
     }
 
     #[test]

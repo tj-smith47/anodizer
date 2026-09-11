@@ -8,8 +8,16 @@
 ///
 /// `_KEY` covers AI provider API keys (`ANTHROPIC_API_KEY`,
 /// `OPENAI_API_KEY`) alongside signing-key and other historical
-/// secret-bearing variable names.
-pub const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN"];
+/// secret-bearing variable names. `_PASSPHRASE` is the GPG/cosign spelling of
+/// a password.
+pub const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN", "_PASSPHRASE"];
+
+/// Key substrings that indicate a secret value wherever they appear.
+///
+/// Credential-bearing names do not always put the giveaway at the end
+/// (`GOOGLE_CREDENTIALS_JSON`, `MY_APIKEY_V2`), so these match anywhere in the
+/// upper-cased key.
+pub const SECRET_KEY_SUBSTRINGS: &[&str] = &["CREDENTIAL", "APIKEY"];
 
 /// Value prefixes that indicate a secret regardless of key name.
 ///
@@ -42,10 +50,23 @@ fn is_secret(key: &str, value: &str) -> bool {
         return false;
     }
     let key_upper = key.to_uppercase();
-    if !is_boolean_shape(value) && SECRET_KEY_SUFFIXES.iter().any(|s| key_upper.ends_with(s)) {
+    if !is_boolean_shape(value)
+        && (SECRET_KEY_SUFFIXES.iter().any(|s| key_upper.ends_with(s))
+            || SECRET_KEY_SUBSTRINGS.iter().any(|s| key_upper.contains(s)))
+    {
         return true;
     }
     SECRET_VALUE_PREFIXES.iter().any(|p| value.starts_with(p))
+}
+
+/// Whether an environment entry looks like a credential.
+///
+/// The public form of the heuristic every redacted log line already uses, for
+/// the surfaces that write env into a FILE rather than into output — the
+/// `--split` context. One rule keeps a value that logs as `$OPENAI_KEY` from
+/// being written in clear next to it.
+pub fn is_secret_env(key: &str, value: &str) -> bool {
+    is_secret(key, value)
 }
 
 /// A value that shares a `*_TOKEN`/`*_KEY`/`*_SECRET`/`*_PASSWORD` key name

@@ -1,12 +1,11 @@
 use super::*;
-use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::artifact::Artifact;
 use anodizer_core::config::{Config, GitHubConfig};
 use anodizer_core::context::Context;
 use anodizer_core::git;
 use anodizer_core::log::StageLogger;
 use anodizer_core::scm::{self, ScmTokenType};
 use anyhow::{Context as _, Result};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Auto-infer `project_name` from Cargo.toml when not set in config.
@@ -249,26 +248,10 @@ pub fn load_artifacts_from_manifest(
     let content = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
 
-    #[derive(serde::Deserialize)]
-    struct MetadataArtifact {
-        kind: String,
-        #[serde(default)]
-        name: Option<String>,
-        path: String,
-        target: Option<String>,
-        crate_name: String,
-        #[serde(default)]
-        metadata: HashMap<String, String>,
-        #[serde(default)]
-        size: Option<u64>,
-    }
-
-    let artifacts: Vec<MetadataArtifact> = serde_json::from_str(&content)
+    let artifacts = anodizer_core::artifact::ArtifactRegistry::from_artifacts_json(&content)
         .with_context(|| format!("parse {}", manifest_path.display()))?;
 
     for a in artifacts {
-        let kind = ArtifactKind::parse(&a.kind)
-            .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", a.kind))?;
         // Re-anchor `./dist/<rel>` / `dist/<rel>` paths onto the caller-
         // supplied `dist` root. Stored paths reflect the harness worktree's
         // `dist/<file>` shape; per-crate publish-only consumes from
@@ -279,14 +262,14 @@ pub fn load_artifacts_from_manifest(
         // is a no-op for them. Paths outside the dist root (raw
         // `.det-tmp/target/...` binaries surfaced as Binary artifacts) are
         // left alone.
-        let path_str = a.path.as_str();
+        let path_str = a.path.to_string_lossy();
         let rewritten = if let Some(rel) = path_str
             .strip_prefix("./dist/")
             .or_else(|| path_str.strip_prefix("dist/"))
         {
             dist.join(rel)
         } else {
-            std::path::PathBuf::from(path_str)
+            a.path.clone()
         };
         // Cross-shard cross-target artifacts (source archive, install.sh,
         // metadata.json — all `target: None`) appear in every shard's
@@ -306,13 +289,8 @@ pub fn load_artifacts_from_manifest(
             continue;
         }
         ctx.artifacts.add(Artifact {
-            kind,
-            name: a.name.unwrap_or_default(),
             path: rewritten,
-            target: a.target,
-            crate_name: a.crate_name,
-            metadata: a.metadata,
-            size: a.size,
+            ..a
         });
     }
 

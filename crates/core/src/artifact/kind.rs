@@ -185,6 +185,14 @@ impl serde::Serialize for ArtifactKind {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for ArtifactKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown artifact kind: {s}")))
+    }
+}
+
 /// Artifact kinds that should be included in size reporting.
 pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     &[

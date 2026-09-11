@@ -501,13 +501,10 @@ pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
             .collect()
     }
 
-    let mut paths = summaries_in(dist);
-    if let Ok(entries) = fs::read_dir(dist) {
-        for entry in entries.flatten().filter(|e| e.path().is_dir()) {
-            paths.extend(summaries_in(&entry.path()));
-        }
-    }
-    paths
+    anodizer_core::dist::layout_roots(dist)
+        .iter()
+        .flat_map(|root| summaries_in(root))
+        .collect()
 }
 
 /// Parse a `summary.json` document tolerant of fields dropped since it was

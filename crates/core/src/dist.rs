@@ -11,6 +11,8 @@
 //! Mirrors the single-source pattern of
 //! `crate::config::attestation::AttestationConfig::SUBJECTS_MANIFEST_NAME`.
 
+use std::path::{Path, PathBuf};
+
 /// `dist/metadata.json` — project metadata (name, tag, version, commit, …).
 pub const METADATA_JSON: &str = "metadata.json";
 
@@ -36,6 +38,31 @@ pub const SUMMARY_JSON: &str = "summary.json";
 /// display of all on-disk publish evidence.
 pub const RUN_DIR_PREFIX: &str = "run-";
 
+/// The directories a `dist/` tree can hold one layout's sidecars in: `dist`
+/// itself, then every first-level subdirectory in sorted order.
+///
+/// A single-crate or lockstep run writes its sidecars and `run-<tag>/` dirs
+/// straight into `dist/`; a per-crate workspace run re-anchors each crate onto
+/// `dist/<crate>/` and writes them there. A reader that wants the whole run's
+/// evidence probes both levels, and does it in one order so two runs over the
+/// same tree observe the same sequence — `read_dir` order is undefined.
+///
+/// Subdirectories that hold nothing the caller wants are simply misses; this
+/// answers where to LOOK, not what is there.
+pub fn layout_roots(dist: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![dist.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(dist) {
+        let mut subdirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        subdirs.sort();
+        roots.extend(subdirs);
+    }
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +80,27 @@ mod tests {
         assert_eq!(ROLLBACK_JSON, "rollback.json");
         assert_eq!(SUMMARY_JSON, "summary.json");
         assert_eq!(RUN_DIR_PREFIX, "run-");
+    }
+
+    /// The two dist layouts are probed in one fixed order — the root first,
+    /// then each crate subdirectory sorted — so a reader walking the tree twice
+    /// sees the same sequence and a per-crate run's evidence is never missed.
+    #[test]
+    fn layout_roots_lists_the_root_then_sorted_subdirs() {
+        let tmp = tempfile::tempdir().expect("tempdir for dist layout");
+        for name in ["zeta", "alpha", "mid"] {
+            std::fs::create_dir(tmp.path().join(name)).expect("create crate subdir");
+        }
+        std::fs::write(tmp.path().join(ARTIFACTS_JSON), "[]").expect("write a sidecar file");
+
+        assert_eq!(
+            layout_roots(tmp.path()),
+            vec![
+                tmp.path().to_path_buf(),
+                tmp.path().join("alpha"),
+                tmp.path().join("mid"),
+                tmp.path().join("zeta"),
+            ]
+        );
     }
 }

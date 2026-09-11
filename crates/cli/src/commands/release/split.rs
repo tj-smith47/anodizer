@@ -111,26 +111,14 @@ pub struct MatrixEntry {
     pub runner: String,
 }
 
-/// Redact env vars whose names end in common secret suffixes or contain
-/// secret-hint substrings. Replaces the value with `"[redacted]"` rather
-/// than dropping the entry so the merge side still sees the key existed
-/// (helps diagnose "why is my template `.Env.X` empty?" cases).
+/// Redact env vars that look like credentials, by the same rule the log
+/// redactor applies. Replaces the value with `"[redacted]"` rather than
+/// dropping the entry so the merge side still sees the key existed (helps
+/// diagnose "why is my template `.Env.X` empty?" cases).
 fn redact_secret_env_vars(env: &HashMap<String, String>) -> HashMap<String, String> {
-    const SECRET_SUFFIXES: &[&str] = &[
-        "_TOKEN",
-        "_SECRET",
-        "_PASSWORD",
-        "_KEY",
-        "_PASSPHRASE",
-        "_API_KEY",
-    ];
-    const SECRET_SUBSTRINGS: &[&str] = &["CREDENTIAL", "APIKEY"];
     env.iter()
         .map(|(k, v)| {
-            let k_upper = k.to_uppercase();
-            let is_secret = SECRET_SUFFIXES.iter().any(|s| k_upper.ends_with(s))
-                || SECRET_SUBSTRINGS.iter().any(|s| k_upper.contains(s));
-            let value = if is_secret && !v.is_empty() {
+            let value = if anodizer_core::redact::is_secret_env(k, v) {
                 "[redacted]".to_string()
             } else {
                 v.clone()
@@ -715,40 +703,20 @@ fn load_artifact_manifests(
     log: &anodizer_core::log::StageLogger,
     artifact_files: &[PathBuf],
 ) -> Result<usize> {
-    #[derive(serde::Deserialize)]
-    struct ManifestArtifact {
-        kind: String,
-        path: String,
-        target: Option<String>,
-        crate_name: String,
-        #[serde(default)]
-        metadata: HashMap<String, String>,
-    }
-
     let mut total_loaded = 0;
     let mut seen_paths = std::collections::HashSet::new();
 
     for artifact_file in artifact_files {
         let content = std::fs::read_to_string(artifact_file)
             .with_context(|| format!("read split artifacts: {}", artifact_file.display()))?;
-        let manifest: Vec<ManifestArtifact> = serde_json::from_str(&content)
+        let manifest = artifact::ArtifactRegistry::from_artifacts_json(&content)
             .with_context(|| format!("parse split artifacts: {}", artifact_file.display()))?;
 
-        for sa in &manifest {
+        for sa in manifest {
             if !seen_paths.insert(sa.path.clone()) {
                 continue;
             }
-            let kind = artifact::ArtifactKind::parse(&sa.kind)
-                .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", sa.kind))?;
-            ctx.artifacts.add(artifact::Artifact {
-                kind,
-                name: String::new(),
-                path: PathBuf::from(&sa.path),
-                target: sa.target.clone(),
-                crate_name: sa.crate_name.clone(),
-                metadata: sa.metadata.clone(),
-                size: None,
-            });
+            ctx.artifacts.add(sa);
             total_loaded += 1;
         }
     }
@@ -809,23 +777,15 @@ fn collect_build_targets(config: &Config, ctx: &Context) -> Vec<String> {
 /// layout observe shards in the same order (artifact iteration order
 /// would otherwise depend on `readdir`'s undefined ordering).
 pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+    // Every shard is a subdirectory: `dist/context.json` is the MERGED context
+    // this function feeds, so the root is not a shard.
+    let files: Vec<PathBuf> = anodizer_core::dist::layout_roots(dist)
+        .into_iter()
+        .filter(|root| root != dist)
+        .map(|root| root.join(anodizer_core::dist::CONTEXT_JSON))
+        .filter(|p| p.exists())
+        .collect();
 
-    if dist.is_dir()
-        && let Ok(entries) = std::fs::read_dir(dist)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let ctx_file = path.join(anodizer_core::dist::CONTEXT_JSON);
-                if ctx_file.exists() {
-                    files.push(ctx_file);
-                }
-            }
-        }
-    }
-
-    files.sort();
     Ok(files)
 }
 
@@ -834,28 +794,12 @@ pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
 /// Returns the list sorted by path for the same reason as
 /// [`find_split_contexts`].
 fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+    let files: Vec<PathBuf> = anodizer_core::dist::layout_roots(dist)
+        .into_iter()
+        .map(|root| root.join(anodizer_core::dist::ARTIFACTS_JSON))
+        .filter(|p| p.exists())
+        .collect();
 
-    let top = dist.join(anodizer_core::dist::ARTIFACTS_JSON);
-    if top.exists() {
-        files.push(top);
-    }
-
-    if dist.is_dir()
-        && let Ok(entries) = std::fs::read_dir(dist)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let sub_artifacts = path.join(anodizer_core::dist::ARTIFACTS_JSON);
-                if sub_artifacts.exists() {
-                    files.push(sub_artifacts);
-                }
-            }
-        }
-    }
-
-    files.sort();
     Ok(files)
 }
 
@@ -1946,6 +1890,19 @@ mod tests {
         assert_eq!(out.get("MyApiKeyThing").unwrap(), "[redacted]");
     }
 
+    /// The split context and the log redactor share one rule, so a value whose
+    /// SHAPE gives it away is masked in the file too — it used to be written
+    /// in clear beside a log line that showed it as `$OPENAI_KEY`.
+    #[test]
+    fn redact_masks_a_secret_shaped_value() {
+        let mut env = HashMap::new();
+        env.insert("OPENAI_KEY".to_string(), "sk-abc123".to_string());
+        env.insert("SOME_VAR".to_string(), "ghp_abc123".to_string());
+        let out = redact_secret_env_vars(&env);
+        assert_eq!(out.get("OPENAI_KEY").unwrap(), "[redacted]");
+        assert_eq!(out.get("SOME_VAR").unwrap(), "[redacted]");
+    }
+
     #[test]
     fn redact_leaves_non_secret_values_intact() {
         let mut env = HashMap::new();
@@ -2171,11 +2128,10 @@ mod tests {
         let mut ctx = make_bare_context();
         let err = load_split_contexts_into(&mut ctx, dist, &null_logger())
             .expect_err("manifest loader must reject an unknown artifact kind");
-        assert!(
-            err.to_string().contains("unknown artifact kind"),
-            "got: {}",
-            err
-        );
+        // The chain: the loader names the manifest it could not parse, the
+        // parser names the kind it did not recognise.
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown artifact kind"), "got: {msg}");
     }
 
     #[test]

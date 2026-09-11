@@ -2518,19 +2518,19 @@ fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
 
 /// Without `literal_message`, the send-time body render expands an
 /// `Env`-reference — this is the second Tera pass that `--raw` alone did NOT
-/// suppress, and the exact path a secret would leak through. A non-`*_TOKEN`
-/// var name is used so the redaction layer does not mask the expansion (a
-/// secret can be reached via an arbitrarily named env var, e.g. a webhook URL
-/// query token), making the leak directly observable.
+/// suppress, and the exact path a secret would leak through. The var name and
+/// value are chosen to trip none of the redaction heuristics, so the expansion
+/// itself is directly observable: a secret can be reached through an
+/// arbitrarily named env var, e.g. a webhook URL's query parameter.
 #[test]
 fn render_message_expands_env_when_not_literal() {
     let mut ctx = make_ctx(None);
     // `set_env` populates `TemplateVars::env`, consulted before any host-env
     // fallback — deterministic, no process-env dependency.
     ctx.template_vars_mut()
-        .set_env("REGISTRY_CREDENTIAL", "leaked-value");
+        .set_env("REGISTRY_HOOK_PATH", "leaked-value");
     assert!(!ctx.literal_message);
-    let out = render_message(&mut ctx, Some("token={{ Env.REGISTRY_CREDENTIAL }}")).unwrap();
+    let out = render_message(&mut ctx, Some("token={{ Env.REGISTRY_HOOK_PATH }}")).unwrap();
     assert_eq!(out, "token=leaked-value");
 }
 

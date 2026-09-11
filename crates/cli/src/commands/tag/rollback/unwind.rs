@@ -136,19 +136,8 @@ pub(super) fn unwind_published_state(
 /// per-crate subdirs, tags in the caller's order) so the unwind sequence
 /// is reproducible across runs.
 fn discover_unwind_targets(dist_root: &Path, tags: &[String]) -> Vec<UnwindTarget> {
-    let mut roots = vec![dist_root.to_path_buf()];
-    if let Ok(entries) = std::fs::read_dir(dist_root) {
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        subdirs.sort();
-        roots.extend(subdirs);
-    }
-
     let mut out = Vec::new();
-    for root in roots {
+    for root in anodizer_core::dist::layout_roots(dist_root) {
         for tag in tags {
             let run_dir = root.join(format!("{}{tag}", anodizer_core::dist::RUN_DIR_PREFIX));
             if run_dir.is_dir() {

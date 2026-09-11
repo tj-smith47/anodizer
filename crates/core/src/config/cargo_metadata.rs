@@ -107,6 +107,23 @@ pub fn workspace_package_version(base_dir: &Path) -> Option<String> {
     WorkspacePackage::resolve(base_dir).string("version")
 }
 
+/// The release version of the crate at `crate_dir`: its `[package].version`,
+/// resolving `version.workspace = true` against the workspace root's
+/// `[workspace.package].version`.
+///
+/// The one reader of a manifest's own version. A member that inherits its
+/// version still HAS that version, so a reader that answered `None` for it
+/// reported a versionless crate where the workspace declares one.
+///
+/// Returns `None` when the manifest is missing, unparsable, declares no
+/// `[package]` table, or declares no version on either side.
+pub fn package_version(crate_dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(crate_dir.join("Cargo.toml")).ok()?;
+    let doc = toml::from_str::<Value>(&content).ok()?;
+    let package = doc.get("package").and_then(Value::as_table)?;
+    string_field(package, &WorkspacePackage::resolve(crate_dir), "version")
+}
+
 /// The workspace root's `[workspace.package]` table, resolved once so
 /// `{ workspace = true }` field inheritance can be honoured.
 struct WorkspacePackage {

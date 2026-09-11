@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::kind::{ArtifactKind, is_derived_sidecar_kind, is_uploadable};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub kind: ArtifactKind,
     pub path: PathBuf,
     /// Canonical artifact name, set at add-time from the path's filename (trimmed).
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub target: Option<String>,
     pub crate_name: String,
-    #[serde(serialize_with = "serialize_metadata_sorted")]
+    #[serde(default, serialize_with = "serialize_metadata_sorted")]
     pub metadata: HashMap<String, String>,
     /// File size in bytes, populated by report_sizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,6 +355,21 @@ impl ArtifactRegistry {
             }
         }
         Ok(val)
+    }
+
+    /// Parse an `artifacts.json` document back into artifacts.
+    ///
+    /// The reading half of [`to_artifacts_json`](Self::to_artifacts_json), so a
+    /// field added to [`Artifact`] reaches every reader at once. Fields the
+    /// writer omits (`size` when unset) and `name`, which the split path never
+    /// wrote, default rather than fail, so manifests written by older releases
+    /// still load.
+    ///
+    /// Paths come back exactly as written (forward slashes, relative to the
+    /// repo root); re-anchoring them onto a different `dist/` root is the
+    /// caller's policy, not the manifest's.
+    pub fn from_artifacts_json(json: &str) -> anyhow::Result<Vec<Artifact>> {
+        Ok(serde_json::from_str(json)?)
     }
 }
 

@@ -720,7 +720,9 @@ mod snapshot_nightly;
 pub use snapshot_nightly::*;
 
 mod cargo_metadata;
-pub use cargo_metadata::{derive_metadata_from_cargo_toml, workspace_package_version};
+pub use cargo_metadata::{
+    derive_metadata_from_cargo_toml, package_version, workspace_package_version,
+};
 
 mod workspace_deps;
 pub use workspace_deps::{

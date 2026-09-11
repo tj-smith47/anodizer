@@ -1613,3 +1613,61 @@ fn id_filter_keeps_a_source_rpm_that_carries_no_build_id() {
     let ids = vec!["keep".to_string()];
     assert!(matches_id_filter(&srpm, Some(&ids)));
 }
+
+/// The manifest writer and the manifest reader are two halves of one shape: a
+/// field added to `Artifact` must survive the round trip, or a reader silently
+/// drops it. Both `--split` merge and `--publish-only` rehydrate from this.
+#[test]
+fn artifacts_json_round_trips_every_field() {
+    let mut registry = ArtifactRegistry::new();
+    let mut meta = HashMap::new();
+    meta.insert("format".to_string(), "tar.gz".to_string());
+    registry.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "myapp_1.0.0_linux_amd64.tar.gz".to_string(),
+        path: PathBuf::from("dist/myapp_1.0.0_linux_amd64.tar.gz"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: meta.clone(),
+        size: Some(4096),
+    });
+
+    let json = serde_json::to_string(&registry.to_artifacts_json().unwrap()).unwrap();
+    let back = ArtifactRegistry::from_artifacts_json(&json).unwrap();
+
+    assert_eq!(back.len(), 1);
+    let a = &back[0];
+    assert_eq!(a.kind, ArtifactKind::Archive);
+    assert_eq!(a.name, "myapp_1.0.0_linux_amd64.tar.gz");
+    assert_eq!(a.path, PathBuf::from("dist/myapp_1.0.0_linux_amd64.tar.gz"));
+    assert_eq!(a.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    assert_eq!(a.crate_name, "myapp");
+    assert_eq!(a.metadata, meta);
+    assert_eq!(a.size, Some(4096));
+}
+
+/// A manifest written before a field existed still loads: the reader defaults
+/// what the document omits instead of refusing the whole file.
+#[test]
+fn artifacts_json_reads_a_manifest_missing_optional_fields() {
+    let back = ArtifactRegistry::from_artifacts_json(
+        r#"[{"kind":"archive","path":"dist/a.tar.gz","crate_name":"myapp"}]"#,
+    )
+    .unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].name, "");
+    assert_eq!(back[0].target, None);
+    assert_eq!(back[0].size, None);
+    assert!(back[0].metadata.is_empty());
+}
+
+/// An unknown `kind` is a manifest the current binary cannot act on; it fails
+/// by name rather than loading an artifact nothing can publish.
+#[test]
+fn artifacts_json_rejects_an_unknown_kind() {
+    let err = ArtifactRegistry::from_artifacts_json(
+        r#"[{"kind":"moon_rock","path":"dist/a","crate_name":"myapp"}]"#,
+    )
+    .expect_err("an unknown kind must not load");
+    assert!(err.to_string().contains("moon_rock"), "got: {err}");
+}

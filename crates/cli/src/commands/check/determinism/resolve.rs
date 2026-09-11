@@ -415,18 +415,6 @@ pub(super) fn resolve_upx_tools(
 /// `[package].version`. Returns `None` if the manifest is missing,
 /// unparseable, or has neither key.
 pub(super) fn read_project_version(repo_root: &std::path::Path) -> Option<String> {
-    let manifest = repo_root.join("Cargo.toml");
-    let text = std::fs::read_to_string(&manifest).ok()?;
-    let doc: toml::Value = toml::from_str(&text).ok()?;
-    doc.get("workspace")
-        .and_then(|w| w.get("package"))
-        .and_then(|p| p.get("version"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            doc.get("package")
-                .and_then(|p| p.get("version"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
+    anodizer_core::config::workspace_package_version(repo_root)
+        .or_else(|| anodizer_core::config::package_version(repo_root))
 }
