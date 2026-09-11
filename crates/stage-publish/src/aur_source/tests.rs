@@ -304,7 +304,7 @@ crates:
 
 #[test]
 fn test_aur_source_amd64_variant_field_parses() {
-    // amd64_variant lands on AurSourceConfig as a typed Amd64Variant enum
+    // amd64_variant reaches AurSourceConfig as a typed Amd64Variant enum
     // (PKGBUILD `prepare:` / `build:` / `package:` template surface uses
     // it as the `Amd64` var; AUR source pkgs don't filter binaries).
     use anodizer_core::config::{Amd64Variant, Config};
@@ -338,7 +338,7 @@ crates:
 #[test]
 fn test_aur_source_amd64_variant_typo_rejected() {
     // Typed enum constraint: anything outside v1/v2/v3/v4 must fail at
-    // parse time so the bad value never silently lands in the PKGBUILD.
+    // parse time so the bad value never silently ends up in the PKGBUILD.
     use anodizer_core::config::Config;
 
     let yaml = r#"
@@ -456,7 +456,7 @@ fn resolve_aur_source_package_name_strip_bin_honors_explicit_name() {
 // and the offline validator share. Pure (reads ctx, no git): covers source
 // URL derivation (GitURL owner extraction for both `://` and `git@host:`
 // remotes), the empty-owner warn, the `url_template` override + `Amd64`
-// scoping, and the dependency/field defaults landing in the rendered
+// scoping, and the dependency/field defaults ending up in the rendered
 // PKGBUILD/.SRCINFO.
 // -----------------------------------------------------------------------
 
@@ -1166,16 +1166,21 @@ fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
     (bare.path().to_string_lossy().into_owned(), bare)
 }
 
-/// Read a file as it landed on the bare repo's `master` ref.
+/// Read a file as it reached the bare repo's `master` ref.
 #[cfg(unix)]
 fn aur_show(bare: &std::path::Path, path: &str) -> String {
     git_stdout(bare, &["show", &format!("master:{path}")])
 }
 
 /// Build a per-crate source-publish context pointing the clone at a local
-/// bare repo, with the four template vars the render reads populated.
+/// bare repo, with the four template vars the render reads populated. The
+/// returned tempdir owns the stage's `dist`, so a panicking assertion still
+/// leaves nothing behind on the host; hold it for the test's lifetime.
 #[cfg(unix)]
-fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -> Context {
+fn live_source_ctx(
+    bare_url: &str,
+    cfg_mut: impl FnOnce(&mut AurSourceConfig),
+) -> (Context, tempfile::TempDir) {
     let mut cfg = AurSourceConfig {
         git_url: Some(bare_url.to_string()),
         description: Some("A source tool".to_string()),
@@ -1184,13 +1189,8 @@ fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -
     };
     cfg_mut(&mut cfg);
     let mut config = Config::default();
-    config.dist = std::env::temp_dir().join(format!(
-        "anodizer-aursrc-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dist = tempfile::tempdir().expect("dist tempdir");
+    config.dist = dist.path().join("dist");
     config.crates = vec![crate_with_aur_source("mytool", cfg)];
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Version", "1.2.3");
@@ -1198,7 +1198,7 @@ fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/myorg/mytool.git");
     ctx.template_vars_mut().set("ProjectName", "mytool");
-    ctx
+    (ctx, dist)
 }
 
 /// End-to-end per-crate source publish: clone, write, commit, push. Assert
@@ -1207,7 +1207,7 @@ fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -
 #[test]
 fn publish_to_aur_source_pushes_to_master() {
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     let pushed = publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
     assert!(pushed, "a fresh source PKGBUILD must report a push");
 
@@ -1221,7 +1221,6 @@ fn publish_to_aur_source_pushes_to_master() {
     );
     let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");
     assert!(srcinfo.contains("pkgbase = mytool"), "{srcinfo}");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1235,7 +1234,7 @@ fn an_unmappable_target_skips_the_entry_and_records_no_rollback_target() {
     use anodizer_core::Publisher as _;
 
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     let mut unmappable = crate_with_aur_source(
         "alpha",
         AurSourceConfig {
@@ -1267,7 +1266,6 @@ fn an_unmappable_target_skips_the_entry_and_records_no_rollback_target() {
         "only the pushed crate is a target: {targets:?}"
     );
     assert_eq!(targets[0].package, "mytool");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1282,7 +1280,7 @@ fn a_gated_top_level_entry_records_no_rollback_target() {
     use anodizer_core::config::StringOrBool;
 
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     ctx.config.crates.clear();
     ctx.config.aur_sources = Some(vec![
         AurSourceConfig {
@@ -1312,7 +1310,6 @@ fn a_gated_top_level_entry_records_no_rollback_target() {
         "only the entry that pushed is a target: {targets:?}"
     );
     assert_eq!(targets[0].target, "aur_sources[1]");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1325,7 +1322,7 @@ fn an_unmappable_target_skips_a_top_level_entry_and_keeps_the_next_one() {
     use anodizer_core::Publisher as _;
 
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     ctx.config.crates.clear();
     // The arch set of a top-level entry comes from the project-wide default
     // targets, so it is the same question for every entry in the array.
@@ -1366,7 +1363,6 @@ fn an_unmappable_target_skips_a_top_level_entry_and_keeps_the_next_one() {
         super::publisher::decode_aur_source_targets(&evidence.extra).is_empty(),
         "nothing pushed, so nothing is a rollback target"
     );
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1375,7 +1371,7 @@ fn an_unmappable_target_skips_a_top_level_entry_and_keeps_the_next_one() {
 #[test]
 fn publish_to_aur_source_second_run_no_changes_returns_false() {
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     assert!(
         publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("first publish ok"),
         "first publish must push"
@@ -1384,18 +1380,17 @@ fn publish_to_aur_source_second_run_no_changes_returns_false() {
         !publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("second publish ok"),
         "an unchanged repo must report no push"
     );
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
-/// `install:` set → the `.install` file lands on `master` and the PKGBUILD
+/// `install:` set → the `.install` file reaches `master` and the PKGBUILD
 /// references it. Also drives the `git_ssh_command` clone branch (a no-op
 /// `ssh` command; the local-path clone ignores `GIT_SSH_COMMAND`).
 #[cfg(unix)]
 #[test]
 fn publish_to_aur_source_writes_install_and_uses_ssh_branch() {
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |c| {
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |c| {
         c.install = Some("post_install() { echo hi; }".to_string());
         // Non-empty git_ssh_command routes through `clone_repo_ssh`; for a
         // local-path clone git ignores GIT_SSH_COMMAND so the clone still
@@ -1407,7 +1402,6 @@ fn publish_to_aur_source_writes_install_and_uses_ssh_branch() {
     assert!(pkgbuild.contains("install=mytool.install"), "{pkgbuild}");
     let install = aur_show(std::path::Path::new(&bare_url), "mytool.install");
     assert_eq!(install, "post_install() { echo hi; }");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1417,14 +1411,13 @@ fn publish_to_aur_source_writes_install_and_uses_ssh_branch() {
 #[test]
 fn publish_to_aur_source_directory_nests_output() {
     let (bare_url, bare) = make_bare_aur_repo();
-    let mut ctx = live_source_ctx(&bare_url, |c| {
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |c| {
         c.directory = Some("pkgs/{{ .Amd64 }}".to_string());
     });
     assert!(publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("publish ok"));
-    // Amd64 defaults to v1, so the files land under pkgs/v1/.
+    // Amd64 defaults to v1, so the files end up under pkgs/v1/.
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "pkgs/v1/PKGBUILD");
     assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1434,14 +1427,13 @@ fn publish_to_aur_source_directory_nests_output() {
 fn publish_to_aur_source_clone_failure_errors() {
     let bogus = tempfile::tempdir().expect("bogus dir");
     let bogus_url = bogus.path().to_string_lossy().into_owned();
-    let mut ctx = live_source_ctx(&bogus_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bogus_url, |_| {});
     let err = publish_to_aur_source(&mut ctx, "mytool", &quiet_log())
         .expect_err("cloning a non-repo path must fail");
     assert!(
         format!("{err:#}").contains("aur_source"),
         "error must name the label: {err:#}"
     );
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bogus);
 }
 
@@ -1457,7 +1449,7 @@ fn aur_source_publisher_run_pushes_and_records_target() {
     // scope resolves the crate's tag deterministically (its `tag_template`
     // is `v{{ .Version }}`), rather than depending on the process cwd's tags.
     let scope_repo = crate::testing::hermetic_tagged_repo();
-    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |_| {});
     ctx.options.project_root = Some(scope_repo.path().to_path_buf());
     ctx.options.selected_crates = vec!["mytool".to_string()];
     let p = AurSourcePublisher::new();
@@ -1473,13 +1465,12 @@ fn aur_source_publisher_run_pushes_and_records_target() {
         "primary_ref must point at the AUR package page"
     );
 
-    // The package landed on master.
+    // The package reached master.
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
     assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
 
     // Rollback is warn-only (force-push is irreversible); must not error.
     p.rollback(&mut ctx, &evidence).expect("rollback ok");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1492,13 +1483,8 @@ fn aur_source_publisher_run_pushes_top_level_entry() {
     let (bare_url, bare) = make_bare_aur_repo();
     let mut config = Config::default();
     config.project_name = "widget".to_string();
-    config.dist = std::env::temp_dir().join(format!(
-        "anodizer-aursrc-top-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dist = tempfile::tempdir().expect("dist tempdir");
+    config.dist = dist.path().join("dist");
     config.aur_sources = Some(vec![AurSourceConfig {
         git_url: Some(bare_url.clone()),
         description: Some("widget tool".to_string()),
@@ -1520,7 +1506,6 @@ fn aur_source_publisher_run_pushes_top_level_entry() {
 
     let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");
     assert!(srcinfo.contains("pkgbase = widget"), "{srcinfo}");
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
 }
 
@@ -1541,7 +1526,7 @@ fn aur_source_renders_templated_private_key_before_write() {
     // that the template references. `render_or_warn_with_vars` is the
     // same function `publish_to_aur_source` calls on `private_key`
     // before passing the rendered bytes to `clone_repo_ssh`.
-    let mut ctx = live_source_ctx(&bare_url, |c| {
+    let (mut ctx, _dist) = live_source_ctx(&bare_url, |c| {
         c.private_key = Some("{{ .Env.AUR_SOURCE_TEST_KEY }}".to_string());
     });
     ctx.template_vars_mut()
@@ -1586,7 +1571,6 @@ fn aur_source_renders_templated_private_key_before_write() {
         "literal template must never reach the SSH key file"
     );
 
-    std::fs::remove_dir_all(&ctx.config.dist).ok();
     drop(bare);
     drop(parent);
 }

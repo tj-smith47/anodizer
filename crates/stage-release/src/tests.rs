@@ -954,8 +954,8 @@ fn test_collect_extra_files_detailed_no_matches_snapshot_still_errors() {
 fn test_collect_extra_files_with_real_file() {
     let ctx = TestContextBuilder::new().build();
     // Create a temp file and collect it
-    let dir = std::env::temp_dir().join("anodizer_extra_files_test");
-    let _ = std::fs::create_dir_all(&dir);
+    let tmp = tempfile::tempdir().expect("extra-files tempdir");
+    let dir = tmp.path();
     let test_file = dir.join("test_extra.txt");
     std::fs::write(&test_file, "extra file content").unwrap();
 
@@ -966,16 +966,14 @@ fn test_collect_extra_files_with_real_file() {
             .iter()
             .any(|(p, _)| p.file_name().unwrap() == "test_extra.txt")
     );
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_collect_extra_files_skips_directories() {
     let ctx = TestContextBuilder::new().build();
-    let dir = std::env::temp_dir().join("anodizer_extra_files_dir_test");
-    let _ = std::fs::create_dir_all(dir.join("subdir"));
+    let tmp = tempfile::tempdir().expect("extra-files tempdir");
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("subdir")).unwrap();
     let test_file = dir.join("file.txt");
     std::fs::write(&test_file, "content").unwrap();
 
@@ -983,16 +981,13 @@ fn test_collect_extra_files_skips_directories() {
     let pattern = dir.join("*").to_string_lossy().into_owned();
     let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
     assert!(result.iter().all(|(p, _)| p.is_file()));
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_collect_extra_files_detailed_spec() {
     let ctx = TestContextBuilder::new().build();
-    let dir = std::env::temp_dir().join("anodizer_extra_files_detailed_test");
-    let _ = std::fs::create_dir_all(&dir);
+    let tmp = tempfile::tempdir().expect("extra-files tempdir");
+    let dir = tmp.path();
     let test_file = dir.join("artifact.sig");
     std::fs::write(&test_file, "signature").unwrap();
 
@@ -1010,9 +1005,6 @@ fn test_collect_extra_files_detailed_spec() {
     assert!(result[0].0.file_name().unwrap() == "artifact.sig");
     // name_template should have been rendered
     assert_eq!(result[0].1.as_deref(), Some("artifact.sig.sig"));
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- resolve_make_latest tests ----
@@ -1138,8 +1130,8 @@ fn test_replace_existing_artifacts_defaults() {
 fn test_dry_run_with_extra_files() {
     // extra_files globs that match nothing are hard
     // errors. Create a real file so the stage completes successfully.
-    let tmp = std::env::temp_dir().join("anodizer_test_dry_extra_files");
-    let _ = std::fs::create_dir_all(&tmp);
+    let tmpdir = tempfile::tempdir().expect("extra-files tempdir");
+    let tmp = tmpdir.path();
     let file = tmp.join("artifact.sig");
     std::fs::write(&file, "sig").unwrap();
     let pattern = tmp.join("*.sig").to_string_lossy().into_owned();
@@ -1160,8 +1152,6 @@ fn test_dry_run_with_extra_files() {
         .build();
     let stage = ReleaseStage;
     assert!(stage.run(&mut ctx).is_ok());
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -1618,8 +1608,8 @@ fn test_dry_run_changelog_header_falls_through_to_release() {
 fn test_extra_files_collected_with_glob() {
     let ctx = TestContextBuilder::new().build();
     // Create temp files and verify glob collection works
-    let dir = std::env::temp_dir().join("anodizer_release_extra_test");
-    let _ = std::fs::create_dir_all(&dir);
+    let tmp = tempfile::tempdir().expect("extra-files tempdir");
+    let dir = tmp.path();
     let f1 = dir.join("artifact1.sig");
     let f2 = dir.join("artifact2.sig");
     let f3 = dir.join("readme.txt");
@@ -1632,9 +1622,6 @@ fn test_extra_files_collected_with_glob() {
     let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
     assert_eq!(result.len(), 2, "should find exactly 2 .sig files");
     assert!(result.iter().all(|(p, _)| p.extension().unwrap() == "sig"));
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3062,8 +3049,8 @@ fn test_dry_run_with_use_existing_draft() {
 #[test]
 fn test_dry_run_with_all_new_fields() {
     // extra_files globs must match at least one file.
-    let tmp = std::env::temp_dir().join("anodizer_test_dry_all_fields");
-    let _ = std::fs::create_dir_all(&tmp);
+    let tmpdir = tempfile::tempdir().expect("extra-files tempdir");
+    let tmp = tmpdir.path();
     let file = tmp.join("extra.sig");
     std::fs::write(&file, "sig").unwrap();
     let pattern = tmp.join("*.sig").to_string_lossy().into_owned();
@@ -3094,8 +3081,6 @@ fn test_dry_run_with_all_new_fields() {
         .insert("testcrate".to_string(), "- changes".to_string());
     let stage = ReleaseStage;
     assert!(stage.run(&mut ctx).is_ok());
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 // ---- ContentSource from_file dry-run integration test ----
@@ -4169,7 +4154,7 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
     // A registered checksum artifact whose file does not exist stands in for the
     // truncated / permission-denied / IO-error read. Such a read must NOT
     // collapse the `{{ .Checksums }}` release-body variable to empty and publish
-    // green — it is a real defect on a tool-produced artifact and must surface.
+    // passing — it is a real defect on a tool-produced artifact and must surface.
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("myapp_1.0.0_checksums.txt");
 

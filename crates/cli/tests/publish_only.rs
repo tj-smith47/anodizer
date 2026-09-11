@@ -35,7 +35,7 @@ const FIXTURE_CRATE_NAME: &str = "anodizer-publish-only-fixture";
 /// written: at least one archive + sidecar `artifacts.json` +
 /// `metadata.json` + `context.json` + a sha256 sidecar.
 ///
-/// The shapes mirror what the determinism harness preserves on a green
+/// The shapes mirror what the determinism harness preserves on a passing
 /// run:
 ///   - `<dist>/<crate>_<version>_<os>_<arch>.tar.gz` — fake archive
 ///     bytes (a sentinel `b"ARCHIVE\n"` payload). Real archives in
@@ -180,10 +180,9 @@ fn inject_preserved_config_yaml(repo: &Path) -> Vec<u8> {
 /// Commits the rewrite so `git describe` sees a tag pointing at HEAD.
 fn configure_tag_template(repo: &Path) {
     let host = common::host_triple();
-    // Include a `release:` block (with `disable_upload: true` so the
-    // dry-run release stage still emits its "would create GitHub
-    // Release ... tag=..." line in stdout — that's the substring
-    // the pipeline-composition test asserts against).
+    // The `release:` block gives the dry-run release stage a repo to name, so
+    // it emits its "would create GitHub Release ... tag=..." line in stdout —
+    // the substring the pipeline-composition test asserts against.
     let yaml = format!(
         r#"project_name: {crate_name}
 crates:
@@ -459,6 +458,9 @@ fn publish_only_missing_context_json_errors_clearly() {
         .args(["release", "--publish-only", "--dry-run"])
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
         .expect("invoking anodizer release --publish-only");
@@ -643,6 +645,11 @@ fn publish_only_runs_publisher_state_preflight_by_default() {
         .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
+        // The token ladder ranks ANODIZER_GITHUB_TOKEN above GITHUB_TOKEN, so
+        // leaving either of these ambient would send a developer's real token
+        // instead of the dummy this test means to use.
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
         .expect("invoking anodizer release --publish-only --verbose");
@@ -685,6 +692,9 @@ fn publish_only_rejects_commit_mismatch() {
         .args(["release", "--publish-only", "--dry-run"])
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
         .expect("invoking anodizer release --publish-only --dry-run");
@@ -851,6 +861,11 @@ Expire-Date: 0
         // gpg's keyring), but the publish-only preflight gate does.
         .env("GPG_PRIVATE_KEY", "present")
         .env("GITHUB_TOKEN", "present")
+        // Everything the spawn does not set itself is scrubbed, so widening
+        // the --skip list later cannot hand this child a real credential.
+        .env_remove("COSIGN_KEY")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
         .current_dir(repo)
         .output()
         .expect("invoking publish-only re-sign");
