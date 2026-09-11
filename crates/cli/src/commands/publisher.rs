@@ -258,10 +258,13 @@ pub fn run_publishers(
             use std::sync::Mutex;
             let errors: Mutex<Vec<anyhow::Error>> = Mutex::new(Vec::new());
 
+            let retry_scope = anodizer_core::retry::current_scope();
             for chunk in matching.chunks(parallelism) {
                 std::thread::scope(|s| {
                     for artifact in chunk {
                         s.spawn(|| {
+                            let _scope =
+                                anodizer_core::retry::RetryScope::inherit(retry_scope.clone());
                             if let Err(e) = run_for_artifact(artifact) {
                                 // Mutex poison only happens if a prior holder
                                 // panicked; recover into_inner and keep going

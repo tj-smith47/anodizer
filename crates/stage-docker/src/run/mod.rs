@@ -378,6 +378,7 @@ fn execute_jobs_and_register(
     }
 
     let job_count = build_jobs.len();
+    let retry_scope = anodizer_core::retry::current_scope();
     let results: Vec<Result<DockerBuildResult>> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(job_count);
 
@@ -386,9 +387,11 @@ fn execute_jobs_and_register(
             let _ = sem_rx.recv();
             let sem_tx_ref = &sem_tx;
 
+            let retry_scope = retry_scope.clone();
             let handle = scope.spawn(move || {
                 // Guard returns the token on drop (including panic).
                 let _guard = SemaphoreGuard { sender: sem_tx_ref };
+                let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                 execute_docker_build(job, log)
             });
             handles.push(handle);

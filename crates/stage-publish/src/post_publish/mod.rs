@@ -189,8 +189,10 @@ pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<Post
     }
     let (tx, rx) = mpsc::channel();
     let n = jobs.len();
+    let retry_scope = anodizer_core::retry::current_scope();
     for (idx, job) in jobs.into_iter().enumerate() {
         let tx = tx.clone();
+        let retry_scope = retry_scope.clone();
         // `job.label()` returns &'static str — picking the stage label
         // from a fixed match table keeps the StageLogger constructor
         // happy without leaking a per-job format!() string.
@@ -203,6 +205,7 @@ pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<Post
         let package = job.package().to_string();
         let version = job.version().to_string();
         thread::spawn(move || {
+            let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
             let worker_log = StageLogger::new(stage_label, verbosity);
             let status = job.execute(&worker_log);
             // Receiver only drops if the parent thread already gave up on

@@ -646,6 +646,7 @@ pub(crate) fn run_parallel(
 
     let mut reaper = IntermediateReaper::new(harness_intermediate_prune_enabled(ctx), build_jobs);
 
+    let retry_scope = anodizer_core::retry::current_scope();
     for chunk in build_jobs.chunks(parallelism) {
         let template_vars = exec.template_vars;
         let log = exec.log;
@@ -685,7 +686,9 @@ pub(crate) fn run_parallel(
                     let thread_log = log.clone();
                     let warn_log = log.clone();
 
+                    let retry_scope = retry_scope.clone();
                     s.spawn(move || -> Result<BuildResult> {
+                        let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                         let program = program.ok_or_else(|| anyhow::anyhow!(
                             "build: planner invariant violation — job for crate {} reached execution without a cmd",
                             crate_name_for_err

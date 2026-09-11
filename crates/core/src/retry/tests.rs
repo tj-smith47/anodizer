@@ -39,10 +39,10 @@ fn backoff_accumulator_is_monotonic_and_sleep_helper_records() {
 #[test]
 fn retry_scope_attributes_backoff_to_its_label() {
     // Isolation rests on the unique scope name plus `>=` delta assertions,
-    // not on serialization: no other test in this crate enters a
-    // `RetryScope`, so nothing swaps `CURRENT_SCOPE` away between the two
-    // records here, and a uniquely-named key can only grow inside this
-    // test's guarded block.
+    // not on serialization: the scope stack is per-thread, so a sibling test
+    // entering its own `RetryScope` on another thread cannot swap this one
+    // away, and a uniquely-named key can only grow inside this test's
+    // guarded block.
     let scope_name = "test-scope-attributes-2f9c";
     let read = |name: &str| -> (u32, Duration) {
         retry_scope_breakdown()
@@ -396,6 +396,50 @@ fn steps_sync_done_quiet_recovers_without_succeeded_line() {
             .any(|(_, m)| m.contains("succeeded after")),
         "DoneQuiet must suppress the recovery line: {:?}",
         cap.all_messages()
+    );
+}
+
+#[test]
+fn two_scopes_on_two_threads_each_keep_their_own_backoff() {
+    // Backoff attribution used to live in one process-global cell, so the
+    // second thread to enter a scope owned the label both threads then
+    // recorded under. The durations are far larger than any sibling test's,
+    // and distinct in magnitude, so a stolen record is visible in the sum
+    // even while the rest of the crate records concurrently.
+    const A_MS: u64 = 1_000_000_000;
+    const B_MS: u64 = 4_000_000_000;
+    let a = "two-thread-scope-a-6d41";
+    let b = "two-thread-scope-b-6d41";
+    let entered = std::sync::Barrier::new(2);
+
+    std::thread::scope(|s| {
+        for (name, ms) in [(a, A_MS), (b, B_MS)] {
+            let entered = &entered;
+            s.spawn(move || {
+                let _guard = RetryScope::enter(name);
+                // Both scopes are open before either records, so a global
+                // cell has already lost one of the two labels.
+                entered.wait();
+                record_retry_backoff(Duration::from_millis(ms));
+            });
+        }
+    });
+
+    let read = |name: &str| -> Duration {
+        retry_scope_breakdown()
+            .into_iter()
+            .find(|(k, _, _)| k == name)
+            .map(|(_, _, d)| d)
+            .unwrap_or(Duration::ZERO)
+    };
+    let (got_a, got_b) = (read(a), read(b));
+    assert!(
+        got_a >= Duration::from_millis(A_MS) && got_a < Duration::from_millis(B_MS),
+        "scope a must hold its own backoff and not b's, got {got_a:?}"
+    );
+    assert!(
+        got_b >= Duration::from_millis(B_MS) && got_b < Duration::from_millis(A_MS + B_MS),
+        "scope b must hold its own backoff and not a's, got {got_b:?}"
     );
 }
 

@@ -573,6 +573,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         let mut release_already_absent = 0usize;
         let mut release_failed = 0usize;
 
+        let retry_scope = anodizer_core::retry::current_scope();
         for chunk in targets.chunks(ROLLBACK_PARALLELISM) {
             // Synchronous per-chunk fan-out via `std::thread::scope` —
             // mirrors krew's rollback shape and avoids pulling tokio
@@ -583,7 +584,9 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                 for target in chunk {
                     let client = Arc::clone(&self.client);
                     let log = log.clone();
+                    let retry_scope = retry_scope.clone();
                     handles.push(s.spawn(move || {
+                        let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                         let release_outcome = if let Some(id) = target.release_id {
                             log.status(&format!(
                                 "deleting {} release {} (id={}) from {}/{}",

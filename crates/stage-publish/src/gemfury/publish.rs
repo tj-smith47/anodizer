@@ -696,12 +696,15 @@ pub fn publish_to_gemfury(
         // worker closure captures it (not the non-`Sync` `ctx`).
         let env = ctx.env_source_arc();
         let mut first_err: Option<anyhow::Error> = None;
+        let retry_scope = anodizer_core::retry::current_scope();
         'chunks: for chunk in jobs.chunks(parallelism) {
             let chunk_results: Vec<Result<PushOutcome>> = std::thread::scope(|scope| {
                 let handles: Vec<_> = chunk
                     .iter()
                     .map(|job| {
                         scope.spawn(|| {
+                            let _scope =
+                                anodizer_core::retry::RetryScope::inherit(retry_scope.clone());
                             push_one_artifact(
                                 &client,
                                 &account,

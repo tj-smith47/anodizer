@@ -211,6 +211,10 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
         1,
     )));
     let replace_existing_artifacts = plan.replace_existing_artifacts;
+    // An upload task migrates between runtime worker threads, so the stage's
+    // retry label travels with the task rather than with whichever thread
+    // polls it.
+    let retry_scope = anodizer_core::retry::current_scope();
     let mut join_set = tokio::task::JoinSet::new();
 
     for (idx, (path, file_name)) in prepared_entries.into_iter().enumerate() {
@@ -226,8 +230,9 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
         // Owned clone moved into the `'static` upload task so its slow-upload
         // heartbeat can reach the shared stderr stream.
         let log = log.clone();
+        let retry_scope = retry_scope.clone();
 
-        join_set.spawn(async move {
+        join_set.spawn(anodizer_core::retry::in_scope(retry_scope, async move {
             let _permit = sem
                 .acquire()
                 .await
@@ -291,7 +296,7 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                 client.upload_asset(&path, &file_name),
             )
             .await
-        });
+        }));
     }
 
     while let Some(result) = join_set.join_next().await {

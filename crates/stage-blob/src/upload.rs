@@ -293,6 +293,9 @@ pub(crate) fn upload_files_owned(
     client_kms: Option<(String, KmsProvider)>,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<UploadReport> {
+    // Read on the caller's thread: each upload task is polled by a runtime
+    // worker that holds no scope of its own.
+    let retry_scope = anodizer_core::retry::current_scope();
     runtime.block_on(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
         let uploaded: Arc<std::sync::Mutex<Vec<String>>> =
@@ -320,69 +323,73 @@ pub(crate) fn upload_files_owned(
             let key_display = object_key.clone();
             let client_kms = client_kms.clone();
             let task_log = log.clone();
+            let task_retry_scope = retry_scope.clone();
 
-            handles.push(tokio::spawn(async move {
-                let _permit = sem
-                    .acquire()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("semaphore error: {}", e))?;
-                let data = tokio::fs::read(&local).await.map_err(|e| {
-                    anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
-                })?;
+            handles.push(tokio::spawn(anodizer_core::retry::in_scope(
+                task_retry_scope,
+                async move {
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("semaphore error: {}", e))?;
+                    let data = tokio::fs::read(&local).await.map_err(|e| {
+                        anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
+                    })?;
 
-                // Capture before the Option is consumed by the if-let below.
-                let kms_in_use = client_kms.is_some();
-                let upload_data = if let Some((kms_key, provider)) = client_kms {
-                    // Dedicated clone moved into the blocking task; `task_log`
-                    // is still needed by the status/lock-recover calls below.
-                    let kms_log = task_log.clone();
-                    tokio::task::spawn_blocking(move || {
-                        encrypt_with_kms(&data, &kms_key, provider, &kms_log)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
-                } else {
-                    data
-                };
+                    // Capture before the Option is consumed by the if-let below.
+                    let kms_in_use = client_kms.is_some();
+                    let upload_data = if let Some((kms_key, provider)) = client_kms {
+                        // Dedicated clone moved into the blocking task; `task_log`
+                        // is still needed by the status/lock-recover calls below.
+                        let kms_log = task_log.clone();
+                        tokio::task::spawn_blocking(move || {
+                            encrypt_with_kms(&data, &kms_key, provider, &kms_log)
+                        })
+                        .await
+                        .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
+                    } else {
+                        data
+                    };
 
-                // Idempotency gate: when the store already holds a
-                // byte-identical object at this key, the PUT is a no-op —
-                // record a skip instead of blindly overwriting. A differing
-                // (or unprovable) object falls through to the overwrite PUT,
-                // preserving the historical blind-overwrite semantics.
-                //
-                // KMS-encrypted uploads skip this check: each encryption call
-                // produces a different ciphertext for the same plaintext
-                // (non-deterministic), so the byte comparison can never match
-                // and would waste a full-object GET on every re-run.
-                if !kms_in_use
-                    && let Some(true) =
-                        object_is_identical(&store, &object_path, &upload_data).await
-                {
-                    // Per-file skip detail is verbose-only; the job summary
-                    // (default verbosity) reports the aggregate skip count.
-                    task_log.verbose(&format!(
-                        "skipped {} — identical object already present",
-                        key_display
-                    ));
-                    anodizer_core::parallel::lock_recover(&skipped, &task_log, "blob upload")
+                    // Idempotency gate: when the store already holds a
+                    // byte-identical object at this key, the PUT is a no-op —
+                    // record a skip instead of blindly overwriting. A differing
+                    // (or unprovable) object falls through to the overwrite PUT,
+                    // preserving the historical blind-overwrite semantics.
+                    //
+                    // KMS-encrypted uploads skip this check: each encryption call
+                    // produces a different ciphertext for the same plaintext
+                    // (non-deterministic), so the byte comparison can never match
+                    // and would waste a full-object GET on every re-run.
+                    if !kms_in_use
+                        && let Some(true) =
+                            object_is_identical(&store, &object_path, &upload_data).await
+                    {
+                        // Per-file skip detail is verbose-only; the job summary
+                        // (default verbosity) reports the aggregate skip count.
+                        task_log.verbose(&format!(
+                            "skipped {} — identical object already present",
+                            key_display
+                        ));
+                        anodizer_core::parallel::lock_recover(&skipped, &task_log, "blob upload")
+                            .push(object_key);
+                        return Ok::<(), anyhow::Error>(());
+                    }
+
+                    store
+                        .put_opts(&object_path, upload_data.into(), put_opts)
+                        .await
+                        .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
+                    // Record the successful upload's key. Lock held only for
+                    // the push, so contention is negligible. Use the poison-
+                    // recovering helper so one panicked sibling task doesn't
+                    // forfeit every other worker's recorded upload — partial
+                    // success must still land in PublishEvidence for rollback.
+                    anodizer_core::parallel::lock_recover(&uploaded, &task_log, "blob upload")
                         .push(object_key);
-                    return Ok::<(), anyhow::Error>(());
-                }
-
-                store
-                    .put_opts(&object_path, upload_data.into(), put_opts)
-                    .await
-                    .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
-                // Record the successful upload's key. Lock held only for
-                // the push, so contention is negligible. Use the poison-
-                // recovering helper so one panicked sibling task doesn't
-                // forfeit every other worker's recorded upload — partial
-                // success must still land in PublishEvidence for rollback.
-                anodizer_core::parallel::lock_recover(&uploaded, &task_log, "blob upload")
-                    .push(object_key);
-                Ok::<(), anyhow::Error>(())
-            }));
+                    Ok::<(), anyhow::Error>(())
+                },
+            )));
         }
 
         let mut first_err: Option<anyhow::Error> = None;

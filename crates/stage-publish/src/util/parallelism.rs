@@ -89,6 +89,7 @@ pub(crate) fn run_revert_targets_parallel(
     log: &StageLogger,
 ) -> (usize, usize) {
     let counts = Mutex::new((0usize, 0usize));
+    let retry_scope = anodizer_core::retry::current_scope();
     let chunks = targets.chunks(ROLLBACK_PARALLELISM);
     for chunk in chunks {
         std::thread::scope(|s| {
@@ -96,7 +97,9 @@ pub(crate) fn run_revert_targets_parallel(
             for target in chunk {
                 let log = log.clone();
                 let counts = &counts;
+                let retry_scope = retry_scope.clone();
                 handles.push(s.spawn(move || {
+                    let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                     log.status(&format!(
                         "reverting and pushing {} for {} ({})",
                         target.target, publisher, target.repo_url

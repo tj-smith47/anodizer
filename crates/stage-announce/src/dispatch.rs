@@ -140,10 +140,13 @@ pub(crate) fn run_queue(queue: DispatchQueue, deadline: Duration) -> DispatchOut
     let (tx, rx) = mpsc::channel::<(String, Result<()>)>();
     let worker_count = total.min(MAX_ANNOUNCE_WORKERS);
 
+    let retry_scope = anodizer_core::retry::current_scope();
     for _ in 0..worker_count {
         let work = Arc::clone(&work);
         let tx = tx.clone();
+        let retry_scope = retry_scope.clone();
         std::thread::spawn(move || {
+            let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
             loop {
                 let next = {
                     let mut guard = work.lock().unwrap_or_else(|p| p.into_inner());

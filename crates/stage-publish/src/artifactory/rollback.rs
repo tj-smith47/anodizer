@@ -198,11 +198,13 @@ pub(crate) fn parallel_delete(
 ) -> (usize, usize, usize) {
     use std::sync::Mutex;
     let counts = Mutex::new((0usize, 0usize, 0usize));
+    let retry_scope = anodizer_core::retry::current_scope();
     let chunks = jobs.chunks(ROLLBACK_PARALLELISM);
     for chunk in chunks {
         std::thread::scope(|s| {
             let mut handles = Vec::with_capacity(chunk.len());
             for job in chunk {
+                let retry_scope = retry_scope.clone();
                 let client = client.clone();
                 let url = job.url.clone();
                 let basic_auth = job.basic_auth.clone();
@@ -210,6 +212,7 @@ pub(crate) fn parallel_delete(
                 let log = log.clone();
                 let counts = &counts;
                 handles.push(s.spawn(move || {
+                    let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                     log.verbose(&format!("DELETE {}", url));
                     let mut req = client.delete(&url);
                     if let Some((ref u, ref p)) = basic_auth {

@@ -227,13 +227,32 @@ static RETRY_BACKOFF_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 static PER_SCOPE_RETRY: std::sync::Mutex<std::collections::BTreeMap<String, ScopeRetry>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// The label backoff is attributed to while a [`RetryScope`] is active. Stages
-/// run serially and each installs one scope, so a single global cell suffices:
-/// the release stage's parallel upload tasks all read the same constant value
-/// ("release") for the stage's duration, and the serial publish loop swaps it
-/// per publisher. No task-local is needed because the value never differs
-/// between two concurrently-running sleeps.
-static CURRENT_SCOPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// Labels of the [`RetryScope`] guards alive on THIS thread, innermost
+    /// last.
+    ///
+    /// Per-thread, never process-global. A guard is entered and dropped by one
+    /// thread, but several threads hold scopes at once — two publishers under
+    /// test, a stage and a worker it fanned out to — and a single shared cell
+    /// files one thread's backoff under whichever label another thread
+    /// installed last. A fan-out worker therefore inherits its parent's label
+    /// explicitly, through [`current_scope`] and [`RetryScope::inherit`]
+    /// (blocking workers) or [`in_scope`] (async tasks), because a freshly
+    /// spawned thread starts with an empty stack.
+    static SCOPE_STACK: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+tokio::task_local! {
+    /// The scope an async fan-out task was spawned under, installed by
+    /// [`in_scope`].
+    ///
+    /// A tokio task migrates between runtime worker threads at every `.await`,
+    /// so a thread-local guard held across one would pop a stack belonging to
+    /// a different thread. The task-local travels with the task instead, and
+    /// takes precedence over [`SCOPE_STACK`] whenever one is set.
+    static TASK_SCOPE: Option<String>;
+}
 
 /// Bucket key for backoff recorded outside any [`RetryScope`].
 const UNATTRIBUTED_SCOPE: &str = "(unattributed)";
@@ -246,28 +265,66 @@ struct ScopeRetry {
     backoff_ms: u64,
 }
 
-/// RAII scope that attributes every backoff sleep recorded during its lifetime
-/// to `name` (a publisher or stage label). Restores the previous scope on drop,
-/// so nested/sequential scopes compose. Install one around each publisher's
-/// `run` and around a stage's whole retrying section.
+/// RAII scope that attributes every backoff sleep recorded on this thread
+/// during its lifetime to `name` (a publisher or stage label). Restores the
+/// enclosing scope on drop, so nested/sequential scopes compose. Install one
+/// around each publisher's `run` and around a stage's whole retrying section,
+/// and one per fan-out worker (via [`RetryScope::inherit`]) so the worker's
+/// backoff lands under the same label as its parent's.
 #[must_use = "the scope only applies while the guard is alive"]
 pub struct RetryScope {
-    prev: Option<String>,
+    /// Guards are LIFO within one thread's [`SCOPE_STACK`]; the struct carries
+    /// no state of its own.
+    _private: (),
 }
 
 impl RetryScope {
-    /// Enter a retry-attribution scope named `name`.
+    /// Enter a retry-attribution scope named `name` on the calling thread.
     pub fn enter(name: impl Into<String>) -> Self {
-        let mut cur = CURRENT_SCOPE.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = cur.replace(name.into());
-        RetryScope { prev }
+        SCOPE_STACK.with(|stack| stack.borrow_mut().push(name.into()));
+        RetryScope { _private: () }
+    }
+
+    /// Re-enter, on a fan-out worker thread, the scope its spawning thread
+    /// held — the label read from [`current_scope`] before the spawn.
+    ///
+    /// `None` (the spawning thread held no scope) installs nothing, so the
+    /// worker's backoff falls to the unattributed bucket exactly as the
+    /// parent's would have.
+    pub fn inherit(label: Option<String>) -> Option<Self> {
+        label.map(Self::enter)
     }
 }
 
 impl Drop for RetryScope {
     fn drop(&mut self) {
-        *CURRENT_SCOPE.lock().unwrap_or_else(|e| e.into_inner()) = self.prev.take();
+        SCOPE_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
     }
+}
+
+/// The label backoff recorded on this thread (or in this async task) is
+/// attributed to, or `None` outside any [`RetryScope`].
+///
+/// Read it on the spawning side of a fan-out and hand the value to
+/// [`RetryScope::inherit`] or [`in_scope`] on the worker side; a spawned
+/// thread or task inherits nothing on its own.
+pub fn current_scope() -> Option<String> {
+    match TASK_SCOPE.try_with(Clone::clone) {
+        Ok(label) => label,
+        Err(_) => SCOPE_STACK.with(|stack| stack.borrow().last().cloned()),
+    }
+}
+
+/// Run `fut` as a fan-out task attributed to `label`, the scope
+/// [`current_scope`] reported on the spawning side.
+///
+/// The async counterpart of [`RetryScope::inherit`]: a tokio task moves
+/// between runtime worker threads at every `.await`, so its scope travels
+/// with the task rather than with whichever thread happens to poll it.
+pub async fn in_scope<F: std::future::Future>(label: Option<String>, fut: F) -> F::Output {
+    TASK_SCOPE.scope(label, fut).await
 }
 
 thread_local! {
@@ -276,16 +333,13 @@ thread_local! {
     /// [`crate::Context::retry_deadline`], which adds the configured
     /// `retry.max_elapsed` to it.
     ///
-    /// Thread-local, unlike the process-global [`CURRENT_SCOPE`] next to it,
-    /// and the difference is deliberate. Backoff attribution has to be global
-    /// because the sleeps it counts happen in worker threads a publisher fans
-    /// out to. The budget anchor has the opposite constraint: it is read only
-    /// through `&Context`, which a publisher receives as `&mut` on the
-    /// dispatching thread and never shares, so the anchor is read on exactly
-    /// the thread that installed it. Keeping it per-thread makes the guard's
-    /// save/restore genuinely LIFO — a process-global cell could be entered by
-    /// two threads at once and have the outer guard's drop strand the inner
-    /// one's anchor, wedging every later deadline into the already-elapsed past.
+    /// Thread-local, like the scope stack next to it, and for the same reason:
+    /// a process-global cell can be entered by two threads at once, and the
+    /// outer guard's drop then strands the inner one's anchor, wedging every
+    /// later deadline into the already-elapsed past. It is read only through
+    /// `&Context`, which a publisher receives as `&mut` on the dispatching
+    /// thread and never shares, so the anchor is read on exactly the thread
+    /// that installed it and needs no fan-out inheritance.
     static CURRENT_BUDGET_ANCHOR: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
 }
@@ -354,11 +408,7 @@ pub fn record_retry_backoff(d: Duration) {
     let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     RETRY_BACKOFF_MILLIS.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
 
-    let key = CURRENT_SCOPE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_else(|| UNATTRIBUTED_SCOPE.to_string());
+    let key = current_scope().unwrap_or_else(|| UNATTRIBUTED_SCOPE.to_string());
     let mut map = PER_SCOPE_RETRY.lock().unwrap_or_else(|e| e.into_inner());
     let entry = map.entry(key).or_default();
     entry.retries = entry.retries.saturating_add(1);

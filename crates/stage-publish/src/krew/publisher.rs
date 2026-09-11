@@ -538,13 +538,16 @@ impl anodizer_core::Publisher for KrewPublisher {
         // deleted). Re-running anodizer tag rollback after a partial
         // success must NOT surface those as failures.
         let counts = std::sync::Mutex::new((0usize, 0usize, 0usize));
+        let retry_scope = anodizer_core::retry::current_scope();
         for chunk in jobs.chunks(crate::util::ROLLBACK_PARALLELISM) {
             std::thread::scope(|s| {
                 let mut handles = Vec::with_capacity(chunk.len());
                 for job in chunk {
                     let log = log.clone();
                     let counts = &counts;
+                    let retry_scope = retry_scope.clone();
                     handles.push(s.spawn(move || {
+                        let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
                         let pr_url = format!(
                             "https://github.com/{}/{}/pull/{}",
                             job.upstream_owner, job.upstream_repo, job.pr_number

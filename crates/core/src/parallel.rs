@@ -114,9 +114,21 @@ where
     let parallelism = parallelism.max(1);
     let mut results: Vec<T> = Vec::with_capacity(jobs.len());
 
+    // A worker thread starts outside every retry scope, so the caller's label
+    // is read here and re-entered inside each worker; without it the stage's
+    // parallel backoff would be filed as unattributed.
+    let retry_scope = crate::retry::current_scope();
     for chunk in jobs.chunks(parallelism) {
         let chunk_results: Vec<Result<T>> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk.iter().map(|job| s.spawn(|| run_job(job))).collect();
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|job| {
+                    s.spawn(|| {
+                        let _scope = crate::retry::RetryScope::inherit(retry_scope.clone());
+                        run_job(job)
+                    })
+                })
+                .collect();
             handles
                 .into_iter()
                 .map(|h| {
@@ -314,6 +326,31 @@ mod tests {
         let out = run_parallel_chunks(&jobs, 3, "test", &log, |job| Ok(*job)).unwrap();
         assert_eq!(out.len(), 6);
         assert_eq!(cap.warn_count(), 0, "no warns on a clean run");
+    }
+
+    #[test]
+    fn fan_out_workers_attribute_backoff_to_the_callers_retry_scope() {
+        // A worker thread enters the pool holding no scope of its own, so
+        // without inheritance a stage's parallel backoff is filed as
+        // unattributed and the run summary can no longer name the slow remote.
+        let scope = "parallel-fan-out-attribution-b7c2";
+        let jobs: Vec<u64> = vec![3_000_000_000, 3_000_000_001];
+        {
+            let _guard = crate::retry::RetryScope::enter(scope);
+            run_parallel_chunks(&jobs, 2, "test", test_logger(), |job| {
+                crate::retry::record_retry_backoff(std::time::Duration::from_millis(*job));
+                Ok(*job)
+            })
+            .unwrap();
+        }
+        let recorded = crate::retry::retry_scope_breakdown()
+            .into_iter()
+            .find(|(k, _, _)| k == scope);
+        assert_eq!(
+            recorded.map(|(_, retries, backoff)| (retries, backoff)),
+            Some((2, std::time::Duration::from_millis(6_000_000_001))),
+            "both workers' backoff must land under the caller's scope"
+        );
     }
 
     #[test]
