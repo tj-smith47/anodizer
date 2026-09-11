@@ -60,6 +60,12 @@ run_scanner() {
 # would then read its file list from stdin — so grep always runs with stdin on
 # /dev/null and returns empty instead of reading, or blocking on, whatever the
 # caller's stdin happens to be.
+#
+# A recursive collection that names NO root is refused outright (exit 2,
+# naming the flag): `grep -r` with no file operand recurses the working
+# directory, so such a call would silently scan the whole tree — including
+# `target/` and every vendored source — and report whatever it found there as
+# a violation of the audited rule.
 collect_files() {
     local -n __collect_out="$1"
     shift
@@ -86,6 +92,17 @@ collect_files() {
         printf '%s: collect_files called without --; the scan did not run.\n' \
             "$(basename "$0" .sh)" >&2
         exit 2
+    fi
+    if ((__collect_named == 0)); then
+        local __collect_opt
+        for __collect_opt in "${__collect_opts[@]}"; do
+            if [[ "$__collect_opt" == --recursive || "$__collect_opt" == --dereference-recursive ||
+                  "$__collect_opt" =~ ^-[^-]*[rR] ]]; then
+                printf '%s: collect_files called with %s and no root; the scan did not run.\n' \
+                    "$(basename "$0" .sh)" "$__collect_opt" >&2
+                exit 2
+            fi
+        done
     fi
     __collect_out=()
     # Every named root is absent: an empty result, not a grep over the tree.

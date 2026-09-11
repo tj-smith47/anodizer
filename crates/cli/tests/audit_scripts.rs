@@ -414,6 +414,41 @@ fn a_collection_whose_every_named_root_is_absent_returns_empty() {
     );
 }
 
+/// A recursive collection that names no root at all is refused, naming the
+/// flag. `grep -r` with no file operand recurses the working directory, so the
+/// call would scan the whole tree — `target/` and vendored sources included —
+/// and report the findings as violations of the audited rule.
+#[test]
+fn a_rootless_recursive_collection_is_refused_naming_the_flag() {
+    let dir = fixture_tree();
+    for flag in ["-r", "-R", "-rl", "--recursive", "--dereference-recursive"] {
+        let (code, out) = run_collector(
+            dir.path(),
+            &format!("collect_files X {flag} -- 'set_var'\nprintf 'n=%d\\n' \"${{#X[@]}}\""),
+            "",
+        );
+        assert_eq!(code, 2, "{flag} with no root must not run: {out}");
+        assert!(
+            out.contains(&format!("called with {flag} and no root")),
+            "the refusal must name {flag}: {out}"
+        );
+    }
+}
+
+/// A NON-recursive rootless collection keeps working: it reaches grep with
+/// stdin on /dev/null and returns empty, which is what the stdin guard pins.
+#[test]
+fn a_rootless_non_recursive_collection_is_still_allowed() {
+    let dir = fixture_tree();
+    let (code, out) = run_collector(
+        dir.path(),
+        "collect_files X --include='*.rs' -- 'set_var'\nprintf 'n=%d\\n' \"${#X[@]}\"",
+        "set_var from stdin\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("n=0"), "{out}");
+}
+
 /// `collect_files` is handed OPTIONAL roots — `crates/*/src crates/*/tests` —
 /// and a glob that matches nothing stays literal. An absent optional root is
 /// not a failed scan: the roots that do exist are still read.
