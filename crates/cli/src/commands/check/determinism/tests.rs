@@ -865,6 +865,35 @@ version = "0.0.1"
 }
 
 #[test]
+fn read_project_version_resolves_an_inheriting_member() {
+    // A member declaring `version.workspace = true` carries no literal
+    // version of its own. Pointed at that member, the reader must climb to
+    // the workspace root rather than report no version at all.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["member"]
+
+[workspace.package]
+version = "2.4.6"
+"#,
+    )
+    .unwrap();
+    let member = tmp.path().join("member");
+    std::fs::create_dir_all(&member).unwrap();
+    std::fs::write(
+        member.join("Cargo.toml"),
+        r#"[package]
+name = "member"
+version.workspace = true
+"#,
+    )
+    .unwrap();
+    assert_eq!(read_project_version(&member), Some("2.4.6".to_string()));
+}
+
+#[test]
 fn read_project_version_returns_none_on_malformed_toml() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("Cargo.toml"), "not valid \x00 toml ===").unwrap();
