@@ -395,7 +395,11 @@ impl Config {
         let template = format!("{prefix}{{{{ Version }}}}");
         let mut filled = false;
         for c in self.crates.iter_mut() {
-            if c.tag_template.is_none() {
+            // Empty-as-unset, the same predicate `tag_family_template` reads
+            // with: a crate written as `tag_template: ""` would otherwise skip
+            // every rung and land on the per-crate `<name>-v` family while its
+            // siblings share the repo one.
+            if c.tag_template.as_deref().is_none_or(str::is_empty) {
                 c.tag_template = Some(template.clone());
                 filled = true;
             }

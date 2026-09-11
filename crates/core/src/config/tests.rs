@@ -7356,6 +7356,36 @@ fn lockstep_workspace_derives_the_repo_tag_family() {
     );
 }
 
+/// `tag_template: ""` is the same statement as omitting it — the accessor
+/// already reads it that way. Treating only `None` as unset left that crate on
+/// the per-crate `<name>-v` family while its lockstep siblings shared `v`, so
+/// the release stage created the release on a tag nothing else scans for.
+#[test]
+fn an_empty_tag_template_derives_the_repo_tag_family() {
+    let dir = cargo_workspace_dir(Some("0.25.3"));
+    let yaml = "project_name: app\ncrates:\n  - { name: core, path: crates/core, tag_template: \"\" }\n  - { name: cli, path: crates/cli }\n";
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    config.populate_derived_tag_templates(dir.path());
+    for c in &config.crates {
+        assert_eq!(
+            c.tag_family_template(),
+            "v{{ Version }}",
+            "crate '{}' must release under the one tag `tag` cuts",
+            c.name
+        );
+    }
+}
+
+/// The `defaults.crates.tag_template` fold reads the field the same way.
+#[test]
+fn an_empty_tag_template_takes_the_defaults_tag_template() {
+    let yaml = "project_name: app\ndefaults:\n  crates:\n    tag_template: \"rel-{{ Version }}\"\ncrates:\n  - { name: core, path: crates/core, tag_template: \"\" }\n";
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("config parses");
+    crate::defaults_merge::apply_defaults(&mut config);
+    assert_eq!(config.crates[0].tag_family_template(), "rel-{{ Version }}");
+}
+
 #[test]
 fn explicit_tag_prefix_derives_the_repo_tag_family() {
     let dir = cargo_workspace_dir(None);

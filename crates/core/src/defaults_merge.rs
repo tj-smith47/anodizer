@@ -214,7 +214,9 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
         crate_cfg.cross = defaults.cross.clone();
     }
-    if crate_cfg.tag_template.is_none() {
+    // Empty-as-unset, the same predicate `CrateConfig::tag_family_template`
+    // reads the field with.
+    if crate_cfg.tag_template.as_deref().is_none_or(str::is_empty) {
         if let Some(tag_template) = defaults
             .crates
             .as_ref()
