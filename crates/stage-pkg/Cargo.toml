@@ -23,6 +23,9 @@ filetime.workspace = true
 # byte), replacing the shell `gzip -9n` so the gzip stream is byte-stable.
 flate2.workspace = true
 glob.workspace = true
+# SHA-1 for the xar table-of-contents checksum, the digest the xar format
+# records there.
+sha1.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]

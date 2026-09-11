@@ -400,6 +400,7 @@ dependencies = [
  "flate2",
  "glob",
  "serde_yaml_ng",
+ "sha1",
  "tempfile",
 ]
 
