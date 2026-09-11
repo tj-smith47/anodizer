@@ -1,13 +1,15 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::json;
 
-pub struct ResolveTagOpts {
+/// Options of `anodizer resolve-tag`: the tag to resolve and the output form.
+pub(crate) struct ResolveTagOpts {
     pub tag: String,
     pub json: bool,
     pub config_override: Option<std::path::PathBuf>,
 }
 
-pub fn run(opts: ResolveTagOpts) -> Result<()> {
+/// Run `anodizer resolve-tag`: print which configured crate a tag belongs to.
+pub(crate) fn run(opts: ResolveTagOpts) -> Result<()> {
     let config_path = opts
         .config_override
         .as_deref()

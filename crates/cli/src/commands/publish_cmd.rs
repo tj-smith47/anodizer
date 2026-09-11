@@ -9,7 +9,9 @@ use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
 
-pub struct PublishOpts {
+/// Options of `anodizer publish`: the preserved dist to publish from, the
+/// publisher selection, and the write/preview mode.
+pub(crate) struct PublishOpts {
     pub dry_run: bool,
     pub token: Option<String>,
     pub dist: Option<PathBuf>,
@@ -36,7 +38,9 @@ pub struct PublishOpts {
     pub publishers: Vec<String>,
 }
 
-pub fn run(opts: PublishOpts) -> Result<()> {
+/// Run `anodizer publish`: publish an already-built dist tree to the selected
+/// publishers.
+pub(crate) fn run(opts: PublishOpts) -> Result<()> {
     let log = StageLogger::new(
         "publish",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),

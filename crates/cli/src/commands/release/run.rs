@@ -62,7 +62,9 @@ pub(crate) fn recover_crate_selection(
     }
 }
 
-pub fn run(mut opts: ReleaseOpts) -> Result<()> {
+/// Run `anodizer release`: build the configured pipeline for this mode and
+/// execute every stage it selects.
+pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
     if opts.prepare {
         apply_prepare_mode_to_skip(&mut opts.skip);
     }

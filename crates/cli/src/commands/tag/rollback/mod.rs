@@ -31,7 +31,7 @@ mod tags;
 mod types;
 mod unwind;
 
-pub use run::run;
+pub(crate) use run::run;
 pub use types::{Mode, RollbackOpts, Scope};
 
 #[cfg(test)]

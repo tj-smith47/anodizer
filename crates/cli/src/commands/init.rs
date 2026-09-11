@@ -45,7 +45,9 @@ struct CrateInfo {
 // Main run() implementation
 // ---------------------------------------------------------------------------
 
-pub fn run() -> Result<()> {
+/// Run `anodizer init`: scaffold an `.anodizer.yaml` from what the repository
+/// already declares.
+pub(crate) fn run() -> Result<()> {
     let log = StageLogger::new("init", Verbosity::default());
 
     let config_path = ".anodizer.yaml";

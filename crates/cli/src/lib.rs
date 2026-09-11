@@ -51,6 +51,8 @@ fn removed_rollback_flag(_: &str) -> Result<String, String> {
     Err(REMOVED_ROLLBACK_FLAG_MIGRATION.to_string())
 }
 
+/// The parsed `anodizer` command line: the global flags, and the subcommand
+/// to run.
 #[derive(Parser)]
 #[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
@@ -82,6 +84,8 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
+/// Every `anodizer` subcommand, each variant carrying that command's own
+/// flags.
 #[derive(Subcommand)]
 // The `Release` variant carries one field per CLI flag (~40 fields) so its
 // size dwarfs the other subcommands. Boxing every flag bag would just hide

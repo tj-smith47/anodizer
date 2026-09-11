@@ -1,6 +1,8 @@
 use super::*;
 
-pub fn run(mut opts: TagOpts) -> Result<()> {
+/// Run `anodizer tag`: resolve the next version for every unit the repo shape
+/// dispatches, write it back, and cut the tag.
+pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // Discover the workspace root once, config-derived, so `tag` resolves the
     // same root whether invoked from the repo root or a subdirectory (matching
     // `bump` and `changelog`); every workspace-load / git-working-dir site below

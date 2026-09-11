@@ -34,7 +34,9 @@ pub use config_loader::{
     find_config_with_logger, load_config, load_config_logged, load_repo_config,
 };
 
-pub struct Pipeline {
+/// An ordered set of stages plus what the runner must know to execute them:
+/// one built pipeline per run mode.
+pub(crate) struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
     /// Whether this pipeline is expected to have a compiled binary for
     /// every in-scope crate that configures a binary-requiring surface.

@@ -21,7 +21,14 @@ use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-pub fn run(config_override: Option<&Path>, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
+/// Run `anodizer check version-files`: report every enrolled file whose
+/// version has drifted from the crate that enrolled it.
+pub(crate) fn run(
+    config_override: Option<&Path>,
+    verbose: bool,
+    debug: bool,
+    quiet: bool,
+) -> Result<()> {
     let log = StageLogger::new("check", Verbosity::from_flags(quiet, verbose, debug));
 
     // Resolve enrolled (repo-root-relative) paths against the discovered

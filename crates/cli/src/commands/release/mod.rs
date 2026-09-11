@@ -11,7 +11,7 @@ mod split;
 pub(crate) use context_setup::*;
 pub(crate) use crate_select::*;
 pub(crate) use pipeline_run::*;
-pub use run::run;
+pub(crate) use run::run;
 pub use split::{load_split_contexts_into, run_merge};
 
 use super::helpers;
@@ -24,7 +24,9 @@ use anodizer_core::template;
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
 
-pub struct ReleaseOpts {
+/// Options of `anodizer release`: the run mode, the crate and stage
+/// selection, and every flag the pipeline builder reads.
+pub(crate) struct ReleaseOpts {
     pub crate_names: Vec<String>,
     pub all: bool,
     pub force: bool,

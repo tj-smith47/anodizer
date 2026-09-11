@@ -68,7 +68,9 @@ struct ResolvedRange {
     pinned_crate: Option<String>,
 }
 
-pub fn run(opts: ChangelogOpts) -> Result<()> {
+/// Run `anodizer changelog`: render the commit range for each selected crate
+/// in the requested format, to stdout or into the crate's changelog file.
+pub(crate) fn run(opts: ChangelogOpts) -> Result<()> {
     let ChangelogOpts {
         crate_name,
         range,

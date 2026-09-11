@@ -15,7 +15,9 @@ use anyhow::Result;
 use super::cargo_edit::MemberInfo;
 use super::plan::BumpLevel;
 
-pub struct InferenceResult {
+/// What the commit range since a crate's last tag implies: the bump level it
+/// asks for, and the tag and commits that answer was read from.
+pub(crate) struct InferenceResult {
     pub level: BumpLevel,
     pub reason: String,
 }

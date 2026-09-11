@@ -6,7 +6,9 @@ use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub fn run(
+/// Run `anodizer check config`: validate the resolved config and report
+/// every problem it holds.
+pub(crate) fn run(
     config_override: Option<&Path>,
     workspace: Option<&str>,
     publishers: &[String],

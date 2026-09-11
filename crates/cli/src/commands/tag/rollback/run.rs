@@ -13,7 +13,9 @@ use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 
-pub fn run(opts: RollbackOpts) -> Result<()> {
+/// Run `anodizer tag rollback`: delete the tag, revert the version-bump
+/// commit, and unwind whatever the release already published.
+pub(crate) fn run(opts: RollbackOpts) -> Result<()> {
     run_with_gh(opts, std::path::Path::new("gh"))
 }
 

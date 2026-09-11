@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 pub use plan::PlanRow;
 
-pub struct BumpOpts {
+/// Options of `anodizer bump`: the level or explicit version to apply, the
+/// crate scope, and the write/preview mode.
+pub(crate) struct BumpOpts {
     pub level_or_version: Option<String>,
     pub package: Vec<String>,
     pub workspace: bool,
@@ -37,7 +39,9 @@ pub struct BumpOpts {
     pub strict: bool,
 }
 
-pub fn run(opts: BumpOpts) -> Result<()> {
+/// Run `anodizer bump`: resolve each selected crate's next version and write
+/// it into the manifests, or print what a write would do.
+pub(crate) fn run(opts: BumpOpts) -> Result<()> {
     let log = StageLogger::new(
         "bump",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),

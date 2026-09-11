@@ -127,7 +127,9 @@ fn below_min_version(min_version: Option<&str>, version_line: Option<&str>) -> b
     }
 }
 
-pub fn run() -> Result<()> {
+/// Probe every external tool the configured stages need and report each one's
+/// presence and version floor.
+pub(crate) fn run() -> Result<()> {
     let log = StageLogger::new("healthcheck", Verbosity::Normal);
 
     log.status(&format!("{}", "Anodizer Environment Health Check".bold()));

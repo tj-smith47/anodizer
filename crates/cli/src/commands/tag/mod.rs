@@ -13,7 +13,7 @@ pub(crate) use bump_detect::*;
 pub(crate) use crate_info::*;
 pub(crate) use per_crate::*;
 pub(crate) use repo_shape::*;
-pub use run::run;
+pub(crate) use run::run;
 pub(crate) use single_crate::*;
 pub(crate) use version_plan::*;
 pub(crate) use workspace_bump::*;
@@ -40,7 +40,9 @@ use crate::commands::changelog_sync::{
 };
 use crate::commands::version_files_resolve::{enrolled_units, resolve_version_files};
 
-pub struct TagOpts {
+/// Options of `anodizer tag`: the version override, the crate scope, the
+/// signing and push behaviour, and the write/preview mode.
+pub(crate) struct TagOpts {
     pub dry_run: bool,
     pub custom_tag: Option<String>,
     /// Explicit `--version`: tag exactly this version, bypassing autotag

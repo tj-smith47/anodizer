@@ -78,11 +78,8 @@ pub enum TagSub {
     },
 }
 
-/// `anodizer check` parent subcommand.
-///
-/// `Config` is the historic `check` body (validate `.anodizer.yaml`); the
-/// determinism harness is plumbed here so the flag set ships with this
-/// commit, but the body lands in a follow-up task.
+/// The checks `anodizer check` can run: the config validator, the determinism
+/// harness, and the `version_files` drift guard.
 #[derive(Subcommand)]
 pub enum CheckCmd {
     /// Validate the workspace's anodizer config.
@@ -116,6 +113,8 @@ pub enum CheckCmd {
     VersionFiles,
 }
 
+/// Arguments of `anodizer check determinism`: the run count, the stage and
+/// target filters, preserved-dist reuse, and where the report is written.
 #[derive(clap::Args)]
 pub struct CheckDeterminismArgs {
     #[arg(

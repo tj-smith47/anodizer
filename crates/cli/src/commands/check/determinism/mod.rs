@@ -23,7 +23,14 @@ use anodizer_core::{
 use anyhow::{Context, Result};
 use strum::IntoEnumIterator;
 
-pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
+/// Run `anodizer check determinism`: rebuild the configured stages the
+/// requested number of times and report which artifacts differ between runs.
+pub(crate) fn run(
+    args: CheckDeterminismArgs,
+    verbose: bool,
+    debug: bool,
+    quiet: bool,
+) -> Result<()> {
     let verbosity = Verbosity::from_flags(quiet, verbose, debug);
 
     // `--inject-drift` is a test-only flag gated by
