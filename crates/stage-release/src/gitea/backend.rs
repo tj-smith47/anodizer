@@ -83,6 +83,12 @@ pub(crate) fn run_gitea_backend(
     let download_url = gitea_urls
         .download
         .unwrap_or_else(|| crate::gitea::url::DEFAULT_GITEA_INSTANCE.to_string());
+    if !crate::gitea::url::has_scheme_and_host(&download_url) {
+        bail!(
+            "release: invalid gitea_urls.download URL: {:?}",
+            download_url
+        );
+    }
     let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
 
     let commit_sha = ctx

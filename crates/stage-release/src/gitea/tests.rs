@@ -1847,6 +1847,48 @@ fn assert_backend_rejects_api_url(configured: &str) {
     );
 }
 
+/// A `gitea_urls.download` missing its scheme or its host feeds the release
+/// page URL and the `ReleaseURL` / download-URL template vars, so a
+/// `gitea.example.com` value would publish a relative release URL from the
+/// announce and webhook stages. Refused up front, like `api`.
+#[test]
+fn run_backend_rejects_a_download_url_without_a_scheme_or_host() {
+    for configured in ["gitea.example.com", "https:///forge"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let mut ctx = build_gitea_ctx("https://gitea.example.com");
+        ctx.config.gitea_urls.as_mut().expect("gitea_urls").download = Some(configured.to_string());
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        let err = run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect_err("a download base without a scheme or host must be refused");
+        assert!(
+            err.to_string()
+                .contains("release: invalid gitea_urls.download URL:"),
+            "unexpected error for {configured:?}: {err}"
+        );
+    }
+}
+
 /// When the size probe finds a same-size remote asset, the upload is
 /// skipped (idempotent no-op): no DELETE, no upload POST — only the create
 /// flow plus the size probe GET.
