@@ -662,6 +662,41 @@ fn upsert_schema_options_handles_an_empty_options_object() {
     );
 }
 
+/// A reviewer's `//` annotation inside an `options` block must not make the
+/// block unreadable. `upsert_schema_options` REPLACES the whole member span,
+/// so a block read as absent takes every sibling option (`unknownKeywords`,
+/// `externalSchema`) down with it — which is what fails SchemaStore's CI.
+#[test]
+fn an_options_block_with_a_comment_still_reads() {
+    let jsonc = r#"{
+  "options": {
+    "cfgd-config-0.5.0.json": {
+      // keep: taplo emits this one
+      "unknownKeywords": ["x-taplo"],
+      "unknownFormat": ["uint32"], // and this format
+      "note": "a // inside a string is data"
+    }
+  }
+}
+"#;
+    let got = schema_options_block(jsonc, "cfgd-config-0.5.0.json")
+        .expect("a commented block must still parse");
+    assert_eq!(
+        got.get("unknownKeywords").unwrap(),
+        &serde_json::json!(["x-taplo"]),
+        "the reviewer's sibling options survive the comment"
+    );
+    assert_eq!(
+        got.get("unknownFormat").unwrap(),
+        &serde_json::json!(["uint32"])
+    );
+    assert_eq!(
+        got.get("note").unwrap(),
+        &serde_json::json!("a // inside a string is data"),
+        "a `//` inside a string literal is not a comment"
+    );
+}
+
 /// A `//` comment naming `"options"` precedes the real key, one string value
 /// spells it inside escaped quotes, and another IS the bare word. A plain
 /// `text.find("\"options\"")` would anchor

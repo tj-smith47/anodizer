@@ -81,6 +81,41 @@ impl JsonScan {
     }
 }
 
+/// The same bytes with every `//` line comment removed, so a JSONC fragment can
+/// be handed to a plain JSON parser.
+///
+/// String literals are left untouched — a `//` inside one is data, not a
+/// comment — and the newline that ends a comment is kept, so byte offsets of
+/// later lines shift only by the comment text itself.
+pub(crate) fn strip_line_comments(text: &str) -> String {
+    let mut scan = JsonScan::new();
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
+    // A `/` is emitted only once the NEXT byte proves it is not opening a
+    // comment, so the scanner's own one-byte lookahead is mirrored here.
+    let mut pending_slash = false;
+    for &b in text.as_bytes() {
+        scan.step(b);
+        if scan.in_comment {
+            pending_slash = false;
+            continue;
+        }
+        if pending_slash {
+            out.push(b'/');
+            pending_slash = false;
+        }
+        if scan.prev_slash {
+            pending_slash = true;
+            continue;
+        }
+        out.push(b);
+    }
+    if pending_slash {
+        out.push(b'/');
+    }
+    // Only ASCII comment bytes are dropped, so what remains is still UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
 /// Locate the `"<key>"` key and return the byte index of the `[` that opens the
 /// array immediately following it. Both the key hunt and the `[` hunt run
 /// through the `JsonScan` state machine, and the match must sit in KEY position

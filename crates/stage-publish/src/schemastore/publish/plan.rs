@@ -333,9 +333,22 @@ fn rekey_external_schema(value: &str, current: &str) -> Option<String> {
 
 /// The family stem of a `<slug>-<version>.json` vendored filename, or `None`
 /// when the name carries no `-<version>` suffix.
+///
+/// The suffix must parse as a version. Any hyphen would otherwise split an
+/// unversioned sibling (`cfgd-host.json`) into the stem of a versioned file
+/// (`cfgd-0.4.2.json`), and a reviewer's reference to the other family would
+/// be re-pointed at the file being published.
 fn versioned_stem(filename: &str) -> Option<&str> {
-    let (stem, _version) = filename.strip_suffix(".json")?.rsplit_once('-')?;
-    (!stem.is_empty()).then_some(stem)
+    let base = filename.strip_suffix(".json")?;
+    // Rightmost split first, so a family stem carrying its own hyphens keeps
+    // them; a prerelease suffix (`-0.4.2-rc.1`) only parses at the earlier
+    // hyphen, which is why the scan continues instead of stopping at the first.
+    base.rmatch_indices('-')
+        .map(|(at, _)| (&base[..at], &base[at + 1..]))
+        .find(|(stem, version)| {
+            !stem.is_empty() && anodizer_core::git::parse_semver(version).is_ok()
+        })
+        .map(|(stem, _)| stem)
 }
 
 /// The `options` block to carry forward: this plan's own vendored filename when

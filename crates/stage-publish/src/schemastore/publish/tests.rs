@@ -2164,6 +2164,9 @@ fn write_vendor_schema_stages_the_options_block() {
 /// A value naming an older file of the SAME family is re-pointed at the file
 /// being published; a sibling family's file and a non-versioned name carry
 /// forward untouched, because nothing here knows what version they publish.
+/// `cfgd-config-extra.json` is the unversioned case that matters most: it
+/// shares the hyphenated prefix of the file being published, so a stem rule
+/// that accepts any hyphen would re-point another family's reference.
 #[test]
 fn external_schema_refs_are_rekeyed_only_within_the_same_family() {
     let jsonc = r#"{
@@ -2174,6 +2177,7 @@ fn external_schema_refs_are_rekeyed_only_within_the_same_family() {
       "externalSchema": [
         "cfgd-config-0.5.0.json",
         "cfgd-profile-0.5.0.json",
+        "cfgd-config-extra.json",
         "some-plain.json"
       ],
       "unknownKeywords": ["x-taplo"]
@@ -2187,6 +2191,7 @@ fn external_schema_refs_are_rekeyed_only_within_the_same_family() {
         &serde_json::json!([
             "cfgd-config-0.10.0.json",
             "cfgd-profile-0.5.0.json",
+            "cfgd-config-extra.json",
             "some-plain.json"
         ]),
         "own family re-keyed; sibling family and unversioned names verbatim"

@@ -289,17 +289,21 @@ pub(crate) fn add_high_schema_version(jsonc: &str, name: &str) -> anyhow::Result
 
 /// The per-file validator `options` block `schema-validation.jsonc` records for
 /// the vendored file `filename`, or `None` when the file has no `options`
-/// object, no block for that name, or a block that does not parse as plain
-/// JSON (a block carrying `//` comments). A `None` from an unparseable block is
-/// the conservative answer everywhere it is used: the caller then treats the
-/// options as absent and rewrites them.
+/// object, no block for that name, or a block that does not parse as JSON once
+/// its `//` comments are removed.
+///
+/// The comments are stripped rather than rejected: a block a reviewer
+/// annotated still carries its other options (`unknownKeywords`,
+/// `externalSchema`, …), and the caller REPLACES the whole member span — an
+/// unreadable block would drop every sibling option the reviewer set.
 pub(crate) fn schema_options_block(jsonc: &str, filename: &str) -> Option<Map<String, Value>> {
     let open = find_object_open_after(jsonc, "options").ok()?;
     let close = find_brace_close(jsonc, open).ok()?;
     let (start, end) = find_object_member_span(jsonc, open, close, filename)?;
     // Re-wrap the member in braces so serde parses it as a one-key object; that
     // decodes the key's own escapes instead of scanning for a `:` by hand.
-    let obj: Value = serde_json::from_str(&format!("{{{}}}", &jsonc[start..end])).ok()?;
+    let member = super::scan::strip_line_comments(&jsonc[start..end]);
+    let obj: Value = serde_json::from_str(&format!("{{{member}}}")).ok()?;
     obj.get(filename).and_then(Value::as_object).cloned()
 }
 
