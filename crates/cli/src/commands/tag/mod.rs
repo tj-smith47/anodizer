@@ -26,6 +26,7 @@ use anodizer_core::git;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template::TemplateVars;
+use anodizer_core::version_files::FileRewrite;
 use anyhow::{Result, bail};
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -399,17 +400,4 @@ pub(crate) struct CrateTagInfo {
     /// Effective `version_files` enrollment for this crate (per-crate /
     /// defaults list, else the top-level `Config.version_files`).
     version_files: Vec<anodizer_core::config::VersionFileEntry>,
-}
-
-/// One planned `version_files` rewrite: rewrite `old` → `new` in `file`,
-/// scoped to the regions `anchor` selects when the enrollment carries one.
-#[derive(Debug, PartialEq)]
-pub(crate) struct VersionFileRewrite {
-    file: String,
-    anchor: Option<String>,
-    old: String,
-    new: String,
-    /// Crate that enrolled this entry, named in the conflict / unmatched-anchor
-    /// errors.
-    owner: String,
 }

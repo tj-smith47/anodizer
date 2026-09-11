@@ -176,12 +176,7 @@ pub(crate) fn apply_workspace_bump(
 
     let mut staged_rel: Vec<String> = staged
         .iter()
-        .map(|p| {
-            p.strip_prefix(workspace_root)
-                .unwrap_or(p.as_path())
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map(|p| anodizer_core::path_util::display_under_root(workspace_root, p))
         .collect();
 
     // version_files are repo-root-relative already; rewrite the shared old→new

@@ -129,10 +129,10 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // default while `bump`, `changelog`, `--crate <name>` and the release
     // stage all resolved the crate's `tag_family_template()` — one crate with
     // two answers, so the tag `tag` cut was in a family nothing else scanned.
-    // An explicit `tag.tag_prefix` is the operator naming the family and
-    // still wins.
+    // An explicit `tag.tag_prefix` still wins where it is the family: the
+    // config-load fold already wrote it into a crate that declares no template
+    // of its own, and a crate that declares one outranks it there too.
     if opts.crate_name.is_none()
-        && tag_config.tag_prefix.is_none()
         && matches!(repo_shape, RepoShape::Single)
         && let [only] = loaded_config.crate_universe().as_slice()
     {

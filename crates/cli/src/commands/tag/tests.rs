@@ -2204,7 +2204,7 @@ fn plan_version_files_rewrites_dedupes_identical_lockstep_pair() {
     )];
     let plan = plan_version_files_rewrites(&groups).unwrap();
     assert_eq!(plan.len(), 1);
-    assert_eq!(plan[0].file, "README.md");
+    assert_eq!(plan[0].path, "README.md");
     assert_eq!(plan[0].old, "0.1.0");
     assert_eq!(plan[0].new, "0.2.0");
 }
@@ -2429,8 +2429,7 @@ fn plan_version_files_rewrites_dedupes_identical_anchored_pair() {
         ],
     )];
     let plan = plan_version_files_rewrites(&groups).unwrap();
-    let values: Vec<&VersionFileRewrite> =
-        plan.iter().filter(|r| r.file == "values.yaml").collect();
+    let values: Vec<&FileRewrite> = plan.iter().filter(|r| r.path == "values.yaml").collect();
     assert_eq!(
         values.len(),
         1,
@@ -2439,7 +2438,7 @@ fn plan_version_files_rewrites_dedupes_identical_anchored_pair() {
     assert_eq!(values[0].anchor.as_deref(), Some(shared));
     let chart: Vec<Option<&str>> = plan
         .iter()
-        .filter(|r| r.file == "chart.yaml")
+        .filter(|r| r.path == "chart.yaml")
         .map(|r| r.anchor.as_deref())
         .collect();
     assert_eq!(
@@ -2470,7 +2469,7 @@ fn top_level_version_files_drive_a_single_crate_plan() {
     let plan = version_files_plan(&files, "1.2.3", "1.3.0", "app").unwrap();
     let got: Vec<(&str, Option<&str>)> = plan
         .iter()
-        .map(|r| (r.file.as_str(), r.anchor.as_deref()))
+        .map(|r| (r.path.as_str(), r.anchor.as_deref()))
         .collect();
     assert_eq!(
         got,

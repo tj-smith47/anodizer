@@ -225,24 +225,20 @@ fn resolve_start_bound(
 }
 
 /// Resolve which crate a single tag belongs to from its tag-template prefix,
-/// returning `(crate_name, prefix)`. Mirrors the `resolve-tag` command:
-/// longest-matching prefix wins, and the remainder must look like a version.
+/// returning `(crate_name, prefix)`.
+///
+/// The answer comes from the tag-to-crate resolver `--publish-only` crate
+/// selection and `resolve-tag` read, so a tag can never name one crate here and
+/// another there; of the tier it selects, the first declared crate owns the
+/// changelog range.
 fn resolve_tag_owner(config: &Config, tag: &str) -> Result<(String, String)> {
-    let mut best: Option<(&str, String)> = None;
-    for c in config.crate_universe() {
-        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_family_template());
-        if let Some(remainder) = tag.strip_prefix(&prefix) {
-            let is_version = remainder
-                .split('.')
-                .next()
-                .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
-            if is_version && best.as_ref().is_none_or(|(_, p)| prefix.len() > p.len()) {
-                best = Some((c.name.as_str(), prefix));
-            }
-        }
-    }
-    match best {
-        Some((name, prefix)) => Ok((name.to_string(), prefix)),
+    let universe: Vec<anodizer_core::config::CrateConfig> =
+        config.crate_universe().into_iter().cloned().collect();
+    match crate::commands::release::resolve_tag_to_crates(tag, &universe).first() {
+        Some(c) => Ok((
+            c.name.clone(),
+            git::per_crate_tag_prefix(&c.name, &c.tag_family_template()),
+        )),
         None => bail!("no crate in the config matches tag '{}'", tag),
     }
 }

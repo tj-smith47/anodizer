@@ -1469,6 +1469,46 @@ fn tag_unknown_crate_hard_errors_naming_known_crates() {
     );
 }
 
+/// A one-crate repo whose crate declares its own `tag_template` tags in that
+/// template's family even when `tag.tag_prefix` names another one: the prefix
+/// is the family only for a crate that declares no template, and every other
+/// surface reads the crate's own.
+#[test]
+fn repo_level_tag_prefers_the_crate_template_over_the_tag_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: single\ntag:\n  tag_prefix: \"rel-\"\ncrates:\n  - name: app\n    path: crates/app\n    tag_template: \"app-v{{ .Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "app-v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a deref issue");
+
+    let out = tag_dry_run_from(root, &root.join(".anodizer.yaml"));
+    assert!(out.success, "tag --dry-run failed: {}", out.stdout);
+    assert!(
+        out.stdout.contains("new_tag=app-v0.1.1"),
+        "expected new_tag=app-v0.1.1: {}",
+        out.stdout
+    );
+}
+
 /// A one-crate `crates:` repo with no explicit `tag.tag_prefix` must tag in
 /// that crate's own family (`app-v0.1.1`), not in the `v` family the
 /// repo-level default would otherwise mint — every other surface (bump,

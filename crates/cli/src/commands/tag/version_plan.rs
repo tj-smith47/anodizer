@@ -20,33 +20,23 @@ use super::*;
 /// is returned for staging. A no-op entry (`old == new`) is dropped.
 pub(crate) fn rewrite_and_stage_version_files(
     root: &Path,
-    plan: &[VersionFileRewrite],
+    plan: &[FileRewrite],
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
-    let applicable: Vec<&VersionFileRewrite> = plan.iter().filter(|r| r.old != r.new).collect();
+    let applicable: Vec<FileRewrite> = plan.iter().filter(|r| r.old != r.new).cloned().collect();
     if applicable.is_empty() {
         return Ok(Vec::new());
     }
-    let rewrites: Vec<anodizer_core::version_files::FileRewrite> = applicable
-        .iter()
-        .map(|r| anodizer_core::version_files::FileRewrite {
-            path: r.file.clone(),
-            anchor: r.anchor.clone(),
-            old: r.old.clone(),
-            new: r.new.clone(),
-            owner: r.owner.clone(),
-        })
-        .collect();
     let outcomes =
-        anodizer_core::version_files::rewrite_version_in_files(root, &rewrites, dry_run)?;
+        anodizer_core::version_files::rewrite_version_in_files(root, &applicable, dry_run)?;
     let mut changed = Vec::new();
     for (outcome, rewrite) in outcomes.iter().zip(applicable.iter()) {
         let anchor_suffix = match &rewrite.anchor {
             Some(anchor) => {
                 log.verbose(&format!(
                     "version_files: {} anchor {} matched {} region(s)",
-                    rewrite.file,
+                    rewrite.path,
                     anchor,
                     outcome.matched_regions.unwrap_or(0)
                 ));
@@ -61,16 +51,16 @@ pub(crate) fn rewrite_and_stage_version_files(
                 outcome.replacements,
                 rewrite.old,
                 rewrite.new,
-                rewrite.file,
+                rewrite.path,
                 anchor_suffix,
             ));
-            if !dry_run && !changed.contains(&rewrite.file) {
-                changed.push(rewrite.file.clone());
+            if !dry_run && !changed.contains(&rewrite.path) {
+                changed.push(rewrite.path.clone());
             }
         } else {
             log.warn(&format!(
                 "enrolled version_files entry {} did not contain version {} (nothing rewritten)",
-                rewrite.file, rewrite.old
+                rewrite.path, rewrite.old
             ));
         }
     }
@@ -112,7 +102,7 @@ pub(crate) fn rewrite_and_stage_version_files(
 /// applied by the caller.
 pub(crate) fn plan_version_files_rewrites(
     tag_results: &[GroupTagResult],
-) -> Result<Vec<VersionFileRewrite>> {
+) -> Result<Vec<FileRewrite>> {
     let mut units: Vec<PlanUnit<'_>> = Vec::new();
     for group_result in tag_results {
         let Some(ref old) = group_result.old_version else {
@@ -153,19 +143,19 @@ pub(crate) struct PlanUnit<'a> {
 /// Every config mode funnels through here so the conflict guard cannot hold in
 /// one mode and not another. A single unit is the single-crate and lockstep
 /// shape; several units are the per-crate shape.
-fn build_version_files_plan(units: &[PlanUnit<'_>]) -> Result<Vec<VersionFileRewrite>> {
-    let mut plan: Vec<VersionFileRewrite> = Vec::new();
+fn build_version_files_plan(units: &[PlanUnit<'_>]) -> Result<Vec<FileRewrite>> {
+    let mut plan: Vec<FileRewrite> = Vec::new();
     for unit in units {
         for entry in unit.files {
-            let candidate = VersionFileRewrite {
-                file: entry.path().to_string(),
+            let candidate = FileRewrite {
+                path: entry.path().to_string(),
                 anchor: entry.anchor().map(str::to_string),
                 old: unit.old.to_string(),
                 new: unit.new.to_string(),
                 owner: unit.owner.to_string(),
             };
             if plan.iter().any(|p| {
-                p.file == candidate.file
+                p.path == candidate.path
                     && p.anchor == candidate.anchor
                     && p.old == candidate.old
                     && p.new == candidate.new
@@ -342,7 +332,7 @@ pub(crate) fn shared_version_files_plan(
     units: &[crate::commands::version_files_resolve::EnrolledUnit],
     old: &str,
     new: &str,
-) -> Result<Vec<VersionFileRewrite>> {
+) -> Result<Vec<FileRewrite>> {
     let plan_units: Vec<PlanUnit<'_>> = units
         .iter()
         .map(|unit| PlanUnit {
@@ -369,7 +359,7 @@ pub(crate) fn version_files_plan(
     old: &str,
     new: &str,
     owner: &str,
-) -> Result<Vec<VersionFileRewrite>> {
+) -> Result<Vec<FileRewrite>> {
     build_version_files_plan(&[PlanUnit {
         files,
         old,
@@ -383,16 +373,16 @@ pub(crate) fn version_files_plan(
 /// word-boundary prefix of a longer one would otherwise consume it (`0.1.0`
 /// inside `0.1.0-rc1`). `sort_by_key` is stable, so entries that tie keep their
 /// enrollment order.
-fn sort_plan(plan: &mut [VersionFileRewrite]) {
+fn sort_plan(plan: &mut [FileRewrite]) {
     let mut file_order: Vec<String> = Vec::new();
     for rewrite in plan.iter() {
-        if !file_order.contains(&rewrite.file) {
-            file_order.push(rewrite.file.clone());
+        if !file_order.contains(&rewrite.path) {
+            file_order.push(rewrite.path.clone());
         }
     }
     plan.sort_by_key(|r| {
         (
-            file_order.iter().position(|f| f == &r.file).unwrap_or(0),
+            file_order.iter().position(|f| f == &r.path).unwrap_or(0),
             std::cmp::Reverse(r.old.len()),
         )
     });
@@ -401,7 +391,7 @@ fn sort_plan(plan: &mut [VersionFileRewrite]) {
 /// How one side of a refusal is named: several owners are named by crate, a
 /// single owner by the entry it wrote, because "crates" sends the author
 /// looking for a second crate that does not exist.
-fn refusal_side(rewrite: &VersionFileRewrite, same_owner: bool) -> String {
+fn refusal_side(rewrite: &FileRewrite, same_owner: bool) -> String {
     match (same_owner, rewrite.anchor.as_deref()) {
         (false, _) => rewrite.owner.clone(),
         (true, Some(anchor)) => format!("match {anchor}"),
@@ -412,8 +402,8 @@ fn refusal_side(rewrite: &VersionFileRewrite, same_owner: bool) -> String {
 /// Refuse the two rewrite shapes one file cannot survive, for a pair of
 /// enrollments that overlap in it. Returns `Ok(())` when the pair does not
 /// interact, or interacts safely (distinct olds, no chain).
-fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<()> {
-    if a.file != b.file {
+fn check_rewrite_pair(a: &FileRewrite, b: &FileRewrite) -> Result<()> {
+    if a.path != b.path {
         return Ok(());
     }
     // One file bumped from one version to one other version is ONE rewrite,
@@ -448,7 +438,7 @@ fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<
             "version_files conflict: {}{} {} bumping FROM the same version to \
              different versions ({} {} → {} vs {} {} → {}); a file cannot hold two new versions \
              for one old one",
-            a.file,
+            a.path,
             anchor_suffix,
             enrolled_by,
             refusal_side(a, same_owner),
@@ -476,7 +466,7 @@ fn check_rewrite_pair(a: &VersionFileRewrite, b: &VersionFileRewrite) -> Result<
             "version_files conflict: {}{} {} whose bumps chain ({} {} → {} \
              then {} {} → {}); the second rewrite would consume the first's output — give each \
              enrollment its own `match` anchor",
-            a.file,
+            a.path,
             anchor_suffix,
             enrolled_by,
             refusal_side(first, same_owner),
