@@ -192,20 +192,29 @@ fn collision_message(claim: &Claim<'_>, prev: &Prior) -> String {
     {
         let target = claim.target.unwrap_or("host");
         let stage = claim.stage;
-        let reason = match (prev.binary.as_deref() == claim.binary, var(claim, "Binary")) {
-            (true, _) => format!(
+        let reason = match (prev.binary.as_deref(), claim.binary, var(claim, "Binary")) {
+            // Neither side names a binary at all — the installer stages
+            // (`dmgs`, `nfpms`, `msis`, …) never render one, so telling the
+            // user the entries "render the same binary name" names a value
+            // that stage does not have.
+            (None, None, _) => format!(
+                "The collision is between two `{stage}` entries on the same build target \
+                 '{target}', and the `{stage}` naming context defines no binary variable, so \
+                 no template variable can separate them"
+            ),
+            (prior, now, _) if prior == now => format!(
                 "The collision is between two `{stage}` entries on the same build target \
                  '{target}', which render the same binary name, so no template variable can \
                  separate them"
             ),
-            (false, Some(v)) => format!(
+            (_, _, Some(v)) => format!(
                 "The collision is between two `{stage}` entries on the same build target \
                  '{target}', which select different binaries ('{prior}' and '{now}'), so \
                  '{v}' would also separate them",
                 prior = prev.binary.as_deref().unwrap_or("none"),
                 now = claim.binary.unwrap_or("none"),
             ),
-            (false, None) => format!(
+            (_, _, None) => format!(
                 "The collision is between two `{stage}` entries on the same build target \
                  '{target}', which select different binaries ('{prior}' and '{now}'), but the \
                  `{stage}` naming context exposes no binary variable",
@@ -593,6 +602,47 @@ mod tests {
         assert!(
             !err.contains("{{ .Binary }}"),
             "two entries render the same binary: {err}"
+        );
+    }
+
+    /// An installer stage renders no binary at all, so both entries carry
+    /// `binary: None`. Reading that as "the two entries render the same binary
+    /// name" describes a value `dmgs` never produces.
+    #[test]
+    fn two_entries_without_a_binary_say_the_stage_defines_none() {
+        let installer = exposed(&["Os", "Arch", "Target", "Amd64"]);
+        let mut guard = ArchPathGuard::new();
+        let path = Path::new("dist/app.dmg");
+        let mut c = claim(
+            path,
+            "{{ .ProjectName }}",
+            "app",
+            Some("aarch64-apple-darwin"),
+            None,
+            &installer,
+        );
+        c.stage = "dmgs";
+        c.artifact = "disk image";
+        c.template_key = "name_template";
+        guard.check(c).expect("first path must pass");
+        c.entry = 1;
+        let err = guard.check(c).unwrap_err().to_string();
+
+        assert!(
+            err.contains(
+                "two `dmgs` entries on the same build target 'aarch64-apple-darwin', and the \
+                 `dmgs` naming context defines no binary variable, so no template variable can \
+                 separate them"
+            ),
+            "{err}"
+        );
+        assert!(
+            !err.contains("binary name"),
+            "the stage renders no binary name to report: {err}"
+        );
+        assert!(
+            err.contains("give each config entry a distinct `name_template`"),
+            "{err}"
         );
     }
 
