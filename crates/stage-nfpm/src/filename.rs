@@ -109,24 +109,12 @@ pub(crate) fn nfpm_arch(arch: &str) -> &str {
 /// Debian arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToDebian`).
 ///
-/// Rows mirror nfpm exactly, plus anodizer's `armv5`/`armv6`/`armv7`
-/// aliases for the `arm5`/`arm6`/`arm7` keys. Unmapped archs (`amd64`,
-/// `ppc64`, `riscv64`, …) pass through, matching nfpm's fall-through.
+/// The table is `anodizer_core::target::debian_arch_from_arch` — the same one
+/// the Artifactory deb-layout upload resolves a path with, so a package's
+/// filename and its upload path can never disagree. An arch with no Debian
+/// spelling passes through, matching nfpm's fall-through.
 fn debian_arch(arch: &str) -> &str {
-    match arch {
-        "386" => "i386",
-        "arm64" => "arm64",
-        "arm5" | "armv5" => "armel",
-        "arm6" | "armv6" => "armhf",
-        "arm7" | "armv7" => "armhf",
-        "mips64le" => "mips64el",
-        "mipsle" => "mipsel",
-        "ppc64le" => "ppc64el",
-        "s390" => "s390x",
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    }
+    anodizer_core::target::debian_arch_from_arch(arch).unwrap_or(arch)
 }
 
 fn deb_filename(info: &FileNameInfo<'_>) -> String {
@@ -959,6 +947,11 @@ mod tests {
         ];
         for (k, v) in arch_to_debian {
             assert_eq!(debian_arch(k), v, "debian_arch({k})");
+            assert_eq!(
+                anodizer_core::target::debian_arch_from_arch(k),
+                Some(v),
+                "core debian_arch_from_arch({k})"
+            );
         }
 
         let arch_to_rpm = [

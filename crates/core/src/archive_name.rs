@@ -102,6 +102,14 @@ pub const MICRO_ARCH_VARIANT_SUFFIX: &str = micro_arch_variant_suffix!();
 /// installer names instead of one silently clobbering the other; `v1` (the
 /// baseline) renders no suffix so the common single-variant build keeps its
 /// historical name.
+/// The baseline x86-64 microarchitecture level.
+///
+/// An ordinary amd64 build carries this level, and every default template
+/// guards against emitting it (`Amd64 != "v1"`) so the common single-variant
+/// build keeps its historical, suffix-free name. Only the optimized levels
+/// (`v2`/`v3`/`v4`) reach an asset name or a package's architecture field.
+pub const AMD64_BASELINE_VARIANT: &str = "v1";
+
 pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
     "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
 
@@ -146,7 +154,7 @@ pub fn seed_target_vars(ctx: &mut Context, target: &str) {
         vars.set("Arm", version);
     } else {
         if arch == "amd64" {
-            vars.set("Amd64", "v1");
+            vars.set("Amd64", AMD64_BASELINE_VARIANT);
         }
         vars.set("Arch", &arch);
     }
@@ -198,7 +206,7 @@ pub fn seed_variant_vars(
     reset_variant_vars(vars);
     match target.split('-').next().unwrap_or("") {
         "aarch64" => vars.set("Arm64", "v8"),
-        "x86_64" => vars.set("Amd64", amd64_variant.unwrap_or("v1")),
+        "x86_64" => vars.set("Amd64", amd64_variant.unwrap_or(AMD64_BASELINE_VARIANT)),
         "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
         _ => {}
     }
@@ -233,7 +241,7 @@ pub fn seed_amd64_variant_var(
 ) {
     let value = match amd64_variant {
         Some(v) => v,
-        None if arch == "amd64" => "v1",
+        None if arch == "amd64" => AMD64_BASELINE_VARIANT,
         None => "",
     };
     vars.set("Amd64", value);
@@ -585,6 +593,22 @@ mod tests {
         // byte-identical to them.
         assert!(DEFAULT_NAME_TEMPLATE.ends_with(MICRO_ARCH_VARIANT_SUFFIX));
         assert!(DEFAULT_BINARY_NAME_TEMPLATE.ends_with(MICRO_ARCH_VARIANT_SUFFIX));
+    }
+
+    /// Every default template's "suppress the baseline" guard reads the same
+    /// level the packagers compare against, so a change to the baseline moves
+    /// the asset names and the deb `arch_variant` together.
+    #[test]
+    fn the_baseline_amd64_level_is_spelled_once() {
+        let guard = format!("Amd64 != \"{AMD64_BASELINE_VARIANT}\"");
+        assert!(
+            INSTALLER_AMD64_VARIANT_SUFFIX.contains(&guard),
+            "installer suffix must guard on the baseline const: {INSTALLER_AMD64_VARIANT_SUFFIX}"
+        );
+        assert!(
+            MICRO_ARCH_VARIANT_SUFFIX.contains(&guard),
+            "full suffix must guard on the baseline const: {MICRO_ARCH_VARIANT_SUFFIX}"
+        );
     }
 
     #[test]

@@ -9,7 +9,13 @@ use super::*;
 /// Nothing but amd64 has a microarchitecture level to name.
 pub(crate) fn deb_arch_variant(arch: &str, amd64_variant: Option<&str>) -> Option<String> {
     match amd64_variant {
-        Some(v) if arch == "amd64" && !v.is_empty() && v != "v1" => Some(v.to_string()),
+        Some(v)
+            if arch == "amd64"
+                && !v.is_empty()
+                && v != anodizer_core::archive_name::AMD64_BASELINE_VARIANT =>
+        {
+            Some(v.to_string())
+        }
         _ => None,
     }
 }

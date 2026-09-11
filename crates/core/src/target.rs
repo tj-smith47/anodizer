@@ -196,7 +196,7 @@ impl std::error::Error for UnknownDebianArch {}
 ///
 /// This differs from [`map_target`]'s GoReleaser-style arch in the names
 /// Debian spells differently: `386` → `i386`, `armv7` → `armhf`,
-/// `armv6` → `armel`, `ppc64le` → `ppc64el`. The result is suitable for the
+/// `armv5` → `armel`, `ppc64le` → `ppc64el`. The result is suitable for the
 /// `deb.architecture=` Artifactory matrix param so an uploaded `.deb` lands in
 /// the correct architecture slice of the repo index.
 ///
@@ -226,13 +226,23 @@ pub fn debian_arch_from_target(triple: &str) -> Result<String, UnknownDebianArch
 /// [`map_target`] produces for a Linux target is enumerated here; anything else
 /// (a `darwin-universal` synthetic, an unmapped `prebuilt` token, a typo)
 /// returns `None` so the caller hard-fails instead of shipping a wrong slice.
+///
+/// Every row of nfpm v2's `archToDebian` resolves through here, under both
+/// nfpm's `armN` keys and anodizer's `armvN` aliases, so a deb filename and a
+/// deb-layout upload can never name one package with two architectures. ARMv6
+/// is `armhf`, as nfpm maps it: the hard-float userland is what a Raspbian-era
+/// ARMv6 build actually ships.
 pub fn debian_arch_from_arch(arch: &str) -> Option<&'static str> {
     let mapped = match arch {
-        "amd64" => "amd64",
-        "arm64" => "arm64",
+        "amd64" | "x86_64" => "amd64",
+        "arm64" | "aarch64" => "arm64",
         "386" => "i386",
-        "armv7" => "armhf",
-        "armv6" => "armel",
+        "arm7" | "armv7" => "armhf",
+        "arm6" | "armv6" => "armhf",
+        "arm5" | "armv5" => "armel",
+        "mips64le" => "mips64el",
+        "mipsle" => "mipsel",
+        "s390" => "s390x",
         "ppc64le" => "ppc64el",
         "ppc64" => "ppc64",
         "s390x" => "s390x",
@@ -582,9 +592,11 @@ mod tests {
             debian_arch_from_target("i686-unknown-linux-gnu").unwrap(),
             "i386"
         );
+        // ARMv6 is armhf, the same answer nfpm's archToDebian gives the deb
+        // filename, so a package and its repository slice agree.
         assert_eq!(
             debian_arch_from_target("arm-unknown-linux-gnueabi").unwrap(),
-            "armel"
+            "armhf"
         );
         assert_eq!(
             debian_arch_from_target("powerpc64le-unknown-linux-gnu").unwrap(),
