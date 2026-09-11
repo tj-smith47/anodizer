@@ -368,7 +368,7 @@ impl StageLogger {
 
     /// Open a log section for stage `title`.
     ///
-    /// The Cargo-style header (derived from [`stage_header`]: the phrase's
+    /// The Cargo-style header (derived from [`super::stage_header`]: the phrase's
     /// leading verb bold-green and right-aligned in the `VERB_COLUMN`
     /// gutter, then one space and the remaining words — `   Building binaries`,
     /// ` Publishing` for a single-word phrase) is *deferred*: it prints only
@@ -407,7 +407,7 @@ impl StageLogger {
         SectionGuard { _private: () }
     }
 
-    /// Split a stage's [`stage_header`] phrase into the `(verb, message)`
+    /// Split a stage's [`super::stage_header`] phrase into the `(verb, message)`
     /// pair [`Self::group`] feeds to [`Self::step`]. The verb is everything
     /// up to the first space; the message is the remainder (empty for a
     /// single-word phrase, which renders as a bare gutter verb). An unknown
