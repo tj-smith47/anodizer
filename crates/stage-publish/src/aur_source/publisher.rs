@@ -341,14 +341,15 @@ impl anodizer_core::Publisher for AurSourcePublisher {
                 targets.push(t);
             }
         }
-        // Top-level aur_sources array (project-wide).
+        // Top-level aur_sources array (project-wide). The snapshot is taken
+        // before the pushes and indexed by the entries that pushed, so a
+        // gated-off or unchanged entry leaves no rollback target behind.
         let top_level_targets = collect_aur_source_top_level_targets(ctx);
-        if !top_level_targets.is_empty() {
-            targets.extend(top_level_targets);
-            any_pushed |= publish_top_level_aur_sources(ctx, &log)?;
-        }
-        if !any_pushed {
-            targets.clear();
+        for i in publish_top_level_aur_sources(ctx, &log)? {
+            any_pushed = true;
+            if let Some(t) = top_level_targets.get(i) {
+                targets.push(t.clone());
+            }
         }
         crate::publisher_helpers::evaluate_entry_skips(
             ctx,

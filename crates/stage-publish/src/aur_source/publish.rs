@@ -239,10 +239,15 @@ pub fn publish_to_aur_source(
 /// The AUR-sources publisher reads the `aur_sources` config
 /// as a project-wide array. Each entry generates a source PKGBUILD and .SRCINFO,
 /// then pushes them to the configured AUR git repo.
-pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<bool> {
+///
+/// Returns the index of every entry that actually pushed, so the caller records
+/// a rollback target for those entries only: a force-push target recorded for a
+/// gated-off entry, or for one whose push reported no changes, points
+/// `tag rollback` at a repository this run never wrote to.
+pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<Vec<usize>> {
     let entries = match ctx.config.aur_sources {
         Some(ref v) if !v.is_empty() => v.clone(),
-        _ => return Ok(false),
+        _ => return Ok(Vec::new()),
     };
 
     let project_name = ctx
@@ -251,7 +256,7 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         .cloned()
         .unwrap_or_default();
 
-    let mut any_pushed = false;
+    let mut pushed_entries = Vec::new();
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
         if crate::util::should_skip_publisher_with_if(
@@ -265,8 +270,18 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
             continue;
         }
 
-        any_pushed |= publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;
+        let outcome = publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log);
+        // A build target pacman cannot name disqualifies THIS entry; the `?`
+        // would abort the publisher and strand every entry after it.
+        let Some(pushed) =
+            crate::publisher_helpers::absorb_entry_skip(ctx, log, "aur_source", &label, outcome)?
+        else {
+            continue;
+        };
+        if pushed {
+            pushed_entries.push(i);
+        }
     }
 
-    Ok(any_pushed)
+    Ok(pushed_entries)
 }

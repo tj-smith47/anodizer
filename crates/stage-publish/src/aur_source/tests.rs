@@ -1271,6 +1271,105 @@ fn an_unmappable_target_skips_the_entry_and_records_no_rollback_target() {
     drop(bare);
 }
 
+/// A top-level `aur_sources:` entry that did not push leaves no rollback
+/// target: the array used to record one per entry up front and keep them all
+/// as soon as anything at all pushed, so `tag rollback` named a repository
+/// this run never force-pushed.
+#[cfg(unix)]
+#[test]
+fn a_gated_top_level_entry_records_no_rollback_target() {
+    use anodizer_core::Publisher as _;
+    use anodizer_core::config::StringOrBool;
+
+    let (bare_url, bare) = make_bare_aur_repo();
+    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    ctx.config.crates.clear();
+    ctx.config.aur_sources = Some(vec![
+        AurSourceConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/gated.git".to_string()),
+            name: Some("gated".to_string()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            skip_upload: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        },
+        AurSourceConfig {
+            git_url: Some(bare_url.clone()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+    ]);
+
+    let evidence = super::publisher::AurSourcePublisher::new()
+        .run(&mut ctx)
+        .expect("a gated entry must not fail the publisher");
+
+    let targets = super::publisher::decode_aur_source_targets(&evidence.extra);
+    assert_eq!(
+        targets.len(),
+        1,
+        "only the entry that pushed is a target: {targets:?}"
+    );
+    assert_eq!(targets[0].target, "aur_sources[1]");
+    std::fs::remove_dir_all(&ctx.config.dist).ok();
+    drop(bare);
+}
+
+/// A build target pacman cannot name disqualifies a TOP-LEVEL entry too. The
+/// hard error aborted the publisher at the first entry, so every entry after
+/// it was stranded; now each one is absorbed and recorded.
+#[cfg(unix)]
+#[test]
+fn an_unmappable_target_skips_a_top_level_entry_and_keeps_the_next_one() {
+    use anodizer_core::Publisher as _;
+
+    let (bare_url, bare) = make_bare_aur_repo();
+    let mut ctx = live_source_ctx(&bare_url, |_| {});
+    ctx.config.crates.clear();
+    // The arch set of a top-level entry comes from the project-wide default
+    // targets, so it is the same question for every entry in the array.
+    ctx.config.defaults = Some(anodizer_core::config::Defaults {
+        targets: Some(vec!["riscv64gc-unknown-linux-gnu".to_string()]),
+        ..Default::default()
+    });
+    ctx.config.aur_sources = Some(vec![
+        AurSourceConfig {
+            git_url: Some(bare_url.clone()),
+            name: Some("first".to_string()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        AurSourceConfig {
+            git_url: Some(bare_url.clone()),
+            name: Some("second".to_string()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+    ]);
+
+    let evidence = super::publisher::AurSourcePublisher::new()
+        .run(&mut ctx)
+        .expect("an unmappable target must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    let labels: Vec<&str> = events.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["aur_sources[0]", "aur_sources[1]"],
+        "the entry after the skipped one must still be evaluated: {events:?}"
+    );
+    assert!(events[0].reason.contains("riscv64"), "{}", events[0].reason);
+    assert!(
+        super::publisher::decode_aur_source_targets(&evidence.extra).is_empty(),
+        "nothing pushed, so nothing is a rollback target"
+    );
+    std::fs::remove_dir_all(&ctx.config.dist).ok();
+    drop(bare);
+}
+
 /// A second publish against an unchanged repo reports `NoChanges` → `false`.
 #[cfg(unix)]
 #[test]

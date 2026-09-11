@@ -2089,6 +2089,59 @@ fn publish_to_aur_pushes_pkgbuild_and_srcinfo_to_master() {
     drop(bare);
 }
 
+/// The rollback target is rendered inside the per-crate template scope that
+/// rendered the push. `aur.name` may read `{{ .ProjectName }}`, which the scope
+/// overrides with the crate name, so a target collected after the scope closed
+/// names the WORKSPACE project instead of the package just pushed.
+#[cfg(unix)]
+#[test]
+fn the_rollback_target_is_rendered_in_the_crate_scope() {
+    use anodizer_core::Publisher as _;
+
+    let (bare_url, bare) = make_bare_aur_repo();
+    let mut config = Config::default();
+    config.project_name = "workspace-project".to_string();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            aur: Some(AurConfig {
+                git_url: Some(bare_url.clone()),
+                // Renders to the CRATE's name inside the scope, to the
+                // workspace project name outside it.
+                name: Some("{{ .ProjectName }}-bin".to_string()),
+                homepage: Some("https://example.com/mytool".to_string()),
+                license: Some("MIT".to_string()),
+                description: Some("A great tool".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut()
+        .set("ProjectName", "workspace-project");
+    ctx.artifacts.add(linux_amd64_archive(
+        "mytool",
+        "https://example.com/mytool-1.2.3-linux-amd64.tar.gz",
+        "abc123",
+    ));
+
+    let evidence = super::publisher::AurOurPublisher::new()
+        .run(&mut ctx)
+        .expect("the publish must succeed");
+
+    let targets = super::publisher::decode_aur_our_targets(&evidence.extra);
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    assert_eq!(
+        targets[0].target, "mytool-bin",
+        "the recorded package must be the one the scoped render pushed"
+    );
+    drop(bare);
+}
+
 /// A crate the run SKIPPED must leave no rollback target behind. The
 /// ambiguous first crate is skipped, the second one pushes, so `any_pushed`
 /// is true — and a run-wide target collection would record the skipped

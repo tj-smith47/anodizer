@@ -351,22 +351,33 @@ impl anodizer_core::Publisher for AurOurPublisher {
             log.verbose(&run_per_crate_start_message(crate_name));
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered PKGBUILD `pkgver` carries the crate's version, not the
-            // first crate's (workspace per-crate independent-version mode).
+            // first crate's (workspace per-crate independent-version mode). The
+            // rollback target is taken INSIDE the same scope, and only for a
+            // crate that pushed: `aur.name` may read `{{ .ProjectName }}`, which
+            // the scope overrides, so a target collected after the scope closed
+            // names a different AUR repository than the one just pushed to.
             let outcome = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| publish_to_aur(ctx, crate_name, &log),
+                |ctx| {
+                    let pushed = publish_to_aur(ctx, crate_name, &log)?;
+                    let target = if pushed {
+                        collect_aur_our_target(ctx, &log, crate_name)?
+                    } else {
+                        None
+                    };
+                    Ok((pushed, target))
+                },
             );
-            let pushed =
+            let Some((pushed, target)) =
                 crate::publisher_helpers::absorb_entry_skip(ctx, &log, "aur", crate_name, outcome)?
-                    .unwrap_or(false);
+            else {
+                continue;
+            };
             if pushed {
                 any_pushed = true;
-                // The rollback target is taken only for a crate that pushed.
-                // Recording one for a skipped crate would send `tag rollback`
-                // into an AUR repository this run never wrote to.
-                if let Some(target) = collect_aur_our_target(ctx, &log, crate_name)? {
+                if let Some(target) = target {
                     targets.push(target);
                 }
             }
